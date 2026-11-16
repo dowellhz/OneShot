@@ -413,8 +413,18 @@ class Engine:
     @torch.inference_mode()
     def generate(self, prompt: str, out: str, image=None, last_image=None, references=None, seconds: float = 5.2,
                  height=None, width=None, steps: int = 4, seed: int = 0, turbo: bool = True, frames: int | None = None,
-                 lora: str | None = "auto"):
+                 lora: str | None = "auto", keyframes=None):
         from diffusers.utils.export_utils import encode_video
+        import keyframes as KF
+        KF.install()
+        references = list(references or [])
+        if keyframes:                                     # keyframes at any frame ride along as trailing references
+            from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference
+            h_, w_ = int(height or 768), int(width or 1344)
+            KF.set_active(len(references), [int(f) for _, f in keyframes])
+            references += [MiniMaxH3ImageReference(image=KF.crop_to_canvas(img, w_, h_)) for img, _ in keyframes]
+        else:
+            KF.set_active(None, [])
         task = "ref2va" if references else "fl2va"
         if lora == "auto":                                # callers that already chose (the service) pass their choice
             lora = pick_lora(task, height, width, turbo)
@@ -437,6 +447,9 @@ class Engine:
             kw["last_image"] = last_image
         if references:
             kw["references"] = references
+            # like ComfyUI's ref_image_size "match": references at the video's own short edge, not diffusers' default
+            # 2048 (a 2048 reference is ~5k tokens instead of ~1k; attention cost grows with the square of the sequence)
+            self.pipe.register_to_config(reference_image_short_edge=min(int(height or 768), int(width or 1344)))
         t0 = time.time()
         torch.cuda.reset_peak_memory_stats()
         r = self.pipe(**kw)

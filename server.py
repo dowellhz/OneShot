@@ -1411,23 +1411,19 @@ async def generate_engine(req, p: dict, count: int):
     body = {"kind": "video", "prompt": meta["full_prompt"], "frames": min(345, max(124, meta["frames"])), "height": meta["height"],
             "width": meta["width"], "steps": meta["steps"], "turbo": bool(p.get("turbo", True))}
     mode = meta["mode"]
-    if mode == "planned":
-        subj = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs if im.get("role") == "subject"]
+    nframes = body["frames"]
+    at = lambda t: max(0, min(nframes - 4, round(float(t or 0) * 24)))   # the pixel frame a keyframe is anchored at
+    if mode == "planned":                          # character references + keyframes at their times (ComfyUI AddGuide)
+        subj = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs if im.get("role") == "subject"][:9]
         frames = sorted([im for im in imgs if im.get("role") != "subject"], key=lambda im: float(im.get("time") or 0))
-        if subj:
-            body["references"] = subj[:9]
-        elif frames:
-            body["image"] = str(tools.ref_path(COMFY_DIR, frames[0]["ref"]))
-            if len(frames) > 1:
-                body["last_image"] = str(tools.ref_path(COMFY_DIR, frames[-1]["ref"]))
-        if subj and frames:
-            meta["mode_name"] = "人物设定（首帧暂作参考）"
-            body["references"] = (subj + [str(tools.ref_path(COMFY_DIR, frames[0]["ref"]))])[:9]
+        body["references"] = subj
+        body["keyframes"] = [{"path": str(tools.ref_path(COMFY_DIR, im["ref"])), "frame": at(im.get("time"))} for im in frames]
     elif mode == "reference":
         body["references"] = paths[:9]
-    elif mode == "keyframes":                       # in-between keyframes: first and last are anchored, the rest guide by reference
-        body["image"], body["last_image"] = paths[0], paths[-1]
-        meta["mode_name"] = "首尾帧（中间关键帧暂不支持）"
+    elif mode == "keyframes":                      # like the ComfyUI graph: the first image as reference, the rest anchored
+        times = meta.get("times") or []
+        body["references"] = paths[:1]
+        body["keyframes"] = [{"path": paths[i], "frame": at(times[i] if i < len(times) else 0)} for i in range(1, len(paths))]
     elif paths:
         body["image"] = paths[0]
         if len(paths) > 1:

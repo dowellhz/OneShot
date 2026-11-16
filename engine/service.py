@@ -99,7 +99,8 @@ def worker():
             if r.get("references"):
                 from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3ImageReference
                 refs = [MiniMaxH3ImageReference(image=load_image(p)) for p in r["references"]]
-            task = "ref2va" if refs else "fl2va"
+            kfs = [(load_image(k["path"]), int(k["frame"])) for k in r.get("keyframes") or []]
+            task = "ref2va" if refs or kfs else "fl2va"
             j["phase"] = "loading model" if ENGINE.task != task else None
             lora = E.pick_lora(task, r.get("height"), r.get("width"), bool(r.get("turbo", True)))
             ENGINE.use(task, lora)
@@ -114,7 +115,7 @@ def worker():
                                    last_image=load_image(r["last_image"]) if r.get("last_image") else None, references=refs,
                                    seconds=float(r.get("seconds") or 5.2), height=r.get("height"), width=r.get("width"),
                                    steps=int(r.get("steps") or 4), seed=int(r.get("seed") or 0), turbo=bool(r.get("turbo", True)),
-                                   frames=r.get("frames"), lora=lora)
+                                   frames=r.get("frames"), lora=lora, keyframes=kfs)
             j.update(state="done", took=round(took, 1), finished=time.time())
         except Cancelled:
             j.update(state="error", error="已取消", finished=time.time())
