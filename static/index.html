@@ -414,7 +414,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 
 <script src="/static/tools.js?v=5"></script>
 <script src="/static/film.js?v=4"></script>
-<script src="/static/wizard.js?v=5"></script>
+<script src="/static/wizard.js?v=6"></script>
 <script src="/static/settings.js?v=2"></script>
 <script src="/static/account.js?v=1"></script>
 <script>
@@ -438,8 +438,18 @@ function emptyBoard(name = "我的画布") { return { name, nodes: [], edges: []
 function toast(m, ms = 2400) { const t = $("#toast"); t.textContent = m; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), ms); }
 
 // ================================================================= persistence & history
-let saveT = null;
-function save() { clearTimeout(saveT); saveT = setTimeout(() => fetch("/api/board/" + boardId, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(B) }), 500); }
+let saveT = null, savePending = null;
+// a save belongs to the board it was made on, even if the user switches boards before it is sent
+function save() { clearTimeout(saveT); savePending = { id: boardId, b: B }; saveT = setTimeout(flushSave, 500); }
+async function flushSave(keepalive) {
+  clearTimeout(saveT); const p = savePending; savePending = null; if (!p) return;
+  const body = JSON.stringify(p.b, (k, v) => k === "st" ? undefined : v);   // live job status is not board data
+  try {
+    const r = await fetch("/api/board/" + p.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body, keepalive: !!keepalive && body.length < 60000 });
+    if (!r.ok && r.status !== 401) { let m = r.statusText; try { m = (await r.json()).error || m; } catch {} toast("保存失败：" + m, 5000); }
+  } catch { if (!keepalive) { toast("保存失败：网络断开，稍后会再试", 4000); if (!savePending) { savePending = p; saveT = setTimeout(flushSave, 3000); } } }
+}
+addEventListener("pagehide", () => flushSave(true));
 const undoStack = [], redoStack = [];
 function snap() { return JSON.stringify({ nodes: B.nodes.map(n => ({ ...n, job: null })), edges: B.edges, seq: B.seq }); }
 function checkpoint() { undoStack.push(snap()); if (undoStack.length > 80) undoStack.shift(); redoStack.length = 0; }
@@ -1233,6 +1243,7 @@ $("#zFit").onclick = () => fit();
 // keyboard
 let clip = null;
 addEventListener("keydown", e => {
+  if (document.querySelector("#wiz.on, #film.on, #wzSample.on, #pv.on, #settings.on")) return;   // the canvas is hidden behind these
   if (e.code === "Space" && !e.target.closest("input, textarea, select, button, [contenteditable=true]")) { if (!spaceDown) { spaceDown = true; vp.classList.add("space"); } e.preventDefault(); return; }
   if (e.target.closest("input, textarea, select, [contenteditable=true]")) return;
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
@@ -1463,6 +1474,7 @@ $$("#drawer .tabs button").forEach(b => b.onclick = () => { $$("#drawer .tabs bu
 
 // ================================================================= boards
 async function openBoard(id) {
+  await flushSave();
   boardId = id; localStorage.setItem("h3.board", id);
   let b = {}; try { b = await (await fetch("/api/board/" + id)).json(); } catch {}
   B = Object.assign(emptyBoard(), b && b.nodes ? b : {});
@@ -1485,10 +1497,10 @@ $("#bmenuBtn").onclick = async e => {
     `<div class="sep"></div><button data-new>${ico("plus")}新建画布</button><button data-export>${ico("dl")}导出当前画布</button><button data-import>${ico("upload")}导入画布 JSON</button><button data-del style="color:#ff8a8a">${ico("trash")}删除当前画布</button>`;
   closeMenus(); m.classList.add("on");
   $$("button[data-id]", m).forEach(b => b.onclick = () => { m.classList.remove("on"); openBoard(b.dataset.id); });
-  $("[data-new]", m).onclick = () => { m.classList.remove("on"); const id = "b" + Date.now().toString(36); boardId = id; B = emptyBoard("新画布 " + new Date().toLocaleDateString()); fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(B) }).then(() => openBoard(id)); };
+  $("[data-new]", m).onclick = async () => { m.classList.remove("on"); await flushSave(); const id = "b" + Date.now().toString(36); boardId = id; B = emptyBoard("新画布 " + new Date().toLocaleDateString()); fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(B) }).then(() => openBoard(id)); };
   $("[data-export]", m).onclick = () => { m.classList.remove("on"); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(B, null, 1)], { type: "application/json" })); a.download = (B.name || "board") + ".json"; a.click(); };
   $("[data-import]", m).onclick = () => { m.classList.remove("on"); const i = document.createElement("input"); i.type = "file"; i.accept = ".json"; i.onchange = async () => { const o = JSON.parse(await i.files[0].text()); const id = "b" + Date.now().toString(36); o.nodes?.forEach(n => n.job = null); await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(o) }); openBoard(id); }; i.click(); };
-  $("[data-del]", m).onclick = async () => { m.classList.remove("on"); await fetch("/api/board/" + boardId, { method: "DELETE" }); const l = await (await fetch("/api/boards")).json(); openBoard(l[0]?.id || "default"); };
+  $("[data-del]", m).onclick = async () => { m.classList.remove("on"); clearTimeout(saveT); savePending = null; await fetch("/api/board/" + boardId, { method: "DELETE" }); const l = await (await fetch("/api/boards")).json(); openBoard(l[0]?.id || "default"); };
 };
 document.addEventListener("pointerdown", e => { if (!e.target.closest(".menu, #bmenuBtn, #addBtn, .plus")) closeMenus(); });
 

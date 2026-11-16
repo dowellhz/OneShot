@@ -30,6 +30,7 @@ async function openWizard() {
   else {
     if (B.nodes.length) {   // a guided project gets its own board
       const id = "b" + Date.now().toString(36);
+      await flushSave();
       await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(emptyBoard("新项目")) });
       await openBoard(id);
     }

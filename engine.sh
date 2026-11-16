@@ -24,7 +24,7 @@ for step in "$@"; do
     ~/InferSSD/.venv/bin/python - <<"PY"
 import json, os, signal, time
 from pathlib import Path
-s = json.loads(Path.home() / "InferSSD/experiment/web/service.json".read_text())
+s = json.loads((Path.home() / "InferSSD/experiment/web/service.json").read_text())
 pid = s.get("controller_pid")
 alive = pid and Path("/proc", str(pid)).exists() and Path("/proc", str(pid), "stat").read_text().split()[21] == str(s.get("controller_start_identity"))
 if alive:

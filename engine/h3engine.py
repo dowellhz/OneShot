@@ -113,6 +113,39 @@ def release_module(module: nn.Module) -> None:
         del arena
 
 
+# --------------------------------------------------------------------------- VAEs: on the GPU only while used
+
+def gpu_while_used(module: nn.Module, methods=("encode", "decode", "forward")) -> None:
+    """Keep a module's weights in pinned host memory and put the whole module on the GPU only for the duration of a
+    call (ComfyUI does the same with its VAEs while the transformer denoises). Pinned: the move is ~0.3 s for 5 GB, and
+    going back costs nothing (the tensors just point at their host copies again)."""
+    module.to("cpu")
+    pin_module(module)
+    host = [(t, t.data) for t in itertools.chain(module.parameters(), module.buffers())]
+    depth = [0]
+
+    def wrap(fn):
+        def run(*a, **k):
+            if depth[0] == 0:
+                for t, h in host:
+                    t.data = h.to(DEV, non_blocking=True)
+            depth[0] += 1
+            try:
+                return fn(*a, **k)
+            finally:
+                depth[0] -= 1
+                if depth[0] == 0:
+                    torch.cuda.current_stream().synchronize()
+                    for t, h in host:
+                        t.data = h
+                    torch.cuda.empty_cache()
+        return run
+    for name in methods:
+        fn = getattr(module, name, None)
+        if callable(fn):
+            setattr(module, name, wrap(fn))
+
+
 # --------------------------------------------------------------------------- FP8 storage for the text encoder
 
 class FP8Linear(nn.Module):
@@ -255,6 +288,15 @@ def load_text_encoder():
     return model
 
 
+def pick_lora(task: str, height, width, turbo: bool) -> str | None:
+    """The one rule for the turbo LoRA: 4-step 768p one from ~0.7 MP up, else the 8-step one (480p)."""
+    if not turbo:
+        return None
+    if task == "ref2va":
+        return "ref2va_4"
+    return "fl2va_768" if int(height or 768) * int(width or 1344) >= 700_000 else "fl2va_8"
+
+
 # --------------------------------------------------------------------------- the engine
 
 class Engine:
@@ -269,11 +311,27 @@ class Engine:
         te = load_text_encoder()
         self.pipe.update_components(text_encoder=te)
         self._stream(te, "leaf_level")
-        for n in ("vae", "audio_vae"):
-            m = getattr(self.pipe, n)
-            m.to(DEV)
+        for n in ("vae", "audio_vae"):              # like ComfyUI: off the GPU while the transformer denoises
+            gpu_while_used(getattr(self.pipe, n))
         self.task = None
         self.lora = None
+
+    @staticmethod
+    def _chunk_ff(model: nn.Module, rows: int = 16384):
+        """Run every block's feed-forward over at most `rows` tokens at a time: same math, a fraction of the peak
+        memory on long clips (the 768p 14 s sequence is ~100k tokens; its FFN intermediate alone is ~6 GB)."""
+        for blk in getattr(model, "transformer_blocks", []):
+            ff = getattr(blk, "ff", None)
+            if ff is None or getattr(ff, "_h3_chunked", False):
+                continue
+            inner = ff.forward
+
+            def fwd(x, *a, _inner=inner, **k):
+                if x.dim() != 3 or x.shape[1] <= rows:
+                    return _inner(x, *a, **k)
+                return torch.cat([_inner(x[:, i:i + rows], *a, **k) for i in range(0, x.shape[1], rows)], dim=1)
+            ff.forward = fwd
+            ff._h3_chunked = True
 
     def _stream(self, module: nn.Module, kind: str, keep_first: int = 0):
         from diffusers.hooks import apply_group_offloading
@@ -315,10 +373,11 @@ class Engine:
             names = [n for n in self.ipipe.pretrained_component_names if n not in ("transformer", "text_encoder")]
             self.ipipe.load_components(names=names, pretrained_model_name_or_path=str(IMG_BASE), torch_dtype=torch.bfloat16)
             self.ipipe.update_components(text_encoder=self.pipe.text_encoder)
-            self.ipipe.vae.to(DEV)
+            gpu_while_used(self.ipipe.vae)
         need_ram(70, " H3-Image")
         model = MiniMaxH3ImageTransformer2DModel.from_pretrained(str(IMG_BASE), subfolder="transformer_diffusers", torch_dtype=torch.bfloat16)
         model.eval().requires_grad_(False)
+        self._chunk_ff(model)
         self._stream(model, "block_level")
         self.ipipe.update_components(transformer=model)
         self.task = "image"
@@ -346,17 +405,19 @@ class Engine:
         self._drop_big()
         need_ram(70, " H3 视频模型")
         model = load_transformer(task, lora)
+        self._chunk_ff(model)
         self._stream(model, "block_level")
         self.pipe.update_components(**{("transformer_ref" if task == "ref2va" else "transformer"): model})
         self.task, self.lora = task, lora
 
     @torch.inference_mode()
     def generate(self, prompt: str, out: str, image=None, last_image=None, references=None, seconds: float = 5.2,
-                 height=None, width=None, steps: int = 4, seed: int = 0, turbo: bool = True, frames: int | None = None):
+                 height=None, width=None, steps: int = 4, seed: int = 0, turbo: bool = True, frames: int | None = None,
+                 lora: str | None = "auto"):
         from diffusers.utils.export_utils import encode_video
         task = "ref2va" if references else "fl2va"
-        hd = (height or 768) >= 768
-        lora = None if not turbo else ("ref2va_4" if task == "ref2va" else ("fl2va_768" if hd else "fl2va_8"))
+        if lora == "auto":                                # callers that already chose (the service) pass their choice
+            lora = pick_lora(task, height, width, turbo)
         self.use(task, lora)
         if not frames:                                   # the VAE's 17n+5 grid, at least 5.2 s
             frames = max(124, round(seconds * 24))

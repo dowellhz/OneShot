@@ -30,10 +30,8 @@ class Cancelled(Exception):
 
 
 def _ref_path(comfy_dir: Path, ref: str) -> Path:
-    kind, path = ref.split(":", 1)
-    if kind not in ("input", "output") or ".." in path:
-        raise ValueError("bad ref")
-    return comfy_dir / kind / path
+    from tools import ref_path
+    return ref_path(comfy_dir, ref)
 
 
 def _new(comfy_dir: Path, kind: str, prefix: str, ext: str):

@@ -17,10 +17,15 @@ SR = 44100
 
 
 def ref_path(comfy_dir: Path, ref: str) -> Path:
-    kind, path = ref.split(":", 1)
-    if kind not in ("input", "output") or ".." in path:
+    """'input:h3studio/x.png' -> the file, only ever inside <media>/input|output/h3studio (no absolute paths, no ..)."""
+    kind, _, path = str(ref).partition(":")
+    if kind not in ("input", "output") or not path.startswith("h3studio/") or "\\" in path or "\0" in path:
         raise ValueError("bad ref")
-    return comfy_dir / kind / path
+    root = (comfy_dir / kind / "h3studio").resolve()
+    p = (comfy_dir / kind / path).resolve()
+    if not p.is_relative_to(root):
+        raise ValueError("bad ref")
+    return p
 
 
 def _new(comfy_dir: Path, kind: str, prefix: str, ext: str) -> tuple[Path, str]:

@@ -61,9 +61,11 @@ def frames_for(seconds: float) -> int:
 
 def load_name(ref: str) -> str:
     """'input:sub/x.png' -> 'sub/x.png'; 'output:sub/x.png' -> 'sub/x.png [output]' (LoadImage's annotated names)."""
-    kind, path = ref.split(":", 1)
-    if kind not in ("input", "output") or ".." in path:
+    try:
+        tools.ref_path(COMFY_DIR, ref)
+    except ValueError:
         raise web.HTTPBadRequest(text="bad image reference")
+    kind, path = ref.split(":", 1)
     return path if kind == "input" else f"{path} [output]"
 
 
@@ -569,6 +571,46 @@ def board_meta(f: Path) -> dict:
     return b
 
 
+_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
+_URL_KEYS = {"url", "cover_url"}
+_NUM_KEYS = {"seed", "w", "h", "seconds", "duration", "x", "y", "k", "cur", "count", "start", "volume", "in", "out", "sub_size", "speed", "seq"}
+
+
+def clean_board(v, key: str = ""):
+    """Board JSON comes from browsers (any teammate, for shared boards): links may only point at this site's media,
+    ids must be plain, numbers must be numbers — so nothing in a board can inject markup into someone else's page."""
+    if isinstance(v, dict):
+        out = {}
+        for k, x in v.items():
+            if not isinstance(k, str) or len(k) > 64:
+                continue
+            if k in _URL_KEYS:
+                if x is None or (isinstance(x, str) and x.startswith(("/media?ref=", "/static/")) and not re.search(r"[\s\"'<>`\\]", x)):
+                    out[k] = x
+                continue
+            if k in _NUM_KEYS and x is not None and not isinstance(x, (int, float, dict, list)):
+                try:
+                    x = float(x)
+                except (TypeError, ValueError):
+                    continue
+            if k in ("id", "from", "to", "img", "vid", "node", "script") and x is not None and not (isinstance(x, str) and _ID.fullmatch(x)):
+                if k in ("id", "from", "to"):
+                    raise bad("项目数据格式不对（节点编号）")
+                continue
+            if k in ("ref", "cover") and isinstance(x, str) and x:          # media refs (cover: a ref or seconds)
+                try:
+                    tools.ref_path(COMFY_DIR, x)
+                except ValueError:
+                    continue
+            out[k] = clean_board(x, k)
+        return out
+    if isinstance(v, list):
+        return [clean_board(x, key) for x in v[:5000]]
+    if isinstance(v, str):
+        return v[:20000]
+    return v
+
+
 def can_see(u: dict, b: dict) -> bool:
     return u["role"] == "admin" or b.get("owner") in (None, u["id"]) or bool(b.get("shared"))
 
@@ -619,7 +661,7 @@ async def get_board(req):
 @routes.put("/api/board/{bid}")
 async def put_board(req):
     f = board_path(req.match_info["bid"])
-    data = await req.json()
+    data = clean_board(await req.json())
     u = req["user"]
     old = board_meta(f) if f.exists() else {}
     if old and not (u["role"] == "admin" or old.get("owner") in (None, u["id"]) or old.get("shared")):
@@ -698,26 +740,37 @@ async def upload(req):
             dst.unlink(missing_ok=True)
             raise web.HTTPBadRequest(text=json.dumps({"error": f"读不了这个视频：{e}"}, ensure_ascii=False), content_type="application/json")
         return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "type": "video", **info})
-    form = aiohttp.FormData()
-    form.add_field("image", raw, filename=name, content_type=part.headers.get("Content-Type", "image/png"))
-    form.add_field("subfolder", "h3studio"); form.add_field("type", "input")
-    async with req.app["http"].post(f"{COMFY}/upload/image", data=form) as r:
-        b = await r.json(content_type=None)
-    ref = f"input:{b['subfolder'] + '/' if b.get('subfolder') else ''}{b['name']}"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise bad("只支持 PNG / JPG / WEBP 图片，或 MP4 / MOV / WEBM 视频")
+    dst = COMFY_DIR / "input" / "h3studio" / name
+
+    def store():
+        from PIL import Image
+        import io
+        with Image.open(io.BytesIO(raw)) as im:     # refuses anything that is not really an image
+            im.verify()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(raw)
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, store)
+    except Exception as e:
+        raise bad(f"读不了这张图片：{e}")
+    ref = f"input:h3studio/{name}"
     return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe="")})
 
 
 @routes.get("/media")
 async def media(req):
-    kind, path = req.query["ref"].split(":", 1)
-    if kind not in ("input", "output") or ".." in path:
+    try:
+        f = tools.ref_path(COMFY_DIR, req.query.get("ref", ""))
+    except ValueError:
         raise web.HTTPBadRequest()
-    sub, _, fn = path.rpartition("/")
-    f = COMFY_DIR / kind / path
-    if f.is_file():
-        return web.FileResponse(f, headers={"Cache-Control": "max-age=86400"})
-    async with req.app["http"].get(f"{COMFY}/view", params={"filename": fn, "subfolder": sub, "type": kind}) as r:
-        return web.Response(body=await r.read(), content_type=r.content_type, status=r.status)
+    if f.suffix.lower() not in MEDIA_EXT or not f.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(f, headers={"Cache-Control": "max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+
+MEDIA_EXT = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm", ".m4v", ".mkv", ".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 
 
 def apply_fields(p: dict, for_llm: bool = False) -> dict:
@@ -821,7 +874,9 @@ async def generate(req):
 
 @routes.get("/api/jobs")
 async def jobs(req):
-    ids = [i for i in req.query.get("ids", "").split(",") if i]
+    u = req["user"]
+    ids = [i for i in req.query.get("ids", "").split(",") if i and (u["role"] == "admin" or i not in JOBS
+                                                                    or (JOBS[i].get("meta") or {}).get("uid") in (None, u["id"]))][:200]
     queue_order = []
     comfy_ids = [i for i in ids if not (JOBS.get(i, {}).get("out_ref") or i[:1] in "xrt" and len(i) == 13)]
     if any(JOBS.get(i, {}).get("state") == "queued" for i in comfy_ids):
@@ -867,18 +922,15 @@ async def jobs(req):
 
 @routes.post("/api/cancel")
 async def cancel(req):
-    ids = (await req.json()).get("ids", [])
+    u = req["user"]
+    ids = [i for i in (await req.json()).get("ids", []) if i in JOBS and
+           (u["role"] == "admin" or (JOBS[i].get("meta") or {}).get("uid") in (None, u["id"]))]
     eng = [i for i in ids if JOBS.get(i, {}).get("out_ref")]
     if eng:
         try:
             async with req.app["http"].post(ENGINE + "/cancel", json={"ids": eng}):
                 pass
         except Exception:
-            pass
-    async with req.app["http"].post(f"{COMFY}/queue", json={"delete": ids}):
-        pass
-    if any(JOBS.get(i, {}).get("state") == "running" for i in ids):
-        async with req.app["http"].post(f"{COMFY}/interrupt", json={}):
             pass
     for i in ids:
         if i in JOBS and JOBS[i].get("kind") == "render":
@@ -894,10 +946,11 @@ async def cancel(req):
 async def lastframe(req):
     import av
     ref = (await req.json())["ref"]
-    kind, path = ref.split(":", 1)
-    if kind not in ("output", "input") or ".." in path:
+    try:
+        src = tools.ref_path(COMFY_DIR, ref)
+    except ValueError:
         raise web.HTTPBadRequest()
-    src = COMFY_DIR / kind / path
+    path = ref.split(":", 1)[1]
 
     def grab():
         last = None
@@ -1047,7 +1100,11 @@ async def library_put(req):
 
 @routes.delete("/api/library/{aid}")
 async def library_del(req):
-    items = [x for x in lib_load() if x.get("id") != req.match_info["aid"]]
+    u, aid = req["user"], req.match_info["aid"]
+    it = next((x for x in lib_load() if x.get("id") == aid), None)
+    if it and not (u["role"] == "admin" or it.get("owner") in (None, u["id"])):
+        raise bad("这是别人的资产，不能删除")
+    items = [x for x in lib_load() if x.get("id") != aid]
     tmp = LIBRARY.with_suffix(".tmp"); tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1)); tmp.replace(LIBRARY)
     return web.json_response({"ok": True})
 
@@ -1354,7 +1411,19 @@ async def generate_engine(req, p: dict, count: int):
     body = {"kind": "video", "prompt": meta["full_prompt"], "frames": min(345, max(124, meta["frames"])), "height": meta["height"],
             "width": meta["width"], "steps": meta["steps"], "turbo": bool(p.get("turbo", True))}
     mode = meta["mode"]
-    if mode == "reference":
+    if mode == "planned":
+        subj = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs if im.get("role") == "subject"]
+        frames = sorted([im for im in imgs if im.get("role") != "subject"], key=lambda im: float(im.get("time") or 0))
+        if subj:
+            body["references"] = subj[:9]
+        elif frames:
+            body["image"] = str(tools.ref_path(COMFY_DIR, frames[0]["ref"]))
+            if len(frames) > 1:
+                body["last_image"] = str(tools.ref_path(COMFY_DIR, frames[-1]["ref"]))
+        if subj and frames:
+            meta["mode_name"] = "人物设定（首帧暂作参考）"
+            body["references"] = (subj + [str(tools.ref_path(COMFY_DIR, frames[0]["ref"]))])[:9]
+    elif mode == "reference":
         body["references"] = paths[:9]
     elif mode == "keyframes":                       # in-between keyframes: first and last are anchored, the rest guide by reference
         body["image"], body["last_image"] = paths[0], paths[-1]
@@ -1373,7 +1442,10 @@ async def generate_engine(req, p: dict, count: int):
         out.parent.mkdir(parents=True, exist_ok=True)
         m = dict(meta, seed=meta["seed"] + k)
         async with req.app["http"].post(ENGINE + "/jobs", json={**body, "seed": m["seed"], "out": str(out)}) as r:
-            jid = (await r.json())["id"]
+            jr = await r.json()
+        if "id" not in jr:
+            raise bad(f"本地引擎拒绝了任务：{jr.get('error')}")
+        jid = jr["id"]
         JOBS[jid] = {"id": jid, "kind": "video", "state": "queued", "created": time.time(), "meta": m, "out_ref": f"output:h3studio/{name}"}
         db.task_start(id=jid, user_id=u["id"], board_id=m["board"], label=m["label"], capability="video", provider_id="local_h3",
                       provider_kind="local_h3", model="MiniMax-H3 " + m["mode_name"], state="queued", cost=0)

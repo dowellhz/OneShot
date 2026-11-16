@@ -182,6 +182,11 @@ class LLM:
             return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
 
 
+def _ref(comfy_dir: Path, ref: str) -> Path:
+    from tools import ref_path          # tools imports this module; resolve lazily
+    return ref_path(comfy_dir, ref)
+
+
 def image_part(path: Path, max_side=896):
     from PIL import Image
     im = Image.open(path).convert("RGB")
@@ -273,7 +278,7 @@ async def rewrite_video(llm: LLM, comfy_dir: Path, req: dict) -> dict:
         content.append({"type": "text", "text": task})
         for im, l in labels:
             content.append({"type": "text", "text": l})
-            content.append(image_part(comfy_dir / im["ref"].split(":", 1)[0] / im["ref"].split(":", 1)[1]))
+            content.append(image_part(_ref(comfy_dir, im["ref"])))
         system = REF_RULES + (ROOT / "guides/ref_en.md").read_text() + "\n\n=== BASE FORMAT GUIDE (shots, camera, dialogue) ===\n" + (ROOT / "guides/base_en.md").read_text()
         out = strip_fences(await llm.chat(system, content, max_tokens=2600))
         if "subject_definitions:" not in out or "detailed_description:" not in out:
@@ -292,7 +297,7 @@ async def rewrite_video(llm: LLM, comfy_dir: Path, req: dict) -> dict:
     content.append({"type": "text", "text": task + f"\n\nUser request (rewrite this):\n{user_text}{extra}"})
     for j, im in enumerate(frames):
         content.append({"type": "text", "text": f"Picture {j+1}" + (f" (user note: {im['caption']})" if im.get("caption") else "")})
-        content.append(image_part(comfy_dir / im["ref"].split(":", 1)[0] / im["ref"].split(":", 1)[1]))
+        content.append(image_part(_ref(comfy_dir, im["ref"])))
     out = strip_fences(await llm.chat(BASE_RULES + (ROOT / "guides/base_en.md").read_text(), content, max_tokens=1800))
     if "integrated_multimodal_description:" not in out:
         raise RuntimeError("改写结果格式不对，请重试")
@@ -307,7 +312,7 @@ async def expand_image(llm: LLM, comfy_dir: Path, template: dict, ids: dict, pro
     content = []
     for i, im in enumerate(images):
         content.append({"type": "text", "text": f"Reference Media: <Picture {i+1}>"})
-        content.append(image_part(comfy_dir / im["ref"].split(":", 1)[0] / im["ref"].split(":", 1)[1]))
+        content.append(image_part(_ref(comfy_dir, im["ref"])))
     content.append({"type": "text", "text": task + f"\n\nUser Aspect Ratio Selection: {ar_text}"})
     out = strip_fences(await llm.chat(system, content, max_tokens=1500))
     m = re.search(r"\{.*\}", out, re.S)

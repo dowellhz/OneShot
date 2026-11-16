@@ -22,6 +22,7 @@ import traceback
 import uuid
 from pathlib import Path
 
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # shapes change every job: less fragmentation
 import torch
 from aiohttp import web
 
@@ -63,16 +64,21 @@ def worker():
         STATE.update(loading=None, error=f"engine failed to start: {e}")
         traceback.print_exc()
         return
-    hooked = set()
     while True:
         jid = Q.get()
+        if jid == "__free__":             # unloading happens here, never on the web thread while a job runs
+            try:
+                ENGINE._drop_big()
+            except Exception:
+                traceback.print_exc()
+            continue
         j = JOBS.get(jid)
         if not j or j.get("cancel"):
             continue
         STATE["running"] = jid
-        j.update(state="running", started=time.time(), value=0, max=int(j["req"].get("steps") or 4))
         model = None                      # never keep a reference to a big model across jobs (it pins ~62 GB)
         try:
+            j.update(state="running", started=time.time(), value=0, max=int(j["req"].get("steps") or 4))
             r = j["req"]
             if r.get("kind") == "image":
                 if not ENGINE.image_ready():
@@ -82,8 +88,8 @@ def worker():
                 j["phase"] = None
                 j["max"] = int(r.get("steps") or 6)
                 model = ENGINE.ipipe.transformer
-                if id(model) not in hooked:
-                    model.register_forward_pre_hook(progress_hook, with_kwargs=True); hooked.add(id(model))
+                if not getattr(model, "_h3_hooked", False):
+                    model.register_forward_pre_hook(progress_hook, with_kwargs=True); model._h3_hooked = True
                 took = ENGINE.generate_image(r["prompt"], r["out"], images=[load_image(x) for x in r.get("images") or []] or None,
                                              height=int(r.get("height") or 2048), width=int(r.get("width") or 2048),
                                              steps=r.get("steps"), seed=int(r.get("seed") or 0))
@@ -95,19 +101,20 @@ def worker():
                 refs = [MiniMaxH3ImageReference(image=load_image(p)) for p in r["references"]]
             task = "ref2va" if refs else "fl2va"
             j["phase"] = "loading model" if ENGINE.task != task else None
-            hd = int(r.get("height") or 768) * int(r.get("width") or 1344) >= 700_000
-            lora = None if not r.get("turbo", True) else ("ref2va_4" if task == "ref2va" else ("fl2va_768" if hd else "fl2va_8"))
+            lora = E.pick_lora(task, r.get("height"), r.get("width"), bool(r.get("turbo", True)))
             ENGINE.use(task, lora)
+            if j.get("cancel"):
+                raise Cancelled()
             j["phase"] = None
             model = ENGINE.pipe.transformer_ref if task == "ref2va" else ENGINE.pipe.transformer
-            if id(model) not in hooked:
+            if not getattr(model, "_h3_hooked", False):   # marked on the model: ids get reused after a model is freed
                 model.register_forward_pre_hook(progress_hook, with_kwargs=True)
-                hooked.add(id(model))
+                model._h3_hooked = True
             took = ENGINE.generate(r["prompt"], r["out"], image=load_image(r["image"]) if r.get("image") else None,
                                    last_image=load_image(r["last_image"]) if r.get("last_image") else None, references=refs,
                                    seconds=float(r.get("seconds") or 5.2), height=r.get("height"), width=r.get("width"),
                                    steps=int(r.get("steps") or 4), seed=int(r.get("seed") or 0), turbo=bool(r.get("turbo", True)),
-                                   frames=r.get("frames"))
+                                   frames=r.get("frames"), lora=lora)
             j.update(state="done", took=round(took, 1), finished=time.time())
         except Cancelled:
             j.update(state="error", error="已取消", finished=time.time())
@@ -131,6 +138,16 @@ async def submit(req):
     r = await req.json()
     if not r.get("prompt") or not r.get("out"):
         return web.json_response({"error": "prompt and out are required"}, status=400)
+    if STATE.get("error"):
+        return web.json_response({"error": STATE["error"]}, status=503)
+    try:                                   # a bad number must be refused here, not crash the worker later
+        for k in ("steps", "seed", "height", "width", "frames"):
+            if r.get(k) is not None:
+                r[k] = int(r[k])
+        if r.get("seconds") is not None:
+            r["seconds"] = float(r["seconds"])
+    except (TypeError, ValueError):
+        return web.json_response({"error": f"参数格式不对：{k}"}, status=400)
     jid = "e" + uuid.uuid4().hex[:12]
     JOBS[jid] = {"id": jid, "state": "queued", "created": time.time(), "req": r}
     Q.put(jid)
@@ -177,8 +194,8 @@ async def status(_):
 
 @routes.post("/free")
 async def free(_):
-    if ENGINE and not STATE["running"]:
-        ENGINE._drop_big()
+    if ENGINE:
+        Q.put("__free__")                  # done by the worker between jobs
     return web.json_response({"ok": True})
 
 
