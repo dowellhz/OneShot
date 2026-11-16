@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · OneShot</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22osg%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%22%20stop-color%3D%22%237c6cff%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%234fb3ff%22%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%228%22%20fill%3D%22url%28%23osg%29%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23fff%22%2F%3E%3C%2Fsvg%3E">
+<style>
+html, body { margin: 0; height: 100%; background: radial-gradient(1000px 600px at 50% -10%, #1d1a2b, #0b0b0c 65%); color: #ededf0;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color-scheme: dark; }
+.wrap { min-height: 100%; display: flex; align-items: center; justify-content: center; }
+.box { width: min(380px, 92vw); background: rgba(24,24,27,.94); border: 1px solid #2a2a2e; border-radius: 18px; padding: 28px 26px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; margin-bottom: 4px; }
+.logo span { width: 34px; height: 34px; display: inline-flex; }
+p.sub { color: #8b8b93; margin: 0 0 20px; font-size: 13px; }
+label { display: block; color: #8b8b93; font-size: 12px; margin: 12px 0 4px; }
+input { width: 100%; box-sizing: border-box; background: #111113; border: 1px solid #3a3a40; border-radius: 10px; padding: 10px 12px; color: #ededf0; font: inherit; }
+input:focus { outline: none; border-color: #7c6cff; }
+button { width: 100%; margin-top: 20px; padding: 11px; border: none; border-radius: 11px; background: #fff; color: #000; font: inherit; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .5; }
+.err { color: #ff6b6b; font-size: 12.5px; min-height: 18px; margin-top: 10px; }
+.tip { color: #5d5d65; font-size: 12px; margin-top: 14px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap"><form class="box" id="f" autocomplete="on">
+  <div class="logo"><span><svg viewBox="0 0 32 32" width="100%" height="100%" aria-hidden="true"><defs><linearGradient id="osg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c6cff"/><stop offset="1" stop-color="#4fb3ff"/></linearGradient></defs><rect width="32" height="32" rx="8" fill="url(#osg)"/><circle cx="16" cy="16" r="9" fill="none" stroke="#fff" stroke-width="2"/><path d="M14 11.6v8.8l6.8-4.4z" fill="#fff"/></svg></span>OneShot</div>
+  <p class="sub" id="sub">登录</p>
+  <div id="extra"></div>
+  <label>用户名</label><input id="u" name="username" autocomplete="username" required>
+  <label>密码</label><input id="p" name="password" type="password" autocomplete="current-password" required>
+  <div id="extra2"></div>
+  <button id="go">登录</button>
+  <div class="err" id="err"></div>
+  <div class="tip" id="tip">没有账号？请联系管理员在控制台「成员」里添加。</div>
+</form></div>
+<script>
+const $ = s => document.querySelector(s);
+const next = new URLSearchParams(location.search).get("next") || "/console";
+let setup = false;
+fetch("/api/auth/state").then(r => r.json()).then(s => {
+  if (s.user) { location.href = next; return; }
+  if (s.needs_setup) {
+    setup = true;
+    $("#sub").textContent = "第一次使用：创建管理员账号。之前在画布上做的项目和素材都会归到这个账号下。";
+    $("#extra").innerHTML = `<label>显示名称</label><input id="n" placeholder="例如：小明">`;
+    $("#extra2").innerHTML = `<label>再输入一次密码</label><input id="p2" type="password" autocomplete="new-password" required>`;
+    $("#p").autocomplete = "new-password"; $("#p").placeholder = "至少 8 位";
+    $("#go").textContent = "创建管理员并进入"; $("#tip").textContent = "管理员可以添加成员、配置模型和 API Key、管理本地显卡上的服务。";
+  }
+});
+$("#f").onsubmit = async e => {
+  e.preventDefault(); $("#err").textContent = "";
+  const body = { username: $("#u").value.trim(), password: $("#p").value };
+  if (setup) {
+    if ($("#p").value !== $("#p2").value) { $("#err").textContent = "两次输入的密码不一样"; return; }
+    body.name = $("#n").value.trim();
+  }
+  $("#go").disabled = true;
+  try {
+    const r = await fetch(setup ? "/api/auth/setup" : "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "登录失败");
+    location.href = next;
+  } catch (er) { $("#err").textContent = er.message; $("#go").disabled = false; }
+};
+</script>
+</body>
+</html>

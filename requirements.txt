@@ -1,0 +1,12 @@
+# OneShot web server + H3 engine (one environment). Tested with Python 3.12, CUDA 12.8.
+torch==2.11.0
+torchvision
+diffusers>=0.43
+transformers
+accelerate
+safetensors
+aiohttp
+av
+pillow
+numpy
+cryptography

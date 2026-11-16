@@ -1,0 +1,23 @@
+# runtime data: accounts, sessions, encryption key, projects, API keys — never commit
+data/
+*.db
+*.db-shm
+*.db-wal
+secret.key
+# environments, logs, caches
+tts-venv/
+*.log
+__pycache__/
+*.pyc
+bak/
+# downloaded / licensed assets (see README)
+fonts/
+guides/
+templates/
+*.safetensors
+*.gguf
+*.pth
+# generated media
+*.mp4
+*.part
+.DS_Store
