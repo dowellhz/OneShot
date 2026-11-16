@@ -297,7 +297,46 @@ def graph_video_planned(p: dict):
                "full_prompt": full}
 
 
+NO_SPEECH = ("No one speaks: there is no dialogue, narration, voiceover or singing, and every character's mouth stays "
+             "closed except while eating or drinking.")
+NO_SPEECH_SOUND = "No human speech, narration or voices of any kind."
+_SECTION = re.compile(r"\n\n[a-z_]+:")
+
+
+def _append_to_section(full: str, names, text: str) -> tuple[str, bool]:
+    for name in names:
+        m = re.search(rf"(^|\n){name}:", full)
+        if not m:
+            continue
+        nxt = _SECTION.search(full, m.end())
+        end = nxt.start() if nxt else len(full)
+        body = full[:end].rstrip()
+        sep = "" if body.endswith(":") else " "
+        return body + sep + text + full[end:], True
+    return full, False
+
+
+def no_speech_guard(full: str) -> str:
+    """H3 makes sound with the picture; a prompt with no <d> dialogue must say nobody talks, or the model may voice the text."""
+    if "<d>" in full:
+        return full
+    full, _ = _append_to_section(full, ("detailed_description", "integrated_multimodal_description"), NO_SPEECH)
+    full, ok = _append_to_section(full, ("overall_soundscape",), NO_SPEECH_SOUND)
+    if not ok:
+        full = full.rstrip() + f"\n\noverall_soundscape:\n{SOUND_DEFAULT} {NO_SPEECH_SOUND}"
+    return full
+
+
 def graph_video(p: dict):
+    g, meta = _graph_video(p)
+    full = no_speech_guard(meta["full_prompt"])
+    if "5" in g and "prompt" in g["5"].get("inputs", {}):
+        g["5"]["inputs"]["prompt"] = full
+    meta["full_prompt"] = full
+    return g, meta
+
+
+def _graph_video(p: dict):
     if p.get("planned"):
         return graph_video_planned(p)
     imgs = p.get("images") or []
@@ -668,11 +707,17 @@ async def put_board(req):
         raise bad("没有权限修改这个项目")
     data["owner"] = old.get("owner") or u["id"]          # the owner never changes through a save
     data["shared"] = bool(data.get("shared")) if (data["owner"] == u["id"] or u["role"] == "admin") else bool(old.get("shared"))
+    # optimistic concurrency: a page may only overwrite the revision it loaded (another tab, an unload save of a stale
+    # page, or a server-side edit would otherwise be silently lost)
+    cur = old.get("rev")
+    if cur is not None and data.get("rev") != cur:
+        return web.json_response({"error": "画布已在别处更新", "stale": True, "rev": cur}, status=409)
+    data["rev"] = int(cur or 0) + 1
     BOARDS.mkdir(parents=True, exist_ok=True)
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False))
     os.replace(tmp, f)
-    return web.json_response({"ok": True})
+    return web.json_response({"ok": True, "rev": data["rev"]})
 
 
 @routes.delete("/api/board/{bid}")
@@ -814,14 +859,102 @@ def apply_fields(p: dict, for_llm: bool = False) -> dict:
     return {**p, "prompt": prompt, "sound": snd, "music": mus, "images": imgs}
 
 
+_CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+_DBLOCK = re.compile(r"<d>.*?</d>", re.S)
+_MARKS = re.compile(r"<(?:Picture|Subject|Video|Audio) \d+>|\(S\d+(?:,S\d+)*\)|<d>.*?</d>", re.S)
+XLATE_FILE = DATA / "xlate_cache.json"
+try:
+    _XLATE_CACHE: dict = json.loads(XLATE_FILE.read_text())
+except Exception:
+    _XLATE_CACHE = {}
+XLATE_SYSTEM = """You translate the parts of a video-generation prompt from Chinese into natural, concrete English.
+Input: a JSON object. Output: ONLY a JSON object with exactly the same keys and the same list lengths, every value translated.
+Rules:
+- Translate faithfully; do not add, drop or reorder actions, objects, counts, positions or constraints.
+- Copy these verbatim, unchanged: every <d>...</d> block including its content and [Language] tag, every <Picture N>, <Subject N>, <Video N>, <Audio N>, and every speaker ID such as (S1).
+- Text that appears in double quotation marks as visible on-screen text stays as it is.
+- Write descriptions, not speech. Use plain prose; no markdown, no explanations."""
+
+
+def _needs_english(t: str) -> bool:
+    return bool(t) and bool(_CJK.search(_DBLOCK.sub("", t)))
+
+
+async def to_english(app, p: dict) -> dict:
+    """H3's prompt format is English except dialogue/lyrics in <d> and visible text. Translate the rest before generation."""
+    if p.get("kind", "video") != "video":
+        return p
+    prompt = p.get("prompt") or ""
+    structured = any(k in prompt for k in ("subject_definitions:", "integrated_multimodal_description:"))
+    src = {}
+    if not structured and _needs_english(prompt):
+        src["prompt"] = prompt
+    for k in ("sound", "music"):
+        if _needs_english(p.get(k) or ""):
+            src[k] = p[k]
+    imgs = [dict(im) for im in (p.get("images") or [])]
+    caps = [i for i, im in enumerate(imgs) if _needs_english(im.get("caption") or "")]
+    if caps:
+        src["captions"] = [imgs[i]["caption"] for i in caps]
+    if not src:
+        return p
+    key = json.dumps(src, ensure_ascii=False, sort_keys=True)
+    out = _XLATE_CACHE.get(key)
+    if out is None:
+        llm = app["llm"]
+        if not llm.available():
+            return {**p, "_xlate_err": "没有可用的文本模型"}
+        try:
+            text = await llm.chat(XLATE_SYSTEM, json.dumps(src, ensure_ascii=False, indent=1), max_tokens=4000, temperature=0.2)
+            text = rewriter.strip_fences(text)
+            out = json.loads(text[text.index("{"): text.rindex("}") + 1])
+            for k, v in src.items():
+                o = out.get(k)
+                if k == "captions":
+                    if not isinstance(o, list) or len(o) != len(v):
+                        raise ValueError("captions mismatch")
+                    o = [str(x) for x in o]
+                    out[k] = o
+                elif not isinstance(o, str) or not o.strip():
+                    raise ValueError(f"{k} missing")
+                for a, b in (zip(v, o) if k == "captions" else [(v, o)]):
+                    if sorted(_MARKS.findall(a)) != sorted(_MARKS.findall(b)):
+                        raise ValueError(f"{k}: markers or <d> blocks changed")
+                    if _needs_english(b):
+                        raise ValueError(f"{k}: still Chinese")
+        except Exception as e:
+            print(f"to_english failed: {e}", flush=True)
+            return {**p, "_xlate_err": str(e)[:200]}
+        if len(_XLATE_CACHE) > 500:
+            for k in list(_XLATE_CACHE)[:100]:
+                del _XLATE_CACHE[k]
+        _XLATE_CACHE[key] = out
+        try:
+            tmp = XLATE_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(_XLATE_CACHE, ensure_ascii=False))
+            os.replace(tmp, XLATE_FILE)
+        except Exception as e:
+            print(f"xlate cache save failed: {e}", flush=True)
+    q = {**p}
+    for k in ("prompt", "sound", "music"):
+        if k in src:
+            q[k] = out[k]
+    for i, c in zip(caps, out.get("captions", [])):
+        imgs[i]["caption"] = c
+    q["images"] = imgs
+    return q
+
+
 @routes.post("/api/preview")
 async def preview(req):
     """The exact prompt the model would get for this request (no generation)."""
     p = apply_fields(await req.json())
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
+    p = await to_english(req.app, p)
     _, meta = graph_video(p)
-    return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": meta.get("mode_name", "")})
+    mode = meta.get("mode_name", "") + (" · 未翻译成英文：" + p["_xlate_err"] if p.get("_xlate_err") else "")
+    return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode})
 
 
 @routes.post("/api/generate")
@@ -853,10 +986,12 @@ async def generate(req):
             raise web.HTTPBadRequest(text=json.dumps({"error": f"智能扩写失败：{e}"}, ensure_ascii=False), content_type="application/json")
         p = {**p, "prompt": cap, "expand": False}
         meta_extra = {"expanded": cap}
+    if kind != "image" and await engine_up(req.app):
+        return await generate_engine(req, p, count)     # translates in the background, after the job is queued
+    if kind != "image":
+        p = await to_english(req.app, p)
     if llm.running() and llm.device == "GPU":
         llm.stop()   # give the GPU back to the engine
-    if kind != "image" and await engine_up(req.app):
-        return await generate_engine(req, p, count)
     if kind == "image" and await engine_up(req.app, image=True):
         return await generate_engine_image(req, p, count)
     ids = []
@@ -878,7 +1013,7 @@ async def jobs(req):
     ids = [i for i in req.query.get("ids", "").split(",") if i and (u["role"] == "admin" or i not in JOBS
                                                                     or (JOBS[i].get("meta") or {}).get("uid") in (None, u["id"]))][:200]
     queue_order = []
-    comfy_ids = [i for i in ids if not (JOBS.get(i, {}).get("out_ref") or i[:1] in "xrt" and len(i) == 13)]
+    comfy_ids = [i for i in ids if not (JOBS.get(i, {}).get("out_ref") or i[:1] in "xrtp" and len(i) == 13)]
     if any(JOBS.get(i, {}).get("state") == "queued" for i in comfy_ids):
         try:
             async with req.app["http"].get(f"{COMFY}/queue", timeout=aiohttp.ClientTimeout(total=3)) as r:
@@ -889,6 +1024,8 @@ async def jobs(req):
     out = {}
     for i in ids:
         j = JOBS.get(i)
+        if not j and len(i) == 13 and i[:1] == "e":
+            j = await recover_engine_job(req.app, i)
         if not j:
             # a job from before a restart: ask the history
             JOBS[i] = j = {"id": i, "state": "queued", "created": time.time(), "meta": {}}
@@ -909,7 +1046,7 @@ async def jobs(req):
                 await finish(req.app, i)   # in case a websocket message was missed
             except Exception:
                 pass
-        r = {k: j.get(k) for k in ("state", "value", "max", "node", "error", "outputs", "meta")}
+        r = {k: j.get(k) for k in ("state", "value", "max", "node", "error", "outputs", "meta", "prep")}
         if j["state"] == "queued" and i in queue_order:
             r["ahead"] = queue_order.index(i)
             r["eta"] = round(sum(remaining(JOBS[x]) if x in JOBS else 90 for x in queue_order[:r["ahead"] + 1]))
@@ -925,7 +1062,7 @@ async def cancel(req):
     u = req["user"]
     ids = [i for i in (await req.json()).get("ids", []) if i in JOBS and
            (u["role"] == "admin" or (JOBS[i].get("meta") or {}).get("uid") in (None, u["id"]))]
-    eng = [i for i in ids if JOBS.get(i, {}).get("out_ref")]
+    eng = [JOBS[i].get("eid", i) for i in ids if JOBS.get(i, {}).get("out_ref")]
     if eng:
         try:
             async with req.app["http"].post(ENGINE + "/cancel", json={"ids": eng}):
@@ -1241,11 +1378,16 @@ async def queue(req):
             m = j.get("meta") or {}
             out.append({"id": i, "kind": j["kind"], "state": j["state"], "label": m.get("label") or ("图片" if j["kind"] == "image" else "视频"),
                         "eta": round(t), "value": j.get("value"), "max": j.get("max")})
-    for i, j in JOBS.items():            # our engine's jobs, in submission order
+    for i, j in JOBS.items():            # our engine's jobs, in submission order (those still being prepared last)
         if j.get("out_ref") and j["state"] in ("queued", "running"):
             t += remaining(j)
             m = j.get("meta") or {}
             out.append({"id": i, "kind": j["kind"], "state": j["state"], "label": m.get("label") or ("图片" if j["kind"] == "image" else "视频"), "eta": round(t), "value": j.get("value"), "max": j.get("max")})
+    for i, j in JOBS.items():
+        if j.get("prep") and j["state"] == "queued":
+            t += remaining(j)
+            m = j.get("meta") or {}
+            out.append({"id": i, "kind": j["kind"], "state": "queued", "label": (m.get("label") or "视频") + " · 翻译提示词", "eta": round(t), "value": None, "max": None})
     rt = 0.0
     for i, j in JOBS.items():            # renders run beside ComfyUI
         if j.get("kind") == "render" and j["state"] in ("queued", "running"):
@@ -1399,8 +1541,70 @@ async def generate_engine_image(req, p: dict, count: int):
 
 
 async def generate_engine(req, p: dict, count: int):
-    """The same request the ComfyUI graph was built from, sent to the engine: prompt, keyframes or references, size."""
+    """Queue the video at once (ids 'p…'); the prompt is translated to English and the job handed to the engine in the
+    background, in click order, so 生成 answers immediately."""
     u = req["user"]
+    _, meta = graph_video(p)                         # mode name, seed and size for the queue entry (prompt rebuilt later)
+    cls, units, dflt = job_class(p)
+    meta.update(prompt=p["prompt"], cls=cls, units=units, est=estimate(cls, units, dflt), label=clean(p.get("label"))[:60], uid=u["id"],
+                board=clean(p.get("board")), engine=True)
+    pids = []
+    for k in range(count):
+        pid = "p" + uuid.uuid4().hex[:12]
+        m = dict(meta, seed=meta["seed"] + k)
+        JOBS[pid] = {"id": pid, "kind": "video", "state": "queued", "prep": True, "created": time.time(), "meta": m}
+        db.task_start(id=pid, user_id=u["id"], board_id=m["board"], label=m["label"], capability="video", provider_id="local_h3",
+                      provider_kind="local_h3", model="MiniMax-H3 " + m["mode_name"], state="queued", cost=0)
+        pids.append(pid)
+    prev = PREP_TAIL[0]
+    PREP_TAIL[0] = asyncio.create_task(prepare_engine(req.app, p, pids, prev))
+    return web.json_response({"ids": pids, "meta": JOBS[pids[0]]["meta"]})
+
+
+PREP_TAIL = [None]   # the last prepare task: each one waits for the one before, so jobs reach the engine in click order
+
+
+async def prepare_engine(app, p: dict, pids: list, prev):
+    if prev is not None:
+        try:
+            await prev
+        except Exception:
+            pass
+    if not any(JOBS.get(i, {}).get("state") == "queued" for i in pids):
+        return                                       # all cancelled while waiting
+    try:
+        q = await to_english(app, p)
+        llm = app["llm"]
+        if llm.running() and llm.device == "GPU":
+            llm.stop()                               # give the GPU back to the engine
+        body, meta = engine_body(q)
+        for pid in pids:
+            j = JOBS.get(pid)
+            if not j or j["state"] != "queued":
+                continue
+            m = dict(meta, **{k: j["meta"][k] for k in ("prompt", "cls", "units", "est", "label", "uid", "board", "engine", "seed")})
+            if q.get("_xlate_err"):
+                m["mode_name"] = m.get("mode_name", "") + " · 未翻译"
+            name = f"video_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:5]}.mp4"
+            out = COMFY_DIR / "output" / "h3studio" / name
+            out.parent.mkdir(parents=True, exist_ok=True)
+            async with app["http"].post(ENGINE + "/jobs", json={**body, "seed": m["seed"], "out": str(out)}) as r:
+                jr = await r.json()
+            if "id" not in jr:
+                j["state"] = "error"; j["error"] = f"本地引擎拒绝了任务：{jr.get('error')}"; log_end(j)
+                continue
+            j.update(meta=m, eid=jr["id"], out_ref=f"output:h3studio/{name}")
+            j.pop("prep", None)
+        asyncio.create_task(follow_engine(app))
+    except Exception as e:
+        for pid in pids:
+            j = JOBS.get(pid)
+            if j and j["state"] == "queued":
+                j["state"] = "error"; j["error"] = f"提交失败：{e}"; log_end(j)
+
+
+def engine_body(p: dict):
+    """The same request the ComfyUI graph was built from, sent to the engine: prompt, keyframes or references, size."""
     g, meta = graph_video(p)                         # reuse the prompt building (official structure, @图 names, times)
     ar = float(p.get("ar") or 16 / 9)
     short = 768 if p.get("quality", "hd") == "hd" else 480
@@ -1428,29 +1632,35 @@ async def generate_engine(req, p: dict, count: int):
         body["image"] = paths[0]
         if len(paths) > 1:
             body["last_image"] = paths[-1]
-    cls, units, dflt = job_class(p)
-    meta.update(prompt=p["prompt"], cls=cls, units=units, est=estimate(cls, units, dflt), label=clean(p.get("label"))[:60], uid=u["id"],
-                board=clean(p.get("board")), engine=True)
-    ids = []
-    for k in range(count):
-        name = f"video_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:5]}.mp4"
-        out = COMFY_DIR / "output" / "h3studio" / name
-        out.parent.mkdir(parents=True, exist_ok=True)
-        m = dict(meta, seed=meta["seed"] + k)
-        async with req.app["http"].post(ENGINE + "/jobs", json={**body, "seed": m["seed"], "out": str(out)}) as r:
-            jr = await r.json()
-        if "id" not in jr:
-            raise bad(f"本地引擎拒绝了任务：{jr.get('error')}")
-        jid = jr["id"]
-        JOBS[jid] = {"id": jid, "kind": "video", "state": "queued", "created": time.time(), "meta": m, "out_ref": f"output:h3studio/{name}"}
-        db.task_start(id=jid, user_id=u["id"], board_id=m["board"], label=m["label"], capability="video", provider_id="local_h3",
-                      provider_kind="local_h3", model="MiniMax-H3 " + m["mode_name"], state="queued", cost=0)
-        ids.append(jid)
-    asyncio.create_task(follow_engine(req.app))
-    return web.json_response({"ids": ids, "meta": JOBS[ids[0]]["meta"]})
+    return body, meta
 
 
 _following = False
+
+
+async def recover_engine_job(app, eid: str):
+    """A job the engine still knows from before this server restarted: track it again (meta from the task log)."""
+    try:
+        async with app["http"].get(ENGINE + "/jobs", params={"ids": eid}, timeout=aiohttp.ClientTimeout(total=5)) as r:
+            s = (await r.json()).get(eid)
+    except Exception:
+        return None
+    if not s or s.get("state") not in ("queued", "running", "done", "error"):
+        return None
+    row = db.one("SELECT * FROM tasks WHERE id=?", eid) or {}
+    try:
+        uid = int(row.get("user_id")) if row.get("user_id") is not None else None
+    except ValueError:
+        uid = row.get("user_id")
+    kind = "image" if row.get("capability") == "image" else "video"
+    out = s.get("out")
+    j = {"id": eid, "kind": kind, "state": "queued", "created": float(row.get("created") or time.time()),
+         "meta": {"label": row.get("label"), "uid": uid, "board": row.get("board_id"), "engine": True,
+                  "mode_name": (row.get("model") or "").replace("MiniMax-H3 ", "")},
+         "out_ref": "output:h3studio/" + Path(out).name if out else "output:h3studio/pending", "_logged": row.get("state") in ("done", "error")}
+    JOBS[eid] = j
+    asyncio.create_task(follow_engine(app))
+    return j
 
 
 async def follow_engine(app):
@@ -1465,17 +1675,20 @@ async def follow_engine(app):
             if not live:
                 return
             try:
-                async with app["http"].get(ENGINE + "/jobs", params={"ids": ",".join(live)}, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                async with app["http"].get(ENGINE + "/jobs", params={"ids": ",".join(JOBS[i].get("eid", i) for i in live)},
+                                           timeout=aiohttp.ClientTimeout(total=5)) as r:
                     st = await r.json()
             except Exception:
                 await asyncio.sleep(3); continue
             for i in live:
-                j, s = JOBS[i], st.get(i) or {}
+                j = JOBS[i]; s = st.get(j.get("eid", i)) or {}
                 if s.get("state") == "running":
                     if j["state"] != "running":
                         j["state"] = "running"; j["started"] = s.get("started") or time.time()
                     j["value"], j["max"] = s.get("value"), s.get("max")
                 elif s.get("state") == "done":
+                    if s.get("out"):
+                        j["out_ref"] = "output:h3studio/" + Path(s["out"]).name
                     path = COMFY_DIR / "output" / "h3studio" / Path(j["out_ref"]).name
                     j["outputs"] = [{"ref": j["out_ref"], "url": "/media?ref=" + quote(j["out_ref"], safe=""), "meta": media_info(path, j["kind"])}]
                     j["state"] = "done"; j["started"] = s.get("started") or j.get("started"); j["finished"] = s.get("finished") or time.time()
@@ -1654,6 +1867,39 @@ async def admin_provider_test(req):
     return web.json_response(r)
 
 
+def llm_choices() -> dict:
+    lst = [{"id": p["id"], "name": p["name"], "kind": p["kind"], "local": p["kind"].startswith("local_"),
+            "model": providers.default_model(p, "text"), "vision": "vision" in providers.caps_of(p)}
+           for p in providers.all_providers() if p["enabled"] and "text" in providers.caps_of(p)]
+    cur = providers.primary("text")
+    return {"choices": lst, "current": cur["provider"]["id"] if cur else None}
+
+
+@console_routes.get("/api/llm")
+async def llm_get(_):
+    return web.json_response(llm_choices())
+
+
+@console_routes.put("/api/admin/llm")
+async def llm_put(req):
+    """The chosen provider goes first for text (and for vision when it can see); the others stay behind it as fallbacks."""
+    pid = clean((await req.json()).get("provider"))
+    p = providers.get(pid)
+    if not p or not p["enabled"] or "text" not in providers.caps_of(p):
+        raise bad("这个模型不可用")
+    for cap in ("text", "vision"):
+        if cap not in providers.caps_of(p):
+            continue
+        rest = [{"provider_id": r["provider"]["id"], "model": r["model"]} for r in providers.routes(cap) if r["provider"]["id"] != pid]
+        for q in providers.all_providers():          # every usable one becomes a fallback, local Qwen last resort included
+            if q["enabled"] and cap in providers.caps_of(q) and q["id"] != pid and not any(x["provider_id"] == q["id"] for x in rest):
+                rest.append({"provider_id": q["id"], "model": None})
+        providers.set_route(cap, [{"provider_id": pid, "model": None}] + rest)
+    if pid != "local_qwen" and req.app["llm"].running():
+        req.app["llm"].stop()                        # local Qwen not needed now; free its memory
+    return web.json_response(llm_choices())
+
+
 @console_routes.put("/api/admin/routes/{cap}")
 async def admin_route(req):
     items = (await req.json()).get("items") or []
@@ -1696,6 +1942,11 @@ async def task_list(req):
     return web.json_response({"tasks": rows, "totals": tot, "days": days})
 
 
+def text_name():
+    r = providers.primary("text")
+    return None if not r or r["provider"]["kind"] == "local_qwen" else f'{r["provider"]["name"]}（{r["model"]}）'
+
+
 @routes.get("/api/status")
 async def status(req):
     try:   # our engine first; the old ComfyUI only if it still runs
@@ -1705,7 +1956,7 @@ async def status(req):
         return web.json_response({"comfy": bool(s.get("ready")), "engine": True, "loading": s.get("loading"),
                                   "running": 1 if s.get("running") else 0, "pending": s.get("queue", 0),
                                   "llm": llm.available(), "llm_running": llm.running(), "llm_device": llm.device if llm.running() else None,
-                                  "remote": (rewriter.load_remote() or {}).get("name") if hasattr(rewriter, "load_remote") else None})
+                                  "remote": text_name()})
     except Exception:
         pass
     try:
@@ -1714,7 +1965,7 @@ async def status(req):
         llm = req.app["llm"]
         return web.json_response({"comfy": True, "running": len(q.get("queue_running", [])), "pending": len(q.get("queue_pending", [])),
                                   "llm": llm.available(), "llm_running": llm.running(), "llm_device": llm.device if llm.running() else None,
-                                  "remote": (rewriter.load_remote() or {}).get("name")})
+                                  "remote": text_name()})
     except Exception:
         return web.json_response({"comfy": False})
 

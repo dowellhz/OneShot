@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22osg%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%22%20stop-color%3D%22%237c6cff%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%234fb3ff%22%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%228%22%20fill%3D%22url%28%23osg%29%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23fff%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="/static/type.css?v=1">
 <style>
 :root {
   --bg: #0b0b0c; --dotc: rgba(255,255,255,.075); --panel: rgba(24,24,27,.94); --card: #151517; --card-hi: #1c1c1f;
@@ -20,7 +21,7 @@ html { color-scheme: dark; }
 ::-webkit-scrollbar-thumb { background: #3a3a40; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: #55555c; background-clip: padding-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
-  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+   }
 button, select, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
@@ -37,17 +38,18 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #edges g:hover .vis, #edges g.sel .vis { stroke: #9a9aa4; }
 #edges .tmp { fill: none; stroke: #9a9aa4; stroke-width: 2; stroke-dasharray: 5 5; }
 .elabel { position: absolute; transform: translate(-50%, -50%); z-index: 4; padding: 2px 9px; border-radius: 9px; background: #1d1d21; border: 1px solid var(--line2);
-  color: #cfcfd5; font-size: 11px; white-space: nowrap; cursor: pointer; }
+  color: #cfcfd5; font-size: var(--fs-caption); white-space: nowrap; cursor: pointer; }
 .elabel:hover { border-color: #777; color: #fff; }
 .elabel.subj { background: #2a2236; border-color: #5b4a86; color: #d9c8ff; }
 .elabel select, .rsel select { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
 .rsel { position: relative; cursor: pointer; }
+.ref .tsec { width: 46px; margin-left: 4px; padding: 1px 3px; background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: var(--fs-caption); }
 #marquee { position: fixed; border: 1px solid rgba(91,140,255,.8); background: rgba(91,140,255,.08); pointer-events: none; display: none; z-index: 5; }
 
 /* ---------- nodes */
 .node { position: absolute; }
 .node.sel { z-index: 2; } .node.dragging { z-index: 3; }
-.node .lbl { position: absolute; left: -4px; right: -4px; bottom: 100%; margin-bottom: 3px; padding: 4px 6px; border-radius: 8px; display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; white-space: nowrap; user-select: none; cursor: grab; }
+.node .lbl { position: absolute; left: -4px; right: -4px; bottom: 100%; margin-bottom: 3px; padding: 4px 6px; border-radius: 8px; display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: var(--fs-small); white-space: nowrap; user-select: none; cursor: grab; }
 .node .lbl:hover { background: rgba(255,255,255,.05); color: #cfcfd5; }
 .node .lbl .gr { margin-left: auto; opacity: 0; display: flex; color: var(--faint); }
 .node:hover .lbl .gr, .node.sel .lbl .gr { opacity: 1; }
@@ -68,27 +70,31 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .node.bad-target { opacity: .35; filter: blur(.6px); }
 .ph { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--faint); text-align: center; padding: 18px; }
 .ph svg.i { width: 30px; height: 30px; stroke-width: 1.3; }
-.ph .t { font-size: 12px; line-height: 1.6; }
+.ph .t { font-size: var(--fs-small); line-height: 1.6; }
 .card img.m, .card video.m { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .card video.m { object-fit: contain; background: #000; }
 .node.text .card { cursor: default; }
 .node.text textarea { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; border: none; background: transparent; padding: 16px; color: var(--text); outline: none; line-height: 1.7; }
 .node.text textarea::placeholder { color: var(--faint); }
 .gen { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: rgba(12,12,14,.72);
-  backdrop-filter: blur(3px); color: var(--text); font-size: 12px; z-index: 2; }
+  backdrop-filter: blur(3px); color: var(--text); font-size: var(--fs-small); z-index: 2; }
 .gen.on { display: flex; }
 .gen::before { content: ""; position: absolute; inset: 0; background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,.06) 50%, transparent 70%); background-size: 250% 100%; animation: sh 1.8s infinite linear; }
 @keyframes sh { from { background-position: 150% 0; } to { background-position: -100% 0; } }
-.gen .pct { font-size: 22px; font-weight: 600; letter-spacing: .5px; }
+.gen .pct { font-size: var(--fs-title); font-weight: 600; letter-spacing: .5px; }
 .gen .bar { width: 60%; height: 3px; background: rgba(255,255,255,.12); border-radius: 2px; overflow: hidden; }
 .gen .bar i { display: block; height: 100%; width: 0; background: #fff; transition: width .5s; }
 .gen .s { color: var(--dim); }
-.errbox { position: absolute; left: 10px; right: 10px; bottom: 10px; background: rgba(60,16,16,.92); border: 1px solid #6b2a2a; color: #ffb4b4; border-radius: 10px; padding: 7px 10px; font-size: 12px; z-index: 3; display: none; white-space: pre-wrap; word-break: break-word; max-height: 60%; overflow: auto; }
+.errbox { position: absolute; left: 10px; right: 10px; bottom: 10px; background: rgba(60,16,16,.92); border: 1px solid #6b2a2a; color: #ffb4b4; border-radius: 10px; padding: 7px 10px; font-size: var(--fs-small); z-index: 3; display: none; white-space: pre-wrap; word-break: break-word; max-height: 60%; overflow: auto; }
 .errbox.on { display: block; }
-.badge { position: absolute; left: 10px; top: 10px; background: rgba(0,0,0,.6); border-radius: 7px; padding: 1px 7px; font-size: 11px; color: #ddd; z-index: 1; pointer-events: none; }
+.badge { position: absolute; left: 10px; top: 10px; background: rgba(0,0,0,.6); border-radius: 7px; padding: 1px 7px; font-size: var(--fs-caption); color: #ddd; z-index: 1; pointer-events: none; }
 .plus { position: absolute; top: 50%; width: 30px; height: 30px; margin-top: -15px; border-radius: 50%; border: 1px solid var(--line2); background: rgba(20,20,22,.9);
   display: flex; align-items: center; justify-content: center; color: var(--dim); opacity: 0; transition: opacity .15s, transform .15s; cursor: crosshair; z-index: 3; }
 .plus.r { right: -46px; } .plus.l { left: -46px; }
+.vtabs { position: absolute; left: calc(100% + 8px); top: 0; display: flex; flex-direction: column; gap: 4px; max-height: 42%; overflow-y: auto; scrollbar-width: none; z-index: 2; }
+.vtabs button { min-width: 30px; height: 24px; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line2); background: rgba(20,20,22,.9); color: var(--dim); font: var(--fs-small)/22px inherit; cursor: pointer; }
+.vtabs button:hover { color: #fff; border-color: #777; }
+.vtabs button.on { background: #fff; color: #111; border-color: #fff; font-weight: 600; }
 .node:hover .plus { opacity: 1; }
 .plus:hover { color: #fff; border-color: #777; transform: scale(1.1); }
 .node.text .plus.l { display: none; }
@@ -96,10 +102,10 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 /* floating toolbar above the selected node */
 #ntools { position: fixed; z-index: 15; display: none; gap: 2px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.45); }
 #ntools.on { display: flex; }
-#ntools button { display: flex; align-items: center; gap: 5px; border: none; background: none; padding: 5px 8px; border-radius: 8px; color: #cfcfd5; font-size: 12px; white-space: nowrap; }
+#ntools button { display: flex; align-items: center; gap: 5px; border: none; background: none; padding: 5px 8px; border-radius: 8px; color: #cfcfd5; font-size: var(--fs-small); white-space: nowrap; }
 #ntools button:hover { background: rgba(255,255,255,.08); color: #fff; }
 #ntools .sep { width: 1px; background: var(--line); margin: 4px 2px; }
-#ntools .pg { color: var(--dim); font-size: 12px; padding: 0 2px; display: flex; align-items: center; }
+#ntools .pg { color: var(--dim); font-size: var(--fs-small); padding: 0 2px; display: flex; align-items: center; }
 
 /* prompt panel under the selected node */
 #pp { position: fixed; z-index: 16; width: 560px; display: none; flex-direction: column; gap: 8px; padding: 10px 10px 8px; background: var(--panel); border: 1px solid var(--line);
@@ -109,7 +115,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #pp .pgrip { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 120px; height: 16px; display: flex; align-items: center; justify-content: center; gap: 6px; cursor: grab; color: var(--faint); border-radius: 0 0 8px 8px; }
 #pp .pgrip:hover { color: #fff; background: rgba(255,255,255,.05); }
 #pp .pgrip svg.i { width: 18px; height: 12px; stroke: none; fill: currentColor; }
-#pp .pgrip .rs { display: none; font-size: 11px; border: none; background: #2a2a2f; color: #ddd; border-radius: 6px; padding: 0 6px; line-height: 15px; }
+#pp .pgrip .rs { display: none; font-size: var(--fs-caption); border: none; background: #2a2a2f; color: #ddd; border-radius: 6px; padding: 0 6px; line-height: 15px; }
 #pp.pinned .pgrip .rs { display: block; }
 #pp.dragging, #pp.dragging * { cursor: grabbing !important; user-select: none; }
 #pp.wide { width: 700px; }
@@ -118,23 +124,23 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #pp .phead:empty { display: none; }
 .seg { display: inline-flex; padding: 2px; background: #1a1a1d; border: 1px solid var(--line); border-radius: 9px; flex: none; margin-left: auto; }
 .seg:empty { display: none; }
-.seg button { border: none; background: none; color: var(--dim); font-size: 12px; padding: 3px 9px; border-radius: 7px; }
+.seg button { border: none; background: none; color: var(--dim); font-size: var(--fs-small); padding: 3px 9px; border-radius: 7px; }
 .seg button.on { background: #2e2e34; color: #fff; }
 #pfields { display: none; flex-direction: column; gap: 2px; max-height: 48vh; overflow: auto; padding-right: 2px; }
 #pfields.on { display: flex; }
 #pfields .f { display: flex; align-items: flex-start; gap: 8px; padding: 3px 4px; border-radius: 9px; }
 #pfields .f:focus-within { background: rgba(255,255,255,.035); }
-#pfields .f > span { flex: none; width: 52px; padding-top: 5px; color: var(--dim); font-size: 12px; }
-#pfields .f > span small { display: block; color: var(--faint); font-size: 10px; line-height: 1.3; }
-#pp #pfields textarea { flex: 1; min-height: 28px; max-height: 160px; resize: none; border: none; outline: none; background: transparent; color: var(--text); padding: 4px 2px; line-height: 1.55; font-size: 13px; }
+#pfields .f > span { flex: none; width: 52px; padding-top: 5px; color: var(--dim); font-size: var(--fs-small); }
+#pfields .f > span small { display: block; color: var(--faint); font-size: var(--fs-micro); line-height: 1.3; }
+#pp #pfields textarea { flex: 1; min-height: 28px; max-height: 160px; resize: none; border: none; outline: none; background: transparent; color: var(--text); padding: 4px 2px; line-height: 1.55; font-size: var(--fs-body); }
 #pp #pfields textarea::placeholder { color: #55555c; }
 #pv { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; }
 #pv.on { display: flex; }
 #pv .box { width: min(760px, 92vw); max-height: 84vh; display: flex; flex-direction: column; gap: 10px; background: var(--panel); border: 1px solid var(--line2); border-radius: 16px; padding: 16px 18px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
 #pv .hd { display: flex; align-items: center; gap: 10px; font-weight: 600; }
 #pv .hd small { color: var(--faint); font-weight: 400; }
-#pv pre { flex: 1; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; background: #111113; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: 12.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; color: #d8d8de; }
-#pp .ref { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; background: #222226; border: 1px solid var(--line); border-radius: 9px; font-size: 12px; color: #cfcfd5; cursor: pointer; }
+#pv pre { flex: 1; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; background: #111113; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: var(--fs-small)/1.65 var(--font-mono); color: #d8d8de; }
+#pp .ref { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; background: #222226; border: 1px solid var(--line); border-radius: 9px; font-size: var(--fs-small); color: #cfcfd5; cursor: pointer; }
 #pp .ref:hover { border-color: #555; }
 #pp .ref img { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; background: #000; }
 #pp .ref .tx { width: 26px; height: 26px; border-radius: 6px; background: #2a2236; color: var(--c-text); display: flex; align-items: center; justify-content: center; }
@@ -142,43 +148,43 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #pp textarea { width: 100%; min-height: 70px; max-height: 320px; resize: none; border: none; outline: none; background: transparent; color: var(--text); padding: 4px 6px; line-height: 1.6; }
 #pp textarea::placeholder { color: var(--faint); }
 #pp .ctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.pill { position: relative; display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; border-radius: 9px; background: #222226; border: 1px solid transparent; color: #d6d6dc; font-size: 12px; }
+.pill { position: relative; display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; border-radius: 9px; background: #222226; border: 1px solid transparent; color: #d6d6dc; font-size: var(--fs-small); }
 .pill:hover { border-color: var(--line2); }
 .pill select { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
 .pill .ar { width: 12px; height: 12px; border: 1.5px solid currentColor; border-radius: 2px; }
 .pill.model { background: #26262b; }
 .pill.model .dot { width: 8px; height: 8px; border-radius: 50%; background: linear-gradient(135deg, #ff7a59, #ffcf5a); }
 #pp .grow { flex: 1; }
-#pp .est { color: var(--faint); font-size: 12px; white-space: nowrap; }
+#pp .est { color: var(--faint); font-size: var(--fs-small); white-space: nowrap; }
 #send { width: 34px; height: 34px; border-radius: 50%; border: none; background: #fff; color: #000; display: flex; align-items: center; justify-content: center; }
 #send:hover { background: #dcdcdc; }
 #send.stop { background: #2c2c31; color: #fff; }
 #send:disabled { opacity: .35; cursor: default; }
 #more { position: absolute; right: 10px; bottom: 50px; width: 260px; display: none; flex-direction: column; gap: 10px; padding: 12px; background: #1d1d21; border: 1px solid var(--line2); border-radius: 12px; z-index: 2; }
 #more.on { display: flex; }
-#more label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--dim); font-size: 12px; }
+#more label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--dim); font-size: var(--fs-small); }
 #more input[type=number], #more input[type=text] { width: 140px; background: #111; border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; outline: none; }
-#more .h { color: var(--faint); font-size: 11px; line-height: 1.5; }
+#more .h { color: var(--faint); font-size: var(--fs-caption); line-height: 1.5; }
 
 /* ---------- chrome */
 .float { position: fixed; z-index: 20; display: flex; align-items: center; gap: 4px; padding: 5px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 6px 24px rgba(0,0,0,.35); backdrop-filter: blur(8px); }
 .ib { width: 34px; height: 34px; border: none; background: none; border-radius: 9px; color: #c9c9cf; display: flex; align-items: center; justify-content: center; position: relative; }
 .ib:hover { background: rgba(255,255,255,.08); color: #fff; }
 .ib.on { background: rgba(255,255,255,.12); color: #fff; }
-.ib[data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 44px; top: 50%; transform: translateY(-50%); background: #000; color: #fff; padding: 3px 8px; border-radius: 6px; font-size: 12px; white-space: nowrap; pointer-events: none; }
+.ib[data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 44px; top: 50%; transform: translateY(-50%); background: #000; color: #fff; padding: 3px 8px; border-radius: 6px; font-size: var(--fs-small); white-space: nowrap; pointer-events: none; }
 #tl { top: 14px; left: 14px; padding: 5px 8px 5px 6px; gap: 8px; }
 #tl .logo { width: 28px; height: 28px; display: flex; flex: none; }
 #tl .bname { font-weight: 600; outline: none; padding: 2px 4px; border-radius: 5px; min-width: 40px; }
 #tl .bname:focus { background: #222; }
 #tl .tb { border: none; background: none; color: var(--dim); padding: 4px 6px; border-radius: 7px; display: flex; align-items: center; }
 #tl .tb:hover { background: rgba(255,255,255,.08); color: #fff; }
-#tr { top: 14px; right: 14px; padding: 5px 10px; gap: 10px; color: var(--dim); font-size: 12px; }
+#tr { top: 14px; right: 14px; padding: 5px 10px; gap: 10px; color: var(--dim); font-size: var(--fs-small); }
 #tr .st { display: flex; align-items: center; gap: 6px; }
 #tr .sd { width: 7px; height: 7px; border-radius: 50%; background: #555; }
 #tr .sd.ok { background: var(--green); box-shadow: 0 0 8px rgba(60,207,142,.6); } #tr .sd.busy { background: #ffcf5a; } #tr .sd.bad { background: var(--red); }
 #lt { left: 14px; top: 50%; transform: translateY(-50%); flex-direction: column; padding: 5px; }
 #lt .sep { height: 1px; width: 22px; background: var(--line); margin: 3px 0; }
-#bl { left: 14px; bottom: 14px; padding: 3px; gap: 0; color: var(--dim); font-size: 12px; }
+#bl { left: 14px; bottom: 14px; padding: 3px; gap: 0; color: var(--dim); font-size: var(--fs-small); }
 #bl .ib { width: 30px; height: 30px; }
 #bl .z { min-width: 48px; text-align: center; cursor: pointer; }
 #bl .wm { padding: 0 8px; cursor: pointer; white-space: nowrap; border-left: 1px solid var(--line); margin-left: 3px; }
@@ -189,17 +195,17 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #help { position: fixed; inset: 0; z-index: 55; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; }
 #help.on { display: flex; }
 #help .box { width: 560px; max-height: 86vh; overflow: auto; background: var(--panel); border: 1px solid var(--line2); border-radius: 16px; padding: 18px 22px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
-#help h3 { margin: 0 0 10px; font-size: 15px; }
-#help h4 { margin: 14px 0 6px; font-size: 12px; color: var(--faint); font-weight: 500; }
-#help .r { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; font-size: 13px; color: #d6d6dc; border-bottom: 1px solid rgba(255,255,255,.04); }
-#help kbd { font-family: inherit; font-size: 11px; background: #2a2a2f; border: 1px solid var(--line2); border-radius: 5px; padding: 1px 6px; color: #fff; margin-left: 3px; }
+#help h3 { margin: 0 0 10px; font-size: var(--fs-heading); }
+#help h4 { margin: 14px 0 6px; font-size: var(--fs-small); color: var(--faint); font-weight: 500; }
+#help .r { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; font-size: var(--fs-body); color: #d6d6dc; border-bottom: 1px solid rgba(255,255,255,.04); }
+#help kbd { font-family: inherit; font-size: var(--fs-caption); background: #2a2a2f; border: 1px solid var(--line2); border-radius: 5px; padding: 1px 6px; color: #fff; margin-left: 3px; }
 
 .menu { position: fixed; z-index: 30; display: none; flex-direction: column; min-width: 190px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 12px 40px rgba(0,0,0,.55); backdrop-filter: blur(10px); }
 .menu.on { display: flex; }
-.menu .mt { color: var(--faint); font-size: 11px; padding: 4px 10px 6px; }
+.menu .mt { color: var(--faint); font-size: var(--fs-caption); padding: 4px 10px 6px; }
 .menu button { display: flex; align-items: center; gap: 10px; border: none; background: none; padding: 7px 10px; border-radius: 8px; text-align: left; color: #dcdce2; }
 .menu button:hover { background: rgba(255,255,255,.07); }
-.menu button .k { margin-left: auto; color: var(--faint); font-size: 11px; }
+.menu button .k { margin-left: auto; color: var(--faint); font-size: var(--fs-caption); }
 .menu .sw { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
 .menu .sep { height: 1px; background: var(--line); margin: 4px 6px; }
 
@@ -207,40 +213,40 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #drawer.on { display: flex; }
 #drawer .dh { display: flex; align-items: center; padding: 12px 14px 8px; font-weight: 600; gap: 8px; }
 #drawer .dh .tabs { display: flex; gap: 4px; margin-left: auto; }
-#drawer .dh .tabs button { border: none; background: none; color: var(--dim); padding: 3px 8px; border-radius: 7px; font-size: 12px; }
+#drawer .dh .tabs button { border: none; background: none; color: var(--dim); padding: 3px 8px; border-radius: 7px; font-size: var(--fs-small); }
 #drawer .dh .tabs button.on { background: #2a2a2f; color: #fff; }
 #drawer .grid { flex: 1; overflow: auto; padding: 4px 12px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-content: start; }
 #drawer .as { position: relative; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: #000; cursor: grab; border: 1px solid var(--line); }
 #drawer .as img, #drawer .as video { width: 100%; height: 100%; object-fit: cover; display: block; }
-#drawer .as .ty { position: absolute; left: 5px; top: 5px; background: rgba(0,0,0,.65); border-radius: 5px; padding: 0 5px; font-size: 10px; }
-#drawer .h { color: var(--faint); font-size: 12px; padding: 0 14px 10px; }
+#drawer .as .ty { position: absolute; left: 5px; top: 5px; background: rgba(0,0,0,.65); border-radius: 5px; padding: 0 5px; font-size: var(--fs-micro); }
+#drawer .h { color: var(--faint); font-size: var(--fs-small); padding: 0 14px 10px; }
 
 #empty { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 4; text-align: center; display: none; }
 #empty.on { display: block; }
-#empty h1 { font-size: 26px; font-weight: 650; margin: 0 0 6px; letter-spacing: .5px; }
+#empty h1 { font-size: var(--fs-display); font-weight: 600; margin: 0 0 6px; letter-spacing: .5px; }
 #empty p { color: var(--dim); margin: 0 0 22px; }
 #empty .tiles { display: flex; gap: 12px; justify-content: center; }
 #empty .tile { width: 150px; padding: 18px 14px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 10px; color: #d6d6dc; }
 #empty .tile:hover { border-color: #555; background: var(--card-hi); }
 #empty .tile svg.i { width: 26px; height: 26px; stroke-width: 1.4; }
-#empty .tile small { color: var(--faint); font-size: 11px; }
+#empty .tile small { color: var(--faint); font-size: var(--fs-caption); }
 
 #light { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.92); display: none; align-items: center; justify-content: center; cursor: zoom-out; }
 #light.on { display: flex; }
 #light img, #light video { max-width: 94vw; max-height: 92vh; border-radius: 6px; }
-#toast { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 60; background: #fff; color: #000; padding: 7px 14px; border-radius: 10px; font-size: 13px; display: none; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+#toast { position: fixed; left: 50%; top: 18px; transform: translateX(-50%); z-index: 60; background: #fff; color: #000; padding: 7px 14px; border-radius: 10px; font-size: var(--fs-body); display: none; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
 #toast.on { display: block; }
 #boards { top: 58px; left: 14px; }
 /* storyboard script node */
 .node.script .plus.r { display: none; }
 .node.script .card { cursor: grab; }
-.sb { position: absolute; inset: 0; overflow: auto; padding: 12px 12px 14px; font-size: 12px; line-height: 1.55; }
+.sb { position: absolute; inset: 0; overflow: auto; padding: 12px 12px 14px; font-size: var(--fs-small); line-height: 1.55; }
 .sbh { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
-.sbh b { font-size: 14px; } .sbh span { color: var(--faint); margin-left: auto; white-space: nowrap; }
+.sbh b { font-size: var(--fs-heading); } .sbh span { color: var(--faint); margin-left: auto; white-space: nowrap; }
 .sbs { color: var(--dim); margin-bottom: 8px; }
 .shot { border-top: 1px solid var(--line); padding: 8px 0 6px; }
 .sh1 { display: flex; align-items: center; gap: 6px; color: #e6e6ea; }
-.sh1 .no { width: 18px; height: 18px; border-radius: 6px; background: #2a2236; color: var(--c-text); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; flex: none; }
+.sh1 .no { width: 18px; height: 18px; border-radius: 6px; background: #2a2236; color: var(--c-text); display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-caption); flex: none; }
 .sh1 img { width: 34px; height: 22px; object-fit: cover; border-radius: 4px; flex: none; }
 .sh1 .dim { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .sh1 .du { color: var(--faint); flex: none; }
@@ -248,21 +254,21 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .sd { color: #c8b8ff; margin: 3px 0 0 24px; }
 /* "/" menu and angle popover */
 #slashMenu button span b { display: block; font-weight: 500; }
-#slashMenu button span small { color: var(--faint); font-size: 11px; }
+#slashMenu button span small { color: var(--faint); font-size: var(--fs-caption); }
 #anglePop { position: fixed; z-index: 31; width: 320px; display: none; flex-direction: column; gap: 10px; padding: 14px; background: var(--panel); border: 1px solid var(--line2); border-radius: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.55); }
 #anglePop.on { display: flex; }
-#anglePop label { display: grid; grid-template-columns: 64px 1fr 56px; align-items: center; gap: 8px; color: var(--dim); font-size: 12px; }
+#anglePop label { display: grid; grid-template-columns: 64px 1fr 56px; align-items: center; gap: 8px; color: var(--dim); font-size: var(--fs-small); }
 #anglePop input[type=range] { width: 100%; accent-color: #fff; }
 #anglePop select { background: #111; border: 1px solid var(--line); border-radius: 7px; color: var(--text); padding: 3px 6px; }
-#anglePop .tx { font-size: 12px; color: #c9c9cf; background: #111113; border: 1px solid var(--line); border-radius: 8px; padding: 8px; line-height: 1.5; }
+#anglePop .tx { font-size: var(--fs-small); color: #c9c9cf; background: #111113; border: 1px solid var(--line); border-radius: 8px; padding: 8px; line-height: 1.5; }
 #anglePop .bt { display: flex; gap: 6px; justify-content: flex-end; }
 /* asset library cards */
 #drawer .tabs.lib { margin-left: 0; }
 #drawer .dh2 { display: flex; padding: 0 14px 8px; }
 #drawer .as.lib { aspect-ratio: 3/4; }
-#drawer .as.lib .nm { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 7px 5px; font-size: 12px; background: linear-gradient(transparent, rgba(0,0,0,.8)); outline: none; }
+#drawer .as.lib .nm { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 7px 5px; font-size: var(--fs-small); background: linear-gradient(transparent, rgba(0,0,0,.8)); outline: none; }
 #drawer .as.lib .nm[contenteditable=true] { background: #222; }
-#drawer .as.lib .x { position: absolute; right: 5px; top: 5px; border: none; border-radius: 6px; background: rgba(0,0,0,.65); color: #ddd; font-size: 11px; padding: 1px 6px; display: none; }
+#drawer .as.lib .x { position: absolute; right: 5px; top: 5px; border: none; border-radius: 6px; background: rgba(0,0,0,.65); color: #ddd; font-size: var(--fs-caption); padding: 1px 6px; display: none; }
 #drawer .as.lib:hover .x, #drawer .as.lib .x.arm { display: block; }
 #drawer .as.lib .x.arm { background: var(--red); color: #fff; }
 </style>
@@ -337,7 +343,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <div class="menu" id="ctxMenu"></div>
 <div class="menu" id="slashMenu"></div>
 <div id="anglePop">
-  <b style="font-size:13px">换角度</b>
+  <b style="font-size:var(--fs-body)">换角度</b>
   <label>水平环绕<input type="range" id="agYaw" min="-180" max="180" step="15" value="45"><span id="agYawV"></span></label>
   <label>俯仰<input type="range" id="agPitch" min="-60" max="60" step="5" value="0"><span id="agPitchV"></span></label>
   <label>景别<select id="agSize"><option value="">保持不变</option><option>面部特写</option><option>近景</option><option>中景</option><option>全景</option><option>远景</option></select><span></span></label>
@@ -412,11 +418,11 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <div id="toast"></div>
 <input type="file" id="file" accept="image/*,video/*" multiple hidden>
 
-<script src="/static/tools.js?v=5"></script>
-<script src="/static/film.js?v=4"></script>
-<script src="/static/wizard.js?v=6"></script>
-<script src="/static/settings.js?v=2"></script>
-<script src="/static/account.js?v=1"></script>
+<script src="/static/tools.js?v=5t"></script>
+<script src="/static/film.js?v=4t"></script>
+<script src="/static/wizard.js?v=6t"></script>
+<script src="/static/settings.js?v=3t"></script>
+<script src="/static/account.js?v=1t"></script>
 <script>
 "use strict";
 const $ = (s, el = document) => el.querySelector(s);
@@ -440,13 +446,40 @@ function toast(m, ms = 2400) { const t = $("#toast"); t.textContent = m; t.class
 // ================================================================= persistence & history
 let saveT = null, savePending = null;
 // a save belongs to the board it was made on, even if the user switches boards before it is sent
-function save() { clearTimeout(saveT); savePending = { id: boardId, b: B }; saveT = setTimeout(flushSave, 500); }
-async function flushSave(keepalive) {
-  clearTimeout(saveT); const p = savePending; savePending = null; if (!p) return;
+function save() { clearTimeout(saveT); savePending = { id: boardId, b: B }; saveT = setTimeout(flushSave, 500); schedulePrewarm(); }
+let prewarmT = null, prewarming = false;
+const prewarmed = new Set();
+function schedulePrewarm(ms = 5000) { clearTimeout(prewarmT); prewarmT = setTimeout(prewarm, ms); }
+async function prewarm() {
+  if (prewarming) return schedulePrewarm();
+  prewarming = true;
+  try {
+    for (const n of B.nodes.filter(x => x.type === "video" && !x.data.film && !x.job && !prepping.has(x.id))) {
+      if (!usesFields(n) || !fieldsFilled(n)) continue;
+      const p = plan(n); if (!p.imgs.every(m => curV(m))) continue;
+      const req = videoReq(n, fullPrompt(n)); if (!req) continue;
+      const key = JSON.stringify(req); if (prewarmed.has(key)) continue;
+      try { const r = await fetch("/api/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) }); if (r.ok) prewarmed.add(key); } catch {}
+    }
+  } finally { prewarming = false; }
+}
+let saveChain = Promise.resolve();
+// saves run one after another, each carrying the board revision it is based on (B.rev); the server refuses a stale one
+function flushSave(keepalive) {
+  clearTimeout(saveT); const p = savePending; savePending = null; if (!p) return saveChain;
+  if (keepalive) { sendSave(p, true); return saveChain; }
+  return saveChain = saveChain.then(() => sendSave(p, false));
+}
+async function sendSave(p, keepalive) {
   const body = JSON.stringify(p.b, (k, v) => k === "st" ? undefined : v);   // live job status is not board data
   try {
     const r = await fetch("/api/board/" + p.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body, keepalive: !!keepalive && body.length < 60000 });
-    if (!r.ok && r.status !== 401) { let m = r.statusText; try { m = (await r.json()).error || m; } catch {} toast("保存失败：" + m, 5000); }
+    if (r.ok) { const j = await r.json().catch(() => ({})); if (j.rev != null && p.b === B) B.rev = j.rev; return; }
+    if (r.status === 409 && !keepalive) {
+      if (p.id === boardId) { toast("画布已在别处更新（另一个窗口或后台修改），已载入最新版本", 5000); setTimeout(() => openBoard(boardId), 0); }
+      return;
+    }
+    if (r.status !== 401) { let m = r.statusText; try { m = (await r.json()).error || m; } catch {} toast("保存失败：" + m, 5000); }
   } catch { if (!keepalive) { toast("保存失败：网络断开，稍后会再试", 4000); if (!savePending) { savePending = p; saveT = setTimeout(flushSave, 3000); } } }
 }
 addEventListener("pagehide", () => flushSave(true));
@@ -569,7 +602,8 @@ function plan(n) {
   if (!useRef) { if (ordered.length >= 1) labels[ordered[0]] = "首帧"; if (ordered.length === 2) labels[ordered[1]] = "尾帧"; }
   else ordered.forEach((i, j) => {
     let t = ordered.length === 1 ? 0 : end * j / (ordered.length - 1);
-    if (roles[i] === "first") t = 0; if (roles[i] === "last") t = end;
+    if (roles[i] === "first") t = 0; else if (roles[i] === "last") t = end;
+    else if (es[i].time != null && isFinite(+es[i].time)) t = Math.min(end, Math.max(0, +es[i].time));   // a time the user typed in
     times[i] = t; labels[i] = t <= 0.01 ? "首帧" : t >= end - 0.05 ? "尾帧" : t.toFixed(1) + "s";
   });
   subj.forEach(i => labels[i] = "人物设定");
@@ -618,9 +652,47 @@ function render(n) {
     const hint = n.type === "image" ? (imgInputs(n).length ? `以图改图 · ${imgInputs(n).length} 张参考图<br>选中后写下修改要求，用 @图1 指代原图` : "选中后在下方输入提示词生成<br>或把图片拖到这里") : (() => { const p = plan(n); return p.imgs.length ? `${p.name} · ${p.imgs.length} 张图<br>点连线上的标签可设为人物设定 / 首帧 / 尾帧` : "选中后输入提示词生成<br>连入图片可做人物设定 / 首帧 / 尾帧 / 关键帧"; })();
     body.innerHTML = `<div class="ph">${ico(n.type)}<div class="t">${hint}</div></div>`;
   }
+  renderVTabs(n, el);
   $(".meta", el).textContent = meta;
   el.classList.toggle("sel", sel.has(n.id));
   renderJob(n);
+}
+// put several videos in the generation queue, in name order (视频 2 before 视频 10); each one is sent like a click on 生成
+let queueing = false;
+async function queueVideos(list) {
+  if (queueing) return toast("正在排队，请稍等上一批提交完");
+  list = list.filter(x => x && !x.job).sort((a, b) => a.name.localeCompare(b.name, "zh", { numeric: true }) || a.y - b.y || a.x - b.x);
+  if (!list.length) return toast("没有需要排队的视频（正在生成的会跳过）");
+  queueing = true;
+  let ok = 0;
+  try {
+    for (const [i, v] of list.entries()) {
+      toast(`正在提交 ${i + 1}/${list.length}：${v.name}`, 60000);
+      await generate(v);
+      if (v.job) ok++;
+    }
+  } finally { queueing = false; }
+  const bad = list.length - ok;
+  toast(`已排队 ${ok} 段视频，会按顺序依次生成${bad ? `；${bad} 段没提交成功，看节点上的提示` : ""}`, 6000);
+}
+// video versions as tabs on the right of the node: every generation is kept, a click switches to it
+function renderVTabs(n, el) {
+  let t = $(".vtabs", el);
+  if (n.type !== "video" || n.versions.length < 2) { t?.remove(); return; }
+  if (!t) {
+    t = document.createElement("div"); t.className = "vtabs"; el.appendChild(t);
+    t.addEventListener("pointerdown", e => e.stopPropagation());
+    t.addEventListener("dblclick", e => e.stopPropagation());
+  }
+  t.innerHTML = n.versions.map((v, i) => {
+    const tip = [`版本 ${i + 1}`, v.mode, v.seconds ? v.seconds.toFixed(1) + "s" : "", v.seed != null ? "seed " + v.seed : ""].filter(Boolean).join(" · ");
+    return `<button data-i="${i}" class="${i === n.cur ? "on" : ""}" title="${esc(tip)}">${i + 1}</button>`;
+  }).join("");
+  $$("button", t).forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const i = +b.dataset.i; if (i === n.cur) return;
+    n.cur = i; save(); render(n); refreshDownstream(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges();
+  });
 }
 function refresh(n) { if (!n) return; render(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges(); }
 
@@ -815,11 +887,25 @@ function showPanel() {
   if (n.type === "image") imgInputs(n).forEach((m, i) => { const mv = curV(m); items.push(`<span class="ref" data-tok="@图${i + 1}" title="点击在提示词中引用 · ${esc(m.name)}">${mv ? `<img src="${mv.url}">` : `<span class="tx">${ico("image")}</span>`}图${i + 1}<span class="role">${i === 0 ? "原图" : "参考"}</span></span>`); });
   if (n.type === "video") {
     const p = plan(n);
-    p.imgs.forEach((m, i) => { const mv = curV(m); items.push(`<span class="ref" data-tok="@图${i + 1}" title="点击在提示词中引用 · ${esc(m.name)}">${mv ? `<img src="${mv.url}">` : `<span class="tx">${ico("image")}</span>`}图${i + 1}<span class="role rsel">${p.labels[i]} ▾${roleSelect(p.es[i])}</span></span>`); });
+    const end = (vidFrames(n.data.duration) - 4) / 24;
+    p.imgs.forEach((m, i) => { const mv = curV(m), r = p.roles[i];
+      // keyframes get a seconds box: where in the video this picture should be reached
+      const tbox = p.useRef && r !== "subject" && r !== "first" && r !== "last" && p.times[i] != null
+        ? `<input class="tsec" type="number" min="0" max="${end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
+      items.push(`<span class="ref" data-tok="@图${i + 1}" title="点击在提示词中引用 · ${esc(m.name)}">${mv ? `<img src="${mv.url}">` : `<span class="tx">${ico("image")}</span>`}图${i + 1}<span class="role rsel">${p.labels[i]} ▾${roleSelect(p.es[i])}</span>${tbox}</span>`); });
   }
   inputs(n, "text").forEach(t => items.push(`<span class="ref" title="${esc(t.data.text.slice(0, 200))}"><span class="tx">${ico("text")}</span>${esc(t.name)}<span class="role">已并入</span></span>`));
   refs.innerHTML = items.join(""); refs.style.display = items.length ? "" : "none";
-  $$(".ref[data-tok]", refs).forEach(r => r.onclick = e => { if (!e.target.closest("select")) insertTok(r.dataset.tok); });
+  $$(".ref[data-tok]", refs).forEach(r => r.onclick = e => { if (!e.target.closest("select, input")) insertTok(r.dataset.tok); });
+  $$("input[data-time]", refs).forEach(inp => {
+    ["pointerdown", "click", "keydown"].forEach(ev => inp.addEventListener(ev, e => e.stopPropagation()));
+    inp.onchange = () => {
+      const e = B.edges[+inp.dataset.time]; if (!e) return;
+      const v = parseFloat(inp.value); checkpoint();
+      if (isFinite(v)) { e.time = Math.round(v * 10) / 10; if (!e.role) e.role = "keyframe"; } else delete e.time;
+      save(); const vn = node(e.to); render(vn); drawEdges(); if (sel.has(vn.id)) showPanel();
+    };
+  });
   wireRoleSelects(refs);
   // ---- prompt
   const ta = $("#prompt");
@@ -1123,6 +1209,8 @@ function ctxMenu(e) {
     it.push(`<div class="sep"></div>`);
   }
   const vids = [...sel].map(node).filter(m => m && m.type === "video" && curV(m));
+  const qv = [...sel].map(node).filter(m => m && m.type === "video" && !m.job && !m.data.film);
+  if (many && qv.length) { add("queuegen", "video", `排队生成（${qv.length} 段视频，按名称顺序）`); if (!(vids.length >= 2)) it.push(`<div class="sep"></div>`); }
   if (many && vids.length >= 2) { add("concat", "scissors", `剪辑成片（${vids.length} 段，按位置顺序）`); it.push(`<div class="sep"></div>`); }
   add("focus", "fit", many ? "聚焦选中" : "聚焦此节点", "F");
   if (!many) add("rename", "text", "重命名");
@@ -1138,6 +1226,7 @@ function ctxMenu(e) {
     else if (a === "dup") duplicate([...sel]);
     else if (a === "del") removeNodes([...sel]);
     else if (a === "concat") concatVideos(byPosition([...sel]));
+    else if (a === "queuegen") queueVideos([...sel].map(node).filter(m => m && m.type === "video" && !m.job && !m.data.film));
     else nodeAction(n, a);
   });
 }
@@ -1222,7 +1311,9 @@ function addFromMenu(type) {
   if (!at && ctx.from) { const s = size(ctx.from); at = freeSpot(ctx.from.x + s.w + 110, ctx.from.y, type); }
   if (!at && ctx.to) at = freeSpot(ctx.to.x - 420, ctx.to.y, type);
   if (!at) at = toW(innerWidth / 2 - 150, innerHeight / 2 - 180);
-  if (type === "upload") { pickFiles(f => { checkpoint(); const kind = x => x.type.startsWith("video/") ? "video" : "image"; const n = addNode(kind(f[0]), at.x, at.y); uploadInto(n, f[0]); f.slice(1).forEach((x, i) => uploadInto(addNode(kind(x), at.x, at.y + (i + 1) * 420), x)); if (ctx.to && n.type === "image") link(n, ctx.to, true); }); return; }
+  if (type === "upload") { pickFiles(f => { checkpoint(); const kind = x => x.type.startsWith("video/") ? "video" : "image";
+    // every uploaded image is wired into the node the menu was opened from, in the order the files were picked
+    f.forEach((x, i) => { const n = addNode(kind(x), at.x, at.y + i * 420); uploadInto(n, x); if (ctx.to && n.type === "image") link(n, ctx.to, true); }); }); return; }
   checkpoint();
   const n = addNode(type, at.x, at.y);
   if (ctx.from) link(ctx.from, n, true);
@@ -1293,8 +1384,17 @@ function fullPrompt(n) {
 function showErr(n, msg) { const b = $(".errbox", els.get(n.id)); b.textContent = msg || ""; b.classList.toggle("on", !!msg); }
 const usesFields = n => !!n && n.type === "video" && n.data.pmode === "fields";
 const fieldsFilled = n => FIELDS.some(f => !["sound", "music"].includes(f.k) && (n.data.fields?.[f.k] || "").trim());
+const prepping = new Set();   // video nodes whose request is being prepared (prompt translated) before it reaches the queue
+function showPrep(n, on) {
+  const el = els.get(n.id); if (!el) return;
+  const g = $(".gen", el);
+  if (!on) { renderJob(n); if (!n.job) g.classList.toggle("on", toolBusy.has(n.id)); return; }
+  g.classList.add("on"); $(".pct", g).textContent = "译"; $(".bar i", g).style.width = "3%";
+  $(".s", g).textContent = "提交中…";
+}
 async function generate(n) {
   if (n.type === "script") return planStoryboard(n);
+  if (prepping.has(n.id)) return toast("这个视频正在准备提交，请稍等");
   const d = n.data, prompt = fullPrompt(n); showErr(n, "");
   if (usesFields(n) ? !fieldsFilled(n) : !prompt) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : "先写提示词，或连入一个文本节点"); if (!usesFields(n)) $("#prompt").focus(); return; }
   let req;
@@ -1310,10 +1410,13 @@ async function generate(n) {
   req.label = n.name;
   req.board = boardId;
   if (n.data.provider && (CAPS_LIST[n.type === "image" ? "image" : "video"] || []).some(x => x.id === n.data.provider)) req.provider = n.data.provider;
+  const slow = n.type === "video";
+  if (slow) { prepping.add(n.id); showPrep(n, true); }
   try {
     const r = await api("/api/generate", req);
     n.job = { ids: r.ids, prompt, t0: Date.now(), st: {} }; save(); render(n); showPanel(); poll();
   } catch (e) { showErr(n, e.message); }
+  finally { if (slow) { prepping.delete(n.id); showPrep(n, false); } }
 }
 function videoReq(n, prompt) {
   const d = n.data;
@@ -1363,7 +1466,7 @@ function renderJob(n) {
   if (run) {
     if (run.max > 1 && run.value != null) { frac = run.value / run.max; pct = Math.round(frac * 100) + "%"; msg = n.data.film ? "合成成片中" : run.value >= run.max ? "解码合成中" : `生成中 · 第 ${run.value}/${run.max} 步`; }
     else { pct = "…"; msg = "加载模型 / 处理输入"; }
-  } else if (q) { pct = "排队"; msg = q.ahead > 0 ? `前面还有 ${q.ahead} 个任务` : "即将开始"; }
+  } else if (q) { pct = "排队"; msg = q.prep ? "已进入队列 · 正在把提示词翻译成英文" : q.ahead > 0 ? `前面还有 ${q.ahead} 个任务` : "即将开始"; }
   const eta = Math.max(0, ...sts.filter(s => s.state !== "done").map(s => s.eta || 0));
   if (eta && (run || q)) msg += ` · ${run ? "还要" : ""}约 ${fmtT(eta)}${run ? "" : "后完成"}`;
   if (n.job.ids.length > 1) msg += ` · ${done}/${n.job.ids.length}`;
@@ -1485,7 +1588,7 @@ async function openBoard(id) {
   $("#bname").textContent = B.name || "我的画布";
   rebuild();
   if (!b.nodes) fit(); else applyView();
-  poll();
+  poll(); schedulePrewarm(3000);
 }
 $("#bname").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
 $("#bname").addEventListener("blur", e => { const t = e.target.textContent.trim() || "未命名画布"; e.target.textContent = t; B.name = t; save(); });
@@ -1494,10 +1597,14 @@ $("#bmenuBtn").onclick = async e => {
   if (m.classList.contains("on")) { m.classList.remove("on"); return; }
   const list = await (await fetch("/api/boards")).json();
   m.innerHTML = `<div class="mt">我的画布</div>` + list.map(b => `<button data-id="${b.id}">${esc(b.name)}<span class="k">${b.nodes} 个节点</span></button>`).join("") +
+    `<div class="sep"></div><button data-qnew>${ico("video")}排队生成：还没生成的视频</button><button data-qall>${ico("video")}排队生成：全部视频（每段多一个新版本）</button>` +
     `<div class="sep"></div><button data-new>${ico("plus")}新建画布</button><button data-export>${ico("dl")}导出当前画布</button><button data-import>${ico("upload")}导入画布 JSON</button><button data-del style="color:#ff8a8a">${ico("trash")}删除当前画布</button>`;
   closeMenus(); m.classList.add("on");
   $$("button[data-id]", m).forEach(b => b.onclick = () => { m.classList.remove("on"); openBoard(b.dataset.id); });
   $("[data-new]", m).onclick = async () => { m.classList.remove("on"); await flushSave(); const id = "b" + Date.now().toString(36); boardId = id; B = emptyBoard("新画布 " + new Date().toLocaleDateString()); fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(B) }).then(() => openBoard(id)); };
+  const vidsOnBoard = () => B.nodes.filter(x => x.type === "video" && !x.data.film && !x.job);
+  $("[data-qnew]", m).onclick = () => { m.classList.remove("on"); queueVideos(vidsOnBoard().filter(x => !x.versions.length)); };
+  $("[data-qall]", m).onclick = () => { m.classList.remove("on"); queueVideos(vidsOnBoard()); };
   $("[data-export]", m).onclick = () => { m.classList.remove("on"); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(B, null, 1)], { type: "application/json" })); a.download = (B.name || "board") + ".json"; a.click(); };
   $("[data-import]", m).onclick = () => { m.classList.remove("on"); const i = document.createElement("input"); i.type = "file"; i.accept = ".json"; i.onchange = async () => { const o = JSON.parse(await i.files[0].text()); const id = "b" + Date.now().toString(36); o.nodes?.forEach(n => n.job = null); await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(o) }); openBoard(id); }; i.click(); };
   $("[data-del]", m).onclick = async () => { m.classList.remove("on"); clearTimeout(saveT); savePending = null; await fetch("/api/board/" + boardId, { method: "DELETE" }); const l = await (await fetch("/api/boards")).json(); openBoard(l[0]?.id || "default"); };

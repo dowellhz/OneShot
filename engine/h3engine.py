@@ -29,6 +29,7 @@ import torch.nn.functional as F
 
 H3 = Path(os.environ.get("H3_WEIGHTS", "/d2/Lego/minimax-h3"))
 IMG_BASE = Path(os.environ.get("H3_IMAGE_BASE", "/d2/Lego/minimax-h3/MiniMax-H3-Image"))
+IMG_PRUNED = Path(os.environ.get("H3_IMAGE_PRUNED", "/d2/Lego/minimax-h3/diffusion_models/minimax_h3_image_pruned_bf16.safetensors"))
 BASE = Path(os.environ.get("H3_BASE", str(Path.home() / "h3engine/MiniMax-H3")))
 FILES = {
     "fl2va": H3 / "diffusion_models/minimax_h3_fl2va_bf16.safetensors",
@@ -179,6 +180,31 @@ def fp8_linears(module: nn.Module, skip=("visual",)) -> int:
 
 # --------------------------------------------------------------------------- loaders
 
+def mmap_safetensors(path: Path) -> dict:
+    """Tensors that read straight from the file (page cache), never copied into process memory — how ComfyUI keeps a
+    51 GB text encoder next to a 62 GB transformer in 125 GB of RAM: the kernel can drop and re-read these pages."""
+    import json, struct
+    import numpy as np
+    dt = {"BF16": (np.uint16, torch.bfloat16), "F16": (np.float16, torch.float16), "F32": (np.float32, torch.float32),
+          "I64": (np.int64, torch.int64), "I32": (np.int32, torch.int32), "U8": (np.uint8, torch.uint8), "I8": (np.int8, torch.int8)}
+    with open(path, "rb") as f:
+        n = struct.unpack("<Q", f.read(8))[0]
+        header = json.loads(f.read(n))
+    header.pop("__metadata__", None)
+    mm = np.memmap(path, dtype=np.uint8, mode="r", offset=8 + n)
+    out = {}
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")                      # read-only mapping: torch warns that it is not writable
+        for k, v in header.items():
+            npt, tt = dt[v["dtype"]]
+            a, b = v["data_offsets"]
+            arr = mm[a:b].view(npt).reshape(v["shape"]) if v["shape"] else mm[a:b].view(npt).reshape(())
+            t = torch.from_numpy(arr)
+            out[k] = t.view(tt) if tt == torch.bfloat16 else t
+    return out
+
+
 def read_safetensors(path: Path, dtype=torch.bfloat16) -> dict:
     from safetensors import safe_open
     out = {}
@@ -249,7 +275,8 @@ def load_text_encoder():
     from accelerate import init_empty_weights
     from transformers import AutoConfig, Qwen3VLForConditionalGeneration
     t0 = time.time()
-    sd = read_safetensors(FILES["te"])
+    fp8 = os.environ.get("H3_TE_FP8", "0") == "1"           # default BF16 from a memory-mapped file, like ComfyUI
+    sd = read_safetensors(FILES["te"]) if fp8 else mmap_safetensors(FILES["te"])
     ren = {}
     for k, v in sd.items():
         if k.startswith("model."):
@@ -283,8 +310,9 @@ def load_text_encoder():
                 mod.register_buffer("inv_freq", inv, persistent=False)
                 mod.original_inv_freq = inv
     model.eval().requires_grad_(False)
-    n = fp8_linears(model.model.language_model)
-    log(f"text encoder ready: {layers}+1 layers, {n} FP8 linears, {time.time() - t0:.0f}s")
+    n = fp8_linears(model.model.language_model) if fp8 else 0
+    model._h3_mmap = not fp8
+    log(f"text encoder ready: {layers}+1 layers, {'FP8 %d linears' % n if fp8 else 'BF16 memory-mapped'}, {time.time() - t0:.0f}s")
     return model
 
 
@@ -310,7 +338,11 @@ class Engine:
         log(f"small components {names} in {time.time() - t0:.0f}s")
         te = load_text_encoder()
         self.pipe.update_components(text_encoder=te)
-        self._stream(te, "leaf_level")
+        if getattr(te, "_h3_mmap", False):                  # file-backed weights: stream without pinning a copy
+            from diffusers.hooks import apply_group_offloading
+            apply_group_offloading(te, onload_device=DEV, offload_type="leaf_level", use_stream=True, low_cpu_mem_usage=True)
+        else:
+            self._stream(te, "leaf_level")
         for n in ("vae", "audio_vae"):              # like ComfyUI: off the GPU while the transformer denoises
             gpu_while_used(getattr(self.pipe, n))
         self.task = None
@@ -339,6 +371,23 @@ class Engine:
         pin_module(module)
         apply_group_offloading(module, onload_device=DEV, offload_type=kind,
                                num_blocks_per_group=1 if kind == "block_level" else None, use_stream=True, low_cpu_mem_usage=True)
+
+    def _stream_resident(self, model: nn.Module, resident: int):
+        """Stream the transformer block by block like _stream, except its first `resident` blocks, which stay on the
+        GPU for good (ComfyUI keeps as much of the model in VRAM as fits and streams only the rest)."""
+        from diffusers.hooks import apply_group_offloading
+        blocks = model.transformer_blocks
+        resident = max(0, min(resident, len(blocks)))
+        keep = nn.ModuleList(list(blocks)[:resident]).to(DEV)
+        model.transformer_blocks = nn.ModuleList(list(blocks)[resident:])
+        for n, m in model.named_children():
+            if n != "transformer_blocks":
+                m.to("cpu")
+        pin_module(model)
+        apply_group_offloading(model, onload_device=DEV, offload_type="block_level", num_blocks_per_group=1,
+                               use_stream=True, low_cpu_mem_usage=True)
+        model.transformer_blocks = nn.ModuleList(list(keep) + list(model.transformer_blocks))
+        log(f"{resident} of {len(blocks)} blocks resident on the GPU")
 
     def _drop_big(self):
         olds = []
@@ -374,11 +423,19 @@ class Engine:
             self.ipipe.load_components(names=names, pretrained_model_name_or_path=str(IMG_BASE), torch_dtype=torch.bfloat16)
             self.ipipe.update_components(text_encoder=self.pipe.text_encoder)
             gpu_while_used(self.ipipe.vae)
-        need_ram(70, " H3-Image")
-        model = MiniMaxH3ImageTransformer2DModel.from_pretrained(str(IMG_BASE), subfolder="transformer_diffusers", torch_dtype=torch.bfloat16)
-        model.eval().requires_grad_(False)
-        self._chunk_ff(model)
-        self._stream(model, "block_level")
+        if IMG_PRUNED.exists() and os.environ.get("H3_IMAGE_FULL", "0") != "1":
+            # what ComfyUI runs: the official pruned file (curve AdaLN, BF16, 40 GB), part of it resident in VRAM
+            import pruned
+            need_ram(45, " H3-Image")
+            model = pruned.load_pruned_image(IMG_PRUNED, str(IMG_BASE), "transformer_diffusers", read=mmap_safetensors, log=log)
+            self._chunk_ff(model)
+            self._stream_resident(model, int(os.environ.get("H3_IMAGE_RESIDENT", "14")))
+        else:
+            need_ram(70, " H3-Image")
+            model = MiniMaxH3ImageTransformer2DModel.from_pretrained(str(IMG_BASE), subfolder="transformer_diffusers", torch_dtype=torch.bfloat16)
+            model.eval().requires_grad_(False)
+            self._chunk_ff(model)
+            self._stream(model, "block_level")
         self.ipipe.update_components(transformer=model)
         self.task = "image"
         log(f"H3-Image transformer ready in {time.time() - t0:.0f}s")

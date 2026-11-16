@@ -5,21 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>登录 · OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22osg%22%20x1%3D%220%22%20y1%3D%220%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20offset%3D%220%22%20stop-color%3D%22%237c6cff%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%234fb3ff%22%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%228%22%20fill%3D%22url%28%23osg%29%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23fff%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="/static/type.css?v=1">
 <style>
 html, body { margin: 0; height: 100%; background: radial-gradient(1000px 600px at 50% -10%, #1d1a2b, #0b0b0c 65%); color: #ededf0;
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; color-scheme: dark; }
+   color-scheme: dark; }
 .wrap { min-height: 100%; display: flex; align-items: center; justify-content: center; }
 .box { width: min(380px, 92vw); background: rgba(24,24,27,.94); border: 1px solid #2a2a2e; border-radius: 18px; padding: 28px 26px; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; margin-bottom: 4px; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: var(--fs-title); margin-bottom: 4px; }
 .logo span { width: 34px; height: 34px; display: inline-flex; }
-p.sub { color: #8b8b93; margin: 0 0 20px; font-size: 13px; }
-label { display: block; color: #8b8b93; font-size: 12px; margin: 12px 0 4px; }
+p.sub { color: #8b8b93; margin: 0 0 20px; font-size: var(--fs-body); }
+label { display: block; color: #8b8b93; font-size: var(--fs-small); margin: 12px 0 4px; }
 input { width: 100%; box-sizing: border-box; background: #111113; border: 1px solid #3a3a40; border-radius: 10px; padding: 10px 12px; color: #ededf0; font: inherit; }
 input:focus { outline: none; border-color: #7c6cff; }
 button { width: 100%; margin-top: 20px; padding: 11px; border: none; border-radius: 11px; background: #fff; color: #000; font: inherit; font-weight: 600; cursor: pointer; }
 button:disabled { opacity: .5; }
-.err { color: #ff6b6b; font-size: 12.5px; min-height: 18px; margin-top: 10px; }
-.tip { color: #5d5d65; font-size: 12px; margin-top: 14px; line-height: 1.6; }
+.err { color: #ff6b6b; font-size: var(--fs-small); min-height: 18px; margin-top: 10px; }
+.tip { color: #5d5d65; font-size: var(--fs-small); margin-top: 14px; line-height: 1.6; }
 </style>
 </head>
 <body>

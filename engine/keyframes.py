@@ -44,7 +44,22 @@ def install():
     if _patched:
         return
     from diffusers.modular_pipelines.minimax_h3 import before_denoise as bd
+    from diffusers.modular_pipelines.minimax_h3 import before_encoder as be
     from diffusers.modular_pipelines.minimax_h3 import encoders as enc
+
+    # 0. keyframes are not references: the 9-image / 12-total caps apply to the real references only
+    setup = be.MiniMaxH3Ref2VASetupStep
+    orig_setup = setup.__call__
+
+    def setup_call(self, components, state):
+        extra = len(ACTIVE["frames"]) if ACTIVE["n_refs"] is not None else 0
+        saved = self.max_images, self.max_references
+        self.max_images, self.max_references = saved[0] + extra, saved[1] + extra
+        try:
+            return orig_setup(self, components, state)
+        finally:
+            self.max_images, self.max_references = saved
+    setup.__call__ = setup_call
 
     # 1. text encoder: only the real references are presented to Qwen
     step = enc.MiniMaxH3Ref2VATextEncoderStep

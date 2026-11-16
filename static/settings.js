@@ -4,7 +4,24 @@
 
 let SET = null;
 async function openSettings() {
-  location.href = "/console#services"; return;
+  let LC;
+  try { LC = await (await fetch("/api/llm")).json(); } catch { return toast("连不上画布服务"); }
+  const box = $("#setBox");
+  box.innerHTML = `<div class="hd">文本模型<span style="flex:1"></span><button class="pill" id="setClose">关闭</button></div>
+    <div class="h">用于<b>把提示词翻译成英文</b>、写剧本、拆分镜、改写、反推看图。选中的排第一，出错时自动换下一个。</div>
+    <div class="ml">${LC.choices.map(c => `<button data-pid="${c.id}" class="${c.id === LC.current ? "on" : ""}"><b>${esc(c.name)}</b>
+      <span>${esc(c.model || "")}${c.local ? " · 本机，不花钱；显卡在生成视频时用 CPU，较慢" : " · 云端，快，不占显卡，按用量计费"}${c.vision ? "" : " · 不能看图（看图仍用其他模型）"}</span></button>`).join("")}</div>
+    <div class="bt"><span id="sMsg" class="h"></span><span style="flex:1"></span><a class="pill" href="/console#services">添加 / 管理服务…</a></div>`;
+  $("#setClose").onclick = () => $("#settings").classList.remove("on");
+  $$("[data-pid]", box).forEach(b => b.onclick = async () => {
+    try {
+      await api("/api/admin/llm", { provider: b.dataset.pid }, "PUT");
+      $$("[data-pid]", box).forEach(x => x.classList.toggle("on", x === b));
+      toast("文本模型已切换为 " + b.querySelector("b").textContent, 3000); status(); loadCaps?.();
+    } catch (e) { $("#sMsg").textContent = e.message; $("#sMsg").style.color = "var(--red)"; }
+  });
+  $("#settings").classList.add("on");
+  return;
   try { SET = await (await fetch("/api/settings")).json(); } catch { return toast("连不上画布服务"); }
   const L = SET.llm || {};
   if (!L.provider) Object.assign(L, { provider: "deepseek", ...SET.presets.deepseek, enabled: false });
@@ -57,19 +74,25 @@ function initSettings() {
 #settings { position: fixed; inset: 0; z-index: 56; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; }
 #settings.on { display: flex; }
 #setBox { width: min(600px, 94vw); display: flex; flex-direction: column; gap: 12px; background: var(--panel); border: 1px solid var(--line2); border-radius: 16px; padding: 16px 20px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
-#setBox .hd { display: flex; align-items: center; font-weight: 600; font-size: 15px; }
-#setBox .h { color: var(--dim); font-size: 12px; line-height: 1.6; } #setBox .h.warn { color: #ffcf5a; }
+#setBox .hd { display: flex; align-items: center; font-weight: 600; font-size: var(--fs-heading); }
+#setBox .h { color: var(--dim); font-size: var(--fs-small); line-height: 1.6; } #setBox .h.warn { color: #ffcf5a; }
 #setBox .ck { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-#setBox .f { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 10px; font-size: 12.5px; color: var(--dim); }
+#setBox .f { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 10px; font-size: var(--fs-small); color: var(--dim); }
 #setBox .f input { background: #111113; border: 1px solid var(--line2); border-radius: 9px; padding: 7px 10px; color: var(--text); }
 #setBox .f input[readonly] { color: var(--dim); }
 #setBox .seg { display: flex; gap: 4px; flex-wrap: wrap; }
-#setBox .seg button { border: 1px solid var(--line2); background: #18181b; color: #d6d6dc; border-radius: 9px; padding: 5px 10px; font-size: 12.5px; }
+#setBox .seg button { border: 1px solid var(--line2); background: #18181b; color: #d6d6dc; border-radius: 9px; padding: 5px 10px; font-size: var(--fs-small); }
 #setBox .seg button.on { background: #fff; color: #000; border-color: #fff; }
-#setBox .bt { display: flex; align-items: center; gap: 8px; }`;
+#setBox .bt { display: flex; align-items: center; gap: 8px; }
+#setBox .bt a { text-decoration: none; color: var(--text); }
+#setBox .ml { display: flex; flex-direction: column; gap: 8px; }
+#setBox .ml button { text-align: left; display: flex; flex-direction: column; gap: 3px; border: 1px solid var(--line2); background: #18181b; color: var(--text); border-radius: 11px; padding: 10px 12px; }
+#setBox .ml button span { color: var(--dim); font-size: var(--fs-small); }
+#setBox .ml button.on { border-color: #fff; box-shadow: 0 0 0 1px #fff inset; }
+#setBox .ml button.on b::after { content: "  ✓ 当前使用"; color: var(--green); font-weight: 500; font-size: var(--fs-small); }`;
   document.head.appendChild(css);
   document.body.insertAdjacentHTML("beforeend", `<div id="settings"><div id="setBox"></div></div>`);
-  $("#helpBtn").insertAdjacentHTML("beforebegin", `<button class="ib" id="setBtn" title="AI 设置（DeepSeek API 等）" style="font-size:15px">⚙</button>`);
+  $("#helpBtn").insertAdjacentHTML("beforebegin", `<button class="ib" id="setBtn" title="文本模型（本地 Qwen / DeepSeek）" style="font-size:var(--fs-heading)">⚙</button>`);
   $("#setBtn").onclick = openSettings;
   $("#settings").addEventListener("pointerdown", e => { if (e.target.id === "settings") $("#settings").classList.remove("on"); });
 }
