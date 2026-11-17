@@ -13,46 +13,60 @@ const CT_ACTIONS=[
   ["ungroup","取消编组","M3 8V4h4M17 4h4v4M21 16v4h-4M7 20H3v-4M8 8l8 8M16 8l-8 8"],
   ["download","批量下载","M12 3v12M7 10l5 5 5-5M4 17v4h16v-4"]
 ];
-function ctPositions(nodes,operation,sizeOf=size) {
+// Card-to-card spacing also leaves room for titles, version tabs and connectors.
+const CT_LAYOUT_GAP={x:180,y:140};
+function ctAvoidObstacles(positions,nodes,obstacles,sizeOf=size){
+  if(!positions.length || !obstacles.length)return positions;
+  const byId=new Map(nodes.map(n=>[n.id,n]));
+  const items=positions.map(p=>({...p,...sizeOf(byId.get(p.id))})),fixed=obstacles.map(n=>({...n,...sizeOf(n)}));
+  const y0=Math.min(...items.map(n=>n.y));let offset=0;
+  for(let pass=0;pass<fixed.length;pass++){
+    const hits=fixed.filter(o=>items.some(n=>n.x<o.x+o.w+CT_LAYOUT_GAP.x && n.x+n.w+CT_LAYOUT_GAP.x>o.x && n.y+offset<o.y+o.h+CT_LAYOUT_GAP.y && n.y+n.h+offset+CT_LAYOUT_GAP.y>o.y));
+    if(!hits.length)break;
+    offset=Math.max(offset,...hits.map(o=>o.y+o.h+CT_LAYOUT_GAP.y-y0));
+  }
+  return positions.map(p=>({...p,y:Math.round(p.y+offset)}));
+}
+function ctPositions(nodes,operation,sizeOf=size,obstacles=[]) {
   if(nodes.length<2)return [];
   const items=nodes.map(n=>({id:n.id,x:n.x,y:n.y,...sizeOf(n)}));
   const x0=Math.min(...items.map(n=>n.x)),y0=Math.min(...items.map(n=>n.y)),x1=Math.max(...items.map(n=>n.x+n.w)),y1=Math.max(...items.map(n=>n.y+n.h));
   if(operation==="distributeX" || operation==="distributeY") {
     if(items.length<3)return [];
-    const axis=operation==="distributeX" ? "x" : "y",dim=axis==="x" ? "w" : "h";items.sort((a,b)=>a[axis]-b[axis]);
-    const min=items[0][axis],max=items[items.length-1][axis]+items[items.length-1][dim],gap=(max-min-items.reduce((s,n)=>s+n[dim],0))/(items.length-1);
+    const axis=operation==="distributeX" ? "x" : "y",dim=axis==="x" ? "w" : "h";items.sort((a,b)=>a[axis]-b[axis] || a.id.localeCompare(b.id));
+    const min=items[0][axis],max=Math.max(...items.map(n=>n[axis]+n[dim])),gap=Math.max(CT_LAYOUT_GAP[axis],(max-min-items.reduce((s,n)=>s+n[dim],0))/(items.length-1));
     let cursor=min;for(const n of items){n[axis]=Math.round(cursor);cursor+=n[dim]+gap;}
-  } else for(const n of items) {
-    if(operation==="left")n.x=x0;else if(operation==="right")n.x=x1-n.w;else if(operation==="centerX")n.x=Math.round((x0+x1-n.w)/2);
-    else if(operation==="top")n.y=y0;else if(operation==="bottom")n.y=y1-n.h;else if(operation==="centerY")n.y=Math.round((y0+y1-n.h)/2);
+  } else {
+    const vertical=["left","right","centerX"].includes(operation),axis=vertical?"y":"x",dim=vertical?"h":"w";
+    items.sort((a,b)=>a[axis]-b[axis] || a[vertical?"x":"y"]-b[vertical?"x":"y"] || a.id.localeCompare(b.id));
+    let cursor=items[0][axis];
+    for(const n of items){
+      if(operation==="left")n.x=x0;else if(operation==="right")n.x=x1-n.w;else if(operation==="centerX")n.x=Math.round((x0+x1-n.w)/2);
+      else if(operation==="top")n.y=y0;else if(operation==="bottom")n.y=y1-n.h;else if(operation==="centerY")n.y=Math.round((y0+y1-n.h)/2);
+      n[axis]=Math.max(n[axis],cursor);cursor=n[axis]+n[dim]+CT_LAYOUT_GAP[axis];
+    }
   }
-  return items.map(({id,x,y})=>({id,x,y}));
+  return ctAvoidObstacles(items.map(({id,x,y})=>({id,x,y})),nodes,obstacles,sizeOf);
 }
 function ctSelected(){return [...sel].map(node).filter(Boolean);}
 const ctMedia=n=>n && (n.type==="image" || n.type==="video");
 function ctGridPositions(nodes,obstacles=[],sizeOf=size){
   if(nodes.length<2)return [];
   const items=nodes.map(n=>({id:n.id,x:n.x,y:n.y,...sizeOf(n)})).sort((a,b)=>a.y-b.y || a.x-b.x || a.id.localeCompare(b.id));
-  const columns=Math.ceil(Math.sqrt(items.length)),gapX=120,gapY=100;
+  const columns=Math.ceil(Math.sqrt(items.length)),gapX=CT_LAYOUT_GAP.x,gapY=CT_LAYOUT_GAP.y;
   const x0=Math.min(...items.map(n=>n.x)),y0=Math.min(...items.map(n=>n.y));
   const widths=Array.from({length:columns},(_,col)=>Math.max(...items.filter((_,i)=>i%columns===col).map(n=>n.w)));
   const lefts=widths.map((_,i)=>x0+widths.slice(0,i).reduce((sum,w)=>sum+w+gapX,0));
   let y=y0;
   for(let i=0;i<items.length;i+=columns){const row=items.slice(i,i+columns);row.forEach((n,col)=>{n.x=lefts[col];n.y=y;});y+=Math.max(...row.map(n=>n.h))+gapY;}
-  // Keep fixed nodes where they are; move the whole grid below any collision.
-  const fixed=obstacles.map(n=>({...n,...sizeOf(n)}));let offset=0;
-  for(let pass=0;pass<fixed.length;pass++){
-    const hits=fixed.filter(o=>items.some(n=>n.x<o.x+o.w+60 && n.x+n.w+60>o.x && n.y+offset<o.y+o.h+60 && n.y+n.h+offset+60>o.y));
-    if(!hits.length)break;
-    offset=Math.max(offset,...hits.map(o=>o.y+o.h+gapY-y0));
-  }
-  return items.map(({id,x,y})=>({id,x:Math.round(x),y:Math.round(y+offset)}));
+  return ctAvoidObstacles(items.map(({id,x,y})=>({id,x:Math.round(x),y:Math.round(y)})),nodes,obstacles,sizeOf);
 }
 function ctArrange(action,ids){
   const nodes=ids.map(node).filter(ctMedia);
   if(nodes.length<2)return toast("至少需要两个图片或视频节点");
   const targets=new Set(nodes.map(n=>n.id));
-  const positions=action==="grid" ? ctGridPositions(nodes,B.nodes.filter(n=>!targets.has(n.id))) : ctPositions(nodes,action);
+  const fixed=B.nodes.filter(n=>!targets.has(n.id));
+  const positions=action==="grid" ? ctGridPositions(nodes,fixed) : ctPositions(nodes,action,size,fixed);
   if(!positions.length)return toast("等距排列至少需要三个图片或视频节点");
   if(!positions.some(p=>{const n=node(p.id);return n.x!==p.x || n.y!==p.y;}))return toast("这些节点已经对齐");
   checkpoint();for(const p of positions){const n=node(p.id);n.x=p.x;n.y=p.y;render(n);}
@@ -61,11 +75,11 @@ function ctArrange(action,ids){
 function ctOpenArrangeMenu(x,y){
   closeMenus();const bid=boardId,selected=ctSelected().filter(ctMedia).map(n=>n.id),all=B.nodes.filter(ctMedia).map(n=>n.id);
   let m=$("#arrangeMenu");if(!m){m=document.createElement("div");m.id="arrangeMenu";m.className="menu";document.body.append(m);}
-  m.innerHTML=`<div class="mt">整理对齐</div><label class="ct-arrange-scope">范围<select aria-label="整理范围"><option value="selected">选中的图片与视频（${selected.length}）</option><option value="all">全部图片与视频（${all.length}）</option></select></label><button data-layout="grid">${ico("assets")}网格整理</button><div class="sep"></div>`+
+  m.innerHTML=`<div class="mt">整理对齐</div><label class="ct-arrange-scope">范围<select aria-label="整理范围"><option value="selected">选中的图片与视频（${selected.length}）</option><option value="all">全部图片与视频（${all.length}）</option></select></label><button data-layout="grid">${ico("assets")}网格整理（自动留出间距）</button><div class="sep"></div>`+
     CT_ACTIONS.slice(0,8).map(([action,label,path])=>`<button data-layout="${action}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg>${label}</button>`).join("")+`<div class="ct-arrange-note">只调整位置，支持撤销</div>`;
   const select=$("select",m);select.value=selected.length>=2 ? "selected" : "all";
   const chosen=()=>select.value==="selected" ? selected : all;
-  const update=()=>{$$("[data-layout]",m).forEach(b=>{const min=b.dataset.layout.startsWith("distribute")?3:2;b.disabled=chosen().length<min;b.title=b.disabled?`至少需要 ${min} 个图片或视频节点`:"";});$(".ct-arrange-note",m).textContent=chosen().length<2?"至少需要两个图片或视频节点":"只调整位置，支持撤销";};
+  const update=()=>{$$("[data-layout]",m).forEach(b=>{const min=b.dataset.layout.startsWith("distribute")?3:2;b.disabled=chosen().length<min;b.title=b.disabled?`至少需要 ${min} 个图片或视频节点`:"";});$(".ct-arrange-note",m).textContent=chosen().length<2?"至少需要两个图片或视频节点":"对齐时自动排开，支持撤销";};
   select.onchange=update;update();
   $$("[data-layout]",m).forEach(b=>b.onclick=()=>{const ids=chosen();closeMenus();if(boardId===bid)ctArrange(b.dataset.layout,ids);});
   m.classList.add("on");m.style.left=Math.max(8,Math.min(x,innerWidth-m.offsetWidth-8))+"px";m.style.top=Math.max(8,Math.min(y,innerHeight-m.offsetHeight-8))+"px";
@@ -74,7 +88,7 @@ function ctGroupBounds(nodes){const rects=nodes.map(n=>({...n,...size(n)}));retu
 function ctGroup(){const nodes=ctSelected();if(nodes.length<2)return toast("至少选择两个节点");checkpoint();const ids=nodes.map(n=>n.id),chosen=new Set(ids);B.groups=(B.groups||[]).map(g=>({...g,nodes:g.nodes.filter(id=>!chosen.has(id))})).filter(g=>g.nodes.length);B.groups.push({id:"g"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:"分组 "+((B.groups||[]).length+1),nodes:ids});drawEdges();save();toast("已编组，拖动分组标题可整体移动");}
 function ctUngroup(ids=sel){const chosen=new Set(ids),groups=(B.groups||[]).filter(g=>g.nodes.some(id=>chosen.has(id)));if(!groups.length)return toast("选中的节点没有编组");checkpoint();const remove=new Set(groups.map(g=>g.id));B.groups=B.groups.filter(g=>!remove.has(g.id));ctRenderGroups();save();toast("已取消编组");}
 async function ctDownload(){const refs=[...new Set(ctSelected().map(curV).filter(Boolean).map(v=>v.ref))];if(!refs.length)return toast("选中节点还没有可下载的素材");if(CT_GROUPS.downloading)return;CT_GROUPS.downloading=true;try{await flushSave();toast("正在打包 "+refs.length+" 个素材…",60000);const r=await fetch("/api/assets/export",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({refs})});if(!r.ok){const p=await r.json();throw new Error(p.error || "打包失败");}const blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=(B.name || "OneShot")+"-素材.zip";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast("已打包 "+refs.length+" 个素材");}catch(err){toast(err.message,5000);}finally{CT_GROUPS.downloading=false;}}
-function ctAction(action){if(action==="group")return ctGroup();if(action==="ungroup")return ctUngroup();if(action==="download")return ctDownload();const positions=ctPositions(ctSelected(),action);if(!positions.length)return toast("等距排列至少需要三个节点");checkpoint();for(const p of positions){const n=node(p.id);Object.assign(n,{x:p.x,y:p.y});render(n);}drawEdges();drawMini();placeOverlays();save();}
+function ctAction(action){if(action==="group")return ctGroup();if(action==="ungroup")return ctUngroup();if(action==="download")return ctDownload();const chosen=ctSelected(),targets=new Set(chosen.map(n=>n.id)),positions=ctPositions(chosen,action,size,B.nodes.filter(n=>!targets.has(n.id)));if(!positions.length)return toast("等距排列至少需要三个节点");checkpoint();for(const p of positions){const n=node(p.id);Object.assign(n,{x:p.x,y:p.y});render(n);}drawEdges();drawMini();placeOverlays();save();}
 function ctRenderSelectionTools(){const box=$("#selectionTools");if(!box || !B)return;const nodes=ctSelected();box.classList.toggle("on",nodes.length>1);if(nodes.length<2)return;
   const key=nodes.map(n=>n.id).sort().join(",");if(box.dataset.key!==key){box.dataset.key=key;box.innerHTML=CT_ACTIONS.map(([action,label,path])=>`<button data-action="${action}" aria-label="${label}" data-tip="${label}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg></button>`).join("");$$("button",box).forEach(button=>{button.onclick=()=>{hideNodeToolTip();ctAction(button.dataset.action);};button.onmouseenter=button.onfocus=()=>showNodeToolTip(button);button.onmouseleave=button.onblur=hideNodeToolTip;});}ctPlaceSelectionTools();}
 function ctPlaceSelectionTools(){const box=$("#selectionTools");if(!box?.classList.contains("on"))return;const rects=ctSelected().map(n=>$(".card",els.get(n.id))?.getBoundingClientRect()).filter(Boolean);if(!rects.length)return;const center=(Math.min(...rects.map(r=>r.left))+Math.max(...rects.map(r=>r.right)))/2;box.style.left=Math.max(8,Math.min(innerWidth-box.offsetWidth-8,center-box.offsetWidth/2))+"px";box.style.top=Math.max(64,Math.min(innerHeight-50,Math.min(...rects.map(r=>r.top))-58))+"px";}
