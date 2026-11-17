@@ -83,7 +83,7 @@ function ewDrawEditor() {
   E.view={scale,canvasTx:tx,canvasTy:ty,tx:tx+(split ? (w+32)*scale : 0)+pads.left*scale,ty:ty+pads.top*scale,totalW,h};
   const c=canvas.getContext("2d");c.save();c.translate(tx,ty);c.scale(scale,scale);
   if(split) { c.drawImage(E.original,0,0,w,h); c.translate(w+32,0); }
-  if(E.mode==="outpaint" && !E.compare) {c.fillStyle="#4fd1c529";c.fillRect(0,0,w,h);}
+  if(E.mode==="outpaint" && !E.compare) {c.fillStyle="#d6d6dc29";c.fillRect(0,0,w,h);}
   c.translate(pads.left,pads.top);
   if(E.compare) c.drawImage(im,0,0);
   else {
@@ -93,10 +93,10 @@ function ewDrawEditor() {
     if(E.compareMode==="off") {
       if(E.mode==="region" && E.mask) { const tint=document.createElement("canvas");tint.width=Math.max(1,Math.round(im.naturalWidth*E.fitScale));tint.height=Math.max(1,Math.round(im.naturalHeight*E.fitScale));const tc=tint.getContext("2d");tc.drawImage(E.mask,0,0,tint.width,tint.height);tc.globalCompositeOperation="source-in";tc.fillStyle="#ef4acb77";tc.fillRect(0,0,tint.width,tint.height);c.drawImage(tint,0,0,im.naturalWidth,im.naturalHeight); }
       const rect=E.drawing?.tool==="rect" ? ieRect(E.drawing.points) : E.mode==="local" ? E.crop : null;
-      if(rect) {c.strokeStyle="#88e7d8";c.lineWidth=2/scale;c.setLineDash([6/scale,4/scale]);c.strokeRect(rect.x,rect.y,rect.w,rect.h);c.setLineDash([]);}
+      if(rect) {c.strokeStyle="#ededf0";c.lineWidth=2/scale;c.setLineDash([6/scale,4/scale]);c.strokeRect(rect.x,rect.y,rect.w,rect.h);c.setLineDash([]);}
       const active=E.mode==="layers" ? E.layers.find(x=>x.id===E.activeLayer && x.visible!==false) : null;
       if(active) {c.strokeStyle="#5b8cff";c.lineWidth=2/scale;c.strokeRect(active.x,active.y,active.w,active.h);}
-      if(E.tool==="smart" && E.mode==="region") for(const p of E.samPoints) {c.fillStyle=p.label ? "#3ccf8e" : "#ff5d5d";c.beginPath();c.arc(p.x,p.y,4/scale,0,Math.PI*2);c.fill();}
+      if(E.tool==="smart" && E.mode==="region") for(const p of E.samPoints) {c.fillStyle=p.label ? "#d6d6dc" : "#ff5d5d";c.beginPath();c.arc(p.x,p.y,4/scale,0,Math.PI*2);c.fill();}
     }
   }
   c.restore();

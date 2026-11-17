@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="/static/type.css?v=1">
 <style>
 :root { --bg: #0b0b0c; --panel: #141417; --card: #18181b; --line: #2a2a2e; --line2: #3a3a40; --text: #ededf0; --dim: #8b8b93; --faint: #5d5d65;
-  --green: #3ccf8e; --red: #ff5d5d; --yellow: #ffcf5a; --blue: #5b8cff; --accent: linear-gradient(135deg, #7c6cff, #4fb3ff); }
+  --success: #d6d6dc; --red: #ff5d5d; --yellow: #ffcf5a; --blue: #5b8cff; --accent: linear-gradient(135deg, #7c6cff, #4fb3ff); }
 * { box-sizing: border-box; }
 html { color-scheme: dark; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);  }
@@ -38,7 +38,7 @@ h2 { font-size: var(--fs-heading); margin: 26px 0 10px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
 .grid { display: grid; gap: 14px; }
 .tag { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 9px; font-size: var(--fs-caption); background: #222226; color: #cfcfd5; }
-.tag.ok { background: #16301f; color: var(--green); } .tag.bad { background: #351a1a; color: #ff8a8a; } .tag.run { background: #33301a; color: var(--yellow); }
+.tag.ok { background: #242429; color: var(--success); } .tag.bad { background: #351a1a; color: #ff8a8a; } .tag.run { background: #33301a; color: var(--yellow); }
 .tag.loc { background: #1b2a3a; color: #8fc3ff; }
 .dim { color: var(--dim); } .faint { color: var(--faint); font-size: var(--fs-small); }
 table { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
@@ -219,7 +219,7 @@ async function pgTasks() {
       <span class="grow"></span><button class="btn" id="rf">刷新</button></div>
     <div class="grid stats" style="margin-bottom:16px">
       <div class="card"><div class="dim">任务</div><div class="big">${n}</div></div>
-      <div class="card"><div class="dim">成功 / 失败</div><div class="big"><span style="color:var(--green)">${ok}</span> / <span style="color:#ff8a8a">${bad}</span></div></div>
+      <div class="card"><div class="dim">成功 / 失败</div><div class="big"><span style="color:var(--success)">${ok}</span> / <span style="color:#ff8a8a">${bad}</span></div></div>
       <div class="card"><div class="dim">按服务</div>${r.totals.slice(0, 5).map(t => `<div class="row" style="font-size:var(--fs-small)"><span>${esc(t.provider)} · ${CAPN[t.capability] || t.capability}</span><span class="grow"></span><span class="dim">${t.n} 次 · ${fmtS(t.secs)}</span></div>`).join("") || `<div class="faint">—</div>`}</div>
       <div class="card"><div class="dim">第三方费用（已记录的）</div><div class="big">${cost ? "¥" + cost.toFixed(2) : "—"}</div><div class="faint">本地 GPU 不计费</div></div>
     </div>
@@ -252,7 +252,7 @@ async function pgServices() {
   const provCards = SV.providers.map(p => `<div class="card prov"><div><b>${esc(p.name)}</b> ${p.group === "local" ? `<span class="tag loc">本地</span>` : ""}${!p.enabled ? `<span class="tag bad">已停用</span>` : ""}
       <div class="faint">${esc(p.label || "")}${p.config.base_url ? " · " + esc(p.config.base_url) : ""}${p.config.region ? " · " + esc(p.config.region) : ""}${Object.entries(p.secrets).map(([k, v]) => ` · ${k}: ${esc(v)}`).join("")}</div>
       <div class="caps2">${p.caps.map(c => `<span class="tag">${CAPN[c]}</span>`).join("")}</div></div>
-      <div class="row">${!p.enabled || !p.caps.includes("text") ? "" : (SV.routes.text || [])[0]?.provider_id === p.id ? `<span class="tag" style="background:#173d2a;color:#7ee2a8">✓ 正在用作文本模型</span>` : `<button class="btn sm pri" data-uselm="${p.id}">设为文本模型</button>`}
+      <div class="row">${!p.enabled || !p.caps.includes("text") ? "" : (SV.routes.text || [])[0]?.provider_id === p.id ? `<span class="tag" style="background:#242429;color:#d6d6dc">✓ 正在用作文本模型</span>` : `<button class="btn sm pri" data-uselm="${p.id}">设为文本模型</button>`}
       ${p.group === "local" ? `<span class="faint">在「本地部署」里管理</span>` : `<button class="btn sm" data-test="${p.id}">测试</button><button class="btn sm" data-edit="${p.id}">编辑</button>`}</div></div>`).join("");
   $("#main").innerHTML = `<h1>模型与服务</h1><p class="lead">每项能力用哪个模型：本地 4090，或者第三方 API。画布上的每个节点也可以单独选。</p>
     <h2>能力路由</h2><div class="grid caps">${capCards}</div>

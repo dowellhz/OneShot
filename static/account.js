@@ -27,7 +27,7 @@ function provPill(n, pill) {
   const def = list.find(x => x.default), cur = nodeProvider(n);
   const opts = { "": `默认：${def ? def.name : "本地"}` };
   list.forEach(x => opts[x.id] = `${x.name}${x.model ? " · " + x.model : ""}${x.local ? "（本地，免费）" : ""}`);
-  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "linear-gradient(135deg,#ffb36b,#ff6bd5)" : "linear-gradient(135deg,#5bc8ff,#3ccf8e)"}"></span>${esc(cur ? cur.name : "服务")}${ico("down")}`, "model");
+  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "linear-gradient(135deg,#ffb36b,#ff6bd5)" : "linear-gradient(135deg,#aab4c8,#d6d6dc)"}"></span>${esc(cur ? cur.name : "服务")}${ico("down")}`, "model");
 }
 
 function initAccount() {

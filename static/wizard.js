@@ -399,7 +399,7 @@ function initWizard() {
 #wzSteps button { display: flex; align-items: center; gap: 6px; border: none; background: none; color: var(--dim); padding: 6px 8px; border-radius: 9px; font-size: var(--fs-body); }
 #wzSteps button b { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line2); display: inline-flex; align-items: center; justify-content: center; font-size: var(--fs-caption); }
 #wzSteps button.on { color: #fff; } #wzSteps button.on b { background: #fff; color: #000; border-color: #fff; }
-#wzSteps button.done b { background: #2b3a31; border-color: #3ccf8e; color: #3ccf8e; }
+#wzSteps button.done b { background: #2b2b30; border-color: #d6d6dc; color: #d6d6dc; }
 #wzSteps button:disabled { opacity: .4; cursor: default; }
 #wzBody { flex: 1; overflow-y: auto; padding: 26px 18px 40px; }
 #wzBody > div { max-width: 1060px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
