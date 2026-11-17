@@ -1,0 +1,96 @@
+#imageEditor { position:fixed; z-index:110; display:none; flex-direction:column; background:var(--bg); color:var(--text); font:400 var(--fs-body)/var(--lh-body) var(--font); border:1px solid var(--line2); border-radius:16px; overflow:hidden; box-shadow:0 24px 80px #0009,0 0 0 1px #ffffff06; container:image-editor / inline-size; }
+#imageEditor.on { display:flex; }
+#imageEditor.maximized:not(.collapsed) { inset:8px !important; width:auto !important; height:auto !important; border-radius:12px; }
+#imageEditor.collapsed { border-radius:12px; }
+#imageEditor.moving, #imageEditor.moving * { user-select:none; }
+#imageEditor.moving .ie-top { cursor:grabbing; }
+#imageEditor button, #imageEditor select, #imageEditor input, #imageEditor textarea { font:inherit; color:inherit; }
+#imageEditor button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; border:1px solid var(--line); border-radius:9px; background:var(--card-hi); padding:6px 12px; color:var(--dim); font-size:var(--fs-small); cursor:pointer; transition:background .15s, border-color .15s, color .15s; }
+#imageEditor button:hover { background:#26262b; border-color:var(--line2); color:var(--text); }
+#imageEditor button:disabled { opacity:.4; cursor:default; }
+#imageEditor button.on { border-color:var(--line2); color:var(--text); background:#2e2e34; }
+#imageEditor :is(button, select, input, textarea):focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+#imageEditor .ie-top { display:flex; align-items:center; gap:8px; flex-shrink:0; min-height:56px; padding:10px 14px; border-bottom:1px solid var(--line); background:var(--panel); cursor:grab; touch-action:none; user-select:none; }
+#imageEditor.maximized:not(.collapsed) .ie-top { cursor:default; }
+#imageEditor .ie-top button { flex:none; padding:6px 10px; }
+#imageEditor.collapsed .ie-top .ie-name, #imageEditor.collapsed .ie-top .ie-meta { display:none; }
+#imageEditor .ie-top strong { font-size:var(--fs-heading); font-weight:600; white-space:nowrap; }
+#imageEditor .ie-top .ie-name { color:var(--dim); font-size:var(--fs-small); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:24vw; }
+#imageEditor .ie-spacer { flex:1; }
+#imageEditor .ie-statusbar { display:flex; align-items:center; gap:20px; flex-shrink:0; min-height:58px; padding:10px 18px; border-bottom:1px solid var(--line); background:var(--card); }
+#imageEditor .ie-status { flex:1; min-width:0; color:var(--text); font-size:var(--fs-small); line-height:var(--lh-small); overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+#imageEditor .ie-statusbar.error .ie-status { color:var(--red); }
+#imageEditor #ieCancel { flex:none; }
+#imageEditor .ie-progress { height:3px; width:min(420px,100%); margin-top:8px; border-radius:3px; overflow:hidden; background:var(--line); }
+#imageEditor .ie-progress i { display:block; height:100%; background:var(--accent); border-radius:inherit; transition:width .4s; }
+#imageEditor .ie-progress.indeterminate i { width:32%; animation:ie-progress 1.6s ease-in-out infinite; }
+@keyframes ie-progress { from { transform:translateX(-110%); } to { transform:translateX(420%); } }
+#imageEditor .ie-layout { display:flex; flex:1; min-height:0; }
+#imageEditor .ie-main { display:flex; flex:1; flex-direction:column; min-width:0; }
+#imageEditor .ie-stage { flex:1; min-height:0; position:relative; display:flex; justify-content:center; align-items:center; padding:24px; overflow:hidden; background:repeating-conic-gradient(var(--card) 0% 25%,var(--card-hi) 0% 50%) 50% / 20px 20px; }
+#imageEditor canvas.ie-canvas { max-width:100%; max-height:100%; object-fit:contain; touch-action:none; cursor:crosshair; box-shadow:0 10px 40px #0006; }
+#imageEditor .ie-stage-note { position:absolute; bottom:10px; left:16px; color:var(--dim); background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:4px 8px; font-size:var(--fs-caption); pointer-events:none; }
+#imageEditor .ie-side { width:310px; flex-shrink:0; border-left:1px solid var(--line); padding:18px; overflow:auto; background:var(--panel); }
+#imageEditor .ie-group-title { margin-bottom:10px; color:var(--dim); font-size:var(--fs-caption); font-weight:500; }
+#imageEditor .ie-tabs { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:4px; margin-bottom:18px; border:1px solid var(--line); border-radius:12px; background:var(--card); }
+#imageEditor .ie-tabs button { border-color:transparent; background:transparent; }
+#imageEditor .ie-tabs button.on { border-color:var(--line2); background:#2e2e34; }
+#imageEditor .ie-section { display:none; }
+#imageEditor .ie-section.on { display:block; }
+#imageEditor .ie-label { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:14px 0 8px; color:var(--dim); font-size:var(--fs-small); }
+#imageEditor output { color:var(--text); font-variant-numeric:tabular-nums; }
+#imageEditor input[type=range] { width:100%; accent-color:var(--accent); }
+#imageEditor select, #imageEditor textarea, #imageEditor input[type=number] { background:var(--bg); border:1px solid var(--line); border-radius:9px; padding:8px 10px; box-sizing:border-box; width:100%; font-size:var(--fs-small); }
+#imageEditor select, #imageEditor input[type=number] { min-height:34px; }
+#imageEditor textarea { resize:vertical; min-height:100px; line-height:1.6; }
+#imageEditor textarea::placeholder { color:var(--faint); }
+#imageEditor .ie-row { display:flex; gap:6px; margin:10px 0; }
+#imageEditor .ie-row button { flex:1; padding:6px 4px; }
+#imageEditor .ie-note { color:var(--faint); font-size:var(--fs-small); line-height:var(--lh-body); margin:10px 0 14px; }
+#imageEditor #ieAI { border-top:1px solid var(--line); margin-top:18px; padding-top:16px; }
+#imageEditor button.ie-primary { width:100%; min-height:36px; margin-top:16px; color:var(--bg); background:var(--accent); border-color:var(--accent); font-weight:600; }
+#imageEditor button.ie-primary:hover { background:#dcdcdc; border-color:#dcdcdc; }
+#imageEditor .ie-padding { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+#imageEditor .ie-padding label { color:var(--dim); font-size:var(--fs-small); }
+#imageEditor .ie-padding input { margin-top:6px; font-variant-numeric:tabular-nums; }
+#imageEditor .ie-history { display:flex; gap:8px; padding:12px 16px; min-height:98px; flex-shrink:0; overflow-x:auto; border-top:1px solid var(--line); background:var(--panel); }
+#imageEditor .ie-history button { display:block; flex-shrink:0; width:84px; padding:4px; text-align:left; border-radius:9px; }
+#imageEditor .ie-history button.on { border-color:var(--text); box-shadow:0 0 0 1px #ffffff18; }
+#imageEditor .ie-history img { width:74px; height:50px; object-fit:contain; display:block; border-radius:5px; background:var(--bg); }
+#imageEditor .ie-history small { display:block; margin:4px 2px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--fs-caption); line-height:var(--lh-caption); }
+#imageEditor .ie-meta { color:var(--faint); font-size:var(--fs-small); font-variant-numeric:tabular-nums; white-space:nowrap; }
+#imageEditor button.ie-resize { position:absolute; right:0; bottom:0; z-index:3; width:24px; height:24px; min-height:0; padding:0; border:0; border-radius:0; background:transparent; cursor:nwse-resize; touch-action:none; }
+#imageEditor button.ie-resize::after { content:""; width:10px; height:10px; border-right:3px double var(--dim); border-bottom:3px double var(--dim); }
+#imageEditor button.ie-resize:hover::after { border-color:var(--text); }
+#imageEditor:is(.maximized,.collapsed) .ie-resize { display:none; }
+#imageEditor [hidden] { display:none !important; }
+@media(prefers-reduced-motion:reduce) { #imageEditor .ie-progress.indeterminate i { animation:none; } }
+@container image-editor (max-width:820px) {
+  #imageEditor .ie-layout { flex-direction:column; overflow:auto; }
+  #imageEditor .ie-main { flex:none; height:clamp(240px,42vh,380px); min-height:240px; }
+  #imageEditor .ie-side { width:auto; flex:none; border-left:0; border-top:1px solid var(--line); overflow:visible; }
+  #imageEditor .ie-stage { padding:16px; }
+  #imageEditor .ie-top { padding:10px 12px; gap:8px; flex-wrap:wrap; }
+  #imageEditor .ie-top .ie-name, #imageEditor .ie-top .ie-meta { display:none; }
+  #imageEditor .ie-statusbar { padding:10px 12px; gap:12px; }
+}
+#imageEditor .ie-viewtools { display:flex; align-items:center; flex-wrap:wrap; gap:4px; flex-shrink:0; padding:8px 12px; border-bottom:1px solid var(--line); background:var(--card); }
+#imageEditor .ie-viewtools button { min-height:28px; padding:3px 8px; }
+#imageEditor .ie-viewtools select { width:auto; max-width:130px; min-height:28px; padding:3px 6px; }
+#imageEditor #ieZoomValue { min-width:44px; text-align:center; font-size:var(--fs-small); color:var(--dim); }
+#imageEditor #ieWipe { width:110px; }
+#imageEditor #ieBrushCursor { position:absolute; transform:translate(-50%,-50%); border:1px solid #fff; border-radius:50%; box-shadow:0 0 0 1px #000a; pointer-events:none; z-index:2; }
+#imageEditor .ie-canvas.pan { cursor:grab; }
+#imageEditor .ie-history-actions { display:flex; align-items:center; gap:6px; padding:6px 12px; flex-shrink:0; border-top:1px solid var(--line); background:var(--panel); }
+#imageEditor .ie-history-actions button { min-height:28px; padding:3px 8px; }
+#imageEditor #ieDraftState { color:var(--faint); font-size:var(--fs-caption); }
+#imageEditor .ie-history { min-height:90px; padding-top:8px; }
+#imageEditor .ie-layer { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:5px; margin:5px 0; background:var(--card); }
+#imageEditor .ie-layer.on { border-color:var(--line2); background:var(--card-hi); }
+#imageEditor .ie-layer img { width:34px; height:30px; object-fit:contain; background:repeating-conic-gradient(#222 0% 25%,#333 0% 50%) 50% / 10px 10px; }
+#imageEditor .ie-layer button { flex:1; min-width:0; justify-content:flex-start; border:0; background:none; padding:3px; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
+#imageEditor .ie-layer input { width:auto; }
+#imageEditor #ieDock { width:66px; min-height:34px; padding:4px; flex:none; }
+#imageEditor.docked .ie-resize { display:none; }
+#imageEditor .ie-top { flex-wrap:wrap; }
+#imageEditor .ie-tabs button:last-child { grid-column:1 / -1; }

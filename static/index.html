@@ -102,10 +102,14 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 /* floating toolbar above the selected node */
 #ntools { position: fixed; z-index: 15; display: none; gap: 2px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.45); }
 #ntools.on { display: flex; }
-#ntools button { display: flex; align-items: center; gap: 5px; border: none; background: none; padding: 5px 8px; border-radius: 8px; color: #cfcfd5; font-size: var(--fs-small); white-space: nowrap; }
+#ntools button { display: flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border: none; background: none; padding: 0; border-radius: 8px; color: #cfcfd5; font-size: var(--fs-small); }
 #ntools button:hover { background: rgba(255,255,255,.08); color: #fff; }
+#ntools button:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; background: rgba(255,255,255,.08); color: #fff; }
 #ntools .sep { width: 1px; background: var(--line); margin: 4px 2px; }
 #ntools .pg { color: var(--dim); font-size: var(--fs-small); padding: 0 2px; display: flex; align-items: center; }
+#nodeToolTip { position: fixed; z-index: 120; max-width: min(300px, calc(100vw - 16px)); padding: 5px 9px; border: 1px solid var(--line2); border-radius: 7px; background: var(--card-hi); color: var(--text); box-shadow: 0 4px 16px #0006; font-size: var(--fs-small); line-height: var(--lh-small); pointer-events: none; overflow-wrap: anywhere; }
+#nodeToolTip[hidden] { display: none; }
+@media(max-width:480px) { #ntools { gap: 0; } #ntools button { width: 30px; height: 32px; } }
 
 /* prompt panel under the selected node */
 #pp { position: fixed; z-index: 16; width: 560px; display: none; flex-direction: column; gap: 8px; padding: 10px 10px 8px; background: var(--panel); border: 1px solid var(--line);
@@ -277,6 +281,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <svg width="0" height="0" style="position:absolute">
   <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 6h14M9 6v13M15 6v13M7 19h4M13 19h4"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m20 16-4.5-4.5L7 20"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5M14.5 5.5l4 4M10 18l-4 1 1-4L17 5a2.8 2.8 0 0 1 4 4Z"/></symbol>
   <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="5.5" width="13.5" height="13" rx="3"/><path d="m16.5 10.5 4.5-2.5v8l-4.5-2.5"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4.5 14v3.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V14"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
@@ -386,7 +391,8 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
   <button data-add="upload"><span class="sw" style="background:#222;color:#ccc"><svg class="i"><use href="#i-upload"/></svg></span>上传图片</button>
 </div>
 
-<div id="ntools"></div>
+<div id="ntools" role="toolbar" aria-label="节点操作"></div>
+<div id="nodeToolTip" role="tooltip" hidden></div>
 <div id="pp">
   <div class="pgrip" title="按住拖动面板；双击回到节点下方"><svg class="i"><use href="#i-grip"/></svg><button class="rs" title="回到节点下方">↺ 跟随节点</button></div>
   <div class="phead"><div class="refs" id="refs"></div><div class="seg" id="pmode"></div></div>
@@ -418,6 +424,16 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <div id="toast"></div>
 <input type="file" id="file" accept="image/*,video/*" multiple hidden>
 
+<link rel="stylesheet" href="/static/image-editor.css?v=4">
+<script src="/static/image-editor.js?v=5"></script>
+<script src="/static/editor-workspace.js?v=2"></script>
+<script src="/static/canvas-tools.js?v=1"></script>
+<link rel="stylesheet" href="/static/agent-chat.css?v=2">
+<script src="/static/vendor/marked.js?v=18.2.1"></script>
+<script src="/static/vendor/purify.min.js?v=3.4.18"></script>
+<script src="/static/agent-markdown.js?v=1"></script>
+<script src="/static/agent-chat.js?v=3"></script>
+<script src="/static/agent-editing.js?v=1"></script>
 <script src="/static/tools.js?v=5t"></script>
 <script src="/static/film.js?v=4t"></script>
 <script src="/static/wizard.js?v=6t"></script>
@@ -440,13 +456,13 @@ const els = new Map();
 let sel = new Set();
 let selEdge = null;
 
-function emptyBoard(name = "我的画布") { return { name, nodes: [], edges: [], view: { x: 0, y: 0, k: 1 }, seq: 1 }; }
+function emptyBoard(name = "我的画布") { return { name, nodes: [], edges: [], groups: [], view: { x: 0, y: 0, k: 1 }, seq: 1 }; }
 function toast(m, ms = 2400) { const t = $("#toast"); t.textContent = m; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), ms); }
 
 // ================================================================= persistence & history
 let saveT = null, savePending = null;
 // a save belongs to the board it was made on, even if the user switches boards before it is sent
-function save() { clearTimeout(saveT); savePending = { id: boardId, b: B }; saveT = setTimeout(flushSave, 500); schedulePrewarm(); }
+function save() { if (typeof acGuardSave === "function" && acGuardSave()) return; clearTimeout(saveT); savePending = { id: boardId, b: B }; saveT = setTimeout(flushSave, 500); schedulePrewarm(); }
 let prewarmT = null, prewarming = false;
 const prewarmed = new Set();
 function schedulePrewarm(ms = 5000) { clearTimeout(prewarmT); prewarmT = setTimeout(prewarm, ms); }
@@ -474,8 +490,9 @@ async function sendSave(p, keepalive) {
   const body = JSON.stringify(p.b, (k, v) => k === "st" ? undefined : v);   // live job status is not board data
   try {
     const r = await fetch("/api/board/" + p.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body, keepalive: !!keepalive && body.length < 60000 });
-    if (r.ok) { const j = await r.json().catch(() => ({})); if (j.rev != null && p.b === B) B.rev = j.rev; return; }
+    if (r.ok) { const j = await r.json().catch(() => ({})); if (j.rev != null && p.b === B) B.rev = j.rev; if (typeof acRememberBoard === "function") acRememberBoard(p.id, {...JSON.parse(body),rev:j.rev}); return; }
     if (r.status === 409 && !keepalive) {
+      if (typeof acRecoverSave === "function" && await acRecoverSave(p)) return;
       if (p.id === boardId) { toast("画布已在别处更新（另一个窗口或后台修改），已载入最新版本", 5000); setTimeout(() => openBoard(boardId), 0); }
       return;
     }
@@ -484,11 +501,11 @@ async function sendSave(p, keepalive) {
 }
 addEventListener("pagehide", () => flushSave(true));
 const undoStack = [], redoStack = [];
-function snap() { return JSON.stringify({ nodes: B.nodes.map(n => ({ ...n, job: null })), edges: B.edges, seq: B.seq }); }
+function snap() { return JSON.stringify({ nodes: B.nodes.map(n => ({ ...n, job: null })), edges: B.edges, groups: B.groups || [], seq: B.seq }); }
 function checkpoint() { undoStack.push(snap()); if (undoStack.length > 80) undoStack.shift(); redoStack.length = 0; }
 function restore(s) {
   const o = JSON.parse(s), jobs = new Map(B.nodes.filter(n => n.job).map(n => [n.id, n.job]));
-  B.nodes = o.nodes; B.edges = o.edges; B.seq = Math.max(B.seq, o.seq);
+  B.nodes = o.nodes; B.edges = o.edges; B.groups = o.groups || []; B.seq = Math.max(B.seq, o.seq);
   B.nodes.forEach(n => { if (jobs.has(n.id)) n.job = jobs.get(n.id); });
   rebuild(); save();
 }
@@ -656,6 +673,7 @@ function render(n) {
   $(".meta", el).textContent = meta;
   el.classList.toggle("sel", sel.has(n.id));
   renderJob(n);
+  if(n.agent_error)showErr(n,n.agent_error);
 }
 // put several videos in the generation queue, in name order (视频 2 before 视频 10); each one is sent like a click on 生成
 let queueing = false;
@@ -795,6 +813,7 @@ function port(n, side) {
 }
 function curve(a, b) { const dx = Math.max(50, Math.abs(b.x - a.x) * 0.45); return `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`; }
 function drawEdges() {
+  ctRenderGroups();
   drawMini();
   $$("g", svg).forEach(g => g.remove());
   $$(".elabel", world).forEach(x => x.remove());
@@ -827,6 +846,8 @@ function updateSel() {
   showPanel(); placeOverlays(); drawMini();
 }
 function placeOverlays() {
+  hideNodeToolTip();
+  ctPlaceSelectionTools();
   const tools = $("#ntools"), pp = $("#pp");
   if (sel.size !== 1) { tools.classList.remove("on"); pp.classList.remove("on"); return; }
   const n = node([...sel][0]); if (!n) return;
@@ -863,23 +884,43 @@ $("#pp .pgrip").addEventListener("pointerdown", e => {
 });
 $("#pp .pgrip").addEventListener("dblclick", () => setPPPin(null));
 $("#pp .pgrip .rs").onclick = e => { e.stopPropagation(); setPPPin(null); };
+function hideNodeToolTip() {
+  const tip = $("#nodeToolTip"); tip.hidden = true;
+  tip._button?.removeAttribute("aria-describedby"); tip._button = null;
+}
+function showNodeToolTip(button) {
+  hideNodeToolTip();
+  const tip = $("#nodeToolTip"), r = button.getBoundingClientRect();
+  tip.textContent = button.dataset.tip; tip.hidden = false; tip._button = button;
+  button.setAttribute("aria-describedby", "nodeToolTip");
+  tip.style.left = Math.max(8, Math.min(innerWidth - tip.offsetWidth - 8, r.left + (r.width - tip.offsetWidth) / 2)) + "px";
+  const below = r.bottom + 8;
+  tip.style.top = Math.max(8, below + tip.offsetHeight <= innerHeight - 8 ? below : r.top - tip.offsetHeight - 8) + "px";
+}
 function showPanel() {
+  hideNodeToolTip();
+  ctRenderSelectionTools();
   const tools = $("#ntools");
   if (sel.size !== 1) { placeOverlays(); return; }
   const n = node([...sel][0]); if (!n) return;
   const v = curV(n);
   // ---- toolbar
   const b = [];
-  if (n.versions.length > 1) b.push(`<button data-a="prev">${ico("left")}</button><span class="pg">${n.cur + 1}/${n.versions.length}</span><button data-a="next">${ico("right")}</button><span class="sep"></span>`);
+  const tool = (action, icon, label, hint = label) => `<button type="button" data-a="${action}" aria-label="${esc(label)}" data-tip="${esc(hint)}">${ico(icon)}</button>`;
+  if (n.versions.length > 1) b.push(tool("prev", "left", "上一个版本") + `<span class="pg">${n.cur + 1}/${n.versions.length}</span>` + tool("next", "right", "下一个版本") + `<span class="sep"></span>`);
   if (v) {
-    if (n.type === "image") b.push(`<button data-a="tovideo">${ico("video")}生成视频</button><button data-a="hd" title="高清重绘">高清</button><button data-a="describe" title="Qwen 看图反推提示词">反推</button>`);
-    if (n.type === "video" && n.data.film) b.push(`<button data-a="film">${ico("scissors")}编辑成片</button>`);
-    else if (n.type === "video") b.push(`<button data-a="cont">${ico("next")}续拍</button><button data-a="frame">${ico("image")}截取末帧</button><button data-a="film" title="剪辑：裁剪、加字幕、配乐、旁白">剪辑</button><button data-a="analyze" title="拉片：切出每个镜头并分析，生成可复刻的分镜脚本">拉片</button>`);
-    b.push(`<button data-a="full">${ico("full")}</button><button data-a="dl">${ico("dl")}</button>`);
+    if (n.type === "image") b.push(tool("edit", "edit", "编辑图片", "编辑图片 · 局部重绘、扩图、裁剪与调色") + tool("tovideo", "video", "生成视频") + tool("hd", "hd", "高清重绘") + tool("describe", "text", "反推提示词"));
+    if (n.type === "video" && n.data.film) b.push(tool("film", "scissors", "编辑成片"));
+    else if (n.type === "video") b.push(tool("cont", "next", "续拍") + tool("frame", "image", "截取末帧") + tool("film", "scissors", "剪辑", "剪辑 · 裁剪、字幕、配乐与旁白") + tool("analyze", "script", "拉片", "拉片 · 拆分镜头并分析"));
+    b.push(tool("full", "full", "全屏查看") + tool("dl", "dl", "下载"));
   }
-  b.push(`<button data-a="dup">${ico("copy")}</button><button data-a="del">${ico("trash")}</button><button data-a="more" title="更多">${ico("more")}</button>`);
+  b.push(tool("dup", "copy", "创建副本") + tool("del", "trash", "删除节点") + tool("more", "more", "更多操作"));
   tools.innerHTML = b.join("");
-  $$("button", tools).forEach(x => x.onclick = ev => x.dataset.a === "more" ? (ev.stopPropagation(), ctxMenu({ target: els.get(n.id), clientX: x.getBoundingClientRect().left, clientY: x.getBoundingClientRect().bottom + 6 })) : nodeAction(n, x.dataset.a));
+  $$("button", tools).forEach(x => {
+    x.onmouseenter = x.onfocus = () => showNodeToolTip(x);
+    x.onmouseleave = x.onblur = hideNodeToolTip;
+    x.onclick = ev => { hideNodeToolTip(); x.dataset.a === "more" ? (ev.stopPropagation(), ctxMenu({ target: els.get(n.id), clientX: x.getBoundingClientRect().left, clientY: x.getBoundingClientRect().bottom + 6 })) : nodeAction(n, x.dataset.a); };
+  });
   if (n.type === "text") { placeOverlays(); return; }
   // ---- refs
   const refs = $("#refs"), items = [];
@@ -1093,6 +1134,7 @@ function nodeAction(n, a) {
   else if (a === "cont") continueFrom(n);
   else if (a === "frame") continueFrom(n, true);
   else if (a === "hd") hdRedraw(n);
+  else if (a === "edit") openImageEditor(n);
   else if (a === "describe") describeImage(n);
   else if (a === "analyze") analyzeVideo(n);
   else if (a === "film") n.data.film ? openFilm(n) : openFilm([n]);
@@ -1196,6 +1238,7 @@ function ctxMenu(e) {
   it.push(`<div class="mt">${many ? `已选 ${sel.size} 个节点` : esc(n.name)}</div>`);
   if (!many && v) {
     if (n.type === "image") {
+      add("edit", "image", "编辑图片（局部重绘 / 扩图 / 裁剪）");
       add("tovideo", "video", "生成视频"); add("hd", "full", "高清重绘"); add("describe", "text", "反推提示词");
       it.push(`<div class="sep"></div>`);
       add("split2x2", "assets", "拆分宫格 2×2"); add("split3x3", "assets", "拆分宫格 3×3"); add("split5x5", "assets", "拆分宫格 5×5");
@@ -1207,6 +1250,12 @@ function ctxMenu(e) {
     else if (n.type === "video") { add("cont", "next", "续拍"); add("frame", "image", "截取末帧"); add("film", "scissors", "剪辑 / 加字幕配乐"); add("analyze", "script", "拉片（拆镜头复刻）"); }
     add("full", "full", "全屏查看"); add("dl", "dl", "下载");
     it.push(`<div class="sep"></div>`);
+  }
+  if (many) {
+    add("ct:left", "fit", "左对齐"); add("ct:top", "fit", "顶部对齐");
+    add("ct:distributeX", "assets", "水平等距排列"); add("ct:distributeY", "assets", "垂直等距排列");
+    add("ct:group", "assets", "编组", "⌘G"); add("ct:ungroup", "assets", "取消编组", "⇧⌘G");
+    add("ct:download", "dl", "批量下载素材"); it.push(`<div class="sep"></div>`);
   }
   const vids = [...sel].map(node).filter(m => m && m.type === "video" && curV(m));
   const qv = [...sel].map(node).filter(m => m && m.type === "video" && !m.job && !m.data.film);
@@ -1221,7 +1270,8 @@ function ctxMenu(e) {
   m.style.left = Math.min(e.clientX, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.min(e.clientY, innerHeight - m.offsetHeight - 8) + "px";
   $$("button", m).forEach(b => b.onclick = () => {
     closeMenus(); const a = b.dataset.a;
-    if (a === "focus") fit([...sel].map(node).filter(Boolean));
+    if (a.startsWith("ct:")) ctAction(a.slice(3));
+    else if (a === "focus") fit([...sel].map(node).filter(Boolean));
     else if (a === "rename") { const nm = $(".nm", els.get(n.id)); nm.dispatchEvent(new MouseEvent("dblclick", { bubbles: false })); }
     else if (a === "dup") duplicate([...sel]);
     else if (a === "del") removeNodes([...sel]);
@@ -1338,6 +1388,7 @@ addEventListener("keydown", e => {
   if (e.code === "Space" && !e.target.closest("input, textarea, select, button, [contenteditable=true]")) { if (!spaceDown) { spaceDown = true; vp.classList.add("space"); } e.preventDefault(); return; }
   if (e.target.closest("input, textarea, select, [contenteditable=true]")) return;
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+  if (mod && k === "g" && sel.size) { e.preventDefault(); e.shiftKey ? ctUngroup() : ctGroup(); return; }
   if (!mod && !e.altKey) {
     const ar = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
     if (ar && sel.size) { e.preventDefault(); if (!e.repeat) checkpoint(); const st = e.shiftKey ? 50 : 10; [...sel].map(node).filter(Boolean).forEach(n => { n.x += ar[0] * st; n.y += ar[1] * st; render(n); }); drawEdges(); placeOverlays(); drawMini(); save(); return; }
@@ -1366,6 +1417,7 @@ function paste(items, dx = 40, dy = 40) {
   checkpoint(); const map = {}; const made = [];
   for (const o of items) { const n = addNode(o.type, o.x + dx, o.y + dy, o.data); n.versions = JSON.parse(JSON.stringify(o.versions)); n.cur = o.cur; n.name = o.name + " 副本"; map[o.id] = n.id; render(n); made.push(n.id); }
   for (const e of B.edges.slice()) if (map[e.from] && map[e.to]) B.edges.push({ from: map[e.from], to: map[e.to] });
+  for (const group of [...(B.groups || [])]) if(group.nodes.every(id => map[id])) B.groups.push({...group,id:"g"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:group.name+" 副本",nodes:group.nodes.map(id=>map[id])});
   drawEdges(); sel = new Set(made); updateSel(); save();
 }
 function duplicate(ids) { paste(ids.map(id => JSON.parse(JSON.stringify(node(id)))), 60, 60); }
@@ -1395,7 +1447,7 @@ function showPrep(n, on) {
 async function generate(n) {
   if (n.type === "script") return planStoryboard(n);
   if (prepping.has(n.id)) return toast("这个视频正在准备提交，请稍等");
-  const d = n.data, prompt = fullPrompt(n); showErr(n, "");
+  const d = n.data, prompt = fullPrompt(n); delete n.agent_error; showErr(n, "");
   if (usesFields(n) ? !fieldsFilled(n) : !prompt) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : "先写提示词，或连入一个文本节点"); if (!usesFields(n)) $("#prompt").focus(); return; }
   let req;
   if (n.type === "image") {
@@ -1466,6 +1518,7 @@ function renderJob(n) {
   if (run) {
     if (run.max > 1 && run.value != null) { frac = run.value / run.max; pct = Math.round(frac * 100) + "%"; msg = n.data.film ? "合成成片中" : run.value >= run.max ? "解码合成中" : `生成中 · 第 ${run.value}/${run.max} 步`; }
     else { pct = "…"; msg = "加载模型 / 处理输入"; }
+    if (run.phase && EW_PHASES[run.phase] && run.phase !== "sampling") { pct = "…"; msg = EW_PHASES[run.phase]+"…"; }
   } else if (q) { pct = "排队"; msg = q.prep ? "已进入队列 · 正在把提示词翻译成英文" : q.ahead > 0 ? `前面还有 ${q.ahead} 个任务` : "即将开始"; }
   const eta = Math.max(0, ...sts.filter(s => s.state !== "done").map(s => s.eta || 0));
   if (eta && (run || q)) msg += ` · ${run ? "还要" : ""}约 ${fmtT(eta)}${run ? "" : "后完成"}`;
@@ -1482,9 +1535,11 @@ async function poll() {
       let st;
       try { st = await (await fetch("/api/jobs?ids=" + act.flatMap(n => n.job.ids).join(","))).json(); } catch { await sleep(3000); continue; }
       for (const n of act) {
+        if(!n.job || node(n.id)!==n) continue;
         n.job.st = st;
         const sts = n.job.ids.map(i => st[i]).filter(Boolean);
         if (!(sts.length === n.job.ids.length && sts.every(s => s.state === "done" || s.state === "error"))) { renderJob(n); continue; }
+        if (n.job.agent_call) { await acSyncAgentJobs(); if (node(n.id)?.job) renderJob(node(n.id)); continue; }
         const errs = sts.filter(s => s.state === "error").map(s => s.error);
         for (const s of sts.filter(s => s.state === "done")) for (const o of s.outputs || []) {
           const m = o.meta || {};
@@ -1581,6 +1636,7 @@ async function openBoard(id) {
   boardId = id; localStorage.setItem("h3.board", id);
   let b = {}; try { b = await (await fetch("/api/board/" + id)).json(); } catch {}
   B = Object.assign(emptyBoard(), b && b.nodes ? b : {});
+  B.groups = Array.isArray(B.groups) ? B.groups.filter(g => g && typeof g.id === "string" && Array.isArray(g.nodes)).map(g => ({...g,name:String(g.name || "分组"),nodes:g.nodes.filter(id => B.nodes.some(n => n.id === id))})) : [];
   const cnt = {};   // boards from the first version: names, defaults
   B.nodes.forEach(n => { cnt[n.type] = (cnt[n.type] || 0) + 1; n.name = n.name || `${TYPE_CN[n.type]} ${cnt[n.type]}`; n.data = { ...defaults(n.type), ...n.data }; n.versions = n.versions || []; delete n.w;
     if (n.type === "image" && !["4mp", "16mp"].includes(n.data.quality)) n.data.quality = "4mp"; });
@@ -1589,6 +1645,8 @@ async function openBoard(id) {
   rebuild();
   if (!b.nodes) fit(); else applyView();
   poll(); schedulePrewarm(3000);
+  if (typeof acRememberBoard === "function") acRememberBoard(id, B);
+  if (typeof acBoardChanged === "function") acBoardChanged();
 }
 $("#bname").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
 $("#bname").addEventListener("blur", e => { const t = e.target.textContent.trim() || "未命名画布"; e.target.textContent = t; B.name = t; save(); });
@@ -1625,6 +1683,9 @@ function updateEmpty() { $("#empty").classList.toggle("on", !B.nodes.length); }
 addEventListener("resize", placeOverlays);
 setInterval(() => B && B.nodes.forEach(n => n.job && renderJob(n)), 1000);
 initTools();
+initImageEditor();
+initCanvasTools();
+initAgentChat();
 initFilm();
 initWizard();
 initSettings();

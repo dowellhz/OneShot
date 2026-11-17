@@ -4,7 +4,7 @@
 Builds ComfyUI API graphs for H3 text-to-image, text/first/last-frame-to-video (FL2VA) and keyframe/reference video
 (Ref2VA), tracks the jobs over ComfyUI's websocket, and keeps the board in data/board.json.
 """
-import asyncio, io, json, math, os, random, re, time, uuid
+import asyncio, io, json, math, os, random, re, time, uuid, hashlib, zipfile
 from pathlib import Path
 
 import aiohttp
@@ -20,6 +20,9 @@ import auth
 import providers
 import remote
 import local_admin
+import image_editor
+import agent_chat
+import sys
 from aiohttp import web
 
 COMFY = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
@@ -427,6 +430,49 @@ def _graph_video(p: dict):
 # ---------------------------------------------------------------- jobs
 
 JOBS: dict = {}   # prompt_id -> state
+EDIT_JOBS = DATA / "image-edits"
+
+
+def attach_image_edit(j, p):
+    spec = p.get("_image_edit")
+    if spec:
+        j["meta"]["image_edit"] = spec
+        j["meta"]["mode_name"] = {"region": "局部重绘", "whole": "整图编辑", "outpaint": "智能扩图"}[spec["mode"]]
+        if spec.get("recipe", {}).get("backend") == "native":
+            j["meta"]["mode_name"] += " · 原生遮罩"
+        EDIT_JOBS.mkdir(parents=True, exist_ok=True)
+        path = EDIT_JOBS / (j["id"] + ".json")
+        tmp = path.with_suffix(".tmp"); tmp.write_text(json.dumps(spec, ensure_ascii=False)); tmp.replace(path)
+
+
+def restore_image_edit(j):
+    # Also keep region protection when recovering an engine/ComfyUI job after restart.
+    if re.fullmatch(r"[\w-]{1,80}", j["id"]):
+        path = EDIT_JOBS / (j["id"] + ".json")
+        if path.is_file():
+            attach_image_edit(j, {"_image_edit": json.loads(path.read_text())})
+
+
+async def complete_outputs(j, outputs):
+    async with j.setdefault("_output_lock", asyncio.Lock()):
+        if j["state"] in ("done", "error"):
+            return
+        try:
+            spec = j.get("meta", {}).get("image_edit")
+            if spec:
+                j["phase"] = "compositing"
+                if spec.get("recipe") is not None:
+                    spec["recipe"]["seed"] = j["meta"].get("seed", spec["recipe"].get("seed", -1))
+                outputs = await asyncio.to_thread(image_editor.composite, COMFY_DIR, spec, outputs)
+            if j.get("cancel"):
+                return
+            j.update(outputs=outputs, state="done", phase="done", finished=time.time())
+            record(j)
+        except Exception as e:
+            j.update(state="error", error=f"图像编辑合成失败：{e}")
+        log_end(j)
+
+
 STATS_FILE = DATA / "stats.json"
 try:
     STATS: dict = json.loads(STATS_FILE.read_text())
@@ -539,10 +585,7 @@ async def finish(app, pid):
         for f in o.get("images", []) + o.get("videos", []) + o.get("gifs", []):
             ref = f"{f.get('type', 'output')}:{(f.get('subfolder') + '/') if f.get('subfolder') else ''}{f['filename']}"
             outs.append({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "meta": f.get("metadata", {})})
-    j["outputs"] = outs
-    j["state"] = "done"; j["finished"] = time.time()
-    record(j)
-    log_end(j)
+    await complete_outputs(j, outs)
 
 
 async def submit(app, graph, meta, kind):
@@ -960,6 +1003,162 @@ async def preview(req):
 @routes.post("/api/generate")
 async def generate(req):
     raw = await req.json()
+    # Only the validated editor endpoint may provide a compositing specification.
+    raw.pop("_image_edit", None)
+    raw.pop("_native_inpaint", None)
+    return await generate_request(req, raw)
+
+
+@routes.post("/api/image-edit/transform")
+async def image_transform(req):
+    p = await req.json()
+    if not isinstance(p, dict):
+        raise bad("图像编辑参数须为对象")
+    try:
+        r = await asyncio.to_thread(image_editor.transform, COMFY_DIR, p)
+    except (ValueError, OSError, TypeError) as e:
+        raise bad(str(e))
+    return web.json_response(r)
+
+
+@routes.post("/api/image-edit/layers")
+@routes.post("/api/image-edit/selection-cutout")
+async def image_layers(req):
+    p = await req.json()
+    if not isinstance(p, dict):
+        raise bad("图像编辑参数须为对象")
+    try:
+        fn = image_editor.cut_selection if req.path.endswith("selection-cutout") else image_editor.compose_layers
+        result = await asyncio.to_thread(fn, COMFY_DIR, p)
+    except (ValueError, OSError, TypeError) as e:
+        raise bad(str(e))
+    return web.json_response(result)
+
+
+def image_draft_path(req, ref):
+    bid, nid = req.match_info["board"], req.match_info["node"]
+    if not _ID.fullmatch(nid):
+        raise bad("节点编号格式不对")
+    board = board_path(bid)
+    if not board.exists() or not can_see(req["user"], board_meta(board)):
+        raise web.HTTPNotFound()
+    try:
+        tools.ref_path(COMFY_DIR, ref)
+    except ValueError:
+        raise bad("图片引用格式不对")
+    key = hashlib.sha256(f'{req["user"]["id"]}:{bid}:{nid}:{ref}'.encode()).hexdigest()
+    return DATA / "image-drafts" / (key + ".json")
+
+
+@routes.get("/api/image-edit/drafts/{board}/{node}")
+async def image_draft_get(req):
+    path = image_draft_path(req, req.query.get("ref", ""))
+    try:
+        result = json.loads(await asyncio.to_thread(path.read_text))
+    except FileNotFoundError:
+        result = None
+    return web.json_response(result)
+
+
+@routes.put("/api/image-edit/drafts/{board}/{node}")
+@routes.post("/api/image-edit/drafts/{board}/{node}")
+async def image_draft_save(req):
+    p = await req.json()
+    if not isinstance(p, dict) or not isinstance(p.get("ref"), str):
+        raise bad("草稿格式不正确")
+    path = image_draft_path(req, p["ref"])
+    try:
+        raw = json.dumps(p, ensure_ascii=False, allow_nan=False)
+    except ValueError:
+        raise bad("草稿包含无效数值")
+    if len(raw.encode()) > 8 * 1024 * 1024:
+        raise bad("草稿过大，请减少选区笔画或图层")
+    def write():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.stem + "." + uuid.uuid4().hex[:8] + ".tmp")
+        tmp.write_text(raw); tmp.replace(path)
+    await asyncio.to_thread(write)
+    return web.json_response({"ok": True})
+
+
+@routes.get("/api/image-edit/capabilities")
+async def image_edit_capabilities(req):
+    try:
+        async with req.app["http"].get(ENGINE + "/status", timeout=aiohttp.ClientTimeout(total=4)) as r:
+            s = await r.json()
+        return web.json_response(s.get("editor", {}))
+    except Exception:
+        return web.json_response({"segment": False, "cutout": False, "native": False})
+
+
+@routes.post("/api/image-edit/segment")
+@routes.post("/api/image-edit/cutout")
+async def image_edit_tool(req):
+    p = await req.json()
+    if not isinstance(p, dict):
+        raise bad("图像编辑参数须为对象")
+    tool = req.path.rsplit("/", 1)[-1]
+    try:
+        image = tools.ref_path(COMFY_DIR, p.get("ref", ""))
+        await asyncio.to_thread(image_editor.load, COMFY_DIR, p.get("ref", ""))
+        out, ref = tools._new(COMFY_DIR, "output", "selection" if tool == "segment" else "cutout", ".png")
+        async with req.app["http"].post(ENGINE + "/tools/" + tool,
+                                       json={"image": str(image), "points": p.get("points"), "out": str(out)},
+                                       timeout=aiohttp.ClientTimeout(total=180)) as r:
+            result = await r.json()
+            if r.status != 200:
+                raise ValueError(result.get("error") or "图像工具执行失败")
+        return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "w": result["width"], "h": result["height"],
+                                  "score": result.get("score")})
+    except (ValueError, OSError, TypeError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise bad(str(e) or "图像工具暂时不可用")
+
+
+@routes.post("/api/assets/export")
+async def export_assets(req):
+    p = await req.json()
+    refs = p.get("refs") if isinstance(p, dict) else None
+    if not isinstance(refs, list) or not 1 <= len(refs) <= 100 or not all(isinstance(ref, str) for ref in refs):
+        raise bad("请选择 1–100 个素材")
+    allowed = None if req["user"]["role"] == "admin" else refs_of_user(req["user"])
+    paths = []
+    for ref in dict.fromkeys(refs):
+        try:
+            path = tools.ref_path(COMFY_DIR, ref)
+        except ValueError:
+            raise bad("素材引用不正确")
+        if (allowed is not None and ref not in allowed) or not path.is_file() or path.suffix.lower() not in MEDIA_EXT:
+            raise bad("素材不存在或没有访问权限")
+        paths.append(path)
+    directory = DATA / "exports"; directory.mkdir(parents=True, exist_ok=True)
+    dst = directory / (uuid.uuid4().hex + ".zip")
+    def archive():
+        with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
+            for i, path in enumerate(paths):
+                z.write(path, f"{i + 1:02d}_{path.name}")
+        # Exports contain only references already authorized above. Remove old archives.
+        for old in directory.glob("*.zip"):
+            if old != dst and time.time() - old.stat().st_mtime > 86400:
+                old.unlink(missing_ok=True)
+    await asyncio.to_thread(archive)
+    return web.FileResponse(dst, headers={"Content-Disposition": 'attachment; filename="OneShot-assets.zip"'})
+
+
+@routes.post("/api/image-edit/generate")
+async def image_edit_generate(req):
+    p = await req.json()
+    if not isinstance(p, dict):
+        raise bad("图像编辑参数须为对象")
+    try:
+        raw = await asyncio.to_thread(image_editor.prepare, COMFY_DIR, p)
+    except (ValueError, OSError, TypeError) as e:
+        raise bad(str(e))
+    if raw.get("_native_inpaint"):
+        return await generate_native_image(req, raw)
+    return await generate_request(req, raw)
+
+
+async def generate_request(req, raw):
     u = req["user"]
     cap = "image" if raw.get("kind") == "image" else "video"
     choice = providers.get(raw["provider"]) if raw.get("provider") else None
@@ -1003,7 +1202,9 @@ async def generate(req):
         meta.update(meta_extra)
         if meta_extra:
             meta["mode_name"] = meta.get("mode_name", "") + " · 扩写"
-        ids.append(await submit(req.app, g, meta, kind))
+        jid = await submit(req.app, g, meta, kind)
+        attach_image_edit(JOBS[jid], p)
+        ids.append(jid)
     return web.json_response({"ids": ids, "meta": JOBS[ids[0]]["meta"]})
 
 
@@ -1029,6 +1230,7 @@ async def jobs(req):
         if not j:
             # a job from before a restart: ask the history
             JOBS[i] = j = {"id": i, "state": "queued", "created": time.time(), "meta": {}}
+            restore_image_edit(j)
             try:
                 await finish(req.app, i)
                 live = set()
@@ -1046,12 +1248,14 @@ async def jobs(req):
                 await finish(req.app, i)   # in case a websocket message was missed
             except Exception:
                 pass
-        r = {k: j.get(k) for k in ("state", "value", "max", "node", "error", "outputs", "meta", "prep")}
+        r = {k: j.get(k) for k in ("state", "value", "max", "node", "error", "outputs", "meta", "prep", "phase")}
         if j["state"] == "queued" and i in queue_order:
             r["ahead"] = queue_order.index(i)
             r["eta"] = round(sum(remaining(JOBS[x]) if x in JOBS else 90 for x in queue_order[:r["ahead"] + 1]))
         elif j["state"] in ("queued", "running"):
             r["eta"] = round(remaining(j))
+            if j["state"] == "queued":
+                r["ahead"] = j.get("ahead", 0)
         r["elapsed"] = round(time.time() - j.get("started", j["created"]), 1)
         out[i] = r
     return web.json_response(out)
@@ -1533,11 +1737,46 @@ async def generate_engine_image(req, p: dict, count: int):
             jid = (await r.json())["id"]
         JOBS[jid] = {"id": jid, "kind": "image", "state": "queued", "created": time.time(), "meta": dict(meta, seed=seed),
                      "out_ref": f"output:h3studio/{name}"}
+        attach_image_edit(JOBS[jid], p)
         db.task_start(id=jid, user_id=u["id"], board_id=meta["board"], label=meta["label"], capability="image", provider_id="local_h3",
                       provider_kind="local_h3", model="H3-Image " + meta["mode_name"], state="queued", cost=0)
         ids.append(jid)
     asyncio.create_task(follow_engine(req.app))
     return web.json_response({"ids": ids, "meta": JOBS[ids[0]]["meta"]})
+
+
+async def generate_native_image(req, p):
+    native = p["_native_inpaint"]
+    # Native SD prompts use CLIP's English vocabulary. Translate through the configured text route when needed.
+    prompt = native["prompt"]
+    if re.search(r"[\u4e00-\u9fff]", prompt):
+        llm = req.app["llm"]
+        try:
+            prompt = clean(await llm.chat("Translate the image editing instruction into a concise English image description. Return only the English description, without commentary.", prompt, max_tokens=180, temperature=.1))
+        except Exception as e:
+            raise bad(f"原生重绘提示词翻译失败：{e}；也可直接填写英文")
+        if llm.running() and llm.device == "GPU":
+            llm.stop()
+    out, ref = tools._new(COMFY_DIR, "output", "inpaint", ".png")
+    seed = seed_of(p.get("seed"))
+    body = {**native, "kind": "inpaint", "prompt": prompt, "seed": seed, "out": str(out),
+            "image": str(tools.ref_path(COMFY_DIR, native["image"])), "mask": str(tools.ref_path(COMFY_DIR, native["mask"]))}
+    try:
+        async with req.app["http"].post(ENGINE + "/jobs", json=body, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            response = await r.json()
+            if r.status != 200 or not response.get("id"):
+                raise ValueError(response.get("error") or "原生重绘引擎未就绪")
+    except (ValueError, aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise bad(str(e))
+    jid = response["id"]; uid = req["user"]["id"]
+    meta = {"prompt": p["_image_edit"]["prompt"], "label": clean(p.get("label"))[:60], "uid": uid,
+            "board": clean(p.get("board")), "seed": seed, "engine": True, "est": 25, "cls": "native-inpaint", "units": 1}
+    j = JOBS[jid] = {"id": jid, "kind": "image", "state": "queued", "created": time.time(), "meta": meta, "out_ref": ref}
+    attach_image_edit(j, p)
+    db.task_start(id=jid, user_id=uid, board_id=meta["board"], label=meta["label"], capability="image", provider_id="local_h3",
+                  provider_kind="local_h3", model="SD 原生遮罩重绘", state="queued", cost=0)
+    asyncio.create_task(follow_engine(req.app))
+    return web.json_response({"ids": [jid], "meta": meta})
 
 
 async def generate_engine(req, p: dict, count: int):
@@ -1659,6 +1898,7 @@ async def recover_engine_job(app, eid: str):
                   "mode_name": (row.get("model") or "").replace("MiniMax-H3 ", "")},
          "out_ref": "output:h3studio/" + Path(out).name if out else "output:h3studio/pending", "_logged": row.get("state") in ("done", "error")}
     JOBS[eid] = j
+    restore_image_edit(j)
     asyncio.create_task(follow_engine(app))
     return j
 
@@ -1682,17 +1922,21 @@ async def follow_engine(app):
                 await asyncio.sleep(3); continue
             for i in live:
                 j = JOBS[i]; s = st.get(j.get("eid", i)) or {}
+                if s.get("state") == "queued":
+                    j["ahead"] = s.get("ahead", 0)
+                    j["phase"] = "queued"
                 if s.get("state") == "running":
                     if j["state"] != "running":
                         j["state"] = "running"; j["started"] = s.get("started") or time.time()
                     j["value"], j["max"] = s.get("value"), s.get("max")
+                    j["phase"] = s.get("phase") or ("decoding" if s.get("max") and (s.get("value") or 0) >= s["max"] else "sampling")
+                    j["ahead"] = s.get("ahead", 0)
                 elif s.get("state") == "done":
                     if s.get("out"):
                         j["out_ref"] = "output:h3studio/" + Path(s["out"]).name
                     path = COMFY_DIR / "output" / "h3studio" / Path(j["out_ref"]).name
-                    j["outputs"] = [{"ref": j["out_ref"], "url": "/media?ref=" + quote(j["out_ref"], safe=""), "meta": media_info(path, j["kind"])}]
-                    j["state"] = "done"; j["started"] = s.get("started") or j.get("started"); j["finished"] = s.get("finished") or time.time()
-                    record(j); log_end(j)
+                    j["started"] = s.get("started") or j.get("started")
+                    await complete_outputs(j, [{"ref": j["out_ref"], "url": "/media?ref=" + quote(j["out_ref"], safe=""), "meta": media_info(path, j["kind"])}])
                 elif s.get("state") == "error":
                     j["state"] = "error"; j["error"] = s.get("error") or "生成失败"; log_end(j)
             await asyncio.sleep(1.5)
@@ -1756,6 +2000,7 @@ async def generate_remote(req, raw: dict, route: dict, cap: str):
         meta = {"label": clean(raw.get("label"))[:60] or p["name"], "cls": cls, "units": 1, "est": estimate(cls, 1, 40 if cap == "image" else 150),
                 "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "prompt": prompt}
         j = JOBS[jid] = {"id": jid, "kind": cap, "state": "queued", "created": time.time(), "meta": meta}
+        attach_image_edit(j, raw)
         db.task_start(id=jid, user_id=u["id"], board_id=clean(raw.get("board")), label=meta["label"], capability=cap, provider_id=p["id"],
                       provider_kind=p["kind"], model=model, state="queued", request={"prompt": prompt[:2000]})
         asyncio.create_task(run_remote(req.app, j, p, model, cap, nreq))
@@ -1779,8 +2024,7 @@ async def run_remote(app, j: dict, p: dict, model: str, cap: str, nreq: dict):
                 outs.append({"ref": f["ref"], "url": "/media?ref=" + quote(f["ref"], safe=""), "meta": media_info(f["path"], f["kind"])})
             if j.get("cancel"):
                 return
-            j["outputs"] = outs; j["state"] = "done"; j["finished"] = time.time()
-            record(j)
+            await complete_outputs(j, outs)
             db.task_update(j["id"], cost=r.get("cost"), units=r.get("units"))
         except Exception as e:
             if j["state"] != "error":
@@ -2007,12 +2251,13 @@ async def on_stop(app):
 
 def main():
     app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[auth.middleware])
+    agent_chat.install(app, sys.modules[__name__])
     app.add_routes(routes)
     app.add_routes(auth.routes)
     app.add_routes(console_routes)
     app.add_routes(local_admin.routes)
     app.router.add_static("/static", ROOT / "static")
-    app.on_startup.append(on_start)
+    app.on_startup.insert(0, on_start)
     app.on_cleanup.append(on_stop)
     web.run_app(app, host="0.0.0.0", port=PORT, print=lambda *_: print(f"OneShot: http://0.0.0.0:{PORT}", flush=True))
 

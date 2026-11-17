@@ -1,0 +1,2 @@
+# Install into editor-venv, separately from the H3 / PyTorch environment.
+rembg[cpu]==2.0.67

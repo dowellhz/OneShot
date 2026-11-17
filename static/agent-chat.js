@@ -1,0 +1,109 @@
+"use strict";
+const AC={session:null,board:null,events:[],runs:[],cursor:0,open:false,polling:false,sending:false,refs:null,base:new Map(),pending:new Map(),calls:new Map(),epoch:0};
+const AC_LABELS={canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片"};
+const AC_STATES={thinking:"正在理解与规划…",running:"正在执行…",stopping:"正在停止，保留已完成结果…",stopped:"本轮已停止",done:"本轮已结束",error:"本轮执行中断"};
+const AC_PHASES={queued:"排队",loading:"加载模型",encoding:"处理提示词与图片",sampling:"生成",decoding:"解码",compositing:"合成",done:"完成",error:"失败"};
+const acClone=v=>JSON.parse(JSON.stringify(v));
+function acActive(){return AC.runs.find(r=>!["done","error","stopped"].includes(r.state));}
+async function acApi(url,body){const r=await fetch(url,body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});let j;try{j=await r.json();}catch{throw new Error("服务返回异常，请稍后重试");}if(!r.ok)throw new Error(j.error||"请求失败");return j;}
+function acRememberBoard(id,b){AC.base.set(id,acClone(b));if(!AC.pending.has(id)){try{const draft=JSON.parse(localStorage.getItem("h3.chat.conflict."+id));if(draft?.nodes){acHoldConflict({id,b:draft},b);if(id===boardId){Object.assign(B,draft);rebuild();applyView();}}}catch{}}}
+function acGuardSave(){if(!AC.pending.has(boardId))return false;const draft=acClone(B);AC.pending.set(boardId,draft);try{localStorage.setItem("h3.chat.conflict."+boardId,JSON.stringify(draft));}catch{}return true;}
+// Three-way merge only accepts disjoint changes. Conflicts keep both full versions available.
+function acMerge(base,local,remote){
+ const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),missing=Symbol("missing");
+ function merge(a,l,r){if(same(l,r)||same(a,r))return l;if(same(a,l))return r;if(a&&l&&r&&typeof a==="object"&&typeof l==="object"&&typeof r==="object"&&!Array.isArray(a)&&!Array.isArray(l)&&!Array.isArray(r)){const out={};for(const key of new Set([...Object.keys(a),...Object.keys(l),...Object.keys(r)])){const v=merge(key in a?a[key]:missing,key in l?l[key]:missing,key in r?r[key]:missing);if(v!==missing)out[key]=v;}return out;}throw new Error("同一内容已被修改");}
+ const out=acClone(remote);
+ for(const key of new Set([...Object.keys(local),...Object.keys(remote)])){if(["rev","nodes","agent_ops"].includes(key))continue;const v=merge(base[key],local[key],remote[key]);if(v!==undefined)out[key]=v;else delete out[key];}
+ const maps=[base,local,remote].map(b=>new Map((b.nodes||[]).map(n=>[n.id,n])));out.nodes=[];
+ for(const id of new Set([...maps[2].keys(),...maps[1].keys()])){const v=merge(maps[0].get(id),maps[1].get(id),maps[2].get(id));if(v)out.nodes.push(v);}
+ return out;
+}
+function acHoldConflict(p,remote){
+  const backup=acClone(p.b);try{localStorage.setItem("h3.chat.conflict."+p.id,JSON.stringify(backup));}catch{}
+  AC.pending.set(p.id,backup);let box=$("#acConflict");if(!box){box=document.createElement("div");box.id="acConflict";box.className="ac-conflict";document.body.append(box);}box.replaceChildren();
+  const text=document.createElement("span");text.textContent="画布同一内容发生冲突，本地改动已暂存。";box.append(text);
+  const button=document.createElement("button");button.textContent="将本地版本保存为副本";button.onclick=async()=>{try{const id="b"+Date.now().toString(36)+Math.random().toString(36).slice(2,5),copy=acClone(AC.pending.get(p.id)||backup);delete copy.rev;delete copy.agent_ops;copy.name=(copy.name||"画布")+" · 本地副本";const r=await fetch("/api/board/"+id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(copy)});if(!r.ok)throw new Error("副本保存失败");AC.pending.delete(p.id);localStorage.removeItem("h3.chat.conflict."+p.id);box.remove();toast("本地改动已保存到画布列表中的副本",5000);if(boardId===p.id){const latest=await acApi("/api/board/"+p.id);acRememberBoard(p.id,latest);acApplyBoard(latest);}}catch(e){toast(e.message);}};box.append(button);toast("保存冲突，本地改动已暂存，请保存为副本",6000);return true;
+}
+async function acRecoverSave(p){
+ const base=AC.base.get(p.id);if(!base)return false;
+ const remote=await acApi("/api/board/"+p.id),local=acClone(p.b);let merged;
+ try{merged=acMerge(base,local,remote);}catch{
+  return acHoldConflict(p,remote);
+ }
+ const r=await fetch("/api/board/"+p.id,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(merged)});
+ if(!r.ok){if(r.status===409){savePending=p;saveT=setTimeout(flushSave,1000);}else throw new Error("合并保存失败");return true;}
+ const j=await r.json();merged.rev=j.rev;acRememberBoard(p.id,merged);
+ if(p.b===B&&p.id===boardId){if(JSON.stringify(B)!==JSON.stringify(local)){try{const next=acMerge(local,B,merged);acApplyBoard(next);save();}catch{return acHoldConflict(p,merged);}}else acApplyBoard(merged);}return true;
+}
+async function acSyncBoard(rev,independent=false){
+ if((!independent&&AC.board!==boardId)||!B||rev<=(B.rev||0)||AC.pending.has(boardId))return;
+ const id=boardId;await flushSave();if(id!==boardId||AC.pending.has(id))return;
+ const j=await acApi("/api/board/"+id);if(id!==boardId)return;
+ if(savePending?.id===id)return;
+ if(j.rev>(B.rev||0)){acRememberBoard(id,j);acApplyBoard(j,true);}
+}
+async function acSyncAgentJobs(){const id=boardId;const remote=await acApi("/api/board/"+id);if(id===boardId)await acSyncBoard(remote.rev,true);}
+function acApplyBoard(data,keepView=false){const previous=new Map(B.nodes.map(n=>[n.id,n])),view=B.view;const nodes=data.nodes.map(n=>{const old=previous.get(n.id);if(!old)return n;for(const k of Object.keys(old))if(!(k in n))delete old[k];Object.assign(old,n);return old;});Object.assign(B,data,{nodes});if(keepView)B.view=view;sel=new Set([...sel].filter(id=>node(id)));rebuild();applyView();if(B.nodes.some(n=>n.job?.agent_call))poll();B.nodes.filter(n=>n.agent_error).forEach(n=>showErr(n,n.agent_error));if(IMAGE_EDITOR&&!node(IMAGE_EDITOR.n.id))closeImageEditor();}
+function acRefs(){return (AC.refs===null?[...sel]:AC.refs).map(node).filter(Boolean);}
+function acRenderRefs(){if(!$("#acRefs")||!B)return;$("#acRefs").innerHTML=acRefs().map(n=>`<span class="ac-ref">${esc(n.name)} · ${n.cur>=0?"版本 "+(n.cur+1):TYPE_CN[n.type]}<button type="button" data-remove="${esc(n.id)}" aria-label="移除引用">×</button></span>`).join("");$$("[data-remove]",$("#acRefs")).forEach(b=>b.onclick=()=>{AC.refs=acRefs().map(n=>n.id).filter(id=>id!==b.dataset.remove);acRenderRefs();});}
+function acPick(){const box=$("#acPicker");box.hidden=!box.hidden;if(box.hidden)return;box.innerHTML=B.nodes.slice(0,200).map(n=>`<button type="button" data-node="${esc(n.id)}">${esc(n.name)} · ${TYPE_CN[n.type]}</button>`).join("")||"画布还没有节点";$$("button",box).forEach(b=>b.onclick=()=>{AC.refs=[...new Set([...acRefs().map(n=>n.id),b.dataset.node])].slice(0,30);box.hidden=true;acRenderRefs();$("#acInput").focus();});}
+async function acFocus(ids,editor=false){if(AC.board!==boardId)return;const nodes=ids.map(node).filter(Boolean);if(!nodes.length)return;sel=new Set(nodes.map(n=>n.id));updateSel();fit(nodes);if(editor&&nodes.length===1&&nodes[0].type==="image")await openImageEditor(nodes[0]);}
+function acResultCards(result){const made=result.nodes||[];if(!made.length)return "";return `<div class="ac-results">${made.map(item=>{const n=node(item.id),v=curV(n)||item;if(item.type==="video"||n?.type==="video")return `<div class="ac-result ac-video"><video controls playsinline preload="metadata" src="/media?ref=${encodeURIComponent(v.ref)}" aria-label="生成的视频"></video><button type="button" data-focus="${esc(item.id)}">定位视频</button></div>`;return `<button type="button" class="ac-result" data-focus="${esc(item.id)}">${v?.ref?`<img loading="lazy" alt="生成结果" src="/media?ref=${encodeURIComponent(v.ref)}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;}).join("")}</div>`;}
+
+function acAppendEvent(e,replay=false){
+ const box=$("#acMessages"),d=e.data;let el;
+ if(["user","assistant","notice"].includes(e.kind)){el=document.createElement("div");el.className="ac-msg "+e.kind;if(e.kind!=="notice")acMarkdown(el,d.text);else el.textContent=d.text;}
+ if(e.kind==="tool_start"){el=document.createElement("details");el.className="ac-call";el.dataset.call=d.call_id;el.innerHTML=`<summary>${esc(AC_LABELS[d.name]||d.name)} · 执行中</summary><div class="ac-progress"></div><div class="ac-output"></div>`;AC.calls.set(d.call_id,el);}
+ if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
+ if(e.kind==="progress"){el=AC.calls.get(d.call_id);if(el)$(".ac-progress",el).textContent=d.jobs.map(j=>{const phase=AC_PHASES[j.phase]||AC_PHASES[j.state]||"处理中",pct=j.max?` · ${Math.min(j.state==="done"?100:99,Math.round((j.value||0)/j.max*100))}%`:"";return phase+pct+(j.ahead?` · 前方 ${j.ahead} 个任务`:"");}).join(" / ");return;}
+ if(e.kind==="focus"&&!replay){acFocus(d.node_ids,d.open_editor);return;}
+ if(typeof aeAppendEvent==="function"&&aeAppendEvent(e,replay))return;
+ if(el){$(".ac-empty",box)?.remove();box.append(el);}
+}
+function acRenderState(){
+ const active=acActive(),latest=AC.runs[0];$("#acStatus").textContent=active?AC_STATES[active.state]:(latest?.error||AC_STATES[latest?.state]||"可以讨论，也可以直接操作当前画布");
+ $("#acStop").hidden=!active;$("#acStop").disabled=active?.state==="stopping";$("#acSend").disabled=!!active||AC.sending||!$("#acInput").value.trim();$("#acUndo").hidden=!latest||!!active;$("#acNew").disabled=!!active;
+ if(latest?.model)$("#acModel").textContent=latest.model.provider+" · "+latest.model.model;
+ if(typeof aeRenderInputs==="function")aeRenderInputs();
+}
+async function acPoll(background=false){
+ if(AC.polling||(!AC.open&&!background)||!AC.session)return;AC.polling=true;const sid=AC.session,epoch=AC.epoch;
+ try{const j=await acApi(`/api/chat/sessions/${sid}?after=${AC.cursor}`);if(epoch!==AC.epoch||sid!==AC.session)return;await acSyncBoard(j.board_rev);if(epoch!==AC.epoch)return;
+  AC.runs=j.runs;AC.inputs=j.inputs||[];const box=$("#acMessages"),bottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;
+  for(const e of j.events){AC.cursor=e.id;AC.events.push(e);acAppendEvent(e,AC.replaying);}AC.replaying=false;acRenderState();if(bottom)box.scrollTop=box.scrollHeight;$("#acError").hidden=true;
+ }catch(e){if(epoch===AC.epoch){$("#acError").textContent="连接中断，将自动重连："+e.message;$("#acError").hidden=false;}}finally{AC.polling=false;}
+}
+async function acLoadSession(id){AC.epoch++;AC.session=id;AC.cursor=0;AC.events=[];AC.runs=[];AC.inputs=[];AC.calls.clear();AC.replaying=true;$("#acMessages").replaceChildren();localStorage.setItem("h3.chat.session."+boardId,id);try{const outbox=JSON.parse(localStorage.getItem("h3.chat.outbox."+id));if(outbox?.payload){$("#acInput").value=outbox.payload.text;AC.refs=outbox.payload.selected;AC.pending.set(outbox.key,outbox.payload);}else $("#acInput").value="";}catch{}await acPoll();acRenderRefs();}
+async function acSessions(fresh=false){const id=boardId,epoch=++AC.epoch;AC.board=id;AC.session=null;AC.cursor=0;AC.runs=[];AC.refs=null;acRenderRefs();const j=await acApi("/api/chat/sessions?board="+encodeURIComponent(id));if(id!==boardId||epoch!==AC.epoch)return;
+ let chosen=!fresh&&j.sessions.find(s=>s.id===localStorage.getItem("h3.chat.session."+id))?.id||(!fresh&&j.sessions[0]?.id);
+ if(!chosen){const made=await acApi("/api/chat/sessions",{board:id});if(id!==boardId)return;chosen=made.id;j.sessions.unshift({id:chosen,title:"新对话"});}
+ $("#acSessions").innerHTML=j.sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.title)}</option>`).join("");$("#acSessions").value=chosen;await acLoadSession(chosen);acRenderEmpty();
+}
+function acRenderEmpty(){if(AC.events.some(e=>e.kind==="user"))return;const box=$("#acMessages");box.innerHTML=`<div class="ac-empty"><b>告诉我你想怎么创作</b><div>引用画布素材，我可以生成、编辑和整理结果。</div><button data-example="描述一下选中的图片">理解这张图片</button><button data-example="以选中图片为参考生成三个暖色版本，横向排列在原图右边">生成三个暖色版本</button><button data-example="把选中的节点横向排齐">整理选中的节点</button></div>`;$$("[data-example]",box).forEach(b=>b.onclick=()=>{$("#acInput").value=b.dataset.example;acRenderState();$("#acInput").focus();});}
+async function acSend(){
+ if(AC.sending||acActive()||!AC.session)return;const text=$("#acInput").value.trim();if(!text)return;
+ const sid=AC.session,id=boardId,selected=acRefs().map(n=>n.id),key=id+"|"+sid+"|"+text+"|"+selected.join(",");
+ let pending=AC.pending.get(key);if(!pending){pending={text,selected,request_key:crypto.randomUUID?.()||("req"+Date.now()+Math.random())};AC.pending.set(key,pending);try{localStorage.setItem("h3.chat.outbox."+sid,JSON.stringify({key,payload:pending}));}catch{}}
+ AC.sending=true;acRenderState();try{await flushSave();if(id!==boardId||sid!==AC.session)throw new Error("画布已切换，请重新发送");if(AC.pending.has(id))throw new Error("请先将冲突的本地画布保存为副本");
+  const sent=await acApi(`/api/chat/sessions/${sid}/messages`,pending);if(!AC.runs.some(r=>r.id===sent.id))AC.runs.unshift(sent);AC.pending.delete(key);localStorage.removeItem("h3.chat.outbox."+sid);const option=$("#acSessions").selectedOptions[0];if(option)option.textContent=text.slice(0,30);$("#acInput").value="";AC.refs=null;await acPoll();acRenderRefs();
+ }catch(e){toast(e.message,6000);}finally{AC.sending=false;acRenderState();}
+}
+async function acOpen(){if(!B)return;AC.open=true;$("#agentChat").hidden=false;$("#chatLaunch").hidden=true;try{await flushSave();if(AC.board!==boardId||!AC.session)await acSessions();else await acPoll();}catch(e){$("#acError").textContent=e.message;$("#acError").hidden=false;}$("#acInput").focus();}
+function acBoardChanged(){if(!AC.open)return;acSessions().catch(e=>toast(e.message));}
+function initAgentChat(){
+ const launch=document.createElement("button");launch.id="chatLaunch";launch.innerHTML=`${ico("script")}<span>创作助手</span>`;launch.setAttribute("aria-controls","agentChat");launch.onclick=acOpen;document.body.append(launch);
+ const pane=document.createElement("section");pane.id="agentChat";pane.hidden=true;pane.setAttribute("role","region");pane.setAttribute("aria-label","创作助手");pane.innerHTML=`<header class="ac-head"><strong>创作助手</strong><button id="acDock" title="切换停靠 / 浮动" aria-label="切换停靠 / 浮动">${ico("full")}</button><button id="acClose" title="收起，任务继续运行" aria-label="收起助手">×</button></header><div class="ac-subhead"><select id="acSessions" aria-label="对话历史"></select><button id="acNew">新对话</button></div><div id="acModel" class="ac-model">使用平台配置的文本模型</div><div id="acMessages" class="ac-messages" role="log" aria-label="对话与操作记录"></div><div id="acError" class="ac-status" hidden></div><div id="acStatus" class="ac-status" role="status"></div><div class="ac-composer"><div id="acRefs" class="ac-refs"></div><div id="acPicker" class="ac-picker" hidden></div><textarea id="acInput" aria-label="告诉助手要做什么" placeholder="描述你想做什么，输入 @ 引用素材…" maxlength="8000"></textarea><div class="ac-actions"><button id="acReference" title="引用画布节点">@ 引用</button><button id="acUndo" hidden>撤销本轮</button><span class="ac-hint">Enter 发送</span><button id="acStop" hidden>停止</button><button id="acSend" disabled>发送</button></div></div>`;document.body.append(pane);
+ $("#acClose").onclick=()=>{AC.open=false;pane.hidden=true;launch.hidden=false;};$("#acDock").onclick=()=>{pane.classList.toggle("floating");pane.style.left=pane.style.top=pane.style.height=pane.style.width="";acStoreWindow();};
+ $("#acNew").onclick=()=>acSessions(true).catch(e=>toast(e.message));$("#acSessions").onchange=e=>acLoadSession(e.target.value).catch(e=>toast(e.message));$("#acReference").onclick=acPick;$("#acSend").onclick=acSend;
+ $("#acInput").oninput=()=>{acRenderState();};$("#acInput").onkeydown=e=>{e.stopPropagation();if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();acSend();}if(e.key==="@")acPick();};
+ $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
+ $("#acUndo").onclick=async()=>{try{await flushSave();await acApi(`/api/chat/runs/${AC.runs[0].id}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
+ $("#acMessages").onclick=e=>{const b=e.target.closest("[data-focus]");if(b)acFocus([b.dataset.focus]);};
+ pane.addEventListener("pointerdown",e=>e.stopPropagation());pane.addEventListener("wheel",e=>e.stopPropagation(),{passive:true});pane.addEventListener("keydown",e=>e.stopPropagation());
+ $(".ac-head",pane).addEventListener("pointerdown",e=>{if(e.button!==0||e.target.closest("button"))return;e.preventDefault();const r=pane.getBoundingClientRect(),start={x:e.clientX,y:e.clientY};pane.classList.add("floating");pane.style.height=r.height+"px";pane.style.width=r.width+"px";pane.style.left=r.left+"px";pane.style.top=r.top+"px";const move=ev=>{pane.style.left=Math.max(0,Math.min(innerWidth-r.width, r.left+ev.clientX-start.x))+"px";pane.style.top=Math.max(8,Math.min(innerHeight-150,r.top+ev.clientY-start.y))+"px";};const end=()=>{removeEventListener("pointermove",move);removeEventListener("pointerup",end);removeEventListener("pointercancel",end);acStoreWindow();};addEventListener("pointermove",move);addEventListener("pointerup",end);addEventListener("pointercancel",end);});
+ try{const layout=JSON.parse(localStorage.getItem("h3.chat.window"));if(layout?.floating){pane.classList.add("floating");for(const k of ["left","top","width","height"])if(Number.isFinite(layout[k]))pane.style[k]=Math.max(k==="width"?300:k==="height"?300:8,Math.min(layout[k],k==="left"?innerWidth-300:k==="top"?innerHeight-150:k==="width"?innerWidth-16:innerHeight-24))+"px";}}catch{}
+ if(typeof aeInit==="function")aeInit();
+ const resize=new ResizeObserver(()=>{if(pane.classList.contains("floating")&&!pane.hidden)acStoreWindow();});resize.observe(pane);
+ setInterval(()=>{if(!AC.open&&AC.board===boardId&&acActive())acPoll(true);if(AC.open){if(AC.board!==boardId)acBoardChanged();else acPoll();acRenderRefs();}},1000);
+}
+function acStoreWindow(){const p=$("#agentChat"),r=p.getBoundingClientRect();try{localStorage.setItem("h3.chat.window",JSON.stringify({floating:p.classList.contains("floating"),left:r.left,top:r.top,width:r.width,height:r.height}));}catch{}}

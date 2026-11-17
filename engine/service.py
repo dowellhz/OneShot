@@ -28,12 +28,14 @@ from aiohttp import web
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import h3engine as E
+import editor_tools as EDITOR
 
 PORT = int(os.environ.get("H3_ENGINE_PORT", "8189"))
 JOBS: dict[str, dict] = {}
 Q: "queue.Queue[str]" = queue.Queue()
 STATE = {"ready": False, "loading": "starting", "running": None, "error": None}
 ENGINE: E.Engine | None = None
+EDITOR_CPU_LOCK = asyncio.Lock()
 
 
 class Cancelled(Exception):
@@ -45,8 +47,24 @@ def progress_hook(module, args, kwargs):
     if j:
         if j.get("cancel"):
             raise Cancelled()
+        j["phase"] = "sampling"
         j["value"] = j.get("value", 0) + 1
     return None
+
+
+def decoding_hook(module, args):
+    j = JOBS.get(STATE["running"] or "")
+    if j:
+        if j.get("cancel"):
+            raise Cancelled()
+        j["phase"] = "decoding"
+
+
+def watch_decoder(vae):
+    decoder = getattr(vae, "decoder", None)
+    if decoder is not None and not getattr(decoder, "_editor_hooked", False):
+        decoder.register_forward_pre_hook(decoding_hook)
+        decoder._editor_hooked = True
 
 
 def load_image(path):
@@ -69,6 +87,7 @@ def worker():
         if jid == "__free__":             # unloading happens here, never on the web thread while a job runs
             try:
                 ENGINE._drop_big()
+                EDITOR.drop_inpaint()
             except Exception:
                 traceback.print_exc()
             continue
@@ -80,12 +99,22 @@ def worker():
         try:
             j.update(state="running", started=time.time(), value=0, max=int(j["req"].get("steps") or 4))
             r = j["req"]
+            if r.get("kind") == "inpaint":
+                ENGINE._drop_big()
+                def report(phase, value, maximum):
+                    j.update(phase=phase, value=value, max=maximum)
+                t0 = time.time()
+                EDITOR.inpaint(r, report, lambda: bool(j.get("cancel")))
+                j.update(state="done", took=round(time.time() - t0, 1), finished=time.time(), phase="done")
+                continue
+            EDITOR.drop_inpaint()
             if r.get("kind") == "image":
                 if not ENGINE.image_ready():
                     raise RuntimeError("H3-Image 权重还在下载")
-                j["phase"] = "loading model" if ENGINE.task != "image" else None
+                j["phase"] = "loading" if ENGINE.task != "image" else "encoding"
                 ENGINE.use_image()
-                j["phase"] = None
+                j["phase"] = "encoding"
+                watch_decoder(ENGINE.ipipe.vae)
                 j["max"] = int(r.get("steps") or 6)
                 model = ENGINE.ipipe.transformer
                 if not getattr(model, "_h3_hooked", False):
@@ -101,12 +130,13 @@ def worker():
                 refs = [MiniMaxH3ImageReference(image=load_image(p)) for p in r["references"]]
             kfs = [(load_image(k["path"]), int(k["frame"])) for k in r.get("keyframes") or []]
             task = "ref2va" if refs or kfs else "fl2va"
-            j["phase"] = "loading model" if ENGINE.task != task else None
+            j["phase"] = "loading" if ENGINE.task != task else "encoding"
             lora = E.pick_lora(task, r.get("height"), r.get("width"), bool(r.get("turbo", True)))
             ENGINE.use(task, lora)
             if j.get("cancel"):
                 raise Cancelled()
-            j["phase"] = None
+            j["phase"] = "encoding"
+            watch_decoder(ENGINE.pipe.vae)
             model = ENGINE.pipe.transformer_ref if task == "ref2va" else ENGINE.pipe.transformer
             if not getattr(model, "_h3_hooked", False):   # marked on the model: ids get reused after a model is freed
                 model.register_forward_pre_hook(progress_hook, with_kwargs=True)
@@ -117,7 +147,7 @@ def worker():
                                    steps=int(r.get("steps") or 4), seed=int(r.get("seed") or 0), turbo=bool(r.get("turbo", True)),
                                    frames=r.get("frames"), lora=lora, keyframes=kfs)
             j.update(state="done", took=round(took, 1), finished=time.time())
-        except Cancelled:
+        except (Cancelled, InterruptedError):
             j.update(state="error", error="已取消", finished=time.time())
         except Exception as e:
             traceback.print_exc()
@@ -190,7 +220,24 @@ async def status(_):
                               "image_ready": bool(ENGINE and ENGINE.image_ready()),
                               "loaded": ENGINE and {"task": ENGINE.task, "lora": ENGINE.lora},
                               "queue": sum(1 for v in JOBS.values() if v["state"] == "queued"),
-                              "vram_used_gb": round((total - free) / 2**30, 1)})
+                              "vram_used_gb": round((total - free) / 2**30, 1), "editor": EDITOR.capabilities()})
+
+
+@routes.post("/tools/{tool}")
+async def editor_tool(req):
+    tool = req.match_info["tool"]
+    if tool not in ("segment", "cutout"):
+        raise web.HTTPNotFound()
+    p = await req.json()
+    try:
+        async with EDITOR_CPU_LOCK:
+            if tool == "segment":
+                result = await asyncio.to_thread(EDITOR.segment, p["image"], p.get("points"), p["out"])
+            else:
+                result = await asyncio.to_thread(EDITOR.cutout, p["image"], p["out"])
+        return web.json_response(result)
+    except Exception as e:
+        return web.json_response({"error": str(e)[:500]}, status=400)
 
 
 @routes.post("/free")

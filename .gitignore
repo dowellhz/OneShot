@@ -14,6 +14,8 @@ bak/
 fonts/
 guides/
 templates/
+models/
+editor-venv/
 *.safetensors
 *.gguf
 *.pth
