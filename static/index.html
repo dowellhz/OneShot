@@ -67,13 +67,13 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .node.image { --node-rgb: var(--node-image-rgb); }
 .node.video { --node-rgb: var(--node-video-rgb); }
 .node:is(.image,.video) .lbl { left: 0; right: 0; min-height: 30px; margin-bottom: 6px; padding: 5px 8px;
-  background: rgba(var(--node-rgb),.26); border: 1px solid var(--line2); color: var(--text); }
-.node:is(.image,.video) .lbl:hover { background: rgba(var(--node-rgb),.31); border-color: #686870; }
-.node:is(.image,.video).sel .lbl { background: rgba(var(--node-rgb),.31); border-color: rgba(255,255,255,.45); }
-.node:is(.image,.video) .lbl > svg.i { color: #cfcfd6; }
+  background: rgb(var(--node-rgb)); border: 1px solid var(--line2); color: #17171c; }
+.node:is(.image,.video) .lbl:hover { border-color: #85858e; }
+.node:is(.image,.video).sel .lbl { border-color: rgba(255,255,255,.65); }
+.node:is(.image,.video) .lbl > svg.i, .node:is(.image,.video) .lbl .gr { color: #303039; }
 .node:is(.image,.video) .lbl .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .node:is(.image,.video) .lbl .nm[contenteditable=true] { overflow: visible; }
-.node:is(.image,.video) .lbl .meta { flex: none; color: #b8b8c2; font-size: var(--fs-caption); }
+.node:is(.image,.video) .lbl .meta { flex: none; color: #303039; font-size: var(--fs-caption); }
 .node:is(.image,.video) .lbl .gr { margin-left: 0; }
 .node .card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; cursor: grab;
   transition: border-color .15s, box-shadow .15s; }
@@ -1332,17 +1332,20 @@ function drawMini() {
     const pad = 80; x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
     const sc = Math.min(W / (x1 - x0), H / (y1 - y0)), ox = (W - (x1 - x0) * sc) / 2 - x0 * sc, oy = (H - (y1 - y0) * sc) / 2 - y0 * sc;
     mmMap = { sc, ox, oy };
-    g.clearRect(0, 0, W, H); g.fillStyle = "#101012"; g.fillRect(0, 0, W, H);
+    g.clearRect(0, 0, W, H); g.globalAlpha = 1; g.fillStyle = "#101012"; g.fillRect(0, 0, W, H);
+    // Put the viewport tint behind nodes so it cannot change their shared colors.
+    g.fillStyle = "rgba(255,255,255,.06)";
+    g.fillRect(vw.x0 * sc + ox, vw.y0 * sc + oy, (vw.x1 - vw.x0) * sc, (vw.y1 - vw.y0) * sc);
     const css = getComputedStyle(document.documentElement), col = { text: css.getPropertyValue("--c-text"), image: `rgb(${css.getPropertyValue("--node-image-rgb").trim()})`, video: `rgb(${css.getPropertyValue("--node-video-rgb").trim()})` };
     g.strokeStyle = "rgba(255,255,255,.14)"; g.lineWidth = 1.5;
     for (const e of B.edges) { const a = node(e.from), b = node(e.to); if (!a || !b) continue; const p = port(a, "out"), q = port(b, "in"); g.beginPath(); g.moveTo(p.x * sc + ox, p.y * sc + oy); g.lineTo(q.x * sc + ox, q.y * sc + oy); g.stroke(); }
     for (const n of B.nodes) {
-      const s = size(n); g.globalAlpha = sel.has(n.id) ? 1 : 0.7; g.fillStyle = (col[n.type] || "#888").trim() || "#888";
+      const s = size(n); g.globalAlpha = n.type === "image" || n.type === "video" ? 1 : sel.has(n.id) ? 1 : 0.7; g.fillStyle = (col[n.type] || "#888").trim() || "#888";
       g.beginPath(); g.roundRect(n.x * sc + ox, n.y * sc + oy, Math.max(3, s.w * sc), Math.max(3, s.h * sc), 3); g.fill();
       if (sel.has(n.id)) { g.strokeStyle = "#fff"; g.lineWidth = 2; g.stroke(); g.strokeStyle = "rgba(255,255,255,.14)"; g.lineWidth = 1.5; }
     }
-    g.globalAlpha = 1; g.strokeStyle = "rgba(255,255,255,.9)"; g.lineWidth = 2; g.fillStyle = "rgba(255,255,255,.06)";
-    g.beginPath(); g.rect(vw.x0 * sc + ox, vw.y0 * sc + oy, (vw.x1 - vw.x0) * sc, (vw.y1 - vw.y0) * sc); g.fill(); g.stroke();
+    g.globalAlpha = 1; g.strokeStyle = "rgba(255,255,255,.9)"; g.lineWidth = 2;
+    g.beginPath(); g.rect(vw.x0 * sc + ox, vw.y0 * sc + oy, (vw.x1 - vw.x0) * sc, (vw.y1 - vw.y0) * sc); g.stroke();
   });
 }
 $("#mmc").addEventListener("pointerdown", e => {
