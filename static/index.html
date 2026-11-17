@@ -221,7 +221,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #help .r { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; font-size: var(--fs-body); color: #d6d6dc; border-bottom: 1px solid rgba(255,255,255,.04); }
 #help kbd { font-family: inherit; font-size: var(--fs-caption); background: #2a2a2f; border: 1px solid var(--line2); border-radius: 5px; padding: 1px 6px; color: #fff; margin-left: 3px; }
 
-.menu { position: fixed; z-index: 30; display: none; flex-direction: column; min-width: 190px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 12px 40px rgba(0,0,0,.55); backdrop-filter: blur(10px); }
+.menu { position: fixed; z-index: 30; display: none; flex-direction: column; min-width: 190px; max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 12px 40px rgba(0,0,0,.55); backdrop-filter: blur(10px); }
 .menu.on { display: flex; }
 .menu .mt { color: var(--faint); font-size: var(--fs-caption); padding: 4px 10px 6px; }
 .menu button { display: flex; align-items: center; gap: 10px; border: none; background: none; padding: 7px 10px; border-radius: 8px; text-align: left; color: #dcdce2; }
@@ -229,6 +229,13 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .menu button .k { margin-left: auto; color: var(--faint); font-size: var(--fs-caption); }
 .menu .sw { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
 .menu .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+.menu [hidden] { display: none; }
+#arrangeMenu { max-height: calc(100vh - 16px); overflow-y: auto; }
+#arrangeMenu button:disabled { opacity: .4; cursor: default; }
+#arrangeMenu button:disabled:hover { background: none; }
+#arrangeMenu .ct-arrange-scope { display: flex; align-items: center; gap: 8px; padding: 4px 10px 8px; color: var(--dim); font-size: var(--fs-small); }
+#arrangeMenu select { min-width: 0; background: var(--card-hi); border: 1px solid var(--line2); border-radius: 7px; padding: 4px 6px; color: var(--text); }
+#arrangeMenu .ct-arrange-note { padding: 6px 10px 4px; color: var(--faint); font-size: var(--fs-caption); }
 
 #drawer { position: fixed; left: 66px; top: 70px; bottom: 14px; width: 300px; z-index: 19; display: none; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.5); backdrop-filter: blur(10px); }
 #drawer.on { display: flex; }
@@ -407,6 +414,8 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
   <button data-add="script"><span class="sw" style="background:#22263a;color:#8fb0ff"><svg class="i"><use href="#i-script"/></svg></span>分镜脚本</button>
   <div class="sep"></div>
   <button data-add="upload"><span class="sw" style="background:#222;color:#ccc"><svg class="i"><use href="#i-upload"/></svg></span>上传图片</button>
+  <div class="sep" data-arrange-entry hidden></div>
+  <button data-arrange-entry hidden><svg class="i"><use href="#i-assets"/></svg>整理对齐…</button>
 </div>
 
 <div id="ntools" role="toolbar" aria-label="节点操作"></div>
@@ -445,7 +454,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <link rel="stylesheet" href="/static/image-editor.css?v=4">
 <script src="/static/image-editor.js?v=6"></script>
 <script src="/static/editor-workspace.js?v=3"></script>
-<script src="/static/canvas-tools.js?v=1"></script>
+<script src="/static/canvas-tools.js?v=2"></script>
 <link rel="stylesheet" href="/static/agent-chat.css?v=3">
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
@@ -1269,7 +1278,7 @@ vp.addEventListener("contextmenu", e => e.preventDefault());
 // ---- right-click menu
 function ctxMenu(e) {
   const el = e.target.closest?.(".node");
-  if (!el) { openAddMenu(e.clientX, e.clientY, { at: toW(e.clientX, e.clientY) }); return; }
+  if (!el) { openAddMenu(e.clientX, e.clientY, { at: toW(e.clientX, e.clientY), arrange: true }); return; }
   const n = node(el.dataset.id); if (!n) return;
   if (!sel.has(n.id)) selectOnly(n.id);
   const many = sel.size > 1, v = curV(n), it = [];
@@ -1296,6 +1305,7 @@ function ctxMenu(e) {
     add("ct:group", "assets", "编组", "⌘G"); add("ct:ungroup", "assets", "取消编组", "⇧⌘G");
     add("ct:download", "dl", "批量下载素材"); it.push(`<div class="sep"></div>`);
   }
+  add("arrange", "assets", "整理图片与视频…");
   const vids = [...sel].map(node).filter(m => m && m.type === "video" && curV(m));
   const qv = [...sel].map(node).filter(m => m && m.type === "video" && !m.job && !m.data.film);
   if (many && qv.length) { add("queuegen", "video", `排队生成（${qv.length} 段视频，按名称顺序）`); if (!(vids.length >= 2)) it.push(`<div class="sep"></div>`); }
@@ -1309,7 +1319,8 @@ function ctxMenu(e) {
   m.style.left = Math.min(e.clientX, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.min(e.clientY, innerHeight - m.offsetHeight - 8) + "px";
   $$("button", m).forEach(b => b.onclick = () => {
     closeMenus(); const a = b.dataset.a;
-    if (a.startsWith("ct:")) ctAction(a.slice(3));
+    if (a === "arrange") ctOpenArrangeMenu(e.clientX, e.clientY);
+    else if (a.startsWith("ct:")) ctAction(a.slice(3));
     else if (a === "focus") fit([...sel].map(node).filter(Boolean));
     else if (a === "rename") { const nm = $(".nm", els.get(n.id)); nm.dispatchEvent(new MouseEvent("dblclick", { bubbles: false })); }
     else if (a === "dup") duplicate([...sel]);
@@ -1376,6 +1387,8 @@ vp.addEventListener("dblclick", e => {
 let addCtx = null;
 function openAddMenu(x, y, ctx) {
   closeMenus(); addCtx = ctx; const m = $("#addMenu");
+  $$('[data-arrange-entry]', m).forEach(el => { el.hidden = !ctx.arrange; });
+  $('button[data-arrange-entry]', m).onclick = () => ctOpenArrangeMenu(x, y);
   $$("button[data-add]", m).forEach(b => {
     const t = b.dataset.add; let ok = true;
     if (ctx.from) ok = t !== "upload" && canLink(ctx.from, { id: "?", type: t });
@@ -1384,7 +1397,7 @@ function openAddMenu(x, y, ctx) {
   });
   $(".mt", m).textContent = ctx.from ? "连接到新节点" : ctx.to ? "添加上游输入" : "添加到画布";
   m.classList.add("on");
-  m.style.left = Math.min(x, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.min(y, innerHeight - m.offsetHeight - 8) + "px";
+  m.style.left = Math.max(8, Math.min(x, innerWidth - m.offsetWidth - 8)) + "px"; m.style.top = Math.max(8, Math.min(y, innerHeight - m.offsetHeight - 8)) + "px";
 }
 // first spot at (x, y) or below it where a new node of this type does not overlap an existing one
 function freeSpot(x, y, type) {

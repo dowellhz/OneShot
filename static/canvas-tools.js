@@ -29,6 +29,47 @@ function ctPositions(nodes,operation,sizeOf=size) {
   return items.map(({id,x,y})=>({id,x,y}));
 }
 function ctSelected(){return [...sel].map(node).filter(Boolean);}
+const ctMedia=n=>n && (n.type==="image" || n.type==="video");
+function ctGridPositions(nodes,obstacles=[],sizeOf=size){
+  if(nodes.length<2)return [];
+  const items=nodes.map(n=>({id:n.id,x:n.x,y:n.y,...sizeOf(n)})).sort((a,b)=>a.y-b.y || a.x-b.x || a.id.localeCompare(b.id));
+  const columns=Math.ceil(Math.sqrt(items.length)),gapX=120,gapY=100;
+  const x0=Math.min(...items.map(n=>n.x)),y0=Math.min(...items.map(n=>n.y));
+  const widths=Array.from({length:columns},(_,col)=>Math.max(...items.filter((_,i)=>i%columns===col).map(n=>n.w)));
+  const lefts=widths.map((_,i)=>x0+widths.slice(0,i).reduce((sum,w)=>sum+w+gapX,0));
+  let y=y0;
+  for(let i=0;i<items.length;i+=columns){const row=items.slice(i,i+columns);row.forEach((n,col)=>{n.x=lefts[col];n.y=y;});y+=Math.max(...row.map(n=>n.h))+gapY;}
+  // Keep fixed nodes where they are; move the whole grid below any collision.
+  const fixed=obstacles.map(n=>({...n,...sizeOf(n)}));let offset=0;
+  for(let pass=0;pass<fixed.length;pass++){
+    const hits=fixed.filter(o=>items.some(n=>n.x<o.x+o.w+60 && n.x+n.w+60>o.x && n.y+offset<o.y+o.h+60 && n.y+n.h+offset+60>o.y));
+    if(!hits.length)break;
+    offset=Math.max(offset,...hits.map(o=>o.y+o.h+gapY-y0));
+  }
+  return items.map(({id,x,y})=>({id,x:Math.round(x),y:Math.round(y+offset)}));
+}
+function ctArrange(action,ids){
+  const nodes=ids.map(node).filter(ctMedia);
+  if(nodes.length<2)return toast("至少需要两个图片或视频节点");
+  const targets=new Set(nodes.map(n=>n.id));
+  const positions=action==="grid" ? ctGridPositions(nodes,B.nodes.filter(n=>!targets.has(n.id))) : ctPositions(nodes,action);
+  if(!positions.length)return toast("等距排列至少需要三个图片或视频节点");
+  if(!positions.some(p=>{const n=node(p.id);return n.x!==p.x || n.y!==p.y;}))return toast("这些节点已经对齐");
+  checkpoint();for(const p of positions){const n=node(p.id);n.x=p.x;n.y=p.y;render(n);}
+  drawEdges();drawMini();placeOverlays();save();toast("已整理 "+nodes.length+" 个节点，可按 ⌘/Ctrl Z 撤销");
+}
+function ctOpenArrangeMenu(x,y){
+  closeMenus();const bid=boardId,selected=ctSelected().filter(ctMedia).map(n=>n.id),all=B.nodes.filter(ctMedia).map(n=>n.id);
+  let m=$("#arrangeMenu");if(!m){m=document.createElement("div");m.id="arrangeMenu";m.className="menu";document.body.append(m);}
+  m.innerHTML=`<div class="mt">整理对齐</div><label class="ct-arrange-scope">范围<select aria-label="整理范围"><option value="selected">选中的图片与视频（${selected.length}）</option><option value="all">全部图片与视频（${all.length}）</option></select></label><button data-layout="grid">${ico("assets")}网格整理</button><div class="sep"></div>`+
+    CT_ACTIONS.slice(0,8).map(([action,label,path])=>`<button data-layout="${action}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg>${label}</button>`).join("")+`<div class="ct-arrange-note">只调整位置，支持撤销</div>`;
+  const select=$("select",m);select.value=selected.length>=2 ? "selected" : "all";
+  const chosen=()=>select.value==="selected" ? selected : all;
+  const update=()=>{$$("[data-layout]",m).forEach(b=>{const min=b.dataset.layout.startsWith("distribute")?3:2;b.disabled=chosen().length<min;b.title=b.disabled?`至少需要 ${min} 个图片或视频节点`:"";});$(".ct-arrange-note",m).textContent=chosen().length<2?"至少需要两个图片或视频节点":"只调整位置，支持撤销";};
+  select.onchange=update;update();
+  $$("[data-layout]",m).forEach(b=>b.onclick=()=>{const ids=chosen();closeMenus();if(boardId===bid)ctArrange(b.dataset.layout,ids);});
+  m.classList.add("on");m.style.left=Math.max(8,Math.min(x,innerWidth-m.offsetWidth-8))+"px";m.style.top=Math.max(8,Math.min(y,innerHeight-m.offsetHeight-8))+"px";
+}
 function ctGroupBounds(nodes){const rects=nodes.map(n=>({...n,...size(n)}));return {x:Math.min(...rects.map(n=>n.x))-20,y:Math.min(...rects.map(n=>n.y))-64,right:Math.max(...rects.map(n=>n.x+n.w))+20,bottom:Math.max(...rects.map(n=>n.y+n.h))+20};}
 function ctGroup(){const nodes=ctSelected();if(nodes.length<2)return toast("至少选择两个节点");checkpoint();const ids=nodes.map(n=>n.id),chosen=new Set(ids);B.groups=(B.groups||[]).map(g=>({...g,nodes:g.nodes.filter(id=>!chosen.has(id))})).filter(g=>g.nodes.length);B.groups.push({id:"g"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:"分组 "+((B.groups||[]).length+1),nodes:ids});drawEdges();save();toast("已编组，拖动分组标题可整体移动");}
 function ctUngroup(ids=sel){const chosen=new Set(ids),groups=(B.groups||[]).filter(g=>g.nodes.some(id=>chosen.has(id)));if(!groups.length)return toast("选中的节点没有编组");checkpoint();const remove=new Set(groups.map(g=>g.id));B.groups=B.groups.filter(g=>!remove.has(g.id));ctRenderGroups();save();toast("已取消编组");}
