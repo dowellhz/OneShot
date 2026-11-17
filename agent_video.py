@@ -29,8 +29,6 @@ def connect_inputs(board, nid, recipe):
         source_id = image.get("node_id")
         if not source_id or not any(n["id"] == source_id and n.get("type") == "image" for n in board["nodes"]):
             continue
-        if any(e.get("from") == source_id and e.get("to") == nid for e in board.setdefault("edges", [])):
-            continue
         if image.get("role") == "subject":
             role = "subject"
         elif recipe.get("planned"):
@@ -40,30 +38,66 @@ def connect_inputs(board, nid, recipe):
         edge = {"from": source_id, "to": nid, "role": role}
         if recipe.get("planned") and role != "subject":
             edge["time"] = image.get("time", 0)
-        board["edges"].append(edge)
+        if edge not in board.setdefault("edges", []):
+            board["edges"].append(edge)
+
+
+def remember_version(s, board, n):
+    """Legacy versions acquire a snapshot before their live inputs are changed."""
+    version = s.current(n)
+    if version is not None:
+        version.setdefault("input_edges", copy.deepcopy([e for e in board.get("edges", []) if e.get("to") == n["id"]]))
+        version.setdefault("node_data", copy.deepcopy(n.get("data", {})))
 
 
 def queued_node(s, run, user, cid, pending):
-    nid = result_id(cid)
+    nid = pending.get("target_id") or result_id(cid)
     def change(b):
-        if any(n["id"] == nid for n in b["nodes"]):
+        n = next((n for n in b["nodes"] if n["id"] == nid), None)
+        if pending.get("target_id"):
+            if not n:
+                return {"node_id": nid, "deleted": True}
+            if n.get("job") and n["job"].get("agent_call") != cid:
+                raise ValueError("原节点已有其他任务，未覆盖其进度")
+            if pending.get("kind") == "video":
+                remember_version(s, b, n)
+                image_ids = {im["id"] for im in b["nodes"] if im.get("type") == "image"}
+                b["edges"] = [e for e in b.get("edges", []) if not (e.get("to") == nid and e.get("from") in image_ids)]
+                n["data"].update(copy.deepcopy(pending.get("target_data") or node_data(pending["recipe"])))
+                connect_inputs(b, nid, pending["recipe"])
+        elif n:
             return {"node_id": nid}
-        recipe = pending["recipe"]
-        x = max((n.get("x", 0) + s.dimensions(n)[0] for n in b["nodes"]), default=20) + 100
-        y = min((n.get("y", 100) for n in b["nodes"]), default=100)
-        b["nodes"].append({"id": nid, "type": "video", "name": pending["name"][:40], "x": x, "y": y,
-            "data": node_data(recipe), "versions": [], "cur": -1, "agent_call": cid,
-            "job": {"ids": pending["ids"], "prompt": pending["prompt"], "t0": round(time.time() * 1000), "agent_call": cid}})
-        connect_inputs(b, nid, recipe)
-        return {"node_id": nid}
+        else:
+            x = max((n.get("x", 0) + s.dimensions(n)[0] for n in b["nodes"]), default=20) + 100
+            y = min((n.get("y", 100) for n in b["nodes"]), default=100)
+            n = {"id": nid, "type": "video", "name": pending["name"][:40], "x": x, "y": y,
+                 "data": node_data(pending["recipe"]), "versions": [], "cur": -1, "agent_call": cid}
+            b["nodes"].append(n)
+            connect_inputs(b, nid, pending["recipe"])
+        n["job"] = {"ids": pending["ids"], "prompt": pending["prompt"], "t0": round(time.time() * 1000), "agent_call": cid}
+        n.pop("agent_error", None)
+        history = {"input_edges": copy.deepcopy([e for e in b.get("edges", []) if e.get("to") == nid]),
+                   "node_data": copy.deepcopy(n["data"])} if pending.get("kind") == "video" else {}
+        return {"node_id": nid, "history": history}
     return s.commit(run, user, "queued_" + cid, change)
 
 
-def fail_node(s, run, user, cid, message):
-    nid = result_id(cid)
+def fail_node(s, run, user, cid, message, target_id=None):
+    nid = target_id or result_id(cid)
     def change(b):
         n = next((n for n in b["nodes"] if n["id"] == nid and (n.get("job") or {}).get("agent_call") == cid), None)
         if n:
+            queued = next((op for op in b.get("agent_ops", []) if op["id"] == "queued_" + cid), None)
+            history = (queued or {}).get("result", {}).get("history", {})
+            previous = s.current(n)
+            if target_id and previous and history:
+                incoming = [e for e in b.get("edges", []) if e.get("to") == nid]
+                if incoming == history.get("input_edges") and "input_edges" in previous:
+                    existing = {node["id"] for node in b["nodes"]}
+                    restored = [e for e in previous["input_edges"] if e.get("from") in existing]
+                    b["edges"] = [e for e in b.get("edges", []) if e.get("to") != nid] + copy.deepcopy(restored)
+                if n.get("data") == history.get("node_data") and "node_data" in previous:
+                    n["data"] = copy.deepcopy(previous["node_data"])
             n["job"] = None
             n["agent_error"] = str(message)[:400]
         return {"node_id": nid}
@@ -77,7 +111,7 @@ def register(tool, prop, node, prompt):
                "seed": prop("integer", minimum=-1, maximum=2**48), "provider": prop("string", maxLength=100), "name": node}
     tool("video_generate", "生成真正的视频（MP4），使用平台视频服务与队列。参考帧指定图片节点，支持首尾帧、多关键帧及人物设定；不能用image_generate代替。", {
         **options, "frames": prop("array", items=frame, maxItems=12)}, ["prompt"])
-    tool("video_regenerate", "重新生成已有视频，复用原视频节点的提示词、时长、关键帧连线和配置。可用replacements把旧关键帧换成修正后的图片节点，结果创建新视频节点，原视频保留。", {
+    tool("video_regenerate", "重新生成已有视频，复用提示词、时长、关键帧连线和配置。可用replacements替换关键帧。结果在原视频节点追加版本，用Tab切换，历史视频与输入连线保留。", {
         **options, "node_id": node, "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
 
@@ -176,7 +210,13 @@ async def execute(s, run, user, cid, name, args):
         raise ValueError("原视频没有可用提示词，请提供视频动作要求")
     if data.get("provider"):
         payload["provider"] = data["provider"]
-    return await s.submit_generation(run, user, cid, payload, args.get("name") or (original.get("name", "视频") + " · 重生成" if original else "助手视频"), s.host.generate_request)
+    target_data = None
+    if original:
+        target_data = {**data, "duration": duration}
+        if args.get("prompt"):
+            target_data.update(prompt=args["prompt"], pmode="free")
+    return await s.submit_generation(run, user, cid, payload, args.get("name") or (original.get("name", "视频") + " · 重生成" if original else "助手视频"),
+                                     s.host.generate_request, target_id=original["id"] if original else None, target_data=target_data)
 
 
 async def describe(s, run, user, nid):

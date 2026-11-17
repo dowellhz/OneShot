@@ -95,13 +95,14 @@ async def main(project):
                     after = json.loads(server.board_path("smoke").read_text())
                     assert len(after["nodes"]) == 2, after
                     assert after["nodes"][0]["versions"][0]["ref"] == receipt["source"]["ref"]
-                    await run("将刚生成的暖色测试图片顺时针旋转90度，保留已有图片，旋转结果放在右边。", [], "real-smoke-2")
+                    await run("将刚生成的暖色测试图片顺时针旋转90度，保留已有图片，在原节点保存新版本。", [], "real-smoke-2")
                     final = json.loads(server.board_path("smoke").read_text())
-                    assert len(final["nodes"]) == 3, final
+                    assert len(final["nodes"]) == 2, final
+                    assert len(final["nodes"][-1]["versions"]) == 2, final
                     assert "image_generate" in report["rounds"][0]["tools"]
                     assert "canvas_arrange" in report["rounds"][0]["tools"]
                     assert "image_transform" in report["rounds"][1]["tools"]
-                    report["outputs"] = [{"id": n["id"], "name": n["name"], "ref": n["versions"][0]["ref"]} for n in final["nodes"]]
+                    report["outputs"] = [{"id": n["id"], "name": n["name"], "ref": n["versions"][n["cur"]]["ref"]} for n in final["nodes"]]
                     report["completed"] = time.time()
                     (project / "data/agent-chat-smoke.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
                     print("REAL AGENT SMOKE PASSED", json.dumps(report, ensure_ascii=False), flush=True)

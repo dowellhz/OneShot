@@ -78,14 +78,14 @@ tool("media_describe", "通过配置的视觉模型理解图片，返回描述�
 tool("image_generate", "通过已配置的默认生图服务生成图片。可引用图片节点，所有结果创建独立节点。等待生成完成后返回结果节点ID。", {
     "prompt": PROMPT, "reference_ids": prop("array", items=NODE, maxItems=4), "count": prop("integer", minimum=1, maximum=4),
     "aspect": prop("string", enum=["auto", "1:1", "3:4", "4:3", "9:16", "16:9"]), "name": NODE}, ["prompt"])
-tool("image_edit", "以文字编辑图片，保存为新的结果节点。局部修改须提供真实已有mask_ref；需要保护主体时先获取选区，不能假装已保护。", {
+tool("image_edit", "以文字编辑图片，在原节点追加历史版本。局部修改须提供真实已有mask_ref；需要保护主体时先获取选区，不能假装已保护。", {
     "node_id": NODE, "prompt": PROMPT, "mask_ref": STR, "backend": prop("string", enum=["h3", "native"]), "name": NODE}, ["node_id", "prompt"])
-tool("image_cutout", "自动去背景，输出透明PNG并创建结果节点。", {"node_id": NODE}, ["node_id"])
+tool("image_cutout", "自动去背景，在原图片节点追加透明PNG版本。", {"node_id": NODE}, ["node_id"])
 tool("image_segment", "基于原图像素坐标点击选物，返回遮罩引用。无法确定坐标时先询问用户或打开编辑器。", {
     "node_id": NODE, "invert": prop("boolean"), "points": prop("array", minItems=1, maxItems=16, items=prop("object", properties={
         "x": prop("number", minimum=0, maximum=8192), "y": prop("number", minimum=0, maximum=8192),
         "positive": prop("boolean")}, required=["x", "y"], additionalProperties=False))}, ["node_id", "points"])
-tool("image_transform", "裁剪、旋转、翻转或调色，结果创建独立节点，原图保留。", {
+tool("image_transform", "裁剪、旋转、翻转或调色，在原节点追加版本，历史图片保留。", {
     "node_id": NODE, "rotate": prop("integer", enum=[-270, -180, -90, 0, 90, 180, 270]),
     "flip_x": prop("boolean"), "flip_y": prop("boolean"),
     "brightness": prop("number", minimum=0, maximum=2), "contrast": prop("number", minimum=0, maximum=2),
@@ -104,7 +104,7 @@ SYSTEM = """你是 OneShot 创作助手。用中文帮助用户操作当前画�
 用户说只改背景、主体不动时，image_edit必须使用target=background；仅改主体用foreground。自动分割是建议，不能保证语义识别完全正确；需要精确局部时用image_select的manual模式等待用户画选区。已有选区可按selection_id跨轮复用。
 image_select manual会等待真实用户输入，工具返回后才能继续编辑；不能绕过选区等待改做整图。图层先用image_layers_get读取ID再操作。减弱生成效果优先调生成区域图层不透明度；沿用参数重新生成用image_reuse，它复用编辑前原图，不能在结果上重复叠加。支持Markdown回复，复杂结果可用列表或表格。
 视频必须调用video_generate；重生成现有视频用video_regenerate，用replacements指定修正关键帧。image_generate只会生成静态图片，不能用于视频，也不能把图片结果叫视频或归咎服务配置。以返回的media_type和文件类型为准。media_describe支持视频抽帧分析。
-本轮选择和图片版本已固定。生成和编辑都保留源图，结果工具会返回真实节点ID。多个版本就是多个结果节点。
+本轮选择和图片版本已固定。修改、图层调整、沿用参数重试和视频重生成都在原节点追加版本，通过Tab切换，不能为了普通修改另建节点；仅明确新建素材用image_generate/video_generate，独立提取用image_extract。历史版本保留，结果工具返回真实节点ID和版本索引。同轮连续修改同一节点时，工具自动沿用上一次修改结果。
 生成工具等待真实任务完成；拿到结果后继续完成排列等剩余步骤。定位操作仅向当前页面发出请求，不能声称用户已经看到。
 每轮最多生成4张图片、1段视频、调用16次工具。达到限制后说明已完成和剩余内容。失败时根据错误修正，不能重复提交状态不明的任务。
 不提供虚构的进度、图片内容或模型名称。工具不支持的能力明确说明。只执行当前用户要求的创作任务。
@@ -270,9 +270,27 @@ class AgentService:
         w = max(220, min(460, math.sqrt(114000 * ar)))
         return round(w), round(w / ar)
 
-    def add_results(self, run, user, cid, versions, name, prompt="", kind="image"):
+    def add_results(self, run, user, cid, versions, name, prompt="", kind="image", target_id=None):
         def change(b):
             nodes = b.setdefault("nodes", [])
+            if target_id:
+                target = next((n for n in nodes if n["id"] == target_id), None)
+                if not target:
+                    return {"nodes": [], "media_type": kind, "notice": "原节点已删除，未重新创建；生成文件仍保留在素材库"}
+                if target.get("type") != kind:
+                    raise ToolError("原节点媒体类型已改变，未写入结果")
+                if target.get("job") and target["job"].get("agent_call") != cid:
+                    raise ToolError("原节点已有其他任务，未覆盖其版本")
+                made = []
+                for version in versions:
+                    target.setdefault("versions", []).append({**version, "label": name[:80]})
+                    target["cur"] = len(target["versions"]) - 1
+                    made.append({"id": target_id, "type": kind, "name": target["name"], "ref": version["ref"],
+                                 "url": version["url"], "version_index": target["cur"]})
+                if (target.get("job") or {}).get("agent_call") == cid:
+                    target["job"] = None
+                target.pop("agent_error", None)
+                return {"nodes": made, "media_type": kind}
             x = max((n.get("x", 0) + self.dimensions(n)[0] for n in nodes), default=20) + 100
             y = min((n.get("y", 100) for n in nodes), default=100)
             made = []
@@ -333,14 +351,15 @@ class AgentService:
             await self.response(self.host.cancel, user, {"ids": ids})
 
     async def wait_jobs(self, run, user, cid, pending):
-        video = pending.get("kind") == "video" and pending.get("recipe")
-        if video:
-            agent_video.queued_node(self, run, user, cid, pending)
+        visible = pending.get("target_id") or (pending.get("kind") == "video" and pending.get("recipe"))
         try:
+            if visible:
+                queued = agent_video.queued_node(self, run, user, cid, pending)
+                pending = {**pending, "history": queued.get("history", {})}
             return await self._wait_jobs(run, user, cid, pending)
         except Exception as error:
-            if video:
-                agent_video.fail_node(self, run, user, cid, error)
+            if visible:
+                agent_video.fail_node(self, run, user, cid, error, pending.get("target_id"))
             raise
 
     async def _wait_jobs(self, run, user, cid, pending):
@@ -382,8 +401,9 @@ class AgentService:
                         versions.append({"ref": out["ref"], "url": "/media?ref=" + quote(out["ref"], safe=""),
                                          "w": m.get("width"), "h": m.get("height"), "seed": (s.get("meta") or {}).get("seed"),
                                          "seconds": m.get("duration"), "prompt": pending["prompt"], "source": "gen", **(out.get("extra") or {}),
-                                         **({"video_recipe": {**pending["recipe"], "seed": (s.get("meta") or {}).get("seed", pending["recipe"].get("seed", -1))}} if expected == "video" and pending.get("recipe") else {})})
-                result = self.add_results(run, user, cid, versions, pending["name"], pending["prompt"], pending.get("kind", "image")) if versions else {"nodes": []}
+                                         **({"video_recipe": {**pending["recipe"], "seed": (s.get("meta") or {}).get("seed", pending["recipe"].get("seed", -1))},
+                                             **copy.deepcopy(pending.get("history", {}))} if expected == "video" and pending.get("recipe") else {})})
+                result = self.add_results(run, user, cid, versions, pending["name"], pending["prompt"], pending.get("kind", "image"), pending.get("target_id")) if versions else {"nodes": []}
                 if errors:
                     result["errors"] = errors
                 if not versions:
@@ -494,7 +514,7 @@ class AgentService:
                 raise ToolError("遮罩未由本轮工具生成；请先生成选区或请用户在编辑器画选区")
             payload = {"ref": v["ref"], "mode": "region" if mask else "whole", "prompt": args["prompt"],
                        "backend": args.get("backend", "h3"), "mask": mask, "feather": 4, "strength": 1, "seed": -1}
-            return await self.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 修改", h.image_edit_generate)
+            return await self.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 修改", h.image_edit_generate, target_id=n["id"])
         if name == "image_transform":
             result = await self.response(h.image_transform, user, {"ref": v["ref"], **{k: val for k, val in args.items() if k != "node_id"}})
         elif name in ("image_cutout", "image_segment"):
@@ -512,13 +532,19 @@ class AgentService:
                 return {"mask_ref": result["ref"], "node_id": n["id"], "source_ref": v["ref"]}
         else:
             raise ToolError("不支持这个工具")
-        return self.add_results(run, user, cid, [{**result, "source": "edit", "prompt": "", "agent_source": v["ref"]}], n.get("name", "图片") + " · " + ("抠图" if name == "image_cutout" else "调整"))
+        return self.add_results(run, user, cid, [{**result, "source": "edit", "prompt": "", "agent_source": v["ref"]}], n.get("name", "图片") + " · " + ("抠图" if name == "image_cutout" else "调整"), target_id=n["id"])
 
-    async def submit_generation(self, run, user, cid, payload, name, fn):
+    async def submit_generation(self, run, user, cid, payload, name, fn, target_id=None, target_data=None):
         if run["data"].get("uncertain"):
             raise ToolError("本轮存在提交状态待核实的任务，已停止追加生成，请先查看任务中心")
         count = payload.get("count", 1)
         kind = "video" if payload.get("kind") == "video" else "image"
+        if target_id:
+            target = next((n for n in self.board(user, run["board_id"])["nodes"] if n["id"] == target_id), None)
+            if not target or target.get("type") != kind:
+                raise ToolError("原节点已不存在或媒体类型不匹配，请重新读取画布")
+            if target.get("job"):
+                raise ToolError("原节点仍有任务，请等待完成或取消后再修改")
         counter, limit = ("generated_video", 1) if kind == "video" else ("generated", 4)
         if run["data"].get(counter, 0) + count > limit:
             raise ToolError("本轮最多生成1段视频和4张图片，请下一轮继续")
@@ -540,6 +566,10 @@ class AgentService:
         else:
             result = await self.response(fn, user, payload)
         pending = {"ids": result["ids"], "name": name, "prompt": payload["prompt"], "kind": kind}
+        if target_id:
+            pending["target_id"] = target_id
+        if target_data is not None:
+            pending["target_data"] = copy.deepcopy(target_data)
         if kind == "video":
             pending["recipe"] = copy.deepcopy(payload)
         db.run("UPDATE chat_calls SET state='waiting',result=?,updated=? WHERE id=?", dumps(pending), time.time(), cid)

@@ -35,7 +35,7 @@ def register(tools, tool, prop, node, text, prompt):
         fn = item["function"]
         if fn["name"] == "image_edit":
             fn["parameters"]["properties"].update(params)
-            fn["description"] = "编辑图片并创建新结果。用户只改背景/主体时必须指定target=background/foreground，工具自动生成真实保护遮罩；指定selection使用选区ID。whole只用于整图修改。"
+            fn["description"] = "编辑图片并在原节点追加历史版本。用户只改背景/主体时必须指定target=background/foreground，工具自动生成真实保护遮罩；指定selection使用选区ID。whole只用于整图修改。"
     tool("image_select", "生成并保存可跨轮复用的选区。foreground/background自动识别主体；manual等待用户在编辑器画区域；existing复用已保存选区。", {
         "node_id": node, "mode": prop("string", enum=["foreground", "background", "manual", "existing"]),
         "selection_id": node, "instruction": text}, ["node_id", "mode"])
@@ -43,14 +43,14 @@ def register(tools, tool, prop, node, text, prompt):
     layer_fields = {"name": node, "opacity": prop("number", minimum=0, maximum=1), "visible": prop("boolean"),
                     "x": prop("integer", minimum=-8192, maximum=8192), "y": prop("integer", minimum=-8192, maximum=8192),
                     "w": prop("integer", minimum=1, maximum=8192), "h": prop("integer", minimum=1, maximum=8192)}
-    tool("image_layers_edit", "按图层ID调整、隐藏、排序或导入其他图片节点，合成并保存可继续编辑的新结果节点。先读取图层ID；顺序从底到顶。", {
+    tool("image_layers_edit", "按图层ID调整、隐藏、排序或导入其他图片节点，合成并在原节点追加可继续编辑的新版本。先读取图层ID；顺序从底到顶。", {
         "node_id": node, "changes": prop("array", maxItems=16, items=prop("object", properties={"layer_id": node, **layer_fields}, required=["layer_id"], additionalProperties=False)),
         "add": prop("array", maxItems=8, items=prop("object", properties={"node_id": node, **layer_fields}, required=["node_id"], additionalProperties=False)),
         "remove": prop("array", items=node, maxItems=16), "order": prop("array", items=node, maxItems=16), "name": node}, ["node_id"])
     tool("image_extract", "提取生成区域或已保存选区，创建独立透明PNG节点。", {"node_id": node,
         "kind": prop("string", enum=["generated", "selection"]), "selection_id": node}, ["node_id", "kind"])
     tool("image_history", "读取图片历史版本、生成参数和已保存选区。version_index为从0开始的历史索引。", {"node_id": node}, ["node_id"])
-    tool("image_reuse", "沿用历史编辑的原图、遮罩与生成参数重新生成，可覆盖提示词、种子和强度。保留原结果，不在已编辑图片上重复叠加。", {
+    tool("image_reuse", "沿用历史编辑的原图、遮罩与生成参数重新生成，可覆盖提示词、种子和强度。在原节点追加历史版本，不在已编辑图片上重复叠加。", {
         "node_id": node, "version_index": prop("integer", minimum=0, maximum=4999), "prompt": prompt,
         "backend": prop("string", enum=["h3", "native"]), "name": node, **{k: v for k, v in params.items() if k not in ("target", "selection_id")}}, ["node_id"])
     tool("image_compare", "向页面提供编辑前后对比，可指定另一张图片作为对照。", {"node_id": node, "before_node_id": node,
@@ -222,7 +222,7 @@ async def execute(s, run, user, cid, name, args):
             payload["mask"] = selection["mask_ref"]
         if args.get("provider"):
             payload["provider"] = args["provider"]
-        return await s.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 修改", h.image_edit_generate)
+        return await s.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 修改", h.image_edit_generate, target_id=n["id"])
     if name == "image_history":
         return {"node_id": n["id"], "bound_ref": source_ref, "versions": [
             {"version_index": i, "ref": v["ref"], "prompt": (v.get("prompt") or "")[:800], "seed": v.get("seed"),
@@ -243,7 +243,7 @@ async def execute(s, run, user, cid, name, args):
         keys = ("ref", "mask", "mode", "prompt", "backend", "strength", "feather", "denoise", "steps", "seed", "provider", "padding")
         payload = {k: recipe[k] for k in keys if k in recipe}
         payload.update({k: args[k] for k in keys if k in args})
-        return await s.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 重试", h.image_edit_generate)
+        return await s.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 重试", h.image_edit_generate, target_id=n["id"])
     if name == "image_compare":
         before = source_ref
         if args.get("before_node_id"):
@@ -294,7 +294,7 @@ async def execute(s, run, user, cid, name, args):
         stack["layers"] = layers = [next(l for l in layers if l["id"] == lid) for lid in args["order"]]
     result = await s.response(h.image_layers, user, {"ref": stack["base_ref"], "layers": layers}, "/api/image-edit/layers")
     return s.add_results(run, user, cid, [{**result, "layer_stack": stack, "source": "edit", "agent_source": source_ref,
-                                         "edit": {"mode": "layers", "source": source_ref}}], args.get("name") or n.get("name", "图片") + " · 图层")
+                                         "edit": {"mode": "layers", "source": source_ref}}], args.get("name") or n.get("name", "图片") + " · 图层", target_id=n["id"])
 
 
 def pending_inputs(session_id):

@@ -147,9 +147,36 @@ async function run(){
  equal(evaluate('B.edges.filter(e=>e.to==="pendingVideo").length'),1,'pending video has visible source connection');
  remote.nodes.find(n=>n.id==='pendingVideo').versions=[{ref:'output:h3studio/test.mp4',url:'/media?ref=output:h3studio/test.mp4',w:640,h:480,seconds:5}];remote.nodes.find(n=>n.id==='pendingVideo').cur=0;remote.nodes.find(n=>n.id==='pendingVideo').job=null;remote.rev++;
  await evaluate('acSyncAgentJobs()');equal(evaluate('node("pendingVideo").versions.length'),1,'same pending node gets one completed video');equal(evaluate('node("pendingVideo").job'),null,'completed video clears progress');
+ // Both media types use tabs; video tabs restore version-specific settings and graph inputs.
+ evaluate('AC.board=boardId;sel=new Set(["n1"]);updateSel()');
+ equal(evaluate('els.get("n1").querySelectorAll(".vtabs [role=tab]").length'),3,'image versions have tabs');
+ evaluate('els.get("n1").querySelectorAll(".vtabs button")[0].click()');
+ equal(evaluate('node("n1").cur'),0,'image tab switches original node');
+ evaluate('nodeAction(node("n1"),"next")');equal(evaluate('node("n1").cur'),1,'toolbar shares version switching');
+ evaluate('const video=node("pendingVideo");video.versions[0].input_edges=[{from:"n1",to:video.id,role:"first"},{from:"n2",to:video.id}];video.versions[0].node_data={...video.data,prompt:"old",duration:5};video.versions.push({...video.versions[0],ref:"output:h3studio/second.mp4",url:"/media?ref=output:h3studio/second.mp4",input_edges:[{from:"agentResult",to:video.id,role:"keyframe",time:2}],node_data:{...video.data,prompt:"new",duration:8}});video.cur=1;video.data={...video.versions[1].node_data};B.edges=B.edges.filter(e=>e.to!==video.id).concat(video.versions[1].input_edges);render(video)');
+ const beforeTabs=evaluate('B.nodes.length');
+ evaluate('els.get("pendingVideo").querySelectorAll(".vtabs button")[0].click()');
+ equal(evaluate('node("pendingVideo").cur'),0,'video old tab selected');
+ equal(evaluate('node("pendingVideo").data.prompt'),'old','old prompt restored');
+ equal(evaluate('B.edges.filter(e=>e.to==="pendingVideo").map(e=>e.from)'),['n1','n2'],'old inputs restored');
+ evaluate('switchVersion(node("pendingVideo"),1)');
+ equal(evaluate('node("pendingVideo").data.duration'),8,'new duration restored');
+ equal(evaluate('B.edges.filter(e=>e.to==="pendingVideo")'),[{from:'agentResult',to:'pendingVideo',role:'keyframe',time:2}],'new input role and time restored');
+ equal(evaluate('B.nodes.length'),beforeTabs,'version tabs never add nodes');
+ evaluate('node("pendingVideo").job={ids:[],agent_call:"busy"};switchVersion(node("pendingVideo"),0)');
+ equal(evaluate('node("pendingVideo").cur'),1,'tabs cannot change an active job input graph');
+ evaluate('node("pendingVideo").job=null');
+ const historyCard=evaluate('acResultCards({nodes:[{id:"pendingVideo",type:"video",ref:"output:h3studio/test.mp4",version_index:0}]})');
+ assert.match(historyCard,/test\.mp4/);assert(!historyCard.includes('second.mp4'),'chat result shows the saved version');
+ evaluate('duplicate(["pendingVideo"])');
+ const copyId=evaluate('[...sel][0]');
+ equal(evaluate(`node(${JSON.stringify(copyId)}).versions[0].input_edges.every(e=>e.to===${JSON.stringify(copyId)})`),true,'duplicated history targets copied node');
+ evaluate(`switchVersion(node(${JSON.stringify(copyId)}),0)`);
+ equal(evaluate(`B.edges.filter(e=>e.to===${JSON.stringify(copyId)}).map(e=>e.from)`),['n1','n2'],'copied tabs restore copied input graph');
  console.log('DOM integration passed: boot, zoom, fit, draft restore, undo/redo, comparisons, layer opacity/merge, docking, alignment, grouping/undo and spacing.');
  console.log('Agent DOM integration passed: panel, references, interrupted submission retry, result sync/cards/focus, conversation restore, floating layout and conflict-safe merge.');
  console.log('Stage-two DOM passed: Markdown tables/code/links/XSS cleanup, video cards, layer metadata, before/after comparison and manual selection handoff.');
  console.log('Pending video DOM passed: immediate input edge, independent sync with chat closed and no duplicate completion.');
+ console.log('Version tabs DOM passed: image tabs, video input/settings restoration, busy protection, immutable chat result cards and copied history.');
 }
 run().catch(err=>{console.error(err);process.exitCode=1;}).finally(()=>w.close());

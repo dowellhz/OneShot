@@ -157,7 +157,9 @@ class ChatIntegration(ChatFixture):
         self.svc.model.side_effect = [call("image_transform", {"node_id": results[1]["id"], "rotate": 90}, "rotate"), answer()]
         rid2 = await self.send("第二张旋转一下", "request002", [])
         self.assertEqual((await self.wait(rid2))["state"], "done")
-        self.assertEqual(len(self.load()["nodes"]), 6)
+        self.assertEqual(len(self.load()["nodes"]), 5)
+        modified = next(n for n in self.load()["nodes"] if n["id"] == results[1]["id"])
+        self.assertEqual(len(modified["versions"]), 2)
 
     async def test_selected_version_is_frozen(self):
         gate = asyncio.Event()
@@ -181,7 +183,7 @@ class ChatIntegration(ChatFixture):
         await self.client.put("/api/board/test", json=b)
         gate.set()
         await self.wait(rid)
-        out = self.load()["nodes"][-1]["versions"][0]
+        out = self.load()["nodes"][0]["versions"][-1]
         self.assertEqual((out["w"], out["h"]), (96, 128))
 
     async def test_invalid_tools_and_mask_never_execute(self):

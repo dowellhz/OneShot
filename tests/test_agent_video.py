@@ -1,5 +1,6 @@
 """Video tool routing, regeneration inputs and media-type verification."""
 import asyncio
+import copy
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -82,7 +83,80 @@ class VideoIntegration(ChatFixture):
         self.assertEqual(payload["quality"], "hd")
         self.assertEqual([i["ref"] for i in payload["images"]], [second["ref"], second["ref"]])
         self.assertEqual(payload["prompt"], "scissors close naturally")
+        self.assertEqual(submit.await_args.kwargs["target_id"], "n5")
         self.assertEqual(self.load()["nodes"], b["nodes"])
+
+    async def test_regeneration_appends_to_original_and_snapshots_both_input_graphs(self):
+        old, new = self.make_video(), self.make_video()
+        b = self.load()
+        b["nodes"].append({"id": "video", "type": "video", "name": "原视频", "x": 700, "y": 90,
+                           "data": {"prompt": "old movement", "duration": 5, "quality": "std"}, "versions": [old], "cur": 0, "job": None})
+        corrected = copy.deepcopy(b["nodes"][0]); corrected["id"] = "corrected"
+        b["nodes"].append(corrected)
+        original_edges = [{"from": "n1", "to": "video", "role": "first"}, {"from": "n2", "to": "video"}]
+        b["edges"] = original_edges
+        server.board_path("test").write_text(json.dumps(b))
+        started, finish = asyncio.Event(), asyncio.Event()
+        async def submit(*_):
+            return web.json_response({"ids": ["e123456789012"]})
+        async def jobs(req):
+            started.set()
+            return web.json_response({"e123456789012": {"state": "done" if finish.is_set() else "running", "meta": {"seed": 42},
+                                    "outputs": [{"ref": new["ref"]}] if finish.is_set() else []}})
+        self.svc.model.side_effect = [call("video_regenerate", {"node_id": "video", "prompt": "new movement", "replacements": [{"from_node_id": "n1", "to_node_id": "corrected"}]}), answer()]
+        with patch.object(server, "generate_request", side_effect=submit), patch.object(server, "jobs", side_effect=jobs):
+            rid = await self.send("原视频上再修改", selected=["video"])
+            await started.wait()
+            waiting = self.load(); n = next(n for n in waiting["nodes"] if n["id"] == "video")
+            self.assertEqual(len(waiting["nodes"]), 4)
+            self.assertEqual(n["versions"][0]["input_edges"], original_edges)
+            self.assertEqual(n["versions"][0]["node_data"]["prompt"], "old movement")
+            self.assertTrue(n["job"]["agent_call"])
+            self.assertEqual({e["from"] for e in waiting["edges"]}, {"corrected", "n2"})
+            # Simulate Web restart; the durable waiting call must finish in the same node.
+            self.svc.closing = True
+            task = self.svc.tasks[rid]; task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self.svc.closing = False
+            finish.set(); self.svc.launch(rid)
+            self.assertEqual((await self.wait(rid))["state"], "done")
+        final = self.load(); n = next(n for n in final["nodes"] if n["id"] == "video")
+        self.assertEqual(len(final["nodes"]), 4)
+        self.assertEqual(len(n["versions"]), 2)
+        self.assertEqual(n["cur"], 1)
+        self.assertIsNone(n["job"])
+        self.assertEqual((n["name"], n["x"], n["y"]), ("原视频", 700, 90))
+        self.assertEqual(n["versions"][1]["input_edges"], final["edges"])
+        self.assertEqual(n["versions"][1]["node_data"]["prompt"], "new movement")
+        self.assertEqual(n["versions"][1]["video_recipe"]["seed"], 42)
+        result = json.loads(db_row(rid)["result"])
+        self.assertEqual(result["nodes"][0]["id"], "video")
+        self.assertEqual(result["nodes"][0]["version_index"], 1)
+        response = await self.client.post(f"/api/chat/runs/{rid}/undo", json={})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.load()["nodes"], b["nodes"])
+        self.assertCountEqual(self.load()["edges"], original_edges)
+
+    async def test_failed_regeneration_keeps_old_video_and_restores_inputs(self):
+        b = self.load(); old = self.make_video()
+        b["nodes"].append({"id": "video", "type": "video", "name": "原视频", "x": 700, "y": 90,
+                           "data": {"prompt": "old movement", "duration": 5}, "versions": [old], "cur": 0, "job": None})
+        b["edges"] = [{"from": "n1", "to": "video", "role": "first"}]
+        server.board_path("test").write_text(json.dumps(b))
+        async def submit(*_):
+            server.JOBS["e123456789012"] = {"state": "error", "created": 1, "meta": {"uid": 7}, "error": "failed"}
+            return web.json_response({"ids": ["e123456789012"]})
+        self.svc.model.side_effect = [call("video_regenerate", {"node_id": "video", "prompt": "new movement"}), answer()]
+        with patch.object(server, "generate_request", side_effect=submit):
+            rid = await self.send(selected=["video"]); await self.wait(rid)
+        n = self.load()["nodes"][-1]
+        self.assertEqual(n["versions"][0]["ref"], old["ref"])
+        self.assertEqual(len(n["versions"]), 1)
+        self.assertEqual(n["cur"], 0)
+        self.assertIsNone(n["job"])
+        self.assertEqual(n["data"], b["nodes"][-1]["data"])
+        self.assertEqual(self.load()["edges"], b["edges"])
+        self.assertEqual(n["agent_error"], "failed")
 
     async def test_pending_video_is_connected_before_completion_and_finishes_in_place(self):
         video = self.make_video()

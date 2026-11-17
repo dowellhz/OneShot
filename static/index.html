@@ -425,15 +425,15 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <input type="file" id="file" accept="image/*,video/*" multiple hidden>
 
 <link rel="stylesheet" href="/static/image-editor.css?v=4">
-<script src="/static/image-editor.js?v=5"></script>
+<script src="/static/image-editor.js?v=6"></script>
 <script src="/static/editor-workspace.js?v=2"></script>
 <script src="/static/canvas-tools.js?v=1"></script>
 <link rel="stylesheet" href="/static/agent-chat.css?v=2">
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
 <script src="/static/agent-markdown.js?v=1"></script>
-<script src="/static/agent-chat.js?v=3"></script>
-<script src="/static/agent-editing.js?v=1"></script>
+<script src="/static/agent-chat.js?v=4"></script>
+<script src="/static/agent-editing.js?v=2"></script>
 <script src="/static/tools.js?v=5t"></script>
 <script src="/static/film.js?v=4t"></script>
 <script src="/static/wizard.js?v=6t"></script>
@@ -693,23 +693,44 @@ async function queueVideos(list) {
   const bad = list.length - ok;
   toast(`已排队 ${ok} 段视频，会按顺序依次生成${bad ? `；${bad} 段没提交成功，看节点上的提示` : ""}`, 6000);
 }
-// video versions as tabs on the right of the node: every generation is kept, a click switches to it
+// Media versions stay in one node; video versions also retain their input graph and settings.
+function rememberVideoVersion(n) {
+  const v = curV(n); if (n.type !== "video" || !v) return;
+  if (!Array.isArray(v.input_edges)) v.input_edges = JSON.parse(JSON.stringify(B.edges.filter(e => e.to === n.id)));
+  if (!v.node_data) v.node_data = JSON.parse(JSON.stringify(n.data));
+}
+function switchVersion(n, i) {
+  if (!Number.isInteger(i) || !n.versions[i] || i === n.cur) return false;
+  if (n.job || prepping.has(n.id) || (IMAGE_EDITOR?.n === n && (IMAGE_EDITOR.busy || IMAGE_EDITOR.agentSelection))) { toast("请等待当前任务完成后再切换版本"); return false; }
+  checkpoint(); rememberVideoVersion(n);
+  const v = n.versions[i];
+  if (n.type === "video") {
+    if (Array.isArray(v.input_edges)) {
+      const edges = v.input_edges.filter(e => e.to === n.id && e.from !== n.id && ["image", "text"].includes(node(e.from)?.type));
+      B.edges = B.edges.filter(e => e.to !== n.id).concat(JSON.parse(JSON.stringify(edges)));
+      if (edges.length !== v.input_edges.length) toast("部分历史输入节点已删除，已恢复仍存在的连线");
+    }
+    if (v.node_data) n.data = JSON.parse(JSON.stringify(v.node_data));
+  }
+  n.cur = i; save(); render(n); refreshDownstream(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges();
+  return true;
+}
 function renderVTabs(n, el) {
   let t = $(".vtabs", el);
-  if (n.type !== "video" || n.versions.length < 2) { t?.remove(); return; }
+  if (!["image", "video"].includes(n.type) || n.versions.length < 2) { t?.remove(); return; }
   if (!t) {
     t = document.createElement("div"); t.className = "vtabs"; el.appendChild(t);
+    t.setAttribute("role", "tablist"); t.setAttribute("aria-label", "历史版本"); t.setAttribute("aria-orientation", "vertical");
     t.addEventListener("pointerdown", e => e.stopPropagation());
     t.addEventListener("dblclick", e => e.stopPropagation());
   }
   t.innerHTML = n.versions.map((v, i) => {
-    const tip = [`版本 ${i + 1}`, v.mode, v.seconds ? v.seconds.toFixed(1) + "s" : "", v.seed != null ? "seed " + v.seed : ""].filter(Boolean).join(" · ");
-    return `<button data-i="${i}" class="${i === n.cur ? "on" : ""}" title="${esc(tip)}">${i + 1}</button>`;
+    const tip = [`版本 ${i + 1}`, v.label || v.mode, v.seconds ? v.seconds.toFixed(1) + "s" : "", v.seed != null ? "seed " + v.seed : ""].filter(Boolean).join(" · ");
+    return `<button role="tab" aria-selected="${i === n.cur}" aria-label="版本 ${i + 1}" data-i="${i}" class="${i === n.cur ? "on" : ""}" title="${esc(tip)}" ${n.job ? "disabled" : ""}>${i + 1}</button>`;
   }).join("");
   $$("button", t).forEach(b => b.onclick = e => {
     e.stopPropagation();
-    const i = +b.dataset.i; if (i === n.cur) return;
-    n.cur = i; save(); render(n); refreshDownstream(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges();
+    switchVersion(n, +b.dataset.i);
   });
 }
 function refresh(n) { if (!n) return; render(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges(); }
@@ -1125,7 +1146,7 @@ document.addEventListener("pointerdown", e => { if (!e.target.closest("#more, #m
 
 function nodeAction(n, a) {
   const v = curV(n);
-  if (a === "prev" || a === "next") { n.cur = (n.cur + (a === "next" ? 1 : -1) + n.versions.length) % n.versions.length; save(); render(n); refreshDownstream(n); showPanel(); drawEdges(); }
+  if (a === "prev" || a === "next") { switchVersion(n, (n.cur + (a === "next" ? 1 : -1) + n.versions.length) % n.versions.length); }
   else if (a === "dl") { const x = document.createElement("a"); x.href = v.url; x.download = v.ref.split("/").pop(); x.click(); }
   else if (a === "full") lightbox(v);
   else if (a === "del") removeNodes([n.id]);
@@ -1416,7 +1437,11 @@ addEventListener("blur", () => { spaceDown = false; vp.classList.remove("space")
 function paste(items, dx = 40, dy = 40) {
   checkpoint(); const map = {}; const made = [];
   for (const o of items) { const n = addNode(o.type, o.x + dx, o.y + dy, o.data); n.versions = JSON.parse(JSON.stringify(o.versions)); n.cur = o.cur; n.name = o.name + " 副本"; map[o.id] = n.id; render(n); made.push(n.id); }
-  for (const e of B.edges.slice()) if (map[e.from] && map[e.to]) B.edges.push({ from: map[e.from], to: map[e.to] });
+  for (const id of made) for (const v of node(id).versions) {
+    if (v.input_edges) v.input_edges = v.input_edges.map(e=>({...e,from:map[e.from]||e.from,to:id}));
+    if (v.video_recipe?.images) v.video_recipe.images.forEach(im=>{if(map[im.node_id])im.node_id=map[im.node_id];});
+  }
+  for (const e of B.edges.slice()) if (map[e.from] && map[e.to]) B.edges.push({ ...e, from: map[e.from], to: map[e.to] });
   for (const group of [...(B.groups || [])]) if(group.nodes.every(id => map[id])) B.groups.push({...group,id:"g"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:group.name+" 副本",nodes:group.nodes.map(id=>map[id])});
   drawEdges(); sel = new Set(made); updateSel(); save();
 }
@@ -1446,6 +1471,7 @@ function showPrep(n, on) {
 }
 async function generate(n) {
   if (n.type === "script") return planStoryboard(n);
+  if (n.job) return toast("这个节点仍有生成任务，请等待完成或取消");
   if (prepping.has(n.id)) return toast("这个视频正在准备提交，请稍等");
   const d = n.data, prompt = fullPrompt(n); delete n.agent_error; showErr(n, "");
   if (usesFields(n) ? !fieldsFilled(n) : !prompt) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : "先写提示词，或连入一个文本节点"); if (!usesFields(n)) $("#prompt").focus(); return; }
@@ -1463,10 +1489,12 @@ async function generate(n) {
   req.board = boardId;
   if (n.data.provider && (CAPS_LIST[n.type === "image" ? "image" : "video"] || []).some(x => x.id === n.data.provider)) req.provider = n.data.provider;
   const slow = n.type === "video";
+  const history = slow ? {input_edges: JSON.parse(JSON.stringify(B.edges.filter(e => e.to === n.id))), node_data: JSON.parse(JSON.stringify(n.data)), video_recipe: JSON.parse(JSON.stringify(req))} : null;
+  rememberVideoVersion(n);
   if (slow) { prepping.add(n.id); showPrep(n, true); }
   try {
     const r = await api("/api/generate", req);
-    n.job = { ids: r.ids, prompt, t0: Date.now(), st: {} }; save(); render(n); showPanel(); poll();
+    n.job = { ids: r.ids, prompt, t0: Date.now(), st: {}, ...(history ? {history} : {}) }; save(); render(n); showPanel(); poll();
   } catch (e) { showErr(n, e.message); }
   finally { if (slow) { prepping.delete(n.id); showPrep(n, false); } }
 }
@@ -1477,7 +1505,7 @@ function videoReq(n, prompt) {
     const p = plan(n), imgs = [];
     for (const [i, m] of p.imgs.entries()) {
       const v = curV(m); if (!v) { toast(`「${m.name}」还没有图片`); return null; }
-      imgs.push({ ref: v.ref, name: m.name, caption: m.data.caption || (v.source === "gen" ? v.prompt : "") || "", index: i + 1, asset: m.data.asset?.id,
+      imgs.push({ node_id: m.id, ref: v.ref, name: m.name, caption: m.data.caption || (v.source === "gen" ? v.prompt : "") || "", index: i + 1, asset: m.data.asset?.id,
                   role: p.roles[i] === "subject" ? "subject" : "frame", time: p.times[i] ?? 0, w: v.w, h: v.h });
     }
     // the video's shape: chosen, or the first frame's, or a character image's
@@ -1543,7 +1571,7 @@ async function poll() {
         const errs = sts.filter(s => s.state === "error").map(s => s.error);
         for (const s of sts.filter(s => s.state === "done")) for (const o of s.outputs || []) {
           const m = o.meta || {};
-          n.versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: n.data.film ? "film" : "gen", mode: s.meta?.mode_name, ...(o.extra || {}) });
+          n.versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: n.data.film ? "film" : "gen", mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}) });
           n.cur = n.versions.length - 1;
         }
         n.job = null; save(); render(n); refreshDownstream(n); drawEdges();

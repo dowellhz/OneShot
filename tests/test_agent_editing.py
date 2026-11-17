@@ -69,8 +69,11 @@ class EditingIntegration(ChatFixture):
         self.assertEqual(self.generated[0]["mode"], "region")
         self.assertEqual(self.generated[0]["backend"], "native")
         b = self.load()
+        self.assertEqual(len(b["nodes"]), 2)
+        self.assertEqual(len(b["nodes"][0]["versions"]), 2)
+        self.assertEqual(b["nodes"][0]["cur"], 1)
         source = image_editor.load(server.COMFY_DIR, self.source["ref"])
-        result = image_editor.load(server.COMFY_DIR, b["nodes"][-1]["versions"][0]["ref"])
+        result = image_editor.load(server.COMFY_DIR, b["nodes"][0]["versions"][-1]["ref"])
         for y in range(20, 71):
             for x in range(30, 81):
                 self.assertEqual(result.getpixel((x, y)), source.getpixel((x, y)))
@@ -171,10 +174,10 @@ class EditingIntegration(ChatFixture):
         self.assertEqual(stack["base_ref"], version["edit"]["base"])
         result = await self.svc.execute(run, {"id": 7, "role": "member"}, "change-layers", "image_layers_edit", {"node_id": "n1", "changes": [{"layer_id": "generated", "opacity": 0}]})
         node = next(n for n in self.load()["nodes"] if n["id"] == result["nodes"][0]["id"])
-        output = image_editor.load(server.COMFY_DIR, node["versions"][0]["ref"])
+        output = image_editor.load(server.COMFY_DIR, node["versions"][-1]["ref"])
         original = image_editor.load(server.COMFY_DIR, self.source["ref"])
         self.assertEqual(output.tobytes(), original.tobytes())
-        self.assertEqual(node["versions"][0]["layer_stack"]["layers"][1]["opacity"], 0)
+        self.assertEqual(node["versions"][-1]["layer_stack"]["layers"][1]["opacity"], 0)
         self.assertEqual(self.load()["nodes"][0]["versions"][1], version)
 
     async def test_layer_import_position_visibility_and_undo(self):
@@ -184,7 +187,7 @@ class EditingIntegration(ChatFixture):
         b["nodes"].append({"id": "n3", "type": "image", "name": "blue", "x": 900, "y": 0, "data": {}, "versions": [blue], "cur": 0})
         server.board_path("test").write_text(json.dumps(b))
         result = await self.svc.execute(run, {"id": 7, "role": "member"}, "import-layer", "image_layers_edit", {"node_id": "n1", "add": [{"node_id": "n3", "x": 10, "y": 15, "w": 20, "h": 20}]})
-        v = next(n for n in self.load()["nodes"] if n["id"] == result["nodes"][0]["id"])["versions"][0]
+        v = next(n for n in self.load()["nodes"] if n["id"] == result["nodes"][0]["id"])["versions"][-1]
         im = image_editor.load(server.COMFY_DIR, v["ref"])
         self.assertEqual(im.getpixel((15, 20)), (0, 0, 255, 255))
         self.assertEqual(im.getpixel((0, 0)), (255, 0, 0, 255))
@@ -196,7 +199,7 @@ class EditingIntegration(ChatFixture):
         version = await self.edited_version()
         run = await self.run_row()
         result = await self.svc.execute(run, {"id": 7, "role": "member"}, "extract", "image_extract", {"node_id": "n1", "kind": "generated"})
-        patch_version = next(n for n in self.load()["nodes"] if n["id"] == result["nodes"][0]["id"])["versions"][0]
+        patch_version = next(n for n in self.load()["nodes"] if n["id"] == result["nodes"][0]["id"])["versions"][-1]
         im = image_editor.load(server.COMFY_DIR, patch_version["ref"])
         self.assertEqual(im.getpixel((0, 0))[3], 0)
         self.generated = []
@@ -208,6 +211,27 @@ class EditingIntegration(ChatFixture):
         self.assertNotEqual(self.generated[0]["ref"], version["ref"])
         history = await self.svc.execute(run, {"id": 7, "role": "member"}, "history", "image_history", {"node_id": "n1"})
         self.assertEqual(history["versions"][1]["recipe"]["seed"], 42)
+
+    async def test_sequential_modifications_share_node_and_undo_preserves_links(self):
+        b = self.load()
+        b["edges"] = [{"from": "n2", "to": "n1"}]
+        server.board_path("test").write_text(json.dumps(b))
+        self.svc.model.side_effect = [call("image_transform", {"node_id": "n1", "rotate": 90}),
+                                     call("image_transform", {"node_id": "n1", "rotate": 90}, "second"), answer()]
+        rid = await self.send("先旋转，再继续旋转同一张图")
+        self.assertEqual((await self.wait(rid))["state"], "done")
+        final = self.load(); n = final["nodes"][0]
+        self.assertEqual(len(final["nodes"]), 2)
+        self.assertEqual(len(n["versions"]), 3)
+        self.assertEqual(n["cur"], 2)
+        self.assertEqual((n["name"], n["x"], n["y"]), ("产品", 30, 40))
+        self.assertEqual(final["edges"], b["edges"])
+        self.assertEqual(n["versions"][2]["agent_source"], n["versions"][1]["ref"])
+        self.assertEqual((n["versions"][2]["w"], n["versions"][2]["h"]), (128, 96))
+        response = await self.client.post(f"/api/chat/runs/{rid}/undo", json={})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.load()["nodes"], b["nodes"])
+        self.assertEqual(self.load()["edges"], b["edges"])
 
     async def test_compare_references_and_invalid_layer_are_safe(self):
         version = await self.edited_version()

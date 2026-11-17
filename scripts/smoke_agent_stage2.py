@@ -115,10 +115,11 @@ async def main(project, scenario):
                     if scenario == "video":
                         await run("重新生成选中的视频，沿用连接图片作为首帧，5秒，标准清晰度，结果叫视频重生成测试。不要生成静态图片，也不需要分析画面。",["n2"],"video-regenerate-smoke")
                         final=json.loads(server.board_path("smoke").read_text())
-                        assert len(final["nodes"])==3,final
+                        assert len(final["nodes"])==2,final
+                        assert len(final["nodes"][-1]["versions"])==2
                         video=final["nodes"][-1]
                         assert video["type"]=="video",video
-                        v=video["versions"][0]
+                        v=video["versions"][-1]
                         info=server.media_info(server.tools.ref_path(server.COMFY_DIR,v["ref"]),"video")
                         assert info.get("duration",0)>=4.8,info
                         assert "video_regenerate" in report["rounds"][0]["tools"],report
@@ -127,7 +128,7 @@ async def main(project, scenario):
                         report["video"]=info
                     else:
                         await run("只把选中图片的背景改成暖色日落天空，主体房子保持不动。必须使用原生遮罩重绘，结果命名背景修改。完成后提供前后对比，不需要描述图片。",["n1"],"stage2-background")
-                        after=json.loads(server.board_path("smoke").read_text());edited=after["nodes"][-1];v=edited["versions"][0]
+                        after=json.loads(server.board_path("smoke").read_text());edited=after["nodes"][-1];v=edited["versions"][-1]
                         assert v.get("edit",{}).get("recipe",{}).get("backend")=="native",v
                         mask=server.image_editor.load(server.COMFY_DIR,v["edit"]["recipe"]["mask"]).convert("L")
                         original=server.image_editor.load(server.COMFY_DIR,receipt["source"]["ref"]);result=server.image_editor.load(server.COMFY_DIR,v["ref"])
@@ -138,16 +139,16 @@ async def main(project, scenario):
                         report["protected_pixels"]=protected
                         await run("把刚生成的背景修改图片中，生成区域图层的不透明度改为50%，其他图层保持不变，保存新结果。",[],"stage2-layers")
                         layered=json.loads(server.board_path("smoke").read_text())["nodes"][-1]
-                        assert any(l["id"]=="generated" and l["opacity"]==.5 for l in layered["versions"][0]["layer_stack"]["layers"])
-                        await run(f"沿用图片节点 {edited['id']} 的编辑参数，以原始输入图和相同遮罩重新生成，提示词不变，种子改为73。",[],"stage2-reuse")
-                        retried=json.loads(server.board_path("smoke").read_text())["nodes"][-1]["versions"][0]
+                        assert any(l["id"]=="generated" and l["opacity"]==.5 for l in layered["versions"][-1]["layer_stack"]["layers"])
+                        await run(f"沿用图片节点 {edited['id']} 的版本索引1的编辑参数，以原始输入图和相同遮罩重新生成，提示词不变，种子改为73。",[],"stage2-reuse")
+                        retried=json.loads(server.board_path("smoke").read_text())["nodes"][-1]["versions"][-1]
                         assert retried["edit"]["recipe"]["ref"]==receipt["source"]["ref"]
                         assert retried["edit"]["recipe"]["seed"]==73
                         await run("我要自己画选区，先等我在编辑器画好，再把选区改成蓝色屋顶，使用原生遮罩重绘。",["n1"],"stage2-manual")
                         final=json.loads(server.board_path("smoke").read_text())
                         assert "image_select" in report["rounds"][-1]["tools"]
                         assert "image_edit" in report["rounds"][-1]["tools"]
-                    report["outputs"] = [{"id": n["id"], "name": n["name"], "ref": n["versions"][0]["ref"]} for n in final["nodes"]]
+                    report["outputs"] = [{"id": n["id"], "name": n["name"], "ref": n["versions"][n["cur"]]["ref"]} for n in final["nodes"]]
                     report["completed"] = time.time()
                     (project / ("data/agent-"+scenario+"-smoke.json")).write_text(json.dumps(report, ensure_ascii=False, indent=2))
                     print("REAL AGENT SMOKE PASSED", json.dumps(report, ensure_ascii=False), flush=True)

@@ -5,10 +5,10 @@ AC_STATES.waiting_input="等待你在编辑器中画选区…";
 function aeAction(label,fn){const button=document.createElement("button");button.type="button";button.textContent=label;button.onclick=()=>Promise.resolve().then(fn).catch(e=>toast(e.message,5000));return button;}
 function aeResultExtras(host,result,name){
  const box=document.createElement("div");box.className="ac-edit-actions";
- for(const item of result.nodes||[]){const n=node(item.id),v=curV(n);if(!n||n.type!=="image")continue;
-  if(v?.edit?.source||v?.agent_source)box.append(aeAction("对比",()=>aeCompare(n.id,v.edit?.source||v.agent_source)));
-  box.append(aeAction("编辑图层",()=>aeOpenLayers(n.id)));
-  if(v?.edit?.recipe)box.append(aeAction("复用参数",()=>aeReuse(n.id,v.edit.recipe)));
+ for(const item of result.nodes||[]){const n=node(item.id),v=acResultVersion(item);if(!n||n.type!=="image")continue;
+  if(v?.edit?.source||v?.agent_source)box.append(aeAction("对比",()=>aeCompare(n.id,v.edit?.source||v.agent_source,"wipe",v.ref)));
+  box.append(aeAction("编辑图层",()=>aeOpenLayers(n.id,v.ref)));
+  if(v?.edit?.recipe)box.append(aeAction("复用参数",()=>aeReuse(n.id,v.edit.recipe,v.ref)));
  }
  if(name==="image_layers_get")box.append(aeAction("打开图层编辑器",()=>aeOpenLayers(result.node_id)));
  if(name==="image_history"){for(const version of result.versions||[])if(version.recipe)box.append(aeAction("复用版本 "+(version.version_index+1),()=>aeReuse(result.node_id,version.recipe)));}
@@ -40,14 +40,14 @@ async function aeCompare(nid,before,mode="wipe",after){
  const E=await aeEditor(nid,after);const original=await ewAsset(E,before);if(IMAGE_EDITOR!==E)return;
  E.original=original;E.compare=false;E.compareMode=mode;$("#ieCompareMode").value=mode;$("#ieWipe").hidden=mode!=="wipe";ieDraw();ieStatus("正在对比编辑前后，可拖动滑杆或切换并排视图");
 }
-async function aeOpenLayers(nid){
- const E=await aeEditor(nid),version=E.n.versions.find(v=>v.ref===E.ref);if(!version)return;
+async function aeOpenLayers(nid,ref){
+ const E=await aeEditor(nid,ref),version=E.n.versions.find(v=>v.ref===E.ref);if(!version)return;
  const saved=version.layer_stack,edit=version.edit;
  if(saved?.layers){E.layers=acClone(saved.layers);}
  else if(edit?.layer&&edit.base){const base=await ewAsset(E,edit.base);E.layers=[{id:"base",name:"编辑前原图",ref:edit.base,x:0,y:0,w:base.naturalWidth,h:base.naturalHeight,opacity:1,visible:true},{id:"generated",name:"生成区域",ref:edit.layer.ref,x:0,y:0,w:base.naturalWidth,h:base.naturalHeight,opacity:1,visible:true}];}
  await ewPreload(E,E.layers.map(l=>l.ref));if(IMAGE_EDITOR!==E)return;E.activeLayer=E.layers[E.layers.length-1]?.id;ewRenderLayers();ieMode("layers");ieDraw();ieStatus("可以调整图层位置、顺序和不透明度，合并时保存新版本");
 }
-async function aeReuse(nid,recipe){await aeEditor(nid);await ewApplyRecipe(recipe);}
+async function aeReuse(nid,recipe,ref){await aeEditor(nid,ref);await ewApplyRecipe(recipe);}
 async function aeShowSelection(selection){
  const E=await aeEditor(selection.node_id,selection.source_ref);await ewAsset(E,selection.mask_ref);if(IMAGE_EDITOR!==E)return;
  E.strokes=[{tool:"mask",ref:selection.mask_ref,replace:true,luminance:true}];E.redo=[];ieMode("region");ieRebuildMask();ewScheduleDraft(true);ieStatus("已加载保存的选区，可调整后生成新版本");

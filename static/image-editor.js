@@ -281,7 +281,7 @@ function ieHistory() {
   ewUpdateHistoryActions();
   const box=$(".ie-history",$("#imageEditor"));
   box.innerHTML=E.n.versions.map((v,i)=>`<button data-version="${i}" class="${i===E.n.cur ? "on" : ""}" title="${esc(v.mode || v.prompt || "原始图片")}"><img src="${esc(v.url)}" loading="lazy" alt="版本 ${i+1}"><small>${i+1} · ${esc(v.mode || (v.source==="upload" ? "原图" : "图片"))}</small></button>`).join("");
-  $$("button",box).forEach(b=>b.onclick=()=>{ if (E.busy || E.n.job || E.agentSelection) return; E.agentPinnedRef=null; E.n.cur=+b.dataset.version; save(); render(E.n); refreshDownstream(E.n); drawEdges(); showPanel(); ieLoad(curV(E.n)); ieHistory(); });
+  $$("button",box).forEach(b=>b.onclick=()=>{ if (E.busy || E.n.job || E.agentSelection) return; if (!switchVersion(E.n,+b.dataset.version)) return; E.agentPinnedRef=null; ieLoad(curV(E.n)); ieHistory(); });
 }
 
 async function ieLocal(extra={}) {
