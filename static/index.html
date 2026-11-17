@@ -67,9 +67,10 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .node.image { --node-rgb: var(--node-image-rgb); }
 .node.video { --node-rgb: var(--node-video-rgb); }
 .node:is(.image,.video) .lbl { left: 0; right: 0; min-height: 30px; margin-bottom: 6px; padding: 5px 8px;
-  background: rgba(var(--node-rgb),.18); border: 1px solid rgba(var(--node-rgb),.4); color: var(--text); }
-.node:is(.image,.video) .lbl:hover, .node:is(.image,.video).sel .lbl { background: rgba(var(--node-rgb),.24); border-color: rgba(var(--node-rgb),.6); }
-.node:is(.image,.video) .lbl > svg.i { color: rgb(var(--node-rgb)); }
+  background: rgba(var(--node-rgb),.26); border: 1px solid var(--line2); color: var(--text); }
+.node:is(.image,.video) .lbl:hover { background: rgba(var(--node-rgb),.31); border-color: #686870; }
+.node:is(.image,.video).sel .lbl { background: rgba(var(--node-rgb),.31); border-color: rgba(255,255,255,.45); }
+.node:is(.image,.video) .lbl > svg.i { color: #cfcfd6; }
 .node:is(.image,.video) .lbl .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .node:is(.image,.video) .lbl .nm[contenteditable=true] { overflow: visible; }
 .node:is(.image,.video) .lbl .meta { flex: none; color: #b8b8c2; font-size: var(--fs-caption); }
