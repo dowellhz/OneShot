@@ -203,7 +203,7 @@ function renderScript(n, body) {
 function scriptCtl(n) {
   const d = n.data, has = (d.shots || []).length > 0, made = madeShots(n);
   const pill = (k, opts, label) => `<span class="pill">${label}<select data-k="${k}">${Object.entries(opts).map(([a, t]) => `<option value="${a}" ${String(a) === String(d[k]) ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
-  let h = `<span class="pill model"><span class="dot" style="background:linear-gradient(135deg,#8a7dff,#5bc8ff)"></span>Qwen 分镜</span>`;
+  let h = `<span class="pill model"><span class="dot" style="background:#bdbdc6"></span>Qwen 分镜</span>`;
   h += pill("nshots", { auto: "镜头数：自动", 3: "3 个镜头", 4: "4 个镜头", 6: "6 个镜头", 8: "8 个镜头" }, d.nshots === "auto" ? "自动镜数" : d.nshots + " 镜");
   h += pill("shotlen", { auto: "每镜时长：自动", 3: "每镜 3 秒", 5: "每镜 5 秒", 8: "每镜 8 秒" }, d.shotlen === "auto" ? "自动时长" : d.shotlen + "s/镜");
   h += pill("aspect", { "16:9": "16:9", "9:16": "9:16", "4:3": "4:3", "1:1": "1:1", "21:9": "21:9" }, d.aspect);

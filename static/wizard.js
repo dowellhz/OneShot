@@ -41,7 +41,7 @@ async function openWizard() {
 function closeWizard() { $("#wiz").classList.remove("on"); updateWizBtn(); }
 function updateWizBtn() {
   const b = $("#wizBtn"); if (!b || !B) return;
-  b.innerHTML = B.wiz && B.wiz.script && node(B.wiz.script) ? `✨ 继续向导 · ${WSTEPS[B.wiz.step]}` : "✨ 一句话成片";
+  b.innerHTML = B.wiz && B.wiz.script && node(B.wiz.script) ? `${ico("script")}<span>继续向导 · ${WSTEPS[B.wiz.step]}</span>` : `${ico("script")}<span>一句话成片</span>`;
 }
 function goStep(k) { W.step = k; wizSave(); wizSig = ""; renderWiz(); }
 
@@ -390,7 +390,7 @@ async function fillEmptyGallery() {
 function initWizard() {
   const css = document.createElement("style");
   css.textContent = `
-#wiz { position: fixed; inset: 0; z-index: 57; background: radial-gradient(1200px 600px at 50% -10%, #1d1a2b, #0b0b0c 60%); display: none; flex-direction: column; }
+#wiz { position: fixed; inset: 0; z-index: 57; background: var(--bg); display: none; flex-direction: column; }
 #wiz.on { display: flex; }
 #wiz .top { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 #wiz .top .x { margin-left: auto; }
@@ -471,20 +471,22 @@ function initWizard() {
 #wzSample .hd { display: flex; align-items: center; gap: 10px; }
 #wzSample video { width: 100%; max-height: 66vh; background: #000; border-radius: 10px; }
 #wzSample .idea { color: var(--dim); font-size: var(--fs-small); line-height: 1.6; }
-#wizBtn { background: linear-gradient(135deg, #7c6cff, #4fb3ff); color: #fff; border: none; border-radius: 10px; padding: 6px 12px; font-weight: 600; font-size: var(--fs-small); margin-left: 6px; white-space: nowrap; }
-#empty .wcta { display: inline-block; margin: 6px 0 22px; padding: 14px 26px; border-radius: 14px; border: none; color: #fff; font-size: var(--fs-heading); font-weight: 600; background: linear-gradient(135deg, #7c6cff, #4fb3ff); box-shadow: 0 8px 30px rgba(110,110,255,.35); }
+#wizBtn { display: inline-flex; align-items: center; gap: 6px; background: var(--card-hi); color: var(--text); border: 1px solid var(--line2); border-radius: 10px; padding: 6px 12px; font-weight: 600; font-size: var(--fs-small); margin-left: 6px; white-space: nowrap; }
+#empty .wcta { display: inline-block; margin: 6px 0 22px; padding: 14px 26px; border-radius: 14px; border: 1px solid var(--line2); color: var(--text); font-size: var(--fs-heading); font-weight: 600; background: var(--card-hi); box-shadow: 0 8px 30px rgba(0,0,0,.3); }
+#wizBtn:hover, #empty .wcta:hover { background: #27272d; border-color: #686870; }
+#wiz .top > b { display: flex; align-items: center; gap: 6px; }
 #empty .wcta small { display: block; font-weight: 400; font-size: var(--fs-small); opacity: .85; margin-top: 2px; }`;
   document.head.appendChild(css);
-  document.body.insertAdjacentHTML("beforeend", `<div id="wiz"><div class="top"><b>✨ 一句话成片</b><div id="wzSteps"></div>
+  document.body.insertAdjacentHTML("beforeend", `<div id="wiz"><div class="top"><b>${ico("script")} 一句话成片</b><div id="wzSteps"></div>
     <button class="ghost x" id="wzClose" title="向导的进度会保存，随时可以回来">去画布查看</button></div><div id="wzBody"></div></div><div id="wzSample"></div>`);
   $("#wzClose").onclick = closeWizard;
-  $("#tl").insertAdjacentHTML("beforeend", `<button id="wizBtn" title="AI 帮你从一句话做到成片">✨ 一句话成片</button>`);
+  $("#tl").insertAdjacentHTML("beforeend", `<button id="wizBtn" title="AI 帮你从一句话做到成片">${ico("script")}<span>一句话成片</span></button>`);
   $("#wizBtn").onclick = openWizard;
   $("#wizBtn").insertAdjacentHTML("afterend", `<button id="galBtn" title="看看用一句话做出来的示例成片">🎬 示例</button>`);
   $("#galBtn").onclick = showGallery;
   $("#empty .tiles").insertAdjacentHTML("afterend", `<div class="gal" id="emptyGal"></div>`);
   fillEmptyGallery();
-  $("#empty h1").insertAdjacentHTML("afterend", `<button class="wcta" id="wizCta">✨ 一句话成片<small>写下想法，AI 帮你写剧本、定角色、出分镜、生成视频、剪成片</small></button><p style="margin:0 0 8px">或者自己搭：</p>`);
+  $("#empty h1").insertAdjacentHTML("afterend", `<button class="wcta" id="wizCta">一句话成片<small>写下想法，AI 帮你写剧本、定角色、出分镜、生成视频、剪成片</small></button><p style="margin:0 0 8px">或者自己搭：</p>`);
   $("#wizCta").onclick = openWizard;
   setInterval(updateWizBtn, 2000);
 }
