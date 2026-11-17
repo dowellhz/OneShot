@@ -461,7 +461,7 @@ function initWizard() {
 .gal .gc .pl { position: absolute; left: 8px; top: 70px; width: 22px; height: 22px; border-radius: 50%; background: #000a; display: flex; align-items: center; justify-content: center; font-size: var(--fs-micro); }
 .gal .gc b { display: block; padding: 6px 9px 0; font-size: var(--fs-small); } .gal .gc small { display: block; padding: 0 9px; color: var(--dim); font-size: var(--fs-caption); }
 .gal .gc:hover { border-color: #777; }
-#galBtn { background: #222226; color: #e6e6ea; border: 1px solid var(--line2); border-radius: 10px; padding: 6px 11px; font-size: var(--fs-small); margin-left: 6px; white-space: nowrap; }
+#galBtn { display: inline-flex; align-items: center; gap: 6px; background: #222226; color: #e6e6ea; border: 1px solid var(--line2); border-radius: 7px; padding: 4px 8px; font: inherit; min-height: 28px; margin-left: 6px; white-space: nowrap; }
 #emptyGal .gl { justify-content: center; max-width: 90vw; flex-wrap: wrap; }
 .gal.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; overflow-y: auto; }
 .gal.grid .gc { width: auto; } .gal.grid .gc img { height: 130px; } .gal.grid .gc .pl { top: 100px; }
@@ -471,7 +471,7 @@ function initWizard() {
 #wzSample .hd { display: flex; align-items: center; gap: 10px; }
 #wzSample video { width: 100%; max-height: 66vh; background: #000; border-radius: 10px; }
 #wzSample .idea { color: var(--dim); font-size: var(--fs-small); line-height: 1.6; }
-#wizBtn { display: inline-flex; align-items: center; gap: 6px; background: var(--card-hi); color: var(--text); border: 1px solid var(--line2); border-radius: 10px; padding: 6px 12px; font-weight: 600; font-size: var(--fs-small); margin-left: 6px; white-space: nowrap; }
+#wizBtn { display: inline-flex; align-items: center; gap: 6px; background: var(--card-hi); color: var(--text); border: 1px solid var(--line2); border-radius: 7px; padding: 4px 8px; font: inherit; min-height: 28px; margin-left: 6px; white-space: nowrap; }
 #empty .wcta { display: inline-block; margin: 6px 0 22px; padding: 14px 26px; border-radius: 14px; border: 1px solid var(--line2); color: var(--text); font-size: var(--fs-heading); font-weight: 600; background: var(--card-hi); box-shadow: 0 8px 30px rgba(0,0,0,.3); }
 #wizBtn:hover, #empty .wcta:hover { background: #27272d; border-color: #686870; }
 #wiz .top > b { display: flex; align-items: center; gap: 6px; }
@@ -482,7 +482,7 @@ function initWizard() {
   $("#wzClose").onclick = closeWizard;
   $("#tl").insertAdjacentHTML("beforeend", `<button id="wizBtn" title="AI 帮你从一句话做到成片">${ico("script")}<span>一句话成片</span></button>`);
   $("#wizBtn").onclick = openWizard;
-  $("#wizBtn").insertAdjacentHTML("afterend", `<button id="galBtn" title="看看用一句话做出来的示例成片">🎬 示例</button>`);
+  $("#wizBtn").insertAdjacentHTML("afterend", `<button id="galBtn" title="看看用一句话做出来的示例成片">${ico("video")}<span>示例</span></button>`);
   $("#galBtn").onclick = showGallery;
   $("#empty .tiles").insertAdjacentHTML("afterend", `<div class="gal" id="emptyGal"></div>`);
   fillEmptyGallery();

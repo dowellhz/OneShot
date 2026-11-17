@@ -34,7 +34,7 @@ function initAccount() {
   fetch("/api/me").then(r => r.ok ? r.json() : null).then(u => {
     if (!u) return;
     ME_USER = u;
-    $("#tr").insertAdjacentHTML("afterbegin", `<a href="/console" id="consoleLink" title="项目、任务、模型与服务" style="color:var(--text);text-decoration:none;font-size:var(--fs-small);padding:2px 8px;border-radius:7px;background:#222226">控制台</a><span style="color:var(--dim);font-size:var(--fs-small)">${esc(u.name || u.username)}</span>`);
+    $("#tr").insertAdjacentHTML("afterbegin", `<a href="/console" id="consoleLink" title="控制台" aria-label="控制台">${ico("console")}<span>控制台</span></a><span style="color:var(--dim);font-size:var(--fs-small)">${esc(u.name || u.username)}</span>`);
     $("#consoleLink").addEventListener("click", e => e.stopPropagation());
     const sb = $("#setBtn"); if (sb) { sb.title = u.role === "admin" ? "模型与服务（控制台）" : "控制台"; sb.onclick = () => location.href = u.role === "admin" ? "/console#services" : "/console"; }
   });

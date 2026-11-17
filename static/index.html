@@ -189,13 +189,17 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .ib:hover { background: rgba(255,255,255,.08); color: #fff; }
 .ib.on { background: rgba(255,255,255,.12); color: #fff; }
 .ib[data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 44px; top: 50%; transform: translateY(-50%); background: #000; color: #fff; padding: 3px 8px; border-radius: 6px; font-size: var(--fs-small); white-space: nowrap; pointer-events: none; }
-#tl { top: 14px; left: 14px; padding: 5px 8px 5px 6px; gap: 8px; }
+#tl { top: 14px; left: 14px; padding: 5px 8px 5px 6px; gap: 8px; font-size: var(--fs-small); font-weight: 400; line-height: var(--lh-small); }
 #tl .logo { width: 28px; height: 28px; display: flex; flex: none; }
-#tl .bname { font-weight: 600; outline: none; padding: 2px 4px; border-radius: 5px; min-width: 40px; }
+#tl .bname { font: inherit; outline: none; padding: 2px 4px; border-radius: 5px; min-width: 40px; }
 #tl .bname:focus { background: #222; }
 #tl .tb { border: none; background: none; color: var(--dim); padding: 4px 6px; border-radius: 7px; display: flex; align-items: center; }
 #tl .tb:hover { background: rgba(255,255,255,.08); color: #fff; }
 #tr { top: 14px; right: 14px; padding: 5px 10px; gap: 10px; color: var(--dim); font-size: var(--fs-small); }
+#consoleLink { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 4px 8px; flex: none;
+  border-radius: 7px; background: #222226; color: var(--text); text-decoration: none; font: inherit; white-space: nowrap; }
+#consoleLink:hover { background: #2a2a2f; }
+#consoleLink:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 #tr .st { display: flex; align-items: center; gap: 6px; }
 #tr .sd { width: 7px; height: 7px; border-radius: 50%; background: #555; }
 #tr .sd.ok { background: var(--success); box-shadow: 0 0 8px rgba(214,214,220,.3); } #tr .sd.busy { background: #ffcf5a; } #tr .sd.bad { background: var(--red); }
@@ -299,6 +303,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4.5 14v3.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V14"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-assets" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/></symbol>
+  <symbol id="i-console" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16M9 10h12"/></symbol>
   <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 7 5 11l4 4"/><path d="M5 11h9a5 5 0 0 1 0 10h-2"/></symbol>
   <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 7 4 4-4 4"/><path d="M19 11h-9a5 5 0 0 0 0 10h2"/></symbol>
   <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"/></symbol>
@@ -449,9 +454,9 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <script src="/static/agent-editing.js?v=2"></script>
 <script src="/static/tools.js?v=6t"></script>
 <script src="/static/film.js?v=4t"></script>
-<script src="/static/wizard.js?v=8t"></script>
+<script src="/static/wizard.js?v=9t"></script>
 <script src="/static/settings.js?v=3t"></script>
-<script src="/static/account.js?v=3t"></script>
+<script src="/static/account.js?v=5t"></script>
 <script>
 "use strict";
 const $ = (s, el = document) => el.querySelector(s);
