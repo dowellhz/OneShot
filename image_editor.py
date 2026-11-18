@@ -195,7 +195,7 @@ def prepare(root: Path, p: dict) -> dict:
     return {"kind": "image", "model": "h3img", "prompt": instruction + prompt, "images": images,
             "ar": context.width / context.height, "quality": p.get("quality", "4mp"), "count": 1,
             "seed": p.get("seed", -1), "provider": p.get("provider"), "label": p.get("label"),
-            "board": p.get("board"), "_image_edit": spec, "_native_inpaint": native}
+            "board": p.get("board"), "memory_ids": p.get("memory_ids", []), "_image_edit": spec, "_native_inpaint": native}
 
 
 def composite(root: Path, spec: dict, outputs: list) -> list:

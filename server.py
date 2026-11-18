@@ -22,6 +22,7 @@ import remote
 import local_admin
 import image_editor
 import agent_chat
+import creative_memory
 import sys
 from aiohttp import web
 
@@ -223,8 +224,10 @@ def planned_prompt(prompt: str, subj, frames, end: float) -> str:
     lines, keep, steps = [], [], ""
     for k, im in enumerate(subj):
         cap = clean(im.get("caption"))
-        lines.append(f"<Subject {k+1}> is the character in <Picture {k+1}>" + (f", {cap}." if cap else "."))
-        keep.append(f"<Subject {k+1}>: fully_preserved - the face, body shape, colors and outfit of <Subject {k+1}> stay identical to <Picture {k+1}> throughout.")
+        subject = {"scene": "environment", "prop": "object", "style": "visual style"}.get(im.get("memory_kind"), "character")
+        lines.append(f"<Subject {k+1}> is the {subject} in <Picture {k+1}>" + (f", {cap}." if cap else "."))
+        features = "visual style, colors and lighting" if subject == "visual style" else "layout, materials, colors and visual details" if subject != "character" else "face, body shape, colors and outfit"
+        keep.append(f"<Subject {k+1}>: fully_preserved - the {features} of <Subject {k+1}> stay identical to <Picture {k+1}> throughout.")
     for j, im in enumerate(frames):
         pn, t, cap = S + j + 1, float(im["time"]), clean(im.get("caption")) or "the scene"
         kind = "first frame" if t <= 0.01 else ("last frame" if t >= end - 0.05 else "keyframe")
@@ -609,6 +612,8 @@ def log_end(j: dict):
         return
     j["_logged"] = True
     try:
+        if j["state"] == "done" and (j.get("meta") or {}).get("uid") is not None:
+            creative_memory.Store(sys.modules[__name__]).observe({"id": j["meta"]["uid"]}, {j["id"]: j})
         db.task_update(j["id"], state=j["state"], started=j.get("started"), finished=j.get("finished") or time.time(),
                        seconds=round((j.get("finished") or time.time()) - (j.get("started") or j["created"]), 1),
                        error=j.get("error"), outputs=[o.get("ref") for o in j.get("outputs") or []])
@@ -827,6 +832,7 @@ async def upload(req):
         except Exception as e:
             dst.unlink(missing_ok=True)
             raise web.HTTPBadRequest(text=json.dumps({"error": f"读不了这个视频：{e}"}, ensure_ascii=False), content_type="application/json")
+        db.run("INSERT OR IGNORE INTO memory_uploads VALUES(?,?,?)", ref, req["user"]["id"], time.time())
         return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "type": "video", **info})
     if ext not in (".png", ".jpg", ".jpeg", ".webp"):
         raise bad("只支持 PNG / JPG / WEBP 图片，或 MP4 / MOV / WEBM 视频")
@@ -844,6 +850,7 @@ async def upload(req):
     except Exception as e:
         raise bad(f"读不了这张图片：{e}")
     ref = f"input:h3studio/{name}"
+    db.run("INSERT OR IGNORE INTO memory_uploads VALUES(?,?,?)", ref, req["user"]["id"], time.time())
     return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe="")})
 
 
@@ -1154,11 +1161,34 @@ async def image_edit_generate(req):
     except (ValueError, OSError, TypeError) as e:
         raise bad(str(e))
     if raw.get("_native_inpaint"):
-        return await generate_native_image(req, raw)
+        memory = req.app["creative_memory"]
+        prepared = memory.prepare(req["user"], raw)
+        if any(a.get("ref") for a in prepared.get("memory_used", [])):
+            raise bad("原生重绘不支持额外参考图；请切换到 H3 编辑以采用记忆参考图")
+        if prepared.get("memory_used"):
+            raw["_native_inpaint"]["prompt"] += prepared["prompt"][len(raw["prompt"]):]
+        response = await generate_native_image(req, raw)
+        result = json.loads(response.body)
+        memory.track(req["user"], prepared, result)
+        result["memory_used"] = prepared.get("memory_used", [])
+        return web.json_response(result)
     return await generate_request(req, raw)
 
 
 async def generate_request(req, raw):
+    memory = req.app["creative_memory"]
+    payload = memory.prepare(req["user"], raw)
+    response = await _generate_request(req, payload)
+    result = json.loads(response.body)
+    memory.track(req["user"], payload, result)
+    memory.observe(req["user"], {jid: JOBS[jid] for jid in result.get("ids", []) if jid in JOBS})
+    if payload.get("memory_used"):
+        result["memory_used"] = payload["memory_used"]
+        result["memory_context"] = {k: payload[k] for k in ("prompt", "images", "planned") if k in payload}
+    return web.json_response(result)
+
+
+async def _generate_request(req, raw):
     u = req["user"]
     cap = "image" if raw.get("kind") == "image" else "video"
     choice = providers.get(raw["provider"]) if raw.get("provider") else None
@@ -1258,6 +1288,7 @@ async def jobs(req):
                 r["ahead"] = j.get("ahead", 0)
         r["elapsed"] = round(time.time() - j.get("started", j["created"]), 1)
         out[i] = r
+    req.app["creative_memory"].observe(u, out)
     return web.json_response(out)
 
 
@@ -1403,50 +1434,30 @@ async def concat(req):
 LIBRARY = DATA / "library.json"
 
 
-def lib_load() -> list:
+def legacy_lib_load() -> list:
     try:
         return json.loads(LIBRARY.read_text())
     except Exception:
         return []
 
 
+def lib_load() -> list:
+    return creative_memory.Store(sys.modules[__name__]).all()
+
+
 @routes.get("/api/library")
 async def library(req):
-    u = req["user"]
-    return web.json_response([a for a in lib_load() if u["role"] == "admin" or a.get("owner") in (None, u["id"]) or a.get("shared")])
+    return web.json_response(req.app["creative_memory"].list(req["user"], req.query.get("board") or None))
 
 
 @routes.post("/api/library")
 async def library_put(req):
-    """Upsert one asset: {id?, kind: character|scene|prop, name, desc, ref, w, h}."""
-    a = await req.json()
-    if a.get("kind") not in ("character", "scene", "prop") or not clean(a.get("name")) or not a.get("ref"):
-        raise bad("资产需要类型、名字和图片")
-    items = lib_load()
-    u = req["user"]
-    old = next((x for x in items if x.get("id") == a.get("id")), None) if a.get("id") else None
-    if old and not (u["role"] == "admin" or old.get("owner") in (None, u["id"])):
-        raise bad("这是别人的资产，不能修改")
-    a = {k: a.get(k) for k in ("id", "kind", "name", "desc", "voice", "ref", "w", "h", "shared")}
-    a["owner"] = (old or {}).get("owner") or u["id"]
-    a["shared"] = bool(a.get("shared")) if a.get("shared") is not None else bool((old or {}).get("shared"))
-    a["id"] = a.get("id") or "a" + uuid.uuid4().hex[:8]
-    a["url"] = "/media?ref=" + quote(a["ref"], safe="")
-    a["mtime"] = time.time()
-    items = [x for x in items if x.get("id") != a["id"]] + [a]
-    LIBRARY.parent.mkdir(parents=True, exist_ok=True)
-    tmp = LIBRARY.with_suffix(".tmp"); tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1)); tmp.replace(LIBRARY)
-    return web.json_response(a)
+    return web.json_response(req.app["creative_memory"].put(req["user"], await req.json()))
 
 
 @routes.delete("/api/library/{aid}")
 async def library_del(req):
-    u, aid = req["user"], req.match_info["aid"]
-    it = next((x for x in lib_load() if x.get("id") == aid), None)
-    if it and not (u["role"] == "admin" or it.get("owner") in (None, u["id"])):
-        raise bad("这是别人的资产，不能删除")
-    items = [x for x in lib_load() if x.get("id") != aid]
-    tmp = LIBRARY.with_suffix(".tmp"); tmp.write_text(json.dumps(items, ensure_ascii=False, indent=1)); tmp.replace(LIBRARY)
+    req.app["creative_memory"].delete(req["user"], req.match_info["aid"])
     return web.json_response({"ok": True})
 
 

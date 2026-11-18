@@ -29,6 +29,7 @@ w.fetch=async(url,options={})=>{
  else if(pathname==='/api/me')result={id:1,role:'admin',name:'Test'};
  else if(pathname==='/api/status')result={comfy:true};
  else if(pathname==='/api/queue')result={jobs:[],total:0};
+ else if(pathname==='/api/memory')result=w.__memories||[];
  else if(pathname==='/api/library'||pathname==='/api/assets')result=[];
  else if(pathname.startsWith('/api/image-edit/drafts/')){if(method==='GET')result=drafts.get(pathname+'|'+u.searchParams.get('ref'))||null;else{const data=JSON.parse(options.body);drafts.set(pathname+'|'+data.ref,data);result={ok:true};}}
  else if(pathname==='/api/image-edit/capabilities')result={segment:true,cutout:true,native:true};
@@ -48,7 +49,7 @@ function evaluate(code){return vm.runInContext(code,dom.getInternalVMContext());
 function equal(actual,expected,label){assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected,label);}
 async function ready(predicate,label){for(let i=0;i<100;i++){if(evaluate(predicate))return;await pause(10);}throw new Error('Timed out: '+label);}
 async function run(){
- for(const file of ['image-editor.js','editor-workspace.js','canvas-tools.js','video-tabs.js','vendor/marked.js','vendor/purify.min.js','agent-markdown.js','agent-chat.js','agent-editing.js','tools.js','film.js','wizard.js','settings.js','account.js'])evaluate(fs.readFileSync(path.join(root,'static',file),'utf8'));
+ for(const file of ['image-editor.js','editor-workspace.js','canvas-tools.js','video-tabs.js','vendor/marked.js','vendor/purify.min.js','agent-markdown.js','agent-chat.js','agent-editing.js','tools.js','creative-memory.js','film.js','wizard.js','settings.js','account.js'])evaluate(fs.readFileSync(path.join(root,'static',file),'utf8'));
  const inline=[...w.document.querySelectorAll('script:not([src])')].map(x=>x.textContent).join('\n');evaluate(inline);
  await ready('B?.nodes.length===3','board boot');
  await evaluate('openImageEditor(node("n1"))');await ready('!!IMAGE_EDITOR?.image && !IMAGE_EDITOR.restoring','open editor');
@@ -265,6 +266,28 @@ async function run(){
  equal(evaluate(`node(${JSON.stringify(copyId)}).versions[0].input_edges.every(e=>e.to===${JSON.stringify(copyId)})`),true,'duplicated history targets copied node');
  evaluate(`switchVersion(node(${JSON.stringify(copyId)}),0)`);
  equal(evaluate(`B.edges.filter(e=>e.to===${JSON.stringify(copyId)}).map(e=>e.from)`),['n1','n2'],'copied tabs restore copied input graph');
+ // A real input event opens the shared completion menu; Enter selects rather than sending chat.
+ w.__memories=[{id:'person1',name:'林森',kind:'character',aliases:['小林'],tags:['主角'],desc:'圆框眼镜',ref:'input:h3studio/lin.png',board:'btest'},{id:'forest1',name:'森林',kind:'scene',aliases:[],tags:['树林'],desc:'晨雾森林',ref:'input:h3studio/forest.png',board:'btest'}];
+ evaluate('cmInvalidate();document.getElementById("acInput").value="让@";document.getElementById("acInput").focus();document.getElementById("acInput").setSelectionRange(2,2);document.getElementById("acInput").dispatchEvent(new Event("input",{bubbles:true}))');
+ await ready('CM.popup && !CM.popup.hidden && CM.matches.length===2','mention dropdown');
+ equal(evaluate('document.querySelectorAll("#memoryMention [role=option]").length'),2,'at sign lists memory records');
+ evaluate('document.getElementById("acInput").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true}));document.getElementById("acInput").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}))');
+ equal(evaluate('document.getElementById("acInput").value'),'让@森林 ','keyboard completes without chat submission');
+ evaluate('document.getElementById("prompt").value="@小";document.getElementById("prompt").focus();document.getElementById("prompt").setSelectionRange(2,2);document.getElementById("prompt").dispatchEvent(new Event("input",{bubbles:true}))');
+ await ready('CM.target?.id==="prompt" && !CM.popup.hidden && CM.matches.length===1','prompt alias completion');
+ evaluate('document.querySelector("#memoryMention [data-memory=person1]").click()');
+ equal(evaluate('document.getElementById("prompt").value'),'@林森 ','mouse completes alias with canonical name');
+ evaluate('document.getElementById("acInput").value="@主角";document.getElementById("acInput").focus();document.getElementById("acInput").setSelectionRange(3,3);document.getElementById("acInput").dispatchEvent(new Event("input",{bubbles:true}))');
+ await ready('CM.matches.length===1 && !CM.popup.hidden','tag completion');
+ evaluate('document.getElementById("acInput").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))');
+ equal(evaluate('CM.popup.hidden'),true,'escape closes completion');
+ evaluate('CM.items.push({...CM.items[0],id:"person2"});document.getElementById("acInput").value="";document.getElementById("acInput").setSelectionRange(0,0);cmInsert(document.getElementById("acInput"),CM.items[0])');
+ equal(evaluate('document.getElementById("acInput").value'),'@{person1} ','duplicate names insert unambiguous IDs');
+ await evaluate('cmEdit(null,"document")');
+ equal(evaluate('document.querySelector("#memoryEditor [name=kind]").value'),'document','background memory editor');
+ equal(evaluate('document.querySelector("#memoryEditor [name=board]").value'),'btest','new memory defaults to current project');
+ evaluate('document.querySelector("#memoryEditor [data-close]").click()');
+ console.log('Memory DOM passed: @ dropdown, alias/tag filtering, keyboard and mouse completion, no accidental send, duplicate identities and editor scope.');
  console.log('DOM integration passed: boot, zoom, fit, draft restore, undo/redo, comparisons, layer opacity/merge, docking, alignment, grouping/undo and spacing.');
  console.log('Agent DOM integration passed: panel, references, interrupted submission retry, result sync/cards/focus, conversation restore, floating layout and conflict-safe merge.');
  console.log('Stage-two DOM passed: Markdown tables/code/links/XSS cleanup, video cards, layer metadata, before/after comparison and manual selection handoff.');

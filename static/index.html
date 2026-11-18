@@ -436,7 +436,8 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 
 <div id="drawer">
   <div class="dh">素材库<div class="tabs"><button data-f="all" class="on">全部</button><button data-f="image">图片</button><button data-f="video">视频</button></div></div>
-  <div class="dh2"><div class="tabs lib"><button data-f="character">角色</button><button data-f="scene">场景</button><button data-f="prop">道具</button></div></div>
+  <div class="dh2"><div class="tabs lib"><button data-f="character">角色</button><button data-f="scene">场景</button><button data-f="prop">道具</button><button data-f="style">风格</button><button data-f="document">资料</button></div></div>
+  <div class="cm-search"><input id="memorySearch" placeholder="搜索记忆名称、别名、标签" aria-label="搜索创作记忆"><button id="memoryNew">新建记忆</button></div>
   <div class="h">点击或拖到画布上使用</div>
   <div class="grid" id="agrid"></div>
 </div>
@@ -465,9 +466,11 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
 <script src="/static/agent-markdown.js?v=1"></script>
-<script src="/static/agent-chat.js?v=5"></script>
+<script src="/static/agent-chat.js?v=6m"></script>
 <script src="/static/agent-editing.js?v=2"></script>
-<script src="/static/tools.js?v=6t"></script>
+<script src="/static/tools.js?v=7m"></script>
+<link rel="stylesheet" href="/static/creative-memory.css?v=1">
+<script src="/static/creative-memory.js?v=1"></script>
 <script src="/static/film.js?v=4t"></script>
 <script src="/static/wizard.js?v=9t"></script>
 <script src="/static/settings.js?v=3t"></script>
@@ -1545,7 +1548,8 @@ async function generate(n) {
   if (slow) { prepping.add(n.id); showPrep(n, true); }
   try {
     const r = await api("/api/generate", req);
-    n.job = { ids: r.ids, prompt, t0: Date.now(), st: {}, ...(history ? {history} : {}) }; save(); render(n); showPanel(); poll();
+    if (history && r.memory_context) Object.assign(history.video_recipe, r.memory_context);
+    n.job = { ids: r.ids, prompt, t0: Date.now(), st: {}, memory_used:r.memory_used||[], ...(history ? {history} : {}) }; save(); render(n); showPanel(); poll();
   } catch (e) { showErr(n, e.message); }
   finally { if (slow) { prepping.delete(n.id); showPrep(n, false); } }
 }
@@ -1622,7 +1626,7 @@ async function poll() {
         const errs = sts.filter(s => s.state === "error").map(s => s.error);
         for (const s of sts.filter(s => s.state === "done")) for (const o of s.outputs || []) {
           const m = o.meta || {};
-          n.versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: n.data.film ? "film" : "gen", mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}) });
+          n.versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: n.data.film ? "film" : "gen", memory_used: n.job.memory_used||[], mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}) });
           n.cur = n.versions.length - 1;
         }
         n.job = null; save(); render(n); refreshDownstream(n); drawEdges();
@@ -1688,7 +1692,7 @@ async function continueFrom(n, frameOnly) {
 let assetsCache = [], afilter = "all";
 async function loadAssets() {
   if (!$("#drawer").classList.contains("on")) return;
-  if (KIND_CN[afilter]) { $("#drawer .h").textContent = "点击或拖到画布上使用；双击名字改名。角色连到视频时默认作为人物设定"; return renderLibrary(afilter); }
+  if (KIND_CN[afilter]) { $("#drawer .h").textContent = "点击或拖到画布上使用；输入 @ 采用设定与参考图；右上角查看记忆和版本"; return renderLibrary(afilter); }
   $("#drawer .h").textContent = "点击或拖到画布上使用";
   try { assetsCache = await (await fetch("/api/assets")).json(); } catch { return; }
   const g = $("#agrid"), list = assetsCache.filter(a => afilter === "all" || a.type === afilter);

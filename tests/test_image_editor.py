@@ -124,7 +124,7 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.patchers = [patch.object(server, "COMFY_DIR", self.root), patch.object(server, "EDIT_JOBS", self.root / "jobs"),
+        self.patchers = [patch.object(server.db, "DB_PATH", self.root / "memory.db"), patch.object(server.db, "_conn", None), patch.object(server, "LIBRARY", self.root / "library.json"), patch.object(server, "COMFY_DIR", self.root), patch.object(server, "EDIT_JOBS", self.root / "jobs"),
                          patch.object(server, "DATA", self.root / "data"), patch.object(server, "BOARDS", self.root / "boards"),
                          patch.object(server.db, "task_start"), patch.object(server.db, "task_update"), patch.object(server, "record")]
         for p in self.patchers:
@@ -142,6 +142,7 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
 
         app = web.Application(middlewares=[user])
         self.http = aiohttp.ClientSession()
+        app["creative_memory"] = server.creative_memory.Store(server)
         app["http"] = self.http
         app["llm"] = SimpleNamespace(running=lambda: False, available=lambda: False)
         app.add_routes(server.routes)
@@ -158,6 +159,7 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
                     pass
         await self.client.close()
         await self.http.close()
+        server.db.conn().close()
         for p in reversed(self.patchers):
             p.stop()
         server.JOBS.clear()

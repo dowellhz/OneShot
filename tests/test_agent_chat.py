@@ -34,6 +34,7 @@ class ChatFixture(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.tmp.name)
         self.patchers = [patch.object(db, "DB_PATH", self.root / "chat.db"), patch.object(db, "_conn", None),
                          patch.object(server, "BOARDS", self.root / "boards"), patch.object(server, "COMFY_DIR", self.root / "media"),
+                         patch.object(server, "LIBRARY", self.root / "library.json"),
                          patch.object(server, "EDIT_JOBS", self.root / "edits"), patch.object(server, "record")]
         for p in self.patchers:
             p.start()

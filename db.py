@@ -34,6 +34,16 @@ CREATE TABLE IF NOT EXISTS tasks (
   error TEXT, outputs TEXT, request TEXT);
 CREATE INDEX IF NOT EXISTS tasks_user ON tasks(user_id, created);
 CREATE INDEX IF NOT EXISTS tasks_created ON tasks(created);
+CREATE TABLE IF NOT EXISTS creative_memories (
+ id TEXT PRIMARY KEY, owner INTEGER, board TEXT NOT NULL DEFAULT '', shared INTEGER NOT NULL DEFAULT 0,
+ kind TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS creative_memories_owner ON creative_memories(owner, board, deleted);
+CREATE TABLE IF NOT EXISTS memory_uploads (ref TEXT PRIMARY KEY, owner INTEGER NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_jobs (
+ id TEXT PRIMARY KEY, owner INTEGER NOT NULL, board TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS memory_outputs (
+ ref TEXT NOT NULL, owner INTEGER NOT NULL, board TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL,
+ PRIMARY KEY(ref, owner));
 """
 
 _lock = threading.RLock()

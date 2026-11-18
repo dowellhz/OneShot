@@ -2,7 +2,7 @@
 // Canvas tools: storyboard script node, "/" image tools, grid split, HD redraw, 反推, 拉片, concat, asset library.
 // Loaded before the main script; only declarations here. The main script calls initTools() before it boots.
 
-const KIND_CN = { character: "角色", scene: "场景", prop: "道具" };
+const KIND_CN = { character: "角色", scene: "场景", prop: "道具", style: "风格", document: "资料" };
 const toolBusy = new Map();          // node id -> { label, t0 } while a Qwen / media tool runs on it
 
 function setToolBusy(n, label) {
@@ -130,10 +130,11 @@ async function saveAsset(n, kind) {
   const v = curV(n); if (!v) return toast("还没有图片");
   const name = n.name.replace(/^图片 (\d+)$/, `${KIND_CN[kind]}$1`);
   try {
-    const a = await api("/api/library", { id: n.data.asset?.id, kind, name, desc: n.data.caption || (v.prompt || "").slice(0, 200), ref: v.ref, w: v.w, h: v.h });
+    await flushSave();
+    const a = await api("/api/library", { id: n.data.asset?.id, kind, name, desc: n.data.caption || (v.prompt || "").slice(0, 200), ref: v.ref, w: v.w, h: v.h, source_board: boardId, node_id:n.id, board: n.data.asset?.id ? undefined : boardId });
     checkpoint(); n.name = a.name; n.data.asset = { id: a.id, kind }; save(); render(n); refreshDownstream(n); drawEdges();
     toast(`已存入资产库 · ${KIND_CN[kind]}「${a.name}」${kind === "character" ? "。之后新连到视频时默认作为人物设定" : ""}`, 3000);
-    libCache = null; loadAssets();
+    cmInvalidate(); loadAssets();
   } catch (e) { toast("保存失败：" + e.message); }
 }
 
@@ -287,34 +288,12 @@ async function batchVideos(n) {
 
 // ================================================================= asset library (characters / scenes / props)
 let libCache = null;
-async function loadLibrary() { if (!libCache) libCache = await (await fetch("/api/library")).json().catch(() => []); return libCache; }
-async function renderLibrary(kind) {
-  const g = $("#agrid"), list = (await loadLibrary()).filter(a => a.kind === kind).sort((a, b) => b.mtime - a.mtime);
-  g.innerHTML = list.map(a => `<div class="as lib" draggable="true" data-id="${a.id}"><img src="${a.url}" loading="lazy"><span class="ty">${KIND_CN[a.kind]}</span>
-      <button class="x" title="从资产库删除（再点一次确认）">×</button><div class="nm" title="双击改名">${esc(a.name)}</div></div>`).join("")
-    || `<div class="h" style="grid-column:1/-1">还没有${KIND_CN[kind]}。在画布上右键一张图片 →「存入资产库」</div>`;
-  $$(".as.lib", g).forEach(el => {
-    const a = list.find(x => x.id === el.dataset.id);
-    el.addEventListener("dragstart", e => e.dataTransfer.setData("application/x-h3-lib", JSON.stringify(a)));
-    el.onclick = e => { if (e.target.closest(".x, .nm[contenteditable=true]")) return; placeLibAsset(a, toW(innerWidth / 2 - 150, innerHeight / 2 - 180)); };
-    const x = $(".x", el);
-    x.onclick = async e => {
-      e.stopPropagation();
-      if (!x.classList.contains("arm")) { x.classList.add("arm"); x.textContent = "删除?"; setTimeout(() => { x.classList.remove("arm"); x.textContent = "×"; }, 2500); return; }
-      await fetch("/api/library/" + a.id, { method: "DELETE" }); libCache = null; renderLibrary(kind);
-    };
-    const nm = $(".nm", el);
-    nm.ondblclick = e => { e.stopPropagation(); nm.contentEditable = "true"; nm.focus(); document.getSelection().selectAllChildren(nm); };
-    nm.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); nm.blur(); } };
-    nm.onblur = async () => {
-      if (nm.contentEditable !== "true") return; nm.contentEditable = "false";
-      const t = nm.textContent.trim(); if (!t || t === a.name) { nm.textContent = a.name; return; }
-      await api("/api/library", { ...a, name: t }); libCache = null; renderLibrary(kind);
-    };
-  });
-}
+async function loadLibrary() { return cmList(); }
+async function renderLibrary(kind) { return cmRenderLibrary(kind); }
+
 function placeLibAsset(a, at) {
   checkpoint();
+  if (!a.ref) { const n = addNode("text", at.x, at.y, { text: a.desc + (a.constraints ? "\n使用约束：" + a.constraints : ""), asset: {id:a.id,kind:a.kind} }, {name:a.name}); render(n); save(); selectOnly(n.id); return; }
   const n = addNode("image", at.x, at.y, { caption: a.desc || "", aspect: "auto" }, { name: a.name });
   n.data.asset = { id: a.id, kind: a.kind };
   n.versions.push({ ref: a.ref, url: a.url, w: a.w, h: a.h, source: "asset", prompt: "" }); n.cur = 0;
@@ -323,6 +302,7 @@ function placeLibAsset(a, at) {
 
 // ================================================================= wiring (called by the main script)
 function initTools() {
+  cmInit();
   // "/" in an image node's prompt opens the tool menu
   $("#prompt").addEventListener("input", e => {
     const n = node(e.target._node); if (!n || n.type !== "image") return;
