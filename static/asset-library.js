@@ -35,9 +35,12 @@ function alRender() {
   $('#alEmptyText').textContent = AL.query || AL.scope !== 'all' || AL.source !== 'all' ? '试试其他关键词，或重置筛选条件。' : '上传素材、从画布收录，或新建一份背景资料。';
   for (const a of list) {
     const card = document.createElement('article'); card.className = 'al-card' + (AL.selected === a.id ? ' selected' : ''); card.dataset.id = a.id;
-    const ref = alThumb(a), video = /\.(mp4|mov|webm)$/i.test(ref);
+    const draftMain = a.kind === 'character' && characterResult(a, 'main', boardId);
+    const hasDraft = a.kind === 'character' && Object.keys(CHARACTER_VIEWS).some(slot => characterResult(a, slot, boardId));
+    const showDraftCover = draftMain && !a.character_views?.main;
+    const ref = showDraftCover ? draftMain : alThumb(a), video = /\.(mp4|mov|webm)$/i.test(ref);
     const image = ref ? video ? `<video src="/media?ref=${encodeURIComponent(ref)}#t=0.1" preload="metadata" muted playsinline></video>` : `<img src="/media?ref=${encodeURIComponent(ref)}" loading="lazy" alt="${esc(a.name)}">` : `<div class="al-text-preview">${ico('script')}<p>${esc((a.desc || '背景资料').slice(0,180))}</p></div>`;
-    card.innerHTML = `<button type="button" class="al-card-main" aria-label="查看资产 ${esc(a.name)}" aria-pressed="${AL.selected === a.id}"><div class="al-cover">${image}<span class="al-type">${esc(cmKind(a))}</span>${a.ref ? '<span class="al-reference">默认参考</span>' : video ? '<span class="al-reference">视频资料</span>' : ''}</div><div class="al-card-info"><strong>${esc(a.name)}</strong><p>${esc(a.desc || '尚未填写设定')}</p><div class="al-card-meta"><span>${esc(alSourceLabel(a))}</span><span>${a.board ? '当前项目' : a.shared ? '共享素材' : '个人素材库'}</span></div><div class="al-tags">${(a.tags||[]).slice(0,3).map(t=>`<span>${esc(t)}</span>`).join('')}</div></div></button><div class="al-card-actions"><button type="button" data-action="canvas" title="放入当前画布">${ico('plus')}放入画布</button><button type="button" data-action="reference" title="在创作助手中引用此资产">@ 引用</button></div>`;
+    card.innerHTML = `<button type="button" class="al-card-main" aria-label="查看资产 ${esc(a.name)}" aria-pressed="${AL.selected === a.id}"><div class="al-cover">${image}<span class="al-type">${esc(cmKind(a))}</span>${hasDraft ? '<span class="al-reference">新图待定稿</span>' : a.ref ? '<span class="al-reference">默认参考</span>' : video ? '<span class="al-reference">视频资料</span>' : ''}</div><div class="al-card-info"><strong>${esc(a.name)}</strong><p>${esc(a.desc || '尚未填写设定')}</p><div class="al-card-meta"><span>${esc(alSourceLabel(a))}</span><span>${a.board ? '当前项目' : a.shared ? '共享素材' : '个人素材库'}</span></div><div class="al-tags">${(a.tags||[]).slice(0,3).map(t=>`<span>${esc(t)}</span>`).join('')}</div></div></button><div class="al-card-actions"><button type="button" data-action="canvas" title="放入当前画布">${ico('plus')}放入画布</button><button type="button" data-action="reference" title="在创作助手中引用此资产">@ 引用</button></div>`;
     card.querySelector('.al-card-main').onclick = () => alSelect(a);
     card.querySelector('[data-action=canvas]').onclick = () => alPlace(a);
     card.querySelector('[data-action=reference]').onclick = () => alReference(a);
@@ -52,6 +55,8 @@ async function alRefresh() {
     if (!r.ok) throw new Error(items.error || '读取资产库失败');
     if (!AL.open || AL.epoch !== epoch || bid !== boardId) return;
     AL.items = items; AL.board = bid; cmInvalidate(); alRender();
+    await refreshCharacterResults(items, bid);
+    if (AL.open && AL.epoch === epoch && bid === boardId) alRender();
   } catch (e) {
     if (AL.open && AL.epoch === epoch) { $('#alError').textContent = e.message + '，可点击刷新重试。'; $('#alError').hidden = false; }
   } finally { if (AL.epoch === epoch) $('#alLoading').hidden = true; }

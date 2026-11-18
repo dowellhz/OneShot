@@ -52,7 +52,10 @@ async function cmEdit(a=null, kind='character', options={}) {
   for (const key of Object.keys(CHARACTER_FIELDS)) field("character_" + key).value = data.character_card?.[key] || "";
   field("kind").addEventListener("change", paintCharacter);
   const watchedDrafts = new Set();
-  function refreshCharacter() { if (panel.isConnected) paintCharacter(); }
+  function refreshCharacter() {
+    if (panel.isConnected) paintCharacter();
+    if (typeof AL !== "undefined" && AL.open && boardId === initialBoard) alRender();
+  }
   function paintCharacter() {
     character.hidden = field("kind").value !== "character";
     if (character.hidden) return;
@@ -99,7 +102,11 @@ async function cmEdit(a=null, kind='character', options={}) {
           continue;
         }
         const key = characterDraftKey(data, slot, initialBoard);
-        const draft = readCharacterDraft(key);
+        let draft = readCharacterDraft(key);
+        if (!draft && data.character_drafts?.[slot]) {
+          draft = data.character_drafts[slot];
+          if (draft.ids?.length) writeCharacterDraft(key, draft);
+        }
         const active = draft?.submitting || !!draft?.ids?.length;
         if (draft?.ids?.length && !watchedDrafts.has(key)) {
           watchedDrafts.add(key);
@@ -229,6 +236,8 @@ async function cmEdit(a=null, kind='character', options={}) {
     const history=panel.querySelector('.cm-history>div');history.textContent='正在读取生成历史…';
     try{
       const r=await fetch('/api/memory/'+encodeURIComponent(a.id)+'?board='+encodeURIComponent(initialBoard));if(!r.ok)throw new Error('读取生成历史失败');const detail=await r.json();if(!panel.isConnected)return;history.replaceChildren();
+      data.character_drafts = detail.character_drafts;
+      paintCharacter();
       for(const v of detail.history||[]){
         const tile=document.createElement('div');tile.className='cm-media-item';
         tile.innerHTML=/\.(png|jpe?g|webp)$/i.test(v.ref)?`<img src="/media?ref=${encodeURIComponent(v.ref)}" alt="生成历史">`:`<video src="/media?ref=${encodeURIComponent(v.ref)}" preload="metadata" controls playsinline></video>`;

@@ -60,6 +60,51 @@ function writeCharacterDraft(key, draft) {
   } catch {}
 }
 
+function characterResult(asset, slot, board) {
+  const saved = readCharacterDraft(characterDraftKey(asset, slot, board)) || asset.character_drafts?.[slot];
+  return saved?.source === characterSource(asset, slot) && saved.ref !== asset.character_views?.[slot]
+    ? saved.ref : null;
+}
+
+function finishCharacterDraft(key, draft, jobs) {
+  if (readCharacterDraft(key) !== draft) return false;
+  const states = draft.ids.map(id => jobs[id]).filter(Boolean);
+  const failed = states.find(state => state.state === "error");
+  const result = states.find(state => state.state === "done");
+  if (!failed && !result && states.length) return false;
+  const ref = result?.outputs?.find(output => output.ref)?.ref;
+  writeCharacterDraft(key, ref
+    ? {source: draft.source, ref}
+    : {source: draft.source, error: failed?.error || "任务未返回图片，可重新生成"});
+  return true;
+}
+
+async function refreshCharacterResults(assets, board) {
+  const pending = [];
+  for (const asset of assets) {
+    if (asset.kind !== "character") continue;
+    for (const slot of Object.keys(CHARACTER_VIEWS)) {
+      const key = characterDraftKey(asset, slot, board);
+      const draft = readCharacterDraft(key);
+      if (draft?.ids?.length) pending.push({key, draft});
+    }
+  }
+  if (!pending.length) return;
+  // Recover jobs submitted before the library could persist their asset association.
+  for (let offset = 0; offset < pending.length; offset += 100) {
+    const batch = pending.slice(offset, offset + 100);
+    const ids = batch.flatMap(({draft}) => draft.ids);
+    try {
+      const response = await fetch("/api/jobs?ids=" + encodeURIComponent(ids.join(",")));
+      if (!response.ok) continue;
+      const jobs = await response.json();
+      for (const {key, draft} of batch) finishCharacterDraft(key, draft, jobs);
+    } catch {
+      // The detail editor can retry the job status.
+    }
+  }
+}
+
 async function generateCharacterView(asset, slot, card, board, refresh) {
   const source = characterSource(asset, slot);
   if (!source) return;
@@ -72,7 +117,8 @@ async function generateCharacterView(asset, slot, card, board, refresh) {
     const result = await api("/api/generate", {
       kind: "image", model: "h3img", prompt: characterPrompt(asset, slot, card),
       images: [{ref:source}], ar: 3 / 4, quality: "4mp", count: 1,
-      seed: -1, turbo: true, board, label: asset.name + " · " + CHARACTER_VIEWS[slot][0]
+      seed: -1, turbo: true, board, label: asset.name + " · " + CHARACTER_VIEWS[slot][0],
+      character_draft: {asset:asset.id, slot}
     });
     if (!result.ids?.length) throw new Error("服务未返回任务编号");
     writeCharacterDraft(key, {source, ids: result.ids});
@@ -91,17 +137,8 @@ async function pollCharacterDraft(key, panel, refresh) {
       if (!response.ok) throw new Error("无法读取任务状态");
       const jobs = await response.json();
       if (readCharacterDraft(key) !== draft) return;
+      if (finishCharacterDraft(key, draft, jobs)) { refresh(); return; }
       const states = draft.ids.map(id => jobs[id]).filter(Boolean);
-      const failed = states.find(state => state.state === "error");
-      const result = states.find(state => state.state === "done");
-      if (failed || result || !states.length) {
-        const ref = result?.outputs?.find(output => output.ref)?.ref;
-        writeCharacterDraft(key, ref
-          ? {source: draft.source, ref}
-          : {source: draft.source, error: failed?.error || "任务未返回图片，可重新生成"});
-        refresh();
-        return;
-      }
       const state = states[0];
       const progress = state.state === "queued" ? "排队中…" :
         state.max > 1 && Number.isFinite(state.value)

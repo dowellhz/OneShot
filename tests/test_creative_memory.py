@@ -209,3 +209,32 @@ class MemoryIntegration(ChatFixture):
         replacement = await recreated.json()
         self.assertNotEqual(replacement["id"], asset["id"])
         self.assertEqual(replacement["board"], "test")
+
+    async def test_character_result_is_visible_in_asset_library_after_job_recovery(self):
+        asset = await self.create()
+        result = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "green"))["ref"]
+        job_id = "character-test"
+        async def submit(req, payload):
+            from db import task_start, task_update
+            task_start(id=job_id, user_id=7, board_id="test", capability="image")
+            task_update(job_id, state="done", outputs=[result])
+            server.JOBS[job_id] = {"id": job_id, "state": "done", "outputs": [{"ref": result}]}
+            return web.json_response({"ids": [job_id]})
+
+        with patch.object(server, "_generate_request", submit):
+            response = await self.client.post("/api/generate", json={
+                "kind": "image", "board": "test", "prompt": "按 @图1 生成角色主图",
+                "images": [{"ref": asset["ref"]}], "character_draft": {"asset": asset["id"], "slot": "main"}
+            })
+        self.assertEqual(response.status, 200, await response.text())
+        server.JOBS.pop(job_id)
+        listing = await (await self.client.get("/api/memory?board=test")).json()
+        self.assertEqual(listing[0]["character_drafts"]["main"]["ref"], result)
+        self.assertEqual(listing[0]["default_ref"], asset["ref"])
+        detail = await (await self.client.get("/api/memory/" + asset["id"] + "?board=test")).json()
+        self.assertEqual(detail["history"][0]["ref"], result)
+        response = await self.client.post("/api/memory", json={
+            "id": asset["id"], "character_view": "main", "ref": result, "source_board": "test"
+        })
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual((await response.json())["default_ref"], result)

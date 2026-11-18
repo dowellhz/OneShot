@@ -1179,10 +1179,13 @@ async def image_edit_generate(req):
 
 async def generate_request(req, raw):
     memory = req.app["creative_memory"]
+    draft = raw.get("character_draft")
+    if draft is not None:
+        draft = memory.character_draft_request(req["user"], raw, draft)
     payload = memory.prepare(req["user"], raw)
     response = await _generate_request(req, payload)
     result = json.loads(response.body)
-    memory.track(req["user"], payload, result)
+    memory.track(req["user"], payload, result, draft)
     memory.observe(req["user"], {jid: JOBS[jid] for jid in result.get("ids", []) if jid in JOBS})
     if payload.get("memory_used"):
         result["memory_used"] = payload["memory_used"]
