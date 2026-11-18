@@ -126,12 +126,42 @@ async function hdRedraw(n) {
   const m = addNode("image", at.x, at.y, { prompt: "高清重绘：保持 @图1 的构图、人物长相、表情、服装、场景和色彩完全一致，提升清晰度和细节，去除模糊、噪点和压缩痕迹", aspect: "auto", quality: "4mp" }, { name: n.name + " · 高清" });
   link(n, m, true); selectOnly(m.id); generate(m);
 }
+const removedAssetIds = new Set();
+
+function clearDeletedAssetBindings(nodes) {
+  const affected = [];
+  for (const n of nodes) {
+    let changed = false;
+    if (removedAssetIds.has(n.data?.asset?.id)) {
+      delete n.data.asset;
+      changed = true;
+    }
+    if (removedAssetIds.has(n.data?.character_draft?.asset)) {
+      delete n.data.character_draft;
+      changed = true;
+    }
+    if (changed) affected.push(n);
+  }
+  return affected;
+}
+
+function unlinkDeletedAsset(id) {
+  removedAssetIds.add(id);
+  if (!B) return;
+  const affected = clearDeletedAssetBindings(B.nodes);
+  if (!affected.length) return;
+  for (const n of affected) { render(n); refreshDownstream(n); }
+  closeMenus();
+  showPanel();
+  save();
+}
+
 async function saveAsset(n, kind) {
   const v = curV(n); if (!v) return toast("还没有图片");
   const name = n.name.replace(/^图片 (\d+)$/, `${KIND_CN[kind]}$1`);
   try {
     await flushSave();
-    const a = await api("/api/library", { id: n.data.asset?.id, kind, name, desc: n.data.caption || (v.prompt || "").slice(0, 200), ref: v.ref, w: v.w, h: v.h, source_board: boardId, node_id:n.id, board: n.data.asset?.id ? undefined : boardId });
+    const a = await api("/api/library", { id: n.data.asset?.id, kind, name, desc: n.data.caption || (v.prompt || "").slice(0, 200), ref: v.ref, w: v.w, h: v.h, source_board: boardId, node_id:n.id, board: n.data.asset?.id ? undefined : boardId, recreate_deleted:true });
     checkpoint(); n.name = a.name; n.data.asset = { id: a.id, kind }; save(); render(n); refreshDownstream(n); drawEdges();
     toast(`已存入资产库 · ${KIND_CN[kind]}「${a.name}」${kind === "character" ? "。之后新连到视频时默认作为人物设定" : ""}`, 3000);
     cmInvalidate(); loadAssets();

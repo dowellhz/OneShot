@@ -742,6 +742,7 @@ async def get_board(req):
     b = json.loads(f.read_text()) if f.exists() else {}
     if b and not can_see(req["user"], b):
         raise bad("没有权限打开这个项目")
+    creative_memory.remove_deleted_bindings(b)
     return web.json_response(b)
 
 
@@ -760,6 +761,7 @@ async def put_board(req):
     cur = old.get("rev")
     if cur is not None and data.get("rev") != cur:
         return web.json_response({"error": "画布已在别处更新", "stale": True, "rev": cur}, status=409)
+    creative_memory.remove_deleted_bindings(data)
     data["rev"] = int(cur or 0) + 1
     BOARDS.mkdir(parents=True, exist_ok=True)
     tmp = f.with_suffix(".tmp")
@@ -1452,7 +1454,13 @@ async def library(req):
 
 @routes.post("/api/library")
 async def library_put(req):
-    return web.json_response(req.app["creative_memory"].put(req["user"], await req.json()))
+    data = await req.json()
+    if isinstance(data, dict) and data.pop("recreate_deleted", False):
+        mid = data.get("id")
+        if isinstance(mid, str) and db.one("SELECT 1 FROM creative_memories WHERE id=? AND deleted=1", mid):
+            data.pop("id")
+            data.setdefault("board", data.get("source_board", ""))
+    return web.json_response(req.app["creative_memory"].put(req["user"], data))
 
 
 @routes.delete("/api/library/{aid}")

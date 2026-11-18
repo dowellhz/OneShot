@@ -182,3 +182,30 @@ class MemoryIntegration(ChatFixture):
         result = await response.json()
         self.assertEqual(result["character_views"], {"main": third})
         self.assertEqual(len(result["media"]), 3)
+
+    async def test_deleted_asset_unlinks_board_and_can_be_saved_again(self):
+        asset = await self.create()
+        board = self.load()
+        item = board["nodes"][0]
+        item["data"]["asset"] = {"id": asset["id"], "kind": "character"}
+        item["data"]["character_draft"] = {"asset": asset["id"], "slot": "main"}
+        saved = await self.client.put("/api/board/test", json=board)
+        self.assertEqual(saved.status, 200)
+        board["rev"] = (await saved.json())["rev"]
+        response = await self.client.delete("/api/memory/" + asset["id"])
+        self.assertEqual(response.status, 200)
+        loaded = await (await self.client.get("/api/board/test")).json()
+        self.assertNotIn("asset", loaded["nodes"][0]["data"])
+        self.assertNotIn("character_draft", loaded["nodes"][0]["data"])
+        self.assertEqual(loaded["nodes"][0]["versions"][0]["ref"], item["versions"][0]["ref"])
+        stale = await self.client.put("/api/board/test", json=board)
+        self.assertEqual(stale.status, 200)
+        self.assertNotIn("asset", self.load()["nodes"][0]["data"])
+        recreated = await self.client.post("/api/library", json={
+            "id": asset["id"], "recreate_deleted": True, "kind": "character",
+            "name": asset["name"], "ref": asset["ref"], "source_board": "test", "node_id": item["id"]
+        })
+        self.assertEqual(recreated.status, 200, await recreated.text())
+        replacement = await recreated.json()
+        self.assertNotEqual(replacement["id"], asset["id"])
+        self.assertEqual(replacement["board"], "test")

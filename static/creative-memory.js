@@ -192,7 +192,7 @@ async function cmEdit(a=null, kind='character', options={}) {
     if(busy||readonly)return;const b=panel.querySelector('[data-delete]');
     if(!b.dataset.armed){b.dataset.armed='1';b.textContent='再次点击删除';setTimeout(()=>{delete b.dataset.armed;b.textContent='删除资产';},3000);return;}
     setBusy(true);
-    try{const r=await fetch('/api/memory/'+encodeURIComponent(data.id),{method:'DELETE'});if(!r.ok)throw new Error((await r.json()).error||'删除失败');cmInvalidate();panel.remove();if(CM.editor===panel)CM.editor=null;if(typeof alChanged==='function')alChanged(data,true);await loadAssets();}catch(e){status(e.message);}finally{setBusy(false);}
+    try{const r=await fetch('/api/memory/'+encodeURIComponent(data.id),{method:'DELETE'});if(!r.ok)throw new Error((await r.json()).error||'删除失败');unlinkDeletedAsset(data.id);cmInvalidate();panel.remove();if(CM.editor===panel)CM.editor=null;if(typeof alChanged==='function')alChanged(data,true);await loadAssets();}catch(e){status(e.message);}finally{setBusy(false);}
   };
   panel.querySelector('[data-canvas]').onclick=()=>{if(!data.id)return status('请先保存资产');placeLibAsset(data,toW(innerWidth/2-150,innerHeight/2-180));if(host&&typeof alClose==='function')alClose();};
   if(readonly){for(const el of panel.querySelectorAll('input,textarea,select'))el.disabled=true;panel.querySelector('[type=submit]').hidden=true;panel.querySelector('[data-delete]').hidden=true;panel.querySelector('[data-current]').hidden=true;status('共享资产可查看和引用，修改请由资产所有者操作');}else field('name').focus();

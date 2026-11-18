@@ -24,6 +24,26 @@ CHARACTER_FIELDS = {
 def character_notes(asset):
     card = asset.get("character_card", {}) if asset["kind"] == "character" else {}
     return "；".join(f"{label}：{card[key]}" for key, label in CHARACTER_FIELDS.items() if card.get(key))
+
+
+def remove_deleted_bindings(board):
+    """Drop live links to deleted assets without changing source media or history."""
+    bindings = []
+    for node in board.get("nodes") or []:
+        data = node.get("data") if isinstance(node, dict) else None
+        if not isinstance(data, dict):
+            continue
+        for key, id_key in (("asset", "id"), ("character_draft", "asset")):
+            binding = data.get(key)
+            mid = binding.get(id_key) if isinstance(binding, dict) else None
+            if isinstance(mid, str) and mid:
+                bindings.append((data, key, mid))
+    if bindings:
+        deleted = {mid for mid in {mid for _, _, mid in bindings}
+                   if db.one("SELECT 1 FROM creative_memories WHERE id=? AND deleted=1", mid)}
+        for data, key, mid in bindings:
+            if mid in deleted:
+                data.pop(key, None)
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 routes = web.RouteTableDef()
 

@@ -356,8 +356,13 @@ async function run(){
  await ready('AL.items.some(a=>a.name==="上传角色") && CM.editor.dataset.busy==="false"','uploaded asset persisted');
  assert.match(w.__lastMemoryPost.ref,/^input:h3studio\/upload/);assert.equal(w.__lastMemoryPost.ref,w.__lastMemoryPost.default_ref);
  equal(evaluate('B.nodes.length'),nodesBeforeLibrary,'asset upload does not add canvas nodes');
+ evaluate('node("n1").data.asset={id:AL.items.find(a=>a.name==="上传角色").id,kind:"character"};checkpoint()');
  evaluate('document.querySelector("#alDetail [data-delete]").click();document.querySelector("#alDetail [data-delete]").click()');
  await ready('!AL.items.some(a=>a.name==="上传角色") && !document.querySelector("#alDetail .cm-editor")','delete asset updates library');
+ equal(evaluate('node("n1").data.asset ?? null'),null,'asset deletion unlinks the canvas image immediately');
+ evaluate('undo();ctxMenu({target:els.get("n1"),clientX:140,clientY:120})');
+ equal(evaluate(`document.querySelector('#ctxMenu [data-a="asset:character"]').textContent.trim()`),'存为角色','undo does not restore deleted binding');
+ evaluate('closeMenus()');
  evaluate('document.getElementById("alImportBtn").click()');
  equal(evaluate('document.getElementById("alImport").hidden'),false,'canvas import chooser');
  const importText=evaluate('B.nodes.find(n=>n.type==="text"&&n.data.text)?.name');
