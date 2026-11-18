@@ -29,7 +29,22 @@ w.fetch=async(url,options={})=>{
  else if(pathname==='/api/me')result={id:1,role:'admin',name:'Test'};
  else if(pathname==='/api/status')result={comfy:true};
  else if(pathname==='/api/queue')result={jobs:[],total:0};
- else if(pathname==='/api/memory')result=w.__memories||[];
+ else if(pathname==='/api/memory'){
+  if(w.__memoryReadFailure&&method==='GET')return {ok:false,status:503,json:async()=>({error:'模拟读取失败'})};
+  if(method==='POST'){
+   const p=JSON.parse(options.body);w.__lastMemoryPost=p;
+   if(w.__memorySaveFailure)return {ok:false,status:409,json:async()=>({error:'模拟保存冲突'}),text:async()=>JSON.stringify({error:'模拟保存冲突'})};
+   const old=(w.__memories||[]).find(a=>a.id===p.id),media=[...(old?.media||[])];
+   if(p.ref&&!media.some(m=>m.ref===p.ref))media.push({ref:p.ref,source:p.ref.startsWith('input:')?'upload':'generated'});
+   result={...old,...p,id:p.id||'mem'+(++serial),owner:old?.owner||1,media,ref:p.default_ref||old?.ref||'',mtime:Date.now()};
+   w.__memories=(w.__memories||[]).filter(a=>a.id!==result.id).concat(result);
+  }else result=w.__memories||[];
+ }
+ else if(pathname.startsWith('/api/memory/')){
+  const id=decodeURIComponent(pathname.split('/').pop());
+  if(method==='DELETE'){w.__memories=(w.__memories||[]).filter(a=>a.id!==id);result={ok:true};}
+  else result={...(w.__memories||[]).find(a=>a.id===id),history:w.__memoryHistory||[]};
+ }
  else if(pathname==='/api/library'||pathname==='/api/assets')result=[];
  else if(pathname.startsWith('/api/image-edit/drafts/')){if(method==='GET')result=drafts.get(pathname+'|'+u.searchParams.get('ref'))||null;else{const data=JSON.parse(options.body);drafts.set(pathname+'|'+data.ref,data);result={ok:true};}}
  else if(pathname==='/api/image-edit/capabilities')result={segment:true,cutout:true,native:true};
@@ -49,7 +64,7 @@ function evaluate(code){return vm.runInContext(code,dom.getInternalVMContext());
 function equal(actual,expected,label){assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected,label);}
 async function ready(predicate,label){for(let i=0;i<100;i++){if(evaluate(predicate))return;await pause(10);}throw new Error('Timed out: '+label);}
 async function run(){
- for(const file of ['image-editor.js','editor-workspace.js','canvas-tools.js','video-tabs.js','vendor/marked.js','vendor/purify.min.js','agent-markdown.js','agent-chat.js','agent-editing.js','tools.js','creative-memory.js','film.js','wizard.js','settings.js','account.js'])evaluate(fs.readFileSync(path.join(root,'static',file),'utf8'));
+ for(const file of ['image-editor.js','editor-workspace.js','canvas-tools.js','video-tabs.js','vendor/marked.js','vendor/purify.min.js','agent-markdown.js','agent-chat.js','agent-editing.js','tools.js','creative-memory.js','asset-library.js','film.js','wizard.js','settings.js','account.js'])evaluate(fs.readFileSync(path.join(root,'static',file),'utf8'));
  const inline=[...w.document.querySelectorAll('script:not([src])')].map(x=>x.textContent).join('\n');evaluate(inline);
  await ready('B?.nodes.length===3','board boot');
  await evaluate('openImageEditor(node("n1"))');await ready('!!IMAGE_EDITOR?.image && !IMAGE_EDITOR.restoring','open editor');
@@ -177,7 +192,7 @@ async function run(){
  remote.rev=evaluate('B.rev')||revision;
  const originalFetch=w.fetch;
  w.fetch=async(url,options={})=>{
-  const u=new URL(String(url),'http://oneshot.test'),body=options.body&&JSON.parse(options.body);
+  const u=new URL(String(url),'http://oneshot.test'),body=typeof options.body==='string'?JSON.parse(options.body):null;
   let result;
   if(u.pathname==='/api/chat/sessions')result=options.method==='POST'?{id:'s1'}:{sessions:[{id:'s1',title:'Test chat'}]};
   else if(u.pathname==='/api/chat/sessions/s1/messages'){
@@ -287,6 +302,89 @@ async function run(){
  equal(evaluate('document.querySelector("#memoryEditor [name=kind]").value'),'document','background memory editor');
  equal(evaluate('document.querySelector("#memoryEditor [name=board]").value'),'btest','new memory defaults to current project');
  evaluate('document.querySelector("#memoryEditor [data-close]").click()');
+ // The dedicated library uses the same persisted API records, not an independent mock-only store.
+ w.__memories=[
+  {id:'char',name:'林森',kind:'character',owner:1,board:'btest',aliases:['小林'],tags:['主角'],desc:'圆框眼镜',ref:'input:h3studio/lin.png',default_ref:'input:h3studio/lin.png',media:[{ref:'input:h3studio/lin.png',source:'upload'}],mtime:5},
+  {id:'scene',name:'森林',kind:'scene',owner:1,board:'',aliases:[],tags:['树林'],desc:'晨雾森林',ref:'output:h3studio/forest.png',default_ref:'output:h3studio/forest.png',media:[{ref:'output:h3studio/forest.png',source:'gen'}],mtime:4},
+  {id:'doc',name:'世界观 <svg onload=alert(1)>',kind:'document',owner:1,board:'btest',aliases:[],tags:['设定'],desc:'时间是2040年',media:[],mtime:3},
+  {id:'clip',name:'机器人动作',kind:'prop',owner:1,board:'btest',aliases:[],tags:[],desc:'动作资料',ref:'',media:[{ref:'input:h3studio/robot.mp4',source:'upload'}],mtime:2},
+  {id:'public',name:'共享画风',kind:'style',owner:2,shared:true,board:'',aliases:[],tags:[],desc:'黑白线稿',media:[],mtime:1}
+ ];
+ w.__memoryHistory=[{ref:'output:h3studio/history.png',board:'btest'}];
+ const nodesBeforeLibrary=evaluate('B.nodes.length');
+ evaluate('ME_USER={id:1,role:"member"};document.getElementById("assetLibraryBtn").click()');
+ await ready('AL.items.length===5 && document.getElementById("alLoading").hidden','asset library entry');
+ equal(evaluate('document.getElementById("assetLibrary").hidden'),false,'dedicated workspace opens');
+ equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),5,'all kinds share asset grid');
+ equal(evaluate('document.querySelector("#alGrid .al-card[data-id=doc] strong svg")'),null,'asset names are escaped');
+ evaluate('document.querySelector("#alCategories [data-kind=character]").click()');
+ equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'category filter');
+ evaluate('document.querySelector("#alCategories [data-kind=all]").click();document.getElementById("alSearch").value="小林";document.getElementById("alSearch").dispatchEvent(new Event("input"))');
+ equal(evaluate('document.querySelector("#alGrid .al-card").dataset.id'),'char','alias search');
+ evaluate('document.getElementById("alSearch").value="树林";document.getElementById("alSearch").dispatchEvent(new Event("input"))');
+ equal(evaluate('document.querySelector("#alGrid .al-card").dataset.id'),'scene','tag search');
+ evaluate('document.getElementById("alReset").click();document.getElementById("alSource").value="generated";document.getElementById("alSource").dispatchEvent(new Event("change"))');
+ equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'generated source filter');
+ evaluate('document.getElementById("alReset").click();document.getElementById("alScope").value="project";document.getElementById("alScope").dispatchEvent(new Event("change"))');
+ equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),3,'project scope filter');
+ evaluate('document.getElementById("alScope").value="personal";document.getElementById("alScope").dispatchEvent(new Event("change"))');
+ equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'personal scope excludes another owner');
+ evaluate('document.getElementById("alReset").click();document.querySelector("#alGrid [data-id=char] .al-card-main").click()');
+ await ready('document.querySelector("#alDetail [name=name]")?.value==="林森" && document.querySelector("#alDetail .cm-history img")','integrated detail and history');
+ equal(evaluate('B.nodes.length'),nodesBeforeLibrary,'viewing assets never creates canvas nodes');
+ equal(evaluate('document.querySelector("#alDetail .cm-hero img").getAttribute("src")'),'/media?ref=input%3Ah3studio%2Flin.png','large asset preview');
+ evaluate('document.querySelector("#alDetail [name=name]").value="林森新版";document.querySelector("#alDetail form").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
+ await ready('AL.items.find(a=>a.id==="char")?.name==="林森新版" && CM.editor.dataset.busy==="false"','save existing asset');
+ assert.equal(w.__lastMemoryPost.default_ref,'input:h3studio/lin.png','editing metadata preserves canonical reference');
+ w.__memorySaveFailure=true;
+ evaluate('document.querySelector("#alDetail [name=name]").value="未保存草稿";document.querySelector("#alDetail form").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
+ await ready('document.querySelector("#alDetail .cm-error").textContent.includes("模拟保存冲突") && CM.editor.dataset.busy==="false"','save conflict visible');
+ equal(evaluate('document.querySelector("#alDetail [name=name]").value'),'未保存草稿','save conflict preserves draft');
+ equal(evaluate('AL.items.find(a=>a.id==="char").name'),'林森新版','failed save preserves library record');
+ w.__memorySaveFailure=false;
+ evaluate('document.querySelector("#alGrid [data-id=clip] .al-card-main").click()');
+ await ready('document.querySelector("#alDetail .cm-hero video")?.controls===true','playable video asset');
+ evaluate('document.querySelector("#alGrid [data-id=public] .al-card-main").click()');
+ await ready('document.querySelector("#alDetail [name=name]")?.value==="共享画风"','shared asset detail');
+ equal(evaluate('document.querySelector("#alDetail [name=name]").disabled'),true,'foreign shared asset read only');
+ equal(evaluate('document.querySelector("#alDetail [type=submit]").hidden'),true,'shared asset hides write action');
+ const fileInput=w.document.getElementById('alFile');
+ Object.defineProperty(fileInput,'files',{configurable:true,value:[new w.File(['png'],'new-person.png',{type:'image/png'})]});
+ fileInput.dispatchEvent(new w.Event('change'));
+ await ready('document.querySelector("#alDetail .cm-error")?.textContent.includes("已上传")','upload directly into asset editor');
+ evaluate('document.querySelector("#alDetail [name=name]").value="上传角色";document.querySelector("#alDetail form").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
+ await ready('AL.items.some(a=>a.name==="上传角色") && CM.editor.dataset.busy==="false"','uploaded asset persisted');
+ assert.match(w.__lastMemoryPost.ref,/^input:h3studio\/upload/);assert.equal(w.__lastMemoryPost.ref,w.__lastMemoryPost.default_ref);
+ equal(evaluate('B.nodes.length'),nodesBeforeLibrary,'asset upload does not add canvas nodes');
+ evaluate('document.querySelector("#alDetail [data-delete]").click();document.querySelector("#alDetail [data-delete]").click()');
+ await ready('!AL.items.some(a=>a.name==="上传角色") && !document.querySelector("#alDetail .cm-editor")','delete asset updates library');
+ evaluate('document.getElementById("alImportBtn").click()');
+ equal(evaluate('document.getElementById("alImport").hidden'),false,'canvas import chooser');
+ const importText=evaluate('B.nodes.find(n=>n.type==="text"&&n.data.text)?.name');
+ const importButton=[...w.document.querySelectorAll('#alImport button')].find(b=>b.textContent.startsWith(importText+' ·'));
+ assert(importButton,'text canvas item available');importButton.click();
+ await ready('document.querySelector("#alDetail [name=kind]")?.value==="document"','import text becomes background asset');
+ evaluate('document.querySelector("#alDetail [name=name]").value="画布资料";document.querySelector("#alDetail form").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
+ await ready('AL.items.some(a=>a.name==="画布资料") && CM.editor.dataset.busy==="false"','canvas text imported');
+ equal(evaluate('B.nodes.length'),nodesBeforeLibrary,'collecting canvas text preserves existing nodes');
+ evaluate('document.querySelector("#alGrid [data-id=char] [data-action=canvas]").click()');
+ equal(evaluate('B.nodes.length'),nodesBeforeLibrary+1,'placing asset creates exactly one node');
+ equal(evaluate('document.getElementById("assetLibrary").hidden'),true,'place returns to canvas');
+ await evaluate('alOpen()');
+ evaluate('document.querySelector("#alGrid [data-id=char] [data-action=reference]").click()');
+ await ready('!AL.open && document.getElementById("acInput").value.includes("@林森新版")','asset can be cited from library');
+ w.__memoryReadFailure=true;await evaluate('alOpen()');
+ equal(evaluate('document.getElementById("alError").hidden'),false,'loading failure has visible error');
+ w.__memoryReadFailure=false;await evaluate('alRefresh()');
+ equal(evaluate('document.getElementById("alError").hidden'),true,'refresh recovers');
+ evaluate('document.getElementById("assetBtn").click()');equal(evaluate('AL.open'),false,'side toolbar toggles same library');
+ await evaluate('alOpen()');
+ const beforeVideoPlace=evaluate('B.nodes.length');
+ evaluate('document.querySelector("#alGrid [data-id=clip] [data-action=canvas]").click()');
+ equal(evaluate('B.nodes.length'),beforeVideoPlace+1,'video asset places one node');
+ equal(evaluate('B.nodes[B.nodes.length-1].type'),'video','video-only asset stays video');
+ equal(evaluate('B.nodes[B.nodes.length-1].versions[0].ref'),'input:h3studio/robot.mp4','video asset retains source');
+ console.log('Asset library DOM passed: entry, categories/search/source/scope, safe labels, preview/history, save/upload/delete, readonly shared assets, canvas import/place, @ citation, and fetch recovery.');
  console.log('Memory DOM passed: @ dropdown, alias/tag filtering, keyboard and mouse completion, no accidental send, duplicate identities and editor scope.');
  console.log('DOM integration passed: boot, zoom, fit, draft restore, undo/redo, comparisons, layer opacity/merge, docking, alignment, grouping/undo and spacing.');
  console.log('Agent DOM integration passed: panel, references, interrupted submission retry, result sync/cards/focus, conversation restore, floating layout and conflict-safe merge.');

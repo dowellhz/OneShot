@@ -293,11 +293,25 @@ async function renderLibrary(kind) { return cmRenderLibrary(kind); }
 
 function placeLibAsset(a, at) {
   checkpoint();
-  if (!a.ref) { const n = addNode("text", at.x, at.y, { text: a.desc + (a.constraints ? "\n使用约束：" + a.constraints : ""), asset: {id:a.id,kind:a.kind} }, {name:a.name}); render(n); save(); selectOnly(n.id); return; }
-  const n = addNode("image", at.x, at.y, { caption: a.desc || "", aspect: "auto" }, { name: a.name });
+  const video = !a.ref && (a.media || []).find(m => /\.(mp4|mov|webm)$/i.test(m.ref));
+  const ref = a.ref || video?.ref;
+  if (!ref) { const n = addNode("text", at.x, at.y, { text: (a.desc || "") + (a.constraints ? "\n使用约束：" + a.constraints : ""), asset: {id:a.id,kind:a.kind} }, {name:a.name}); render(n); save(); selectOnly(n.id); return n; }
+  const n = addNode(video ? "video" : "image", at.x, at.y, { caption: a.desc || "", aspect: "auto" }, { name: a.name });
   n.data.asset = { id: a.id, kind: a.kind };
-  n.versions.push({ ref: a.ref, url: a.url, w: a.w, h: a.h, source: "asset", prompt: "" }); n.cur = 0;
+  const version = { ref, url: "/media?ref=" + encodeURIComponent(ref), w: a.w || video?.w, h: a.h || video?.h, seconds:video?.seconds, source: "asset", prompt: "" };
+  n.versions.push(version); n.cur = 0;
   render(n); save(); selectOnly(n.id);
+  if (video && (!version.w || !version.h)) {
+    const probe = document.createElement("video"), bid = boardId;
+    probe.preload = "metadata";
+    probe.onloadedmetadata = () => {
+      if (boardId === bid && node(n.id) === n) { version.w = probe.videoWidth; version.h = probe.videoHeight; if(Number.isFinite(probe.duration))version.seconds = probe.duration; render(n); save(); }
+      probe.onloadedmetadata = probe.onerror = null; probe.removeAttribute("src");
+    };
+    probe.onerror = () => { probe.onloadedmetadata = probe.onerror = null; probe.removeAttribute("src"); };
+    probe.src = version.url;
+  }
+  return n;
 }
 
 // ================================================================= wiring (called by the main script)
