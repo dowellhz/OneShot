@@ -64,7 +64,7 @@ function evaluate(code){return vm.runInContext(code,dom.getInternalVMContext());
 function equal(actual,expected,label){assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected,label);}
 async function ready(predicate,label){for(let i=0;i<100;i++){if(evaluate(predicate))return;await pause(10);}throw new Error('Timed out: '+label);}
 async function run(){
- for(const file of ['image-editor.js','editor-workspace.js','canvas-tools.js','video-tabs.js','vendor/marked.js','vendor/purify.min.js','agent-markdown.js','agent-chat.js','agent-editing.js','tools.js','creative-memory.js','asset-library.js','film.js','wizard.js','settings.js','account.js'])evaluate(fs.readFileSync(path.join(root,'static',file),'utf8'));
+ for(const file of ['image-editor.js','editor-workspace.js','canvas-tools.js','video-tabs.js','vendor/marked.js','vendor/purify.min.js','agent-markdown.js','agent-chat.js','agent-editing.js','tools.js','character-views.js','creative-memory.js','asset-library.js','film.js','wizard.js','settings.js','account.js'])evaluate(fs.readFileSync(path.join(root,'static',file),'utf8'));
  const inline=[...w.document.querySelectorAll('script:not([src])')].map(x=>x.textContent).join('\n');evaluate(inline);
  await ready('B?.nodes.length===3','board boot');
  await evaluate('openImageEditor(node("n1"))');await ready('!!IMAGE_EDITOR?.image && !IMAGE_EDITOR.restoring','open editor');
@@ -384,6 +384,13 @@ async function run(){
  equal(evaluate('B.nodes.length'),beforeVideoPlace+1,'video asset places one node');
  equal(evaluate('B.nodes[B.nodes.length-1].type'),'video','video-only asset stays video');
  equal(evaluate('B.nodes[B.nodes.length-1].versions[0].ref'),'input:h3studio/robot.mp4','video asset retains source');
+ await evaluate('cmEdit(window.__memories.find(a=>a.id==="char"),"character")');
+ equal(evaluate('document.querySelector(".cm-character-view select").options[1].value'),'current','existing image can become approved main');
+ equal(evaluate('document.querySelectorAll(".cm-character-view button")[2].disabled'),true,'other angles wait for main approval');
+ evaluate('window.characterGeneration = null;const normalGenerate=generate;generate = n=>{window.characterGeneration=n;};document.querySelector(".cm-character-view button").click();generate=normalGenerate;');
+ equal(evaluate('window.characterGeneration.data.character_draft.slot'),'main','generation creates a tracked main-image draft');
+ equal(evaluate('B.edges.find(e=>e.to===window.characterGeneration.id).from'),evaluate('B.nodes.find(n=>curV(n)?.ref==="input:h3studio/lin.png").id'),'main draft uses original image input');
+ assert.match(evaluate('window.characterGeneration.data.prompt'),/正面略转约30度/);
  const appendChatEvent = (kind,text) => {
   const event={id:++chatSeq,kind,data:{text},run_id:'choice-run'};
   chatEvents.push(event);

@@ -135,6 +135,7 @@ async function saveAsset(n, kind) {
     checkpoint(); n.name = a.name; n.data.asset = { id: a.id, kind }; save(); render(n); refreshDownstream(n); drawEdges();
     toast(`已存入资产库 · ${KIND_CN[kind]}「${a.name}」${kind === "character" ? "。之后新连到视频时默认作为人物设定" : ""}`, 3000);
     cmInvalidate(); loadAssets();
+    if (kind === "character") cmEdit(a, kind);
   } catch (e) { toast("保存失败：" + e.message); }
 }
 

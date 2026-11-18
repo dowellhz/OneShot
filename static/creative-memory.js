@@ -38,11 +38,99 @@ async function cmEdit(a=null, kind='character', options={}) {
   panel.setAttribute('aria-modal','false'); panel.setAttribute('aria-label','资产详情');
   panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>范围<select name="board"><option value="${esc(initialBoard)}">当前项目</option><option value="">个人素材库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享到素材库（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片或视频<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
   if(host)host.replaceChildren(panel); else document.body.append(panel); CM.editor=panel;
+  const character = document.createElement("section");
+  character.className = "cm-character";
+  character.innerHTML = `<strong>标准角色图</strong><p>先定稿主图，再补其他角度。核对脸型、服装、鞋和配饰的左右位置。</p><div class="cm-character-views"></div><details><summary>角色卡</summary><div class="cm-character-fields">${Object.entries(CHARACTER_FIELDS).map(([key,label]) => `<label>${label}<input name="character_${key}" maxlength="800"></label>`).join("")}</div></details>`;
+  panel.querySelector(".cm-hero").after(character);
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
   let data=a?acClone(a):{kind:options.kind||kind,board:initialBoard,name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
   if(options.preset)Object.assign(data,Object.fromEntries(Object.entries(options.preset).filter(([k])=>k!=='pending')));
   if(pending&&!selectedRef&&/\.(png|jpe?g|webp)$/i.test(pending.ref))selectedRef=pending.ref;
+  let approvingView = null;
+  const readCard = () => Object.fromEntries(Object.keys(CHARACTER_FIELDS).map(key => [key, field("character_" + key).value.trim()]));
+  for (const key of Object.keys(CHARACTER_FIELDS)) field("character_" + key).value = data.character_card?.[key] || "";
+  field("kind").addEventListener("change", paintCharacter);
+  function paintCharacter() {
+    character.hidden = field("kind").value !== "character";
+    if (character.hidden) return;
+    const views = data.character_views || {};
+    const rows = character.querySelector(".cm-character-views");
+    rows.replaceChildren();
+    for (const [slot, [label, filename]] of Object.entries(CHARACTER_VIEWS)) {
+      const row = document.createElement("div");
+      row.className = "cm-character-view";
+      const heading = document.createElement("strong");
+      heading.textContent = label + (views[slot] ? " · 已定稿" : "");
+      row.append(heading);
+      if (views[slot]) {
+        const media = data.media.find(item => item.ref === views[slot]);
+        const download = document.createElement("a");
+        download.href = "/media?ref=" + encodeURIComponent(views[slot]);
+        download.download = /\.jpe?g$/i.test(views[slot]) ? filename.replace(/\.png$/, ".jpg") : /\.webp$/i.test(views[slot]) ? filename.replace(/\.png$/, ".webp") : filename;
+        download.textContent = "下载";
+        const preview = document.createElement("img");
+        preview.src = download.href;
+        preview.alt = label;
+        preview.loading = "lazy";
+        row.append(preview, download, action("放入画布", () => {
+          placeCharacterReference(data, media.ref);
+          alClose();
+          panel.querySelector("[data-close]").click();
+        }));
+      }
+      if (!readonly) {
+        const ready = !!data.id && (slot === "main" ? !!data.ref : !!views.main);
+        const create = action("生成草稿", () => {
+          if (!busy) generateCharacterView(data, slot, readCard());
+        });
+        create.disabled = !ready;
+        row.append(create);
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", label + "候选图");
+        select.append(new Option("选择候选图", ""));
+        for (const n of B.nodes) {
+          const draft = n.data.character_draft;
+          if (n.type === "image" && draft && draft.asset === data.id && draft.slot === slot &&
+              (slot === "main" || draft.source === views.main) && curV(n)) {
+            select.append(new Option(n.name + " · 版本 " + (n.cur + 1), n.id));
+          }
+        }
+        if (slot === "main" && data.ref && data.ref !== views.main) select.append(new Option("现有默认参考", "current"));
+        if (select.options.length > 1) {
+          const approve = action(slot === "main" ? "定为主图" : "定稿", () => {
+            if (busy || !select.value) return;
+            const n = select.value === "current" ? null : node(select.value);
+            const version = n ? curV(n) : data.media.find(item => item.ref === data.ref);
+            if (!version) return status("候选图片已不存在");
+            approvingView = {slot, version, nodeId:n?.id};
+            form.requestSubmit();
+          });
+          const candidate = document.createElement("a");
+          candidate.target = "_blank";
+          candidate.rel = "noopener";
+          candidate.textContent = "查看候选原图";
+          candidate.hidden = true;
+          approve.disabled = true;
+          select.onchange = () => {
+            const selected = node(select.value);
+            const ref = select.value === "current" ? data.ref : selected && curV(selected)?.ref;
+            approve.disabled = candidate.hidden = !ref;
+            if (ref) candidate.href = "/media?ref=" + encodeURIComponent(ref);
+          };
+          row.append(select, candidate, approve);
+        }
+      }
+      rows.append(row);
+    }
+  }
+  function action(label, handler) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.onclick = handler;
+    return button;
+  }
   const status=msg=>panel.querySelector('.cm-error').textContent=msg;
   function setBusy(value) {busy=value;panel.dataset.busy=String(value);panel.querySelector('[type=submit]').disabled=value;field('upload').disabled=value||readonly;panel.querySelector('[data-current]').disabled=value;}
   function paint() {
@@ -65,7 +153,7 @@ async function cmEdit(a=null, kind='character', options={}) {
     }
   }
   for(const k of ['name','kind','board','desc','constraints'])field(k).value=data[k]||'';
-  field('aliases').value=(data.aliases||[]).join('，');field('tags').value=(data.tags||[]).join('，');field('shared').checked=!!data.shared;paint();
+  field('aliases').value=(data.aliases||[]).join('，');field('tags').value=(data.tags||[]).join('，');field('shared').checked=!!data.shared;paint();paintCharacter();
   panel.querySelector('[data-close]').onclick=()=>{
     if(busy)return status('正在保存或上传，请稍等');panel.remove();if(CM.editor===panel)CM.editor=null;
     if(host&&typeof alEmptyDetail==='function'){AL.selected=null;alEmptyDetail();alRender();}
@@ -82,11 +170,20 @@ async function cmEdit(a=null, kind='character', options={}) {
   }
   field('upload').onchange=()=>receiveFile(field('upload').files[0]);
   form.onsubmit=async e=>{
-    e.preventDefault();if(busy||readonly)return;setBusy(true);status('正在保存…');
+    e.preventDefault();if(busy||readonly)return;const approval=approvingView;approvingView=null;setBusy(true);status('正在保存…');
     try{
       const p={id:data.id,mtime:data.mtime,name:field('name').value,kind:field('kind').value,board:field('board').value,desc:field('desc').value,constraints:field('constraints').value,aliases:field('aliases').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),tags:field('tags').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),shared:field('shared').checked,default_ref:selectedRef};
       if(pending)Object.assign(p,{ref:pending.ref,source_board:pending.source_board||'',node_id:pending.node_id});
-      data=await api('/api/memory',p);pending=null;cmInvalidate();paint();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
+      if(p.kind === "character") {
+        p.character_card = readCard();
+        if(approval) {
+          await flushSave();
+          if (boardId !== initialBoard) return;
+          Object.assign(p, {ref:approval.version.ref, source_board:initialBoard, node_id:approval.nodeId, character_view:approval.slot});
+        }
+      }
+      data=await api('/api/memory',p);if(!approval||pending?.ref===p.ref)pending=null;
+      selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
       panel.querySelector('header strong').textContent='编辑资产';panel.querySelector('[data-delete]').hidden=false;
       if(typeof alChanged==='function')alChanged(data);if(KIND_CN[afilter])await cmRenderLibrary(afilter);
     }catch(e){status(e.message);}finally{setBusy(false);}

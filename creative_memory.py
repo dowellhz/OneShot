@@ -13,6 +13,17 @@ from aiohttp import web
 import db
 
 KINDS = {"character", "scene", "prop", "style", "document"}
+CHARACTER_VIEWS = {"main", "face", "side", "back", "detail"}
+CHARACTER_FIELDS = {
+    "code": "角色编号", "appearance": "外貌锚点", "hair": "发型",
+    "costume": "默认服装", "details": "固定细节", "performance": "表演特征",
+    "variation": "允许变化", "style": "正片风格",
+}
+
+
+def character_notes(asset):
+    card = asset.get("character_card", {}) if asset["kind"] == "character" else {}
+    return "；".join(f"{label}：{card[key]}" for key, label in CHARACTER_FIELDS.items() if card.get(key))
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 routes = web.RouteTableDef()
 
@@ -189,6 +200,25 @@ class Store:
             a["default_ref"] = chosen
         elif not a["default_ref"] and new_ref and Path(new_ref).suffix.lower() in IMAGE_EXT:
             a["default_ref"] = new_ref
+        if a["kind"] == "character":
+            if "character_card" in p:
+                card = p["character_card"]
+                if not isinstance(card, dict) or card.keys() - CHARACTER_FIELDS.keys():
+                    fail("角色卡格式不正确")
+                a["character_card"] = {key: text(value, 800) for key, value in card.items()}
+            if "character_view" in p:
+                slot = p["character_view"]
+                if not isinstance(slot, str) or slot not in CHARACTER_VIEWS or not new_ref or Path(new_ref).suffix.lower() not in IMAGE_EXT:
+                    fail("请为角色视角指定图片")
+                views = a.setdefault("character_views", {})
+                if slot != "main" and not views.get("main"):
+                    fail("请先定稿角色主图")
+                if slot == "main" and views.get("main") != new_ref:
+                    # Other views were approved against the previous main image.
+                    views.clear()
+                views[slot] = new_ref
+            if main := a.get("character_views", {}).get("main"):
+                a["default_ref"] = main
         if a["board"] and a["shared"]:
             fail("项目记忆请通过画布使用；跨项目共享请先选择个人素材库")
         db.run("INSERT INTO creative_memories(id,owner,board,shared,kind,name,data,updated) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,board=excluded.board,shared=excluded.shared,kind=excluded.kind,name=excluded.name,data=excluded.data,updated=excluded.updated",
@@ -269,6 +299,8 @@ class Store:
                 mark = "@图" + str(images.index(im) + 1) if p.get("kind") == "image" else a["name"]
                 notes.append(f"{a['name']} 的参考图：{mark}。" + ("采用该参考的画面风格、色调和光线。" if a["kind"] == "style" else "保持其已设定的外观、配色和特征。"))
             notes.append(f"{a['name']}：{a.get('desc', '')}" + (f"；约束：{a['constraints']}" if a.get("constraints") else ""))
+            if identity := character_notes(a):
+                notes.append(f"{a['name']} 的角色卡：{identity}")
             for alias in sorted([a["name"], *a.get("aliases", []), "{" + a["id"] + "}"], key=len, reverse=True):
                 if isinstance(p.get("fields"), dict):
                     p["fields"] = {k: re.sub("@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else ""), lambda _: a["name"], v, flags=re.I) if isinstance(v, str) else v for k, v in p["fields"].items()}

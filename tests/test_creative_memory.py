@@ -149,3 +149,36 @@ class MemoryIntegration(ChatFixture):
         body,meta=server.engine_body(p)
         self.assertEqual(body['references'],[str(server.tools.ref_path(server.COMFY_DIR,self.source['ref']))])
         self.assertEqual(body['keyframes'],[]);self.assertIn('is the environment',body['prompt']);self.assertNotIn('face, body shape',body['prompt'])
+
+    async def test_character_main_approval_controls_default_and_invalidates_old_angles(self):
+        asset = await self.create()
+        source = asset["ref"]
+        other = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "blue"))["ref"]
+        third = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "green"))["ref"]
+        board = self.load()
+        board["nodes"][0]["versions"].extend([{"ref": other}, {"ref": third}])
+        server.board_path("test").write_text(json.dumps(board))
+
+        async def update(ref, slot, **fields):
+            return await self.client.post("/api/memory", json={
+                "id": asset["id"], "ref": ref, "character_view": slot,
+                "source_board": "test", **fields
+            })
+
+        self.assertEqual((await update(other, "face")).status, 400)
+        response = await update(other, "main", character_card={"details": "戒指固定在本人左手"})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual((await response.json())["default_ref"], other)
+        response = await update(source, "face")
+        self.assertEqual(response.status, 200, await response.text())
+        result = await response.json()
+        self.assertEqual(result["character_views"], {"main": other, "face": source})
+        payload = self.app["creative_memory"].prepare({"id": 7, "role": "member"}, {
+            "kind": "image", "board": "test", "prompt": "@林森 正在读书"
+        })
+        self.assertEqual([item["ref"] for item in payload["images"]], [other])
+        self.assertIn("戒指固定在本人左手", payload["prompt"])
+        response = await update(third, "main")
+        result = await response.json()
+        self.assertEqual(result["character_views"], {"main": third})
+        self.assertEqual(len(result["media"]), 3)
