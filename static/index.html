@@ -81,6 +81,9 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .node.sel .card { border-color: rgba(255,255,255,.55); box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 10px 40px rgba(0,0,0,.5); }
 .node.ok-target .card { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(91,140,255,.25), 0 0 30px rgba(91,140,255,.25); }
 .node.bad-target { opacity: .35; filter: blur(.6px); }
+.node.tab-merge-target .card { border-color: #ededf0; box-shadow: 0 0 0 3px rgba(255,255,255,.18); }
+.node.tab-merge-target .card::after { content: "松开合并为 Tab"; position: absolute; left: 50%; top: 12px; transform: translateX(-50%);
+  padding: 6px 10px; border-radius: 8px; background: #ededf0; color: #17171c; font-size: var(--fs-small); white-space: nowrap; pointer-events: none; z-index: 5; }
 .ph { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--faint); text-align: center; padding: 18px; }
 .ph svg.i { width: 30px; height: 30px; stroke-width: 1.3; }
 .ph .t { font-size: var(--fs-small); line-height: 1.6; }
@@ -226,6 +229,8 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .menu .mt { color: var(--faint); font-size: var(--fs-caption); padding: 4px 10px 6px; }
 .menu button { display: flex; align-items: center; gap: 10px; border: none; background: none; padding: 7px 10px; border-radius: 8px; text-align: left; color: #dcdce2; }
 .menu button:hover { background: rgba(255,255,255,.07); }
+.menu button:disabled { opacity: .4; cursor: default; }
+.menu button:disabled:hover { background: none; }
 .menu button .k { margin-left: auto; color: var(--faint); font-size: var(--fs-caption); }
 .menu .sw { width: 22px; height: 22px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
 .menu .sep { height: 1px; background: var(--line); margin: 4px 6px; }
@@ -454,12 +459,13 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 <link rel="stylesheet" href="/static/image-editor.css?v=4">
 <script src="/static/image-editor.js?v=6"></script>
 <script src="/static/editor-workspace.js?v=3"></script>
-<script src="/static/canvas-tools.js?v=3"></script>
+<script src="/static/canvas-tools.js?v=4"></script>
+<script src="/static/video-tabs.js?v=1"></script>
 <link rel="stylesheet" href="/static/agent-chat.css?v=3">
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
 <script src="/static/agent-markdown.js?v=1"></script>
-<script src="/static/agent-chat.js?v=4"></script>
+<script src="/static/agent-chat.js?v=5"></script>
 <script src="/static/agent-editing.js?v=2"></script>
 <script src="/static/tools.js?v=6t"></script>
 <script src="/static/film.js?v=4t"></script>
@@ -759,6 +765,7 @@ function renderVTabs(n, el) {
     e.stopPropagation();
     switchVersion(n, +b.dataset.i);
   });
+  if(n.type==="video")$$("button",t).forEach(b=>b.oncontextmenu=e=>{e.preventDefault();e.stopPropagation();vtTabMenu(n,+b.dataset.i,e.clientX,e.clientY);});
 }
 function refresh(n) { if (!n) return; render(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges(); }
 
@@ -786,14 +793,19 @@ function wire(n, el) {
       if (!moved) { moved = true; moving.forEach(m => els.get(m.id)?.classList.add("dragging")); }
       ap.move(ev);
       moving.forEach((m, i) => { m.x = Math.round(starts[i][0] + dx); m.y = Math.round(starts[i][1] + dy); const me = els.get(m.id); me.style.left = m.x + "px"; me.style.top = m.y + "px"; });
+      vtMarkDrop(vtDropTarget(moving));
       drawEdges(); placeOverlays(); drawMini();
     };
-    const up = () => {
-      ap.stop(); removeEventListener("pointermove", mv); removeEventListener("pointerup", up);
+    const up = ev => {
+      ap.stop(); removeEventListener("pointermove", mv); removeEventListener("pointerup", up);removeEventListener("pointercancel",up);
       moving.forEach(m => els.get(m.id)?.classList.remove("dragging"));
+      const mergeTarget=moved&&ev?.type!=="pointercancel"?vtDropTarget(moving):null;vtMarkDrop(null);
+      if(mergeTarget&&vtMerge([...moving.map(m=>m.id),mergeTarget.id],mergeTarget.id,before)){
+        for(const id of sel){const me=els.get(id);if(me){me._dragged=true;setTimeout(()=>me._dragged=false,0);}}return;
+      }
       if (moved) { el._dragged = true; setTimeout(() => el._dragged = false, 0); undoStack.push(before); redoStack.length = 0; save(); }
     };
-    addEventListener("pointermove", mv); addEventListener("pointerup", up);
+    addEventListener("pointermove", mv); addEventListener("pointerup", up);addEventListener("pointercancel",up);
   };
   // a drag that started on a video must not also toggle play/pause
   el.addEventListener("click", ev => { if (el._dragged) { ev.preventDefault(); ev.stopPropagation(); } }, true);
@@ -1307,6 +1319,8 @@ function ctxMenu(e) {
   }
   add("arrange", "assets", "整理图片与视频…");
   const vids = [...sel].map(node).filter(m => m && m.type === "video" && curV(m));
+  if(vids.length>=2){const info=vtMergeInfo(vids.map(m=>m.id));it.push(`<button data-a="merge-tabs" ${info.error?`disabled title="${esc(info.error)}"`:""}>${ico("stack")}合并为 Tab（${vids.length} 个视频）</button>`);}
+  if(!many&&n.type==="video"&&n.versions.length>1){add("split-tab","copy","拆出当前 Tab");add("split-tabs","assets","拆开所有 Tab");}
   const qv = [...sel].map(node).filter(m => m && m.type === "video" && !m.job && !m.data.film);
   if (many && qv.length) { add("queuegen", "video", `排队生成（${qv.length} 段视频，按名称顺序）`); if (!(vids.length >= 2)) it.push(`<div class="sep"></div>`); }
   if (many && vids.length >= 2) { add("concat", "scissors", `剪辑成片（${vids.length} 段，按位置顺序）`); it.push(`<div class="sep"></div>`); }
@@ -1320,6 +1334,8 @@ function ctxMenu(e) {
   $$("button", m).forEach(b => b.onclick = () => {
     closeMenus(); const a = b.dataset.a;
     if (a === "arrange") ctOpenArrangeMenu(e.clientX, e.clientY);
+    else if(a==="merge-tabs")vtMerge(vids.map(m=>m.id),n.id);
+    else if(a==="split-tab"||a==="split-tabs")vtSplit(n.id,n.cur,a==="split-tabs");
     else if (a.startsWith("ct:")) ctAction(a.slice(3));
     else if (a === "focus") fit([...sel].map(node).filter(Boolean));
     else if (a === "rename") { const nm = $(".nm", els.get(n.id)); nm.dispatchEvent(new MouseEvent("dblclick", { bubbles: false })); }
@@ -1474,6 +1490,7 @@ function paste(items, dx = 40, dy = 40) {
   for (const id of made) for (const v of node(id).versions) {
     if (v.input_edges) v.input_edges = v.input_edges.map(e=>({...e,from:map[e.from]||e.from,to:id}));
     if (v.video_recipe?.images) v.video_recipe.images.forEach(im=>{if(map[im.node_id])im.node_id=map[im.node_id];});
+    if(v.tab_nodes)v.tab_nodes=[id];delete v.tab_origin;
   }
   for (const e of B.edges.slice()) if (map[e.from] && map[e.to]) B.edges.push({ ...e, from: map[e.from], to: map[e.to] });
   for (const group of [...(B.groups || [])]) if(group.nodes.every(id => map[id])) B.groups.push({...group,id:"g"+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name:group.name+" 副本",nodes:group.nodes.map(id=>map[id])});

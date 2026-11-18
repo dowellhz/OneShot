@@ -61,12 +61,49 @@ function ctGridPositions(nodes,obstacles=[],sizeOf=size){
   for(let i=0;i<items.length;i+=columns){const row=items.slice(i,i+columns);row.forEach((n,col)=>{n.x=lefts[col];n.y=y;});y+=Math.max(...row.map(n=>n.h))+gapY;}
   return ctAvoidObstacles(items.map(({id,x,y})=>({id,x:Math.round(x),y:Math.round(y)})),nodes,obstacles,sizeOf);
 }
+function ctFlowPositions(nodes,edges,obstacles=[],sizeOf=size){
+  if(nodes.length<2)return [];
+  const media=nodes.filter(ctMedia),byId=new Map(media.map(n=>[n.id,n])),links=edges.filter(e=>byId.has(e.from)&&byId.has(e.to));
+  const adjacent=new Map(media.map(n=>[n.id,[]]));for(const e of links){adjacent.get(e.from).push(e.to);adjacent.get(e.to).push(e.from);}
+  const order=(a,b)=>a.y-b.y || a.x-b.x || (a.name||a.id).localeCompare(b.name||b.id,"zh",{numeric:true});
+  const seen=new Set(),components=[];
+  for(const start of [...media].sort(order)){
+    if(seen.has(start.id))continue;const ids=[start.id],component=[];seen.add(start.id);
+    for(let i=0;i<ids.length;i++){const n=byId.get(ids[i]);component.push(n);for(const id of adjacent.get(n.id))if(!seen.has(id)){seen.add(id);ids.push(id);}}
+    components.push(component);
+  }
+  const x0=Math.min(...media.map(n=>n.x)),y0=Math.min(...media.map(n=>n.y));
+  const images=media.filter(n=>n.type==="image"),videoX=images.length?x0+Math.max(...images.map(n=>sizeOf(n).w))+320:x0;
+  const positions=[];let cursor=y0;
+  for(const component of components){
+    const vids=component.filter(n=>n.type==="video").sort(order),rank=new Map(vids.map((n,i)=>[n.id,i]));
+    const imageRank=n=>{const outgoing=links.filter(e=>e.from===n.id&&rank.has(e.to));if(!outgoing.length)return [Infinity,0];
+      const e=outgoing.sort((a,b)=>rank.get(a.to)-rank.get(b.to))[0],role=e.role||"auto",video=byId.get(e.to);
+      const frames=links.filter(f=>f.to===e.to&&(f.role||"auto")!=="subject");
+      const ordered=[...frames.filter(f=>f.role==="first"),...frames.filter(f=>!["first","last"].includes(f.role)),...frames.filter(f=>f.role==="last")];
+      const frameRank=role==="subject"||(role==="auto"&&video.data.mode==="reference")?-1:role==="first"?0:role==="last"?1000:e.time!=null?Number(e.time):ordered.indexOf(e)*1000/Math.max(1,ordered.length-1);
+      return [rank.get(e.to),frameRank];};
+    const imageOrder=(a,b)=>{const ar=imageRank(a),br=imageRank(b);return ar[0]-br[0]||ar[1]-br[1]||order(a,b);};
+    const remaining=component.filter(n=>n.type==="image").sort(imageOrder),imgs=[];
+    while(remaining.length){const ready=remaining.filter(n=>!links.some(e=>e.to===n.id&&remaining.some(m=>m.id===e.from))).sort(imageOrder);const n=ready[0]||remaining[0];imgs.push(n);remaining.splice(remaining.indexOf(n),1);}
+    const left=[];let leftY=cursor;
+    for(const n of imgs){const s=sizeOf(n);left.push({id:n.id,x:x0,y:leftY,h:s.h});leftY+=s.h+CT_LAYOUT_GAP.y;}
+    const leftById=new Map(left.map(p=>[p.id,p])),right=[];let rightY=cursor;
+    const desired=n=>{const inputs=links.filter(e=>e.to===n.id).map(e=>leftById.get(e.from)).filter(Boolean);return inputs.length?inputs.reduce((sum,p)=>sum+p.y+p.h/2,0)/inputs.length:cursor;};
+    for(const n of vids.sort((a,b)=>desired(a)-desired(b)||order(a,b))){const s=sizeOf(n),y=Math.max(rightY,desired(n)-s.h/2);right.push({id:n.id,x:videoX,y,h:s.h});rightY=y+s.h+CT_LAYOUT_GAP.y;}
+    const leftH=left.length?leftY-CT_LAYOUT_GAP.y-left[0].y:0,rightH=right.length?rightY-CT_LAYOUT_GAP.y-right[0].y:0,blockH=Math.max(leftH,rightH);
+    if(left.length){const shift=cursor+(blockH-leftH)/2-left[0].y;for(const p of left)p.y+=shift;}
+    if(right.length){const shift=cursor+(blockH-rightH)/2-right[0].y;for(const p of right)p.y+=shift;}
+    positions.push(...left,...right);cursor+=blockH+CT_LAYOUT_GAP.y*2;
+  }
+  return ctAvoidObstacles(positions.map(({id,x,y})=>({id,x:Math.round(x),y:Math.round(y)})),nodes,obstacles,sizeOf);
+}
 function ctArrange(action,ids){
   const nodes=ids.map(node).filter(ctMedia);
   if(nodes.length<2)return toast("至少需要两个图片或视频节点");
   const targets=new Set(nodes.map(n=>n.id));
   const fixed=B.nodes.filter(n=>!targets.has(n.id));
-  const positions=action==="grid" ? ctGridPositions(nodes,fixed) : ctPositions(nodes,action,size,fixed);
+  const positions=action==="flow" ? ctFlowPositions(nodes,B.edges,fixed) : action==="grid" ? ctGridPositions(nodes,fixed) : ctPositions(nodes,action,size,fixed);
   if(!positions.length)return toast("等距排列至少需要三个图片或视频节点");
   if(!positions.some(p=>{const n=node(p.id);return n.x!==p.x || n.y!==p.y;}))return toast("这些节点已经对齐");
   checkpoint();for(const p of positions){const n=node(p.id);n.x=p.x;n.y=p.y;render(n);}
@@ -75,7 +112,7 @@ function ctArrange(action,ids){
 function ctOpenArrangeMenu(x,y){
   closeMenus();const bid=boardId,selected=ctSelected().filter(ctMedia).map(n=>n.id),all=B.nodes.filter(ctMedia).map(n=>n.id);
   let m=$("#arrangeMenu");if(!m){m=document.createElement("div");m.id="arrangeMenu";m.className="menu";document.body.append(m);}
-  m.innerHTML=`<div class="mt">整理对齐</div><label class="ct-arrange-scope">范围<select aria-label="整理范围"><option value="selected">选中的图片与视频（${selected.length}）</option><option value="all">全部图片与视频（${all.length}）</option></select></label><button data-layout="grid">${ico("assets")}网格整理（自动留出间距）</button><div class="sep"></div>`+
+  m.innerHTML=`<div class="mt">整理对齐</div><label class="ct-arrange-scope">范围<select aria-label="整理范围"><option value="selected">选中的图片与视频（${selected.length}）</option><option value="all">全部图片与视频（${all.length}）</option></select></label><button data-layout="flow">${ico("next")}按关系整理（图片左 · 视频右）</button><button data-layout="grid">${ico("assets")}网格整理（自动留出间距）</button><div class="sep"></div>`+
     CT_ACTIONS.slice(0,8).map(([action,label,path])=>`<button data-layout="${action}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg>${label}</button>`).join("")+`<div class="ct-arrange-note">只调整位置，支持撤销</div>`;
   const select=$("select",m);select.value=selected.length>=2 ? "selected" : "all";
   const chosen=()=>select.value==="selected" ? selected : all;
