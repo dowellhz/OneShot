@@ -191,6 +191,7 @@ class AgentService:
         b = self.host.board_meta(p)
         if not b or not self.host.can_see(account, b):
             raise ToolError("没有权限操作这个画布")
+        creative_memory.remove_deleted_bindings(b)
         return b
 
     @staticmethod
@@ -255,10 +256,7 @@ class AgentService:
         b["agent_ops"] = ops[-100:]
         b["rev"] = result["board_rev"]
         b = self.host.clean_board(b)
-        path = self.host.board_path(run["board_id"])
-        temp = path.with_suffix(".agent-" + uuid.uuid4().hex + ".tmp")
-        temp.write_text(dumps(b))
-        temp.replace(path)
+        self.host.write_board(self.host.board_path(run["board_id"]), b)
         for nid in changed:
             if nid in new_nodes:
                 run["data"].setdefault("node_state", {})[nid] = self.node_state(new_nodes[nid])

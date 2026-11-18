@@ -101,8 +101,10 @@ class Store:
         if not isinstance(bid, str) or not re.fullmatch(r"[\w-]{1,80}", bid):
             fail("画布编号无效")
         try:
-            b = json.loads(self.h.board_path(bid).read_text())
+            b = self.h.board_meta(self.h.board_path(bid))
         except (OSError, ValueError):
+            fail("画布不存在", 404)
+        if not b:
             fail("画布不存在", 404)
         if not self.h.can_see(user, b):
             fail("无法访问这个画布", 403)

@@ -23,6 +23,8 @@ import local_admin
 import image_editor
 import agent_chat
 import creative_memory
+import board_store
+from board_store import BOARD_ID as _ID, board_meta, can_see
 import sys
 from aiohttp import web
 
@@ -645,61 +647,16 @@ BOARDS = DATA / "boards"
 
 
 def board_path(bid: str) -> Path:
-    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", bid or ""):
-        raise web.HTTPBadRequest(text="bad board id")
-    return BOARDS / f"{bid}.json"
+    return board_store.board_path(BOARDS, bid)
 
 
-def board_meta(f: Path) -> dict:
-    try:
-        b = json.loads(f.read_text())
-    except ValueError:
-        return {}
-    return b
+def clean_board(v):
+    return board_store.clean_board(v, COMFY_DIR)
 
 
-_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
-_URL_KEYS = {"url", "cover_url"}
-_NUM_KEYS = {"seed", "w", "h", "seconds", "duration", "x", "y", "k", "cur", "count", "start", "volume", "in", "out", "sub_size", "speed", "seq"}
-
-
-def clean_board(v, key: str = ""):
-    """Board JSON comes from browsers (any teammate, for shared boards): links may only point at this site's media,
-    ids must be plain, numbers must be numbers — so nothing in a board can inject markup into someone else's page."""
-    if isinstance(v, dict):
-        out = {}
-        for k, x in v.items():
-            if not isinstance(k, str) or len(k) > 64:
-                continue
-            if k in _URL_KEYS:
-                if x is None or (isinstance(x, str) and x.startswith(("/media?ref=", "/static/")) and not re.search(r"[\s\"'<>`\\]", x)):
-                    out[k] = x
-                continue
-            if k in _NUM_KEYS and x is not None and not isinstance(x, (int, float, dict, list)):
-                try:
-                    x = float(x)
-                except (TypeError, ValueError):
-                    continue
-            if k in ("id", "from", "to", "img", "vid", "node", "script") and x is not None and not (isinstance(x, str) and _ID.fullmatch(x)):
-                if k in ("id", "from", "to"):
-                    raise bad("项目数据格式不对（节点编号）")
-                continue
-            if k in ("ref", "cover") and isinstance(x, str) and x:          # media refs (cover: a ref or seconds)
-                try:
-                    tools.ref_path(COMFY_DIR, x)
-                except ValueError:
-                    continue
-            out[k] = clean_board(x, k)
-        return out
-    if isinstance(v, list):
-        return [clean_board(x, key) for x in v[:5000]]
-    if isinstance(v, str):
-        return v[:20000]
-    return v
-
-
-def can_see(u: dict, b: dict) -> bool:
-    return u["role"] == "admin" or b.get("owner") in (None, u["id"]) or bool(b.get("shared"))
+def write_board(path: Path, data: dict):
+    creative_memory.remove_deleted_bindings(data)
+    board_store.write_board(path, data)
 
 
 @routes.get("/api/boards")
@@ -725,7 +682,7 @@ async def list_boards_legacy(_):
     BOARDS.mkdir(parents=True, exist_ok=True)
     old = DATA / "board.json"
     if old.exists() and not any(BOARDS.iterdir()):
-        b = json.loads(old.read_text()); b.setdefault("name", "我的画布"); (BOARDS / "default.json").write_text(json.dumps(b, ensure_ascii=False))
+        b = json.loads(old.read_text()); b.setdefault("name", "我的画布"); write_board(BOARDS / "default.json", b)
     out = []
     for f in sorted(BOARDS.glob("*.json"), key=lambda f: -f.stat().st_mtime):
         try:
@@ -739,7 +696,7 @@ async def list_boards_legacy(_):
 @routes.get("/api/board/{bid}")
 async def get_board(req):
     f = board_path(req.match_info["bid"])
-    b = json.loads(f.read_text()) if f.exists() else {}
+    b = board_meta(f)
     if b and not can_see(req["user"], b):
         raise bad("没有权限打开这个项目")
     creative_memory.remove_deleted_bindings(b)
@@ -749,7 +706,10 @@ async def get_board(req):
 @routes.put("/api/board/{bid}")
 async def put_board(req):
     f = board_path(req.match_info["bid"])
-    data = clean_board(await req.json())
+    raw = await req.json()
+    if not isinstance(raw, dict):
+        raise bad("画布数据须为对象")
+    data = clean_board(raw)
     u = req["user"]
     old = board_meta(f) if f.exists() else {}
     if old and not (u["role"] == "admin" or old.get("owner") in (None, u["id"]) or old.get("shared")):
@@ -761,12 +721,8 @@ async def put_board(req):
     cur = old.get("rev")
     if cur is not None and data.get("rev") != cur:
         return web.json_response({"error": "画布已在别处更新", "stale": True, "rev": cur}, status=409)
-    creative_memory.remove_deleted_bindings(data)
     data["rev"] = int(cur or 0) + 1
-    BOARDS.mkdir(parents=True, exist_ok=True)
-    tmp = f.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False))
-    os.replace(tmp, f)
+    write_board(f, data)
     return web.json_response({"ok": True, "rev": data["rev"]})
 
 
@@ -1716,8 +1672,7 @@ async def sample_open(req):
     for n in b.get("nodes", []):
         n["job"] = None
     bid = "b" + uuid.uuid4().hex[:10]
-    BOARDS.mkdir(parents=True, exist_ok=True)
-    board_path(bid).write_text(json.dumps(b, ensure_ascii=False))
+    write_board(board_path(bid), b)
     return web.json_response({"id": bid})
 
 
@@ -2242,7 +2197,7 @@ def on_first_admin(uid: int):
         b = board_meta(f)
         if b and not b.get("owner"):
             b["owner"] = uid
-            f.write_text(json.dumps(b, ensure_ascii=False))
+            write_board(f, b)
     items = lib_load()
     for a in items:
         a.setdefault("owner", uid); a.setdefault("shared", True)

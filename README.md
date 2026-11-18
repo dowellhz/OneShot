@@ -46,6 +46,7 @@ OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一�
 | 文件 | 内容 |
 |---|---|
 | `server.py` | Web 服务、画布 API、生成路由、剪辑渲染、控制台 API |
+| `board_store.py` | 画布编号与数据校验、JSON 读取、原子写入 |
 | `auth.py` / `db.py` | 多人账号（scrypt）、会话、SQLite（服务、路由、任务），API Key 用 Fernet 加密存储 |
 | `providers.py` / `remote.py` | 服务目录与能力路由；第三方生图 / 视频 / 配音 / 音乐适配器 |
 | `engine/h3engine.py` | 完整 H3（31B BF16）在 24 GB 显卡上运行：权重放在锁页内存里按 Transformer 块流式上卡，文本编码器 FP8 存储，turbo LoRA 加载时合并 |
@@ -56,7 +57,15 @@ OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一�
 | `creative_memory.py` / `static/asset-library.js` | 资产库、参考素材与生成历史、助手检索和生成引用 |
 | `render.py` | 成片渲染（转场、字幕、配乐压低、旁白） |
 | `local_admin.py` / `engine.sh` | 本地部署页：GPU / 内存 / 磁盘、服务启停、模型文件 |
-| `static/` | 画布（`index.html` + `tools.js` `film.js` `wizard.js` `account.js`）、控制台、登录页 |
+| `static/index.html` / `static/canvas.css` | 工作台页面结构、画布和通用控件样式 |
+| `static/canvas.js` | 画布状态、保存与撤销、节点、连线和交互 |
+| `static/canvas-generation.js` | 生成参数、任务轮询、上传与素材历史 |
+| `static/canvas-projects.js` | 画布切换、示例及工作台启动 |
+| `static/tools.js` / `static/film.js` / `static/wizard.js` | 画布工具、剪辑台、一句话成片 |
+
+浏览器通过 `/api/board/{id}` 保存画布，助手完成工具操作后也写入同一份画布。浏览器保存时检查版本号，助手把工具结果和画布修改一起写入，避免重复执行。
+
+图片和视频请求汇入生成路由，任务接口统一返回进度和结果。手动生成由画布更新节点，助手发起的任务由后台更新节点。资产库单独保存角色设定、参考图和生成草稿，定稿时才更新默认参考。
 
 ## 部署（Linux + NVIDIA 24 GB 显卡）
 

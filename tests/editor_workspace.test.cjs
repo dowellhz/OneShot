@@ -68,8 +68,15 @@ function evaluate(code){return vm.runInContext(code,dom.getInternalVMContext());
 function equal(actual,expected,label){assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected,label);}
 async function ready(predicate,label){for(let i=0;i<100;i++){if(evaluate(predicate))return;await pause(10);}throw new Error('Timed out: '+label);}
 async function run(){
- for(const file of ['image-editor.js','editor-workspace.js','canvas-tools.js','video-tabs.js','vendor/marked.js','vendor/purify.min.js','agent-markdown.js','agent-chat.js','agent-editing.js','tools.js','character-views.js','creative-memory.js','asset-library.js','film.js','wizard.js','settings.js','account.js'])evaluate(fs.readFileSync(path.join(root,'static',file),'utf8'));
- const inline=[...w.document.querySelectorAll('script:not([src])')].map(x=>x.textContent).join('\n');evaluate(inline);
+ const staticFile = url => path.join(root, new URL(url, w.location.href).pathname);
+ for (const link of w.document.querySelectorAll('link[rel=stylesheet]')) {
+  const style = w.document.createElement('style');
+  style.textContent = fs.readFileSync(staticFile(link.href), 'utf8');
+  link.after(style);
+ }
+ for (const script of w.document.querySelectorAll('script')) {
+  evaluate(script.src ? fs.readFileSync(staticFile(script.src), 'utf8') : script.textContent);
+ }
  await ready('B?.nodes.length===3','board boot');
  await evaluate('openImageEditor(node("n1"))');await ready('!!IMAGE_EDITOR?.image && !IMAGE_EDITOR.restoring','open editor');
  assert.equal(w.document.getElementById('imageEditor').getAttribute('aria-modal'),'false');
