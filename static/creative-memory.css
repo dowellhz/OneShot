@@ -15,3 +15,13 @@
 .cm-character-view select { flex: 1; min-width: 90px; }
 .cm-character-view button:disabled { opacity: .45; cursor: default; }
 .cm-character summary { cursor: pointer; }
+.cm-character-hint { color: #ababba; font-size: 11px; }
+.cm-editor .cm-character-primary,
+#assetLibrary .cm-editor .cm-character-primary { background: #dedee6; border-color: #dedee6; color: #222228; font-weight: 600; }
+.cm-editor .cm-character-primary:hover,
+#assetLibrary .cm-editor .cm-character-primary:hover { background: #f1f1f6; }
+.cm-character-status { color: #c3c4d0; font-size: 11px; }
+.cm-character-view .cm-character-candidate { flex: 1 0 100%; }
+.cm-character-view .cm-character-candidate img {
+  display: block; width: 100%; height: auto; max-height: 220px; object-fit: contain;
+}

@@ -40,7 +40,7 @@ async function cmEdit(a=null, kind='character', options={}) {
   if(host)host.replaceChildren(panel); else document.body.append(panel); CM.editor=panel;
   const character = document.createElement("section");
   character.className = "cm-character";
-  character.innerHTML = `<strong>标准角色图</strong><p>先定稿主图，再补其他角度。核对脸型、服装、鞋和配饰的左右位置。</p><div class="cm-character-views"></div><details><summary>角色卡</summary><div class="cm-character-fields">${Object.entries(CHARACTER_FIELDS).map(([key,label]) => `<label>${label}<input name="character_${key}" maxlength="800"></label>`).join("")}</div></details>`;
+  character.innerHTML = `<strong>标准角色图</strong><p>先生成并定稿主图，再补其他角度。</p><div class="cm-character-views"></div><details><summary>角色卡</summary><div class="cm-character-fields">${Object.entries(CHARACTER_FIELDS).map(([key,label]) => `<label>${label}<input name="character_${key}" maxlength="800"></label>`).join("")}</div></details>`;
   panel.querySelector(".cm-hero").after(character);
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
   let data=a?acClone(a):{kind:options.kind||kind,board:initialBoard,name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
@@ -51,6 +51,8 @@ async function cmEdit(a=null, kind='character', options={}) {
   const readCard = () => Object.fromEntries(Object.keys(CHARACTER_FIELDS).map(key => [key, field("character_" + key).value.trim()]));
   for (const key of Object.keys(CHARACTER_FIELDS)) field("character_" + key).value = data.character_card?.[key] || "";
   field("kind").addEventListener("change", paintCharacter);
+  const watchedDrafts = new Set();
+  function refreshCharacter() { if (panel.isConnected) paintCharacter(); }
   function paintCharacter() {
     character.hidden = field("kind").value !== "character";
     if (character.hidden) return;
@@ -80,45 +82,71 @@ async function cmEdit(a=null, kind='character', options={}) {
         }));
       }
       if (!readonly) {
-        const ready = !!data.id && (slot === "main" ? !!data.ref : !!views.main);
-        const create = action("生成草稿", () => {
-          if (!busy) generateCharacterView(data, slot, readCard());
-        });
-        create.disabled = !ready;
-        row.append(create);
-        const select = document.createElement("select");
-        select.setAttribute("aria-label", label + "候选图");
-        select.append(new Option("选择候选图", ""));
-        for (const n of B.nodes) {
-          const draft = n.data.character_draft;
-          if (n.type === "image" && draft && draft.asset === data.id && draft.slot === slot &&
-              (slot === "main" || draft.source === views.main) && curV(n)) {
-            select.append(new Option(n.name + " · 版本 " + (n.cur + 1), n.id));
-          }
+        if (slot !== "main" && !views.main) {
+          const hint = document.createElement("small");
+          hint.className = "cm-character-hint";
+          hint.textContent = "主图定稿后可生成";
+          row.append(hint);
+          rows.append(row);
+          continue;
         }
-        if (slot === "main" && data.ref && data.ref !== views.main) select.append(new Option("现有默认参考", "current"));
-        if (select.options.length > 1) {
-          const approve = action(slot === "main" ? "定为主图" : "定稿", () => {
-            if (busy || !select.value) return;
-            const n = select.value === "current" ? null : node(select.value);
-            const version = n ? curV(n) : data.media.find(item => item.ref === data.ref);
-            if (!version) return status("候选图片已不存在");
-            approvingView = {slot, version, nodeId:n?.id};
+        if (!data.id || (slot === "main" && !data.ref)) {
+          const hint = document.createElement("small");
+          hint.className = "cm-character-hint";
+          hint.textContent = "请先保存一张角色图片";
+          row.append(hint);
+          rows.append(row);
+          continue;
+        }
+        const key = characterDraftKey(data, slot, initialBoard);
+        const draft = readCharacterDraft(key);
+        const active = draft?.submitting || !!draft?.ids?.length;
+        if (draft?.ids?.length && !watchedDrafts.has(key)) {
+          watchedDrafts.add(key);
+          pollCharacterDraft(key, panel, refreshCharacter).finally(() => watchedDrafts.delete(key));
+        }
+        const matchesSource = draft?.source === characterSource(data, slot);
+        const legacy = !draft && !views[slot] && [...B.nodes].reverse().find(n => {
+          const saved = n.data.character_draft;
+          return n.type === "image" && saved?.asset === data.id && saved?.slot === slot &&
+            (slot === "main" || saved.source === views.main) && curV(n)?.ref !== views[slot] && curV(n);
+        });
+        const candidateRef = !active && (matchesSource && draft?.ref || (legacy && curV(legacy).ref));
+        const create = action(candidateRef || views[slot] ? "重新生成" : slot === "main" ? "生成主图" : "生成", () => {
+          if (!busy) generateCharacterView(data, slot, readCard(), initialBoard, refreshCharacter);
+        });
+        if (slot === "main" && !views.main) create.classList.add("cm-character-primary");
+        create.disabled = !!active;
+        row.append(create);
+        if (active || (matchesSource && draft?.error)) {
+          const message = document.createElement("small");
+          message.className = "cm-character-status";
+          message.setAttribute("role", "status");
+          message.textContent = draft.submitting ? "提交中…" : draft.progress || draft.error || "排队中…";
+          row.append(message);
+        }
+        if (slot === "main" && !views.main && !active && !candidateRef) {
+          row.append(action("用现有图片定稿", () => {
+            if (busy) return;
+            approvingView = {slot, version: {ref: data.ref}};
             form.requestSubmit();
-          });
-          const candidate = document.createElement("a");
-          candidate.target = "_blank";
-          candidate.rel = "noopener";
-          candidate.textContent = "查看候选原图";
-          candidate.hidden = true;
-          approve.disabled = true;
-          select.onchange = () => {
-            const selected = node(select.value);
-            const ref = select.value === "current" ? data.ref : selected && curV(selected)?.ref;
-            approve.disabled = candidate.hidden = !ref;
-            if (ref) candidate.href = "/media?ref=" + encodeURIComponent(ref);
-          };
-          row.append(select, candidate, approve);
+          }));
+        }
+        if (candidateRef && candidateRef !== views[slot]) {
+          const preview = document.createElement("a");
+          preview.className = "cm-character-candidate";
+          preview.href = "/media?ref=" + encodeURIComponent(candidateRef);
+          preview.target = "_blank";
+          preview.rel = "noopener";
+          const image = document.createElement("img");
+          image.src = preview.href;
+          image.alt = label + "草稿，点击查看原图";
+          preview.append(image);
+          row.append(preview, action("定稿", () => {
+            if (busy) return;
+            approvingView = {slot, version: {ref:candidateRef}, nodeId: draft?.ref === candidateRef ? undefined : legacy?.id, draftKey:key};
+            form.requestSubmit();
+          }));
         }
       }
       rows.append(row);
@@ -183,6 +211,7 @@ async function cmEdit(a=null, kind='character', options={}) {
         }
       }
       data=await api('/api/memory',p);if(!approval||pending?.ref===p.ref)pending=null;
+      if (approval?.draftKey && readCharacterDraft(approval.draftKey)?.ref === p.ref) writeCharacterDraft(approval.draftKey, null);
       selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
       panel.querySelector('header strong').textContent='编辑资产';panel.querySelector('[data-delete]').hidden=false;
       if(typeof alChanged==='function')alChanged(data);if(KIND_CN[afilter])await cmRenderLibrary(afilter);

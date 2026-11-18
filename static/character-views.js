@@ -32,21 +32,87 @@ function placeCharacterReference(asset, ref) {
   return placeLibAsset({...asset, ...media, ref}, at);
 }
 
-function generateCharacterView(asset, slot, card) {
-  const ref = asset.character_views?.main || (slot === "main" ? asset.ref : "");
-  if (!ref) return toast(slot === "main" ? "请先保存一张原始角色图片" : "请先定稿标准主图");
-  const source = B.nodes.find(n => n.type === "image" && curV(n)?.ref === ref)
-    || placeCharacterReference(asset, ref);
-  checkpoint();
-  const at = placeRight(source, "image");
-  const draft = addNode("image", at.x, at.y, {
-    prompt: characterPrompt(asset, slot, card), aspect: "3:4", count: 1,
-    character_draft: {asset: asset.id, slot, source: ref}
-  }, {name: asset.name + " · " + CHARACTER_VIEWS[slot][0]});
-  link(source, draft, true);
-  selectOnly(draft.id);
-  alClose();
-  CM.editor?.querySelector("[data-close]").click();
-  generate(draft);
-  toast("生成后请在资产详情核对草稿并定稿");
+function characterSource(asset, slot) {
+  return asset.character_views?.main || (slot === "main" ? asset.ref : "");
+}
+
+function characterDraftKey(asset, slot, board) {
+  return ["h3.character.draft", ME_USER?.id, board, asset.id, slot].join(":");
+}
+
+const characterDrafts = new Map();
+
+function readCharacterDraft(key) {
+  if (characterDrafts.has(key)) return characterDrafts.get(key);
+  try {
+    const saved = JSON.parse(localStorage.getItem(key));
+    characterDrafts.set(key, saved);
+    return saved;
+  } catch { return null; }
+}
+
+function writeCharacterDraft(key, draft) {
+  characterDrafts.set(key, draft);
+  try {
+    if (draft?.submitting) return;
+    if (draft) localStorage.setItem(key, JSON.stringify(draft));
+    else localStorage.removeItem(key);
+  } catch {}
+}
+
+async function generateCharacterView(asset, slot, card, board, refresh) {
+  const source = characterSource(asset, slot);
+  if (!source) return;
+  const key = characterDraftKey(asset, slot, board);
+  const existing = readCharacterDraft(key);
+  if (existing?.submitting || existing?.ids?.length) return;
+  writeCharacterDraft(key, {source, submitting: true});
+  refresh();
+  try {
+    const result = await api("/api/generate", {
+      kind: "image", model: "h3img", prompt: characterPrompt(asset, slot, card),
+      images: [{ref:source}], ar: 3 / 4, quality: "4mp", count: 1,
+      seed: -1, turbo: true, board, label: asset.name + " · " + CHARACTER_VIEWS[slot][0]
+    });
+    if (!result.ids?.length) throw new Error("服务未返回任务编号");
+    writeCharacterDraft(key, {source, ids: result.ids});
+  } catch (error) {
+    writeCharacterDraft(key, {source, error: error.message});
+  }
+  refresh();
+}
+
+async function pollCharacterDraft(key, panel, refresh) {
+  while (panel.isConnected) {
+    const draft = readCharacterDraft(key);
+    if (!draft?.ids?.length) return;
+    try {
+      const response = await fetch("/api/jobs?ids=" + encodeURIComponent(draft.ids.join(",")));
+      if (!response.ok) throw new Error("无法读取任务状态");
+      const jobs = await response.json();
+      if (readCharacterDraft(key) !== draft) return;
+      const states = draft.ids.map(id => jobs[id]).filter(Boolean);
+      const failed = states.find(state => state.state === "error");
+      const result = states.find(state => state.state === "done");
+      if (failed || result || !states.length) {
+        const ref = result?.outputs?.find(output => output.ref)?.ref;
+        writeCharacterDraft(key, ref
+          ? {source: draft.source, ref}
+          : {source: draft.source, error: failed?.error || "任务未返回图片，可重新生成"});
+        refresh();
+        return;
+      }
+      const state = states[0];
+      const progress = state.state === "queued" ? "排队中…" :
+        state.max > 1 && Number.isFinite(state.value)
+          ? "正在生成 · " + Math.min(99, Math.round(100 * state.value / state.max)) + "%" : "正在生成…";
+      if (draft.progress !== progress) { draft.progress = progress; refresh(); }
+    } catch {
+      if (draft.progress !== "暂时无法读取进度，正在重连…") {
+        draft.progress = "暂时无法读取进度，正在重连…";
+        refresh();
+      }
+    }
+    await sleep(1400);
+  }
 }

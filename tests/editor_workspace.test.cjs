@@ -37,6 +37,10 @@ w.fetch=async(url,options={})=>{
    const old=(w.__memories||[]).find(a=>a.id===p.id),media=[...(old?.media||[])];
    if(p.ref&&!media.some(m=>m.ref===p.ref))media.push({ref:p.ref,source:p.ref.startsWith('input:')?'upload':'generated'});
    result={...old,...p,id:p.id||'mem'+(++serial),owner:old?.owner||1,media,ref:p.default_ref||old?.ref||'',mtime:Date.now()};
+   if(p.character_view){
+    result.character_views={...(old?.character_views||{}),[p.character_view]:p.ref};
+    if(p.character_view==='main')result.ref=result.default_ref=p.ref;
+   }
    w.__memories=(w.__memories||[]).filter(a=>a.id!==result.id).concat(result);
   }else result=w.__memories||[];
  }
@@ -390,12 +394,40 @@ async function run(){
  equal(evaluate('B.nodes[B.nodes.length-1].type'),'video','video-only asset stays video');
  equal(evaluate('B.nodes[B.nodes.length-1].versions[0].ref'),'input:h3studio/robot.mp4','video asset retains source');
  await evaluate('cmEdit(window.__memories.find(a=>a.id==="char"),"character")');
- equal(evaluate('document.querySelector(".cm-character-view select").options[1].value'),'current','existing image can become approved main');
- equal(evaluate('document.querySelectorAll(".cm-character-view button")[2].disabled'),true,'other angles wait for main approval');
- evaluate('window.characterGeneration = null;const normalGenerate=generate;generate = n=>{window.characterGeneration=n;};document.querySelector(".cm-character-view button").click();generate=normalGenerate;');
- equal(evaluate('window.characterGeneration.data.character_draft.slot'),'main','generation creates a tracked main-image draft');
- equal(evaluate('B.edges.find(e=>e.to===window.characterGeneration.id).from'),evaluate('B.nodes.find(n=>curV(n)?.ref==="input:h3studio/lin.png").id'),'main draft uses original image input');
- assert.match(evaluate('window.characterGeneration.data.prompt'),/正面略转约30度/);
+ equal(evaluate('$$(".cm-character-view button").some(b=>b.textContent==="用现有图片定稿")'),true,'existing image has direct approval action');
+ equal(evaluate('$$(".cm-character-hint").filter(el=>el.textContent==="主图定稿后可生成").length'),4,'locked angles explain the prerequisite');
+ const preCharacterFetch=w.fetch;
+ let characterRequest, characterDone=false, characterRequests=0;
+ w.fetch=async(url,options={})=>{
+  if(String(url)==='/api/generate'){
+   characterRequest=JSON.parse(options.body);characterRequests++;
+   return {ok:true,text:async()=>JSON.stringify({ids:['character-job']})};
+  }
+  if(String(url)==='/api/jobs?ids=character-job'){
+   const state=characterDone?{state:'done',outputs:[{ref:'output:h3studio/approved-main.png'}]}:{state:'queued'};
+   return {ok:true,json:async()=>({'character-job':state})};
+  }
+  return preCharacterFetch(url,options);
+ };
+ const beforeCharacter=evaluate('B.nodes.length');
+ evaluate('document.querySelector(".cm-character-primary").click();document.querySelector(".cm-character-primary").click()');
+ await ready('document.querySelector(".cm-character-status")?.textContent==="排队中…"','character generation progress stays in details');
+ assert.equal(characterRequests,1);
+ assert.equal(characterRequest.images[0].ref,'input:h3studio/lin.png');
+ assert.match(characterRequest.prompt,/正面略转约30度/);
+ equal(evaluate('B.nodes.length'),beforeCharacter,'generation leaves canvas untouched');
+ evaluate('CM.editor.querySelector("[data-close]").click();characterDrafts.clear()');
+ characterDone=true;
+ await evaluate('cmEdit(window.__memories.find(a=>a.id==="char"),"character")');
+ await ready('!!document.querySelector(".cm-character-candidate img")','reopened editor recovers candidate from job');
+ evaluate('$$(".cm-character-view button").find(b=>b.textContent==="定稿").click()');
+ await ready('$$(".cm-character-view button").filter(b=>b.textContent==="生成").length===4','main approval unlocks all four views');
+ assert.equal(w.__lastMemoryPost.character_view,'main');
+ assert.equal(w.__lastMemoryPost.ref,'output:h3studio/approved-main.png');
+ equal(evaluate('B.nodes.length'),beforeCharacter,'approval leaves canvas untouched');
+ evaluate('CM.editor.querySelector("[data-close]").click()');
+ w.fetch=preCharacterFetch;
+
  const appendChatEvent = (kind,text) => {
   const event={id:++chatSeq,kind,data:{text},run_id:'choice-run'};
   chatEvents.push(event);
