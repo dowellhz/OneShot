@@ -384,6 +384,37 @@ async function run(){
  equal(evaluate('B.nodes.length'),beforeVideoPlace+1,'video asset places one node');
  equal(evaluate('B.nodes[B.nodes.length-1].type'),'video','video-only asset stays video');
  equal(evaluate('B.nodes[B.nodes.length-1].versions[0].ref'),'input:h3studio/robot.mp4','video asset retains source');
+ const appendChatEvent = (kind,text) => {
+  const event={id:++chatSeq,kind,data:{text},run_id:'choice-run'};
+  chatEvents.push(event);
+  evaluate(`AC.cursor=${event.id};AC.events.push(${JSON.stringify(event)});acAppendEvent(AC.events.at(-1));acRenderState()`);
+ };
+ appendChatEvent('assistant','操作顺序：\n\n1. 上传图片\n2. 选择尺寸\n3. 导出图片');
+ equal(evaluate('document.querySelectorAll("#acMessages .ac-choices").length'),0,'instructions stay as a list');
+ appendChatEvent('assistant','你想选择哪个方案？\n\n1. **暖色风格**\n2. 冷色风格');
+ equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),2,'assistant offers two active choices');
+ const priorChatFetch=w.fetch;
+ let picked, attempts=0;
+ w.fetch=async(url,options={})=>{
+  if(String(url)==='/api/chat/sessions/s1/messages'){
+   attempts++;picked=JSON.parse(options.body);
+   const event={id:++chatSeq,kind:'user',data:{text:picked.text},run_id:'choice-result'};
+   chatEvents.push(event);
+   chatRuns=[{id:'choice-result',state:'thinking'}];
+   return {ok:true,json:async()=>({id:'choice-result',state:'thinking'})};
+  }
+  return priorChatFetch(url,options);
+ };
+ evaluate('$("#acInput").value="正在写的草稿"; const choices=$$(".ac-choices button");choices[1].click();choices[0].click()');
+ await ready('!AC.sending && AC.events.at(-1).data.text==="我选择 2：冷色风格"','selected option reaches the conversation');
+ assert.equal(picked.text,'我选择 2：冷色风格');
+ assert.equal(attempts,1,'clicks cannot submit twice');
+ equal(evaluate('$("#acInput").value'),'正在写的草稿','option preserves draft');
+ equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),0,'answered choices cannot be submitted again');
+ chatRuns=[{id:'choice-result',state:'done'}];
+ await evaluate('acLoadSession("s1")');
+ equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),0,'old choices stay inactive after replay');
+ console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');
  console.log('Asset library DOM passed: entry, categories/search/source/scope, safe labels, preview/history, save/upload/delete, readonly shared assets, canvas import/place, @ citation, and fetch recovery.');
  console.log('Memory DOM passed: @ dropdown, alias/tag filtering, keyboard and mouse completion, no accidental send, duplicate identities and editor scope.');
  console.log('DOM integration passed: boot, zoom, fit, draft restore, undo/redo, comparisons, layer opacity/merge, docking, alignment, grouping/undo and spacing.');

@@ -51,9 +51,53 @@ async function acFocus(ids,editor=false){if(AC.board!==boardId)return;const node
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
 function acResultCards(result){const made=result.nodes||[];if(!made.length)return "";return `<div class="ac-results">${made.map(item=>{const n=vtResolve(item.id,item.ref)?.node,v=acResultVersion(item);if(item.type==="video"||n?.type==="video")return `<div class="ac-result ac-video"><video controls playsinline preload="metadata" src="/media?ref=${encodeURIComponent(v.ref)}" aria-label="生成的视频"></video><button type="button" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">定位视频</button></div>`;return `<button type="button" class="ac-result" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">${v?.ref?`<img loading="lazy" alt="生成结果" src="/media?ref=${encodeURIComponent(v.ref)}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;}).join("")}</div>`;}
 
+function acAddChoices(message, event) {
+ const prose = Array.from(message.children).filter(el => !["OL","UL","PRE","BLOCKQUOTE"].includes(el.tagName));
+ const prompt = prose.map(el => el.textContent).join(" ");
+ if (!/(?:请选择|(?:你|您)(?:想|要|会)?选|选哪|选一个|哪[个种一]|二选一|回复\s*[12]|1\s*还是\s*2|choose|pick one|which option)/i.test(prompt)) return;
+ const lists = Array.from(message.children).filter(el => el.tagName === "OL");
+ const list = lists[0];
+ let options;
+ if (lists.length === 1) {
+  const items = Array.from(list.children);
+  if (list.start !== 1 || items.some(el => el.querySelector("ol,ul,pre,table,input,a,img"))) return;
+  options = items.map(el => el.textContent.trim().replace(/\s+/g, " "));
+ } else if (!lists.length && /(?:^|\D)1\s*还是\s*2(?:\D|$)/.test(prompt)) {
+  options = ["", ""];
+ } else return;
+ if (options.length < 2 || options.length > 6 || options.some(label => label.length > 350)) return;
+ const card = document.createElement("div");
+ card.className = "ac-choices";
+ card.dataset.event = event.id;
+ card.setAttribute("role", "group");
+ card.setAttribute("aria-label", "请选择一个方案");
+ const title = document.createElement("strong");
+ title.textContent = "请选择一个方案";
+ card.append(title);
+ options.forEach((label, index) => {
+  const button = document.createElement("button");
+  button.type = "button";
+  const number = document.createElement("span");
+  number.className = "ac-choice-number";
+  number.textContent = index + 1;
+  button.append(number, document.createTextNode(label || `选择 ${index + 1}`));
+  button.disabled = true;
+  button.onclick = () => {
+   if (!button.disabled) acSend(label ? `我选择 ${index + 1}：${label}` : `我选择 ${index + 1}`);
+  };
+  card.append(button);
+ });
+ if (list) list.replaceWith(card);
+ else message.append(card);
+}
+
 function acAppendEvent(e,replay=false){
  const box=$("#acMessages"),d=e.data;let el;
- if(["user","assistant","notice"].includes(e.kind)){el=document.createElement("div");el.className="ac-msg "+e.kind;if(e.kind!=="notice")acMarkdown(el,d.text);else el.textContent=d.text;}
+ if(["user","assistant","notice"].includes(e.kind)){
+  el=document.createElement("div");el.className="ac-msg "+e.kind;
+  if(e.kind!=="notice")acMarkdown(el,d.text);else el.textContent=d.text;
+  if(e.kind==="assistant")acAddChoices(el,e);
+ }
  if(e.kind==="tool_start"){el=document.createElement("details");el.className="ac-call";el.dataset.call=d.call_id;el.innerHTML=`<summary>${esc(AC_LABELS[d.name]||d.name)} · 执行中</summary><div class="ac-progress"></div><div class="ac-output"></div>`;AC.calls.set(d.call_id,el);}
  if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":d.result.adopted?"已采用："+d.result.adopted.map(a=>a.name).join("、"):d.result.memories?`找到 ${d.result.memories.length} 条创作记忆。`:d.result.memory?"已保存记忆："+d.result.memory.name:"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
  if(e.kind==="progress"){el=AC.calls.get(d.call_id);if(el)$(".ac-progress",el).textContent=d.jobs.map(j=>{const phase=AC_PHASES[j.phase]||AC_PHASES[j.state]||"处理中",pct=j.max?` · ${Math.min(j.state==="done"?100:99,Math.round((j.value||0)/j.max*100))}%`:"";return phase+pct+(j.ahead?` · 前方 ${j.ahead} 个任务`:"");}).join(" / ");return;}
@@ -63,6 +107,14 @@ function acAppendEvent(e,replay=false){
 }
 function acRenderState(){
  const active=acActive(),latest=AC.runs[0];$("#acStatus").textContent=active?AC_STATES[active.state]:(latest?.error||AC_STATES[latest?.state]||"可以讨论，也可以直接操作当前画布");
+ const lastMessage = AC.events.findLast(e => e.kind === "assistant" || e.kind === "user");
+ let choosing = false;
+ for (const card of $$("#acMessages .ac-choices")) {
+  const current = AC.session && lastMessage?.kind === "assistant" && card.dataset.event === String(lastMessage.id);
+  for (const button of card.querySelectorAll("button")) button.disabled = !current || !!active || AC.sending;
+  choosing ||= !!current && !active && !AC.sending;
+ }
+ if (choosing) $("#acStatus").textContent = "请选择上方的方案，或输入你的回复";
  $("#acStop").hidden=!active;$("#acStop").disabled=active?.state==="stopping";$("#acSend").disabled=!!active||AC.sending||!$("#acInput").value.trim();$("#acUndo").hidden=!latest||!!active;$("#acNew").disabled=!!active;
  if(latest?.model)$("#acModel").textContent=latest.model.provider+" · "+latest.model.model;
  if(typeof aeRenderInputs==="function")aeRenderInputs();
@@ -81,12 +133,21 @@ async function acSessions(fresh=false){const id=boardId,epoch=++AC.epoch;AC.boar
  $("#acSessions").innerHTML=j.sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.title)}</option>`).join("");$("#acSessions").value=chosen;await acLoadSession(chosen);acRenderEmpty();
 }
 function acRenderEmpty(){if(AC.events.some(e=>e.kind==="user"))return;const box=$("#acMessages");box.innerHTML=`<div class="ac-empty"><b>告诉我你想怎么创作</b><div>引用画布素材，我可以生成、编辑和整理结果。</div><button data-example="描述一下选中的图片">理解这张图片</button><button data-example="以选中图片为参考生成三个暖色版本，横向排列在原图右边">生成三个暖色版本</button><button data-example="把选中的节点横向排齐">整理选中的节点</button></div>`;$$("[data-example]",box).forEach(b=>b.onclick=()=>{$("#acInput").value=b.dataset.example;acRenderState();$("#acInput").focus();});}
-async function acSend(){
- if(AC.sending||acActive()||!AC.session)return;const text=$("#acInput").value.trim();if(!text)return;
+async function acSend(choiceText){
+ if(AC.sending||acActive()||!AC.session)return;
+ const input = $("#acInput"), draft = input.value;
+ const text = typeof choiceText === "string" ? choiceText : draft.trim();
+ if(!text)return;
  const sid=AC.session,id=boardId,selected=acRefs().map(n=>n.id),key=id+"|"+sid+"|"+text+"|"+selected.join(",");
  let pending=AC.pending.get(key);if(!pending){pending={text,selected,request_key:crypto.randomUUID?.()||("req"+Date.now()+Math.random())};AC.pending.set(key,pending);try{localStorage.setItem("h3.chat.outbox."+sid,JSON.stringify({key,payload:pending}));}catch{}}
  AC.sending=true;acRenderState();try{await flushSave();if(id!==boardId||sid!==AC.session)throw new Error("画布已切换，请重新发送");if(AC.pending.has(id))throw new Error("请先将冲突的本地画布保存为副本");
-  const sent=await acApi(`/api/chat/sessions/${sid}/messages`,pending);if(!AC.runs.some(r=>r.id===sent.id))AC.runs.unshift(sent);AC.pending.delete(key);localStorage.removeItem("h3.chat.outbox."+sid);const option=$("#acSessions").selectedOptions[0];if(option)option.textContent=text.slice(0,30);$("#acInput").value="";AC.refs=null;await acPoll();acRenderRefs();
+  const sent=await acApi(`/api/chat/sessions/${sid}/messages`,pending);
+  AC.pending.delete(key);localStorage.removeItem("h3.chat.outbox."+sid);
+  if(id!==boardId||sid!==AC.session)return;
+  if(!AC.runs.some(r=>r.id===sent.id))AC.runs.unshift(sent);
+  const option=$("#acSessions").selectedOptions[0];if(option)option.textContent=text.slice(0,30);
+  if(typeof choiceText!=="string"&&input.value===draft)input.value="";
+  AC.refs=null;await acPoll();acRenderRefs();
  }catch(e){toast(e.message,6000);}finally{AC.sending=false;acRenderState();}
 }
 async function acOpen(){if(!B)return;AC.open=true;$("#agentChat").hidden=false;$("#chatLaunch").hidden=true;try{await flushSave();if(AC.board!==boardId||!AC.session)await acSessions();else await acPoll();}catch(e){$("#acError").textContent=e.message;$("#acError").hidden=false;}$("#acInput").focus();}
