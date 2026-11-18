@@ -10,7 +10,8 @@
 .cm-character-fields { margin-top: 7px; }
 .cm-character-view { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; border-top: 1px solid #35353c; padding-top: 7px; }
 .cm-character-view strong { flex: 1 0 100%; font-size: 11px; }
-.cm-character-view img { width: 48px; height: 60px; border-radius: 5px; object-fit: contain; background: #151518; }
+.cm-character-preview { display: block; flex: none; }
+.cm-character-preview img { display: block; width: 68px; height: 86px; border-radius: 5px; object-fit: contain; background: #151518; }
 .cm-character-view a { color: #c2c2cc; text-decoration: underline; }
 .cm-character-view select { flex: 1; min-width: 90px; }
 .cm-character-view button:disabled { opacity: .45; cursor: default; }
@@ -21,7 +22,4 @@
 .cm-editor .cm-character-primary:hover,
 #assetLibrary .cm-editor .cm-character-primary:hover { background: #f1f1f6; }
 .cm-character-status { color: #c3c4d0; font-size: 11px; }
-.cm-character-view .cm-character-candidate { flex: 1 0 100%; }
-.cm-character-view .cm-character-candidate img {
-  display: block; width: 100%; height: auto; max-height: 220px; object-fit: contain;
-}
+.cm-character-candidate { display: flex; align-items: center; gap: 5px; flex: 1 0 100%; }

@@ -74,10 +74,7 @@ async function cmEdit(a=null, kind='character', options={}) {
         download.href = "/media?ref=" + encodeURIComponent(views[slot]);
         download.download = /\.jpe?g$/i.test(views[slot]) ? filename.replace(/\.png$/, ".jpg") : /\.webp$/i.test(views[slot]) ? filename.replace(/\.png$/, ".webp") : filename;
         download.textContent = "下载";
-        const preview = document.createElement("img");
-        preview.src = download.href;
-        preview.alt = label;
-        preview.loading = "lazy";
+        const preview = characterPreview(views[slot], label + "已定稿");
         row.append(preview, download, action("放入画布", () => {
           placeCharacterReference(data, media.ref);
           alClose();
@@ -140,24 +137,35 @@ async function cmEdit(a=null, kind='character', options={}) {
           }));
         }
         if (candidateRef && candidateRef !== views[slot]) {
-          const preview = document.createElement("a");
-          preview.className = "cm-character-candidate";
-          preview.href = "/media?ref=" + encodeURIComponent(candidateRef);
-          preview.target = "_blank";
-          preview.rel = "noopener";
-          const image = document.createElement("img");
-          image.src = preview.href;
-          image.alt = label + "草稿，点击查看原图";
-          preview.append(image);
-          row.append(preview, action("定稿", () => {
+          const candidate = document.createElement("div");
+          candidate.className = "cm-character-candidate";
+          const tag = document.createElement("small");
+          tag.className = "cm-character-status";
+          tag.textContent = "待定稿";
+          candidate.append(characterPreview(candidateRef, label + "草稿"), tag, action("定稿", () => {
             if (busy) return;
             approvingView = {slot, version: {ref:candidateRef}, nodeId: draft?.ref === candidateRef ? undefined : legacy?.id, draftKey:key};
             form.requestSubmit();
           }));
+          row.append(candidate);
         }
       }
       rows.append(row);
     }
+  }
+  function characterPreview(ref, label) {
+    const link = document.createElement("a");
+    link.className = "cm-character-preview";
+    link.href = "/media?ref=" + encodeURIComponent(ref);
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = "查看原图";
+    const image = document.createElement("img");
+    image.src = link.href;
+    image.alt = label + "，点击查看原图";
+    image.loading = "lazy";
+    link.append(image);
+    return link;
   }
   function action(label, handler) {
     const button = document.createElement("button");

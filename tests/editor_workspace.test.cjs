@@ -436,10 +436,15 @@ async function run(){
  evaluate('alClose()');
  await evaluate('cmEdit(window.__memories.find(a=>a.id==="char"),"character")');
  await ready('!!document.querySelector(".cm-character-candidate img")','reopened editor recovers candidate from job');
+ const previewSize = evaluate('getComputedStyle($(".cm-character-preview img")).width+"x"+getComputedStyle($(".cm-character-preview img")).height');
+
  evaluate('$$(".cm-character-view button").find(b=>b.textContent==="定稿").click()');
  await ready('$$(".cm-character-view button").filter(b=>b.textContent==="生成").length===4','main approval unlocks all four views');
  assert.equal(w.__lastMemoryPost.character_view,'main');
  assert.equal(w.__lastMemoryPost.ref,'output:h3studio/approved-main.png');
+ equal(evaluate('getComputedStyle($(".cm-character-preview img")).width+"x"+getComputedStyle($(".cm-character-preview img")).height'),previewSize,'approval retains thumbnail dimensions');
+ equal(evaluate('$(".cm-character-preview").target'),'_blank','approved thumbnail opens full image');
+
  equal(evaluate('B.nodes.length'),beforeCharacter,'approval leaves canvas untouched');
  evaluate('CM.editor.querySelector("[data-close]").click()');
  w.fetch=preCharacterFetch;
