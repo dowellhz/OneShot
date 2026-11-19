@@ -21,7 +21,7 @@ function vtMergeInfo(ids){
   const nodes=[...new Set(ids)].map(node);
   if(nodes.length<2||nodes.some(n=>!n||n.type!=="video"||n.data.film||!n.versions.length||!curV(n)))return {error:"请选择至少两个已生成的普通视频"};
   if(nodes.some(n=>n.job||prepping.has(n.id)))return {error:"请等待这些视频的任务完成后再合并"};
-  if(nodes.some(n=>B.edges.some(e=>e.from===n.id)))return {error:"视频还有下游连线，先移除该连线再合并"};
+  if(nodes.some(n=>B.edges.some(e=>e.from===n.id&&e.relation!=="remake")))return {error:"视频还有下游连线，先移除该连线再合并"};
   if(nodes.some(n=>vtSignature(n)!==vtSignature(nodes[0])))return {error:"输入图片、文字或关键帧角色不同，不能合并为同一组 Tab"};
   const pinned=nodes.filter(n=>vtReferences(n.id));
   if(pinned.length>1)return {error:"多个视频分别被成片或分镜引用，请保留为独立节点"};
@@ -62,6 +62,7 @@ function vtMerge(ids,targetId,before=null){
   const versions=[keeper,...others].flatMap(n=>n.versions.map((_,i)=>vtRetargetVersion(vtSnapshot(n,i),keeper.id)));
   if(before){undoStack.push(before);redoStack.length=0;}else checkpoint();
   keeper.versions=versions;keeper.x=destination.x;keeper.y=destination.y;
+  for(const n of others)for(const v of n.versions)vtMoveRemakeSource(n.id,keeper.id,v.ref);
   B.nodes=B.nodes.filter(n=>!removed.has(n.id));B.edges=B.edges.filter(e=>!removed.has(e.from)&&!removed.has(e.to));
   for(const g of B.groups||[])g.nodes=[...new Set(g.nodes.map(id=>removed.has(id)?keeper.id:id))];
   vtFinish([keeper.id]);toast("已合并为 "+versions.length+" 个 Tab，右键 Tab 可拆出；支持撤销",4500);return true;

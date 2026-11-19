@@ -31,9 +31,30 @@ def original_video(host, user, board_id, node_id, source):
     if not board or not host.can_see(user, board):
         fail("画布不存在或不可访问", 404)
     node = next((n for n in board.get("nodes", []) if n["id"] == node_id and n["type"] == "video"), None)
-    if not isinstance(source, str) or not node or not any(v.get("ref") == source for v in node.get("versions", [])):
+    if not isinstance(source, str) or not node:
         fail("原片版本已不存在，请重新打开视频节点", 404)
-    return node
+    versions = node.get("versions", [])
+    matches = [v for v in versions if v.get("ref") == source]
+    if not matches:
+        fail("原片版本已不存在，请重新打开视频节点", 404)
+    selected = node.get("cur")
+    if type(selected) is int and 0 <= selected < len(versions) and versions[selected].get("ref") == source:
+        return versions[selected]
+    return matches[0]
+
+
+def remake_key(host, user, board, node, source):
+    version = original_video(host, user, board, node, source)
+    lineage = version.get("tab_nodes")
+    lineage = [item for item in lineage if isinstance(item, str) and item] if isinstance(lineage, list) else []
+    if not lineage:
+        return (user["id"], board, node, source)
+    existing = {row["node"] for row in db.q(
+        "SELECT node FROM video_remakes WHERE owner=? AND board=? AND source=?", user["id"], board, source,
+    )}
+    # A moved tab reuses the most recent existing session in its own source lineage.
+    location = next((item for item in [node, *reversed(lineage)] if item in existing), lineage[0])
+    return (user["id"], board, location, source)
 
 
 def load(key):
@@ -952,16 +973,16 @@ def public_session(session, **extra):
 async def handle(req, host):
     source = req.query.get("source")
     board, node = req.match_info["board"], req.match_info["node"]
-    original_video(host, req["user"], board, node, source)
-    key = (req["user"]["id"], board, node, source)
     if req.method == "GET":
+        key = remake_key(host, req["user"], board, node, source)
         session = load(key)
         if session:
             update_jobs(host, key[0], session)
-        return web.json_response(public_session(session))
+        return web.json_response(public_session(session, session_node=key[2]))
     data = await req.json()
     if not isinstance(data, dict):
         fail("请求格式不正确")
+    key = remake_key(host, req["user"], board, node, source)
     if key in _writes:
         fail("此原片正在处理，请稍候", 409)
     _writes.add(key)
@@ -1059,6 +1080,6 @@ async def handle(req, host):
         update_jobs(host, key[0], session)
         refresh_export_status(session, source, host.film.FPS)
         save(key, session)
-        return web.json_response(public_session(session, **response))
+        return web.json_response(public_session(session, session_node=key[2], **response))
     finally:
         _writes.discard(key)

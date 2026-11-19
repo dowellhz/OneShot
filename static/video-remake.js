@@ -119,8 +119,8 @@ async function openVideoRemake(video) {
   let liveJobs = {};
   const cancelling = new Set();
   const drafts = new Map();
-  const draftScope = ME_USER?.id == null ? "" : "oneshot.remake.draft:" +
-    JSON.stringify([ME_USER.id, board, video.id, source.ref]) + ":";
+  const draftScope = () => ME_USER?.id == null ? "" : "oneshot.remake.draft:" +
+    JSON.stringify([ME_USER.id, board, session?.session_node || video.id, source.ref]) + ":";
   const inScope = index => !session?.mapping || session.mapping.shots.includes(index);
   const matchesPerson = version => !session?.mapping || (
     version?.asset?.id === session.mapping.asset && version.source_person === session.mapping.source
@@ -136,13 +136,15 @@ async function openVideoRemake(video) {
   function readDraft(field, shot = currentShot(), asset) {
     const key = draftKey(field, shot, asset);
     if (drafts.has(key)) return drafts.get(key);
-    try { return draftScope ? localStorage.getItem(draftScope + key) : null; }
+    const scope = draftScope();
+    try { return scope ? localStorage.getItem(scope + key) : null; }
     catch { return null; }
   }
   function writeDraft(field, value, asset) {
     const key = draftKey(field, currentShot(), asset);
     drafts.set(key, value);
-    try { if (draftScope) localStorage.setItem(draftScope + key, value); }
+    const scope = draftScope();
+    try { if (scope) localStorage.setItem(scope + key, value); }
     catch {}
   }
   const personAbsent = frame => !!frame?.person_absent && (

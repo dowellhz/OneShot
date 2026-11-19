@@ -141,6 +141,45 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(server.JOBS[pending_id]["error"], "已取消")
         self.assertEqual(db.one("SELECT state FROM tasks WHERE id=?", pending_id)["state"], "error")
 
+    async def test_remake_session_follows_its_source_tab_after_board_changes(self):
+        source = self.make_clip("moved-tab", seconds=2, color=(200, 30, 30), frequency=440)
+        session = {"shots":[{"start":0, "end":2, "summary":{},
+                            "frames":{"first":video_remake.frame_record(self.source["ref"], (64, 64))}}],
+                   "cut_revision":3}
+        old_key = (7, "test", "n3", source)
+        video_remake.save(old_key, session)
+
+        def board(nodes):
+            server.board_path("test").write_text(json.dumps({"owner":7, "nodes":nodes}))
+
+        def video(node, ref, lineage=None):
+            version = {"ref":ref}
+            if lineage:
+                version["tab_nodes"] = lineage
+            return {"id":node, "type":"video", "versions":[version], "cur":0}
+
+        async def act(node, action=None, user=None):
+            req = Request(source, user or self.user, {"action":action, "shot":0, "cut_revision":3} if action else None)
+            req.match_info["node"] = node
+            return json.loads((await server.remake(req)).body)
+
+        board([video("n4", source, ["n3"]), video("n5", source)])
+        split = await act("n4")
+        self.assertEqual(split["session_node"], "n3")
+        self.assertEqual(split["cut_revision"], 3)
+        self.assertIsNone(await act("n5"))
+        self.assertIsNone(await act("n4", user={"id":8, "role":"admin"}))
+        with self.assertRaises(web.HTTPNotFound):
+            await act("n3")
+        await act("n4", "keep")
+        self.assertTrue(video_remake.load(old_key)["shots"][0]["keep_original"])
+        self.assertIsNone(video_remake.load((7, "test", "n4", source)))
+
+        board([video("n8", source, ["n3", "n4"])])
+        merged = await act("n8")
+        self.assertEqual(merged["session_node"], "n3")
+        self.assertTrue(merged["shots"][0]["keep_original"])
+
     @skipUnless(hasattr(av.video.stream.VideoStream, "set_display_rotation"), "rotated MP4 fixture needs PyAV display matrix writing")
     async def test_rotated_phone_video_uses_display_coordinates_through_export(self):
         def clip(name, image, rotated=False):

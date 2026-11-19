@@ -497,7 +497,7 @@ async function run(){
   const operation=options.body&&JSON.parse(options.body);
   if(operation?.action==='analyze'){
    const frame={ref:'input:h3studio/remake-frame.png',w:640,h:480,previews:[]};
-   remakeSession={shots:[{start:.5,end:3.5,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
+   remakeSession={session_node:'pendingVideo',shots:[{start:.5,end:3.5,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
   }
   const frame=remakeSession?.shots[0].frames.first;
   if(operation?.action==='map_person'){
@@ -727,6 +727,16 @@ async function run(){
  equal(evaluate('const splitOriginal=vtResolve("pendingVideo",originalRef).node;B.edges.filter(e=>e.relation==="remake").every(e=>e.from===splitOriginal.id)'),true,'origin links follow the pinned video version when split');
  evaluate('switchVersion(shotHandoff,1)');
  equal(evaluate('B.edges.find(e=>e.to===shotHandoff.id&&e.relation==="remake").from'),evaluate('splitOriginal.id'),'the other result tab points to the moved origin too');
+ await evaluate('openVideoRemake(splitOriginal)');
+ equal(evaluate('[$("#videoRemake [data-motion]").value,$("#videoRemake .rm-note input").value,$("#videoRemake [data-view]").value]'),
+  ['尚未提交的动作','尚未提交的修改要求','main'],'the moved source tab uses the draft scope of its existing remake session');
+ evaluate('$("#videoRemake [data-close]").click()');
+ equal(evaluate(`const mergePeer=addNode("video",3000,200,splitOriginal.data,{versions:[{...curV(splitOriginal),
+   ref:"output:h3studio/merge-peer.mp4",tab_nodes:[]}],cur:0});
+   B.edges.push(...B.edges.filter(e=>e.to===splitOriginal.id).map(e=>({...e,to:mergePeer.id})));
+   vtMerge([splitOriginal.id,mergePeer.id],mergePeer.id)`),true,'clips with remake provenance can merge using compatible generation inputs');
+ equal(evaluate('vtResolve("pendingVideo",originalRef).node.id'),evaluate('mergePeer.id'),'original source moves back into a merged tab');
+ equal(evaluate('B.edges.filter(e=>e.relation==="remake").every(e=>e.from===mergePeer.id)'),true,'all remake links now point to the merged source node');
  w.fetch=previousFetch;
  console.log('Video remake DOM passed: analyze, select, preview, review remade shots, correct tracking, localize, export, and first-frame handoff.');
  console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');
