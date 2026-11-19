@@ -875,11 +875,12 @@ async function run(){
   {job:'newer-remake-video',state:'done',ref:'output:h3studio/newer-remake-video.mp4'},
  ];
  evaluate(`$("#acMessages [data-remake-node]").remove();
- $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({video:{submitted:true},remake:{node_id:"pendingVideo",
-  source_ref:originalRef,shot_number:2,shot_start:${locatedShot.start},video_job:"chat-remake-video"}}));
- $("#acMessages [data-remake-node]").click();`);
+ $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({review_versions:[
+  {number:1,job:"chat-remake-video",adopted:true},{number:2,job:"newer-remake-video"}],remake:{node_id:"pendingVideo",
+  source_ref:originalRef,shot_number:2,shot_start:${locatedShot.start}}}));
+ $("#acMessages [data-remake-video-job=chat-remake-video]").click();`);
  await ready('$("[data-result]")?.src.includes("chat-remake-video.mp4") && $(".rm-shot").textContent==="镜头 2"',
-  'a video submitted from chat opens its exact remake version for review');
+  'the assistant review menu opens the exact earlier remake version');
  evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
  evaluate(`$("#upBtn").click();

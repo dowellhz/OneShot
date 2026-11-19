@@ -13,7 +13,8 @@ from aiohttp import web
 import video_remake
 
 NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze",
-         "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate", "video_remake_export"}
+         "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate",
+         "video_remake_review", "video_remake_export"}
 
 
 def result_id(cid):
@@ -119,7 +120,10 @@ def register(tool, prop, node, prompt):
     tool("video_regenerate", "重新生成已有视频，复用提示词、时长、关键帧连线和配置。可用replacements替换关键帧。结果在原视频节点追加版本，用Tab切换，历史视频与输入连线保留。", {
         **options, "node_id": node, "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
-    tool("video_remake_status", "读取原片视频版本的角色替换进度，包括待审核镜头和成片状态。不启动分析或生成。", {"node_id": node}, ["node_id"])
+    shot_number = prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS)
+    tool("video_remake_status", "读取原片视频版本的角色替换进度。指定shot可查看该镜头的已完成视频版本和任务编号。", {
+        "node_id": node, "shot": shot_number,
+    }, ["node_id"])
     tool("video_remake_analyze", "在视频重制工作区分析指定原片，按原片时间轴拆分镜头并识别人物。已有分析时直接读取，可继续审核。", {"node_id": node}, ["node_id"])
     tool("video_remake_map", "保存角色映射，用资产库角色替换指定原片人物。镜头编号从1开始，使用最近一次重制状态的cut_revision。", {
         "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
@@ -150,6 +154,10 @@ def register(tool, prop, node, prompt):
     tool("video_remake_export", "把已审核的重制镜头与保留原片的镜头合成，保留原声。须使用最新cut_revision；只有用户明确要求重新导出时才设rebuild。", {
         "node_id": node, "cut_revision": prop("integer", minimum=0), "rebuild": prop("boolean"),
     }, ["node_id", "cut_revision"])
+    tool("video_remake_review", "保存用户明确指定的审核决定。adopt时使用该镜头已完成版本的video_job，keep时保留原镜头。镜头从1编号。", {
+        "node_id": node, "shot": shot_number, "cut_revision": prop("integer", minimum=0),
+        "decision": prop("string", enum=["adopt", "keep"]), "video_job": node,
+    }, ["node_id", "shot", "cut_revision", "decision"])
 
 
 def video_node(s, run, user, nid, *, allow_film=False):
@@ -209,7 +217,7 @@ async def execute(s, run, user, cid, name, args):
     if name == "video_remake_status":
         nid = args["node_id"]
         key = remake_source(s, run, user, nid)
-        return remake_status(s.host, nid, key, video_remake.load(key))
+        return remake_status(s.host, nid, key, video_remake.load(key), review_shot=args.get("shot"))
     if name == "video_remake_analyze":
         return await analyze_remake(s, run, user, args["node_id"])
     if name == "video_remake_map":
@@ -222,6 +230,8 @@ async def execute(s, run, user, cid, name, args):
         return await generate_remake(s, run, user, cid, args)
     if name == "video_remake_export":
         return await export_remake(s, run, user, cid, args)
+    if name == "video_remake_review":
+        return await review_remake(s, run, user, args)
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -445,6 +455,26 @@ async def generate_remake(s, run, user, cid, args):
     return result
 
 
+async def review_remake(s, run, user, args):
+    nid = args["node_id"]
+    key = remake_source(s, run, user, nid)
+    shot_number = args["shot"]
+    adopt = args["decision"] == "adopt"
+    job = args.get("video_job")
+    if adopt and not job:
+        raise ValueError("请先读取镜头的已完成版本，再指定要采用的版本")
+    session = await apply_remake_action(s, user, nid, key, {
+        "action": "approve_video" if adopt else "keep", "shot": shot_number - 1, "job": job,
+        "cut_revision": args["cut_revision"],
+    })
+    result = remake_status(s.host, nid, key, session)
+    result["remake"].update(shot_number=shot_number, shot_start=session["shots"][shot_number - 1]["start"])
+    if adopt:
+        result["remake"]["video_job"] = job
+    result["text"] = f"已采用镜头 {shot_number} 的指定版本。" if adopt else f"镜头 {shot_number} 已设为保留原片。"
+    return result
+
+
 def export_media(host, export):
     ref = export.get("ref")
     if export.get("state") != "done" or export.get("stale") or not ref:
@@ -508,7 +538,7 @@ def finish_remake_export(s, run, user, pending, state):
     return result
 
 
-def remake_status(host, nid, key, session):
+def remake_status(host, nid, key, session, *, review_shot=None):
     result = {"remake": {"node_id": nid, "source_ref": key[3]}, "shots": [], "analyzed": False}
     if not session or not session["shots"]:
         return {**result, "text": "该原片尚未分析，可打开视频重制工作区开始。"}
@@ -517,6 +547,18 @@ def remake_status(host, nid, key, session):
     review = video_remake.export_review(session)
     mapping = session.get("mapping")
     out = session.get("export") or {}
+    if review_shot is not None:
+        if not 1 <= review_shot <= len(session["shots"]):
+            raise ValueError("请选择存在的镜头")
+        shot = session["shots"][review_shot - 1]
+        result["remake"].update(shot_number=review_shot, shot_start=shot["start"])
+        result["review_versions"] = [
+            {"number": index + 1, "job": version["job"], "mode": version.get("mode", "whole"),
+             "adopted": not shot.get("keep_original") and shot.get("adopted_video") == version["job"],
+             "review_issue": video_remake.video_start_issue(shot, version, mapping)}
+            for index, version in enumerate(shot.get("videos", []))
+            if version["state"] == "done" and version.get("ref") and video_remake.matches_mapping(version, mapping)
+        ]
     issues = {item["shot"]: item["error"] for item in review["remaining"]}
     for index, shot in enumerate(session["shots"]):
         frame_key = video_remake.start_preview_key(shot, mapping)

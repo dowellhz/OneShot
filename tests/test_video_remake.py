@@ -856,7 +856,18 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         blocked = await assistant_export()
         self.assertEqual(blocked["remake"]["shot_number"], 1)
         self.assertIsNone(blocked["export_state"])
-        await act("approve_video", job=local_job)
+        review = await service.execute(run, self.user, "review_choices", "video_remake_status", {"node_id":"n3", "shot":1})
+        self.assertEqual([(v["number"], v["job"], v["mode"]) for v in review["review_versions"]],
+                         [(1, video_job, "whole"), (2, local_job, "local")])
+        review_args = {"node_id":"n3", "shot":1, "cut_revision":review["cut_revision"]}
+        with self.assertRaises(server.agent_chat.ToolError):
+            await service.execute(run, self.user, "review", "video_remake_review",
+                                  {**review_args, "decision":"adopt", "video_job":"another-shot"})
+        adopted = await service.execute(run, self.user, "review", "video_remake_review",
+                                        {**review_args, "decision":"adopt", "video_job":local_job})
+        self.assertEqual(adopted["remake"]["video_job"], local_job)
+        self.assertTrue(adopted["can_export"])
+        self.assertEqual((await act())["shots"][0]["adopted_video"], local_job)
         with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue:
             async with server.RENDER_LOCK:
                 waiting = asyncio.create_task(assistant_export())
@@ -898,8 +909,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertIn("首帧选区已更新", changed.exception.text)
         with self.assertRaises(web.HTTPConflict):
             await act("approve", job=job)
-        kept = await act("keep")
+        kept = await service.execute(run, self.user, "keep", "video_remake_review", {**review_args, "decision":"keep"})
         self.assertTrue(kept["shots"][0]["keep_original"])
+        self.assertTrue((await act())["shots"][0]["keep_original"])
         stale = await assistant_export()
         self.assertEqual(stale["export_state"], "stale")
         self.assertIsNone(stale["export_ref"])
