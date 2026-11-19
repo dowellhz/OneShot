@@ -1184,11 +1184,26 @@ def refresh_export_status(session, source, fps):
         export["stale"] = current["clips"] != export["clips"]
 
 
-def public_session(session, **extra):
+def available_export(host, export):
+    if not export or export.get("state") != "done":
+        return export
+    if export.get("stale"):
+        return {**export, "ref": None}
+    try:
+        if export.get("ref") and host.tools.ref_path(host.COMFY_DIR, export["ref"]).is_file():
+            return export
+    except (ValueError, OSError):
+        pass
+    return {**export, "ref": None, "state": "error", "error": "成片文件暂不可用，请重新合成"}
+
+
+def public_session(host, session, **extra):
     if session is None:
         return None
-    return {**{key: value for key, value in session.items() if key not in ("cut_archive", "cut_undo")},
-            "can_undo_cut": bool(session.get("cut_undo")), "export_review": export_review(session), **extra}
+    result = {key: value for key, value in session.items() if key not in ("cut_archive", "cut_undo")}
+    if "export" in result:
+        result["export"] = available_export(host, result["export"])
+    return {**result, "can_undo_cut": bool(session.get("cut_undo")), "export_review": export_review(session), **extra}
 
 
 async def handle(req, host):
@@ -1199,7 +1214,8 @@ async def handle(req, host):
         session = load(key)
         if session:
             update_jobs(host, key[0], session)
-        return web.json_response(public_session(session, session_node=key[2]))
+            refresh_export_status(session, source, host.film.FPS)
+        return web.json_response(public_session(host, session, session_node=key[2]))
     data = await req.json()
     if not isinstance(data, dict):
         fail("请求格式不正确")
@@ -1311,6 +1327,6 @@ async def handle(req, host):
         update_jobs(host, key[0], session)
         refresh_export_status(session, source, host.film.FPS)
         save(key, session)
-        return web.json_response(public_session(session, session_node=key[2], **response))
+        return web.json_response(public_session(host, session, session_node=key[2], **response))
     finally:
         _writes.discard(key)

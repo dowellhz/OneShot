@@ -937,6 +937,20 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertGreater(first[25,25,0], 170)
         self.assertGreater(first[25,14,0], 140)
 
+        server.tools.ref_path(server.COMFY_DIR, final["ref"]).unlink()
+        missing = (await act())["export"]
+        self.assertEqual(missing["state"], "error")
+        self.assertIsNone(missing["ref"])
+        self.assertIn("请重新合成", missing["error"])
+        status = await service.execute(run, self.user, "status", "video_remake_status", {"node_id":"n3"})
+        self.assertEqual(status["export_state"], "error")
+        self.assertIsNone(status["export_ref"])
+        self.assertTrue(status["can_export"])
+        rebuilt = await assistant_export()
+        self.assertEqual(rebuilt["export_state"], "done")
+        self.assertNotEqual(rebuilt["export_ref"], final["ref"])
+        self.assertEqual((await act())["export"]["ref"], rebuilt["export_ref"])
+
         await act("select", rect=[.3,.3,.7,.7])
         with self.assertRaises(web.HTTPConflict) as changed:
             await act("generate_video")

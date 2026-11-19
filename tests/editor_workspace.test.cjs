@@ -759,7 +759,17 @@ async function run(){
  evaluate('$("#videoRemake [data-export]").click()');
  await ready('$("#videoRemake [data-download]").hidden===false','finished export can be downloaded');
  equal(evaluate('$("#videoRemake [data-download]").download'),'assembled.mp4','export download uses assembled file');
- evaluate(`$(".rm-cuts").open=true;comparedSource.currentTime=1.25;comparedSource.dispatchEvent(new Event("timeupdate"));
+ evaluate('$("[data-close]").click()');
+ Object.assign(remakeSession.export,{state:'error',ref:null,error:'成片文件暂不可用，请重新合成'});
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ equal(evaluate('$("[data-download]").hidden && $("[data-watch]").hidden && $("[data-insert-export]").hidden'),true,
+  'an unavailable export cannot be downloaded, watched, or placed on the canvas');
+ equal(evaluate('$("[data-export]").textContent==="重新合成" && !$("[data-export]").disabled'),true,
+  'the reviewed shots can be exported again');
+ evaluate('$("[data-export]").click()');
+ await ready('!$("[data-download]").hidden','a replacement export restores the download');
+ evaluate(`$(".rm-cuts").open=true;const reopenedSource=$("#videoRemake .rm-source video");
+  reopenedSource.currentTime=1.25;reopenedSource.dispatchEvent(new Event("timeupdate"));
   $("[data-cut=split_shot]").click();`);
  await ready('$$(".rm-shots button").length===2 && $(".rm-shot").textContent==="镜头 2" && $("[data-download]").hidden','split updates the active shot and hides the stale export');
  equal(evaluate('$("[data-review-next]").textContent==="2 个镜头待审核" && $("[data-export]").disabled'),true,

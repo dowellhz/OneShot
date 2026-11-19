@@ -526,16 +526,6 @@ async def review_remake(s, run, user, args):
     return result
 
 
-def export_media(host, export):
-    ref = export.get("ref")
-    if export.get("state") != "done" or export.get("stale") or not ref:
-        return None
-    try:
-        return ref if host.tools.ref_path(host.COMFY_DIR, ref).is_file() else None
-    except ValueError:
-        return None
-
-
 async def export_remake(s, run, user, cid, args):
     nid = args["node_id"]
     key = remake_source(s, run, user, nid)
@@ -602,7 +592,7 @@ def remake_status(host, nid, key, session, *, review_shot=None):
     video_remake.refresh_export_status(session, key[3], host.film.FPS)
     review = video_remake.export_review(session)
     mapping = session.get("mapping")
-    out = session.get("export") or {}
+    out = video_remake.available_export(host, session.get("export")) or {}
     if review_shot is not None:
         if not 1 <= review_shot <= len(session["shots"]):
             raise ValueError("请选择存在的镜头")
@@ -651,7 +641,7 @@ def remake_status(host, nid, key, session, *, review_shot=None):
             "adopted": review["adopted"], "can_export": bool(review["adopted"] and not issues and
                                                           out.get("state") not in ("queued", "running")),
             "export_state": "stale" if out.get("stale") else out.get("state"),
-            "export_ref": export_media(host, out)}
+            "export_ref": out.get("ref") if out.get("state") == "done" else None}
 
 
 async def describe(s, run, user, nid):

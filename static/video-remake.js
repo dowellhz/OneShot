@@ -817,17 +817,21 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     const exportButton = el("[data-export]");
     exportButton.hidden = !adopted && !remaining.length;
     exportButton.disabled = busy || !adopted || !!remaining.length || !!exp && active(exp);
-    exportButton.textContent = exp && active(exp) ? "合成中…" : "合成并保留原声";
+    exportButton.textContent = exp && active(exp) ? "合成中…" : exp?.state === "error" ? "重新合成" : "合成并保留原声";
     const download = el("[data-download]");
     const watch = el("[data-watch]");
     const insert = el("[data-insert-export]");
-    download.hidden = !exp?.ref || !!exp.stale;
+    download.hidden = exp?.state !== "done" || !exp.ref || !!exp.stale;
     watch.hidden = download.hidden;
     insert.hidden = download.hidden;
     insert.disabled = busy;
-    if (exp?.ref) {
+    if (!download.hidden) {
       watch.href = download.href = remakeMedia(exp.ref);
       download.download = exp.ref.split("/").at(-1);
+    } else {
+      download.removeAttribute("href");
+      download.removeAttribute("download");
+      watch.removeAttribute("href");
     }
     if (exp?.error && !exp.stale && !el(".rm-status").textContent) status(exp.error);
   }
