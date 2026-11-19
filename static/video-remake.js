@@ -25,7 +25,7 @@ async function openVideoRemake(video) {
   const panel = document.createElement("dialog");
   panel.id = "videoRemake";
   panel.setAttribute("aria-labelledby", "rmTitle");
-  panel.innerHTML = `<header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)} · 单帧预览</span></div><button type="button" data-close>返回画布</button></header>
+  panel.innerHTML = `<header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-close>返回画布</button></div></header>
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
         <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span></div>
@@ -50,6 +50,19 @@ async function openVideoRemake(video) {
           <button type="button" data-generate>生成预览</button>
         </div>
         <div class="rm-actions rm-review" aria-label="预览版本与审核"></div>
+        <section class="rm-motion" aria-label="重制镜头">
+          <h3>重制这个镜头</h3>
+          <p class="rm-motion-hint">先采用首帧预览，再生成视频。</p>
+          <div class="rm-actions">
+            <label>动作与运镜<textarea data-motion rows="2" maxlength="1600" placeholder="补充动作时机、人物与道具的互动，或说明镜头如何运动"></textarea></label>
+            <button type="button" data-generate-video>生成镜头视频</button>
+          </div>
+          <div class="rm-video-result" hidden>
+            <div class="rm-actions rm-video-review"></div>
+            <video data-result controls preload="metadata" playsinline muted></video>
+            <div class="rm-video-status" role="status"></div>
+          </div>
+        </section>
       </section>
     </div><div class="rm-status" role="status"></div>`;
   document.body.append(panel);
@@ -59,6 +72,8 @@ async function openVideoRemake(video) {
   player.src = remakeMedia(source.ref);
   let session = null, assets = [], shotIndex = 0, frameKey = "first", mode = "point", versionId = null;
   let busy = true, dragStart = null, timer = null, revision = 0;
+  let videoId = null, originalEnd = null;
+  const motionDrafts = new Map();
   const status = message => { el(".rm-status").textContent = message; };
   const currentShot = () => session?.shots[shotIndex];
   const currentFrame = () => currentShot()?.frames[frameKey];
@@ -72,6 +87,12 @@ async function openVideoRemake(video) {
   panel.addEventListener("keydown", event => event.stopPropagation());
   panel.addEventListener("pointerdown", event => event.stopPropagation());
   const active = p => !["done","error"].includes(p.state);
+  player.ontimeupdate = () => {
+    if (originalEnd !== null && player.currentTime >= originalEnd) {
+      player.pause();
+      originalEnd = null;
+    }
+  };
 
   function fillViews(value) {
     const asset = assets.find(item => item.id === el("[data-role]").value);
@@ -97,13 +118,14 @@ async function openVideoRemake(video) {
       const card = document.createElement("button");
       card.type = "button";
       card.setAttribute("aria-pressed", String(i === shotIndex));
-      const completed = Object.values(item.frames).some(f => f.approved);
       card.textContent = `镜头 ${i + 1} · ${item.start.toFixed(1)}–${item.end.toFixed(1)} 秒` +
-        (item.keep_original ? " · 保留原片" : completed ? " · 已采用预览" : "");
+        (item.keep_original ? " · 保留原片" : item.adopted_video ? " · 已采用视频" : Object.values(item.frames).some(f => f.approved) ? " · 已采用预览" : "");
       card.onclick = () => {
         if (busy) return;
         shotIndex = i;
         versionId = null;
+        videoId = null;
+        originalEnd = null;
         player.currentTime = item.start;
         renderPanel();
       };
@@ -143,7 +165,7 @@ async function openVideoRemake(video) {
       review.append(select);
     }
     if (version?.ref) {
-      if (version.job !== frame.approved || shot.keep_original) {
+      if (version.job !== frame.approved) {
         review.append(button("采用此预览", () => change("approve", {job:version.job}), busy));
       } else {
         review.append(button("放入画布", () => insertPreview(version, frame, false), busy));
@@ -153,6 +175,61 @@ async function openVideoRemake(video) {
     if (!shot.keep_original) review.append(button("保留这个原镜头", () => change("keep"), busy));
     el("[data-generate]").disabled = busy || !frame.selection || !el("[data-role]").value || !!latest && active(latest);
     el("[data-frame]").disabled = busy;
+    renderVideo();
+  }
+
+  function renderVideo() {
+    const shot = currentShot();
+    const videos = shot.videos || [];
+    const latest = videos.at(-1);
+    const selected = videos.find(v => v.job === videoId) || latest;
+    const firstApproved = !!shot.frames.first.approved;
+    el(".rm-motion-hint").textContent = firstApproved
+      ? "生成后请对照原片检查动作和口型。合成时按原镜头长度截取。"
+      : "先在「镜头首帧」中采用替换预览。";
+    const input = el("[data-motion]");
+    const motion = motionDrafts.get(shotIndex) ?? latest?.motion ?? "";
+    if (input.value !== motion) input.value = motion;
+    el("[data-generate-video]").disabled = busy || !firstApproved || videos.some(active);
+    el("[data-generate-video]").textContent = latest ? "重试镜头视频" : "生成镜头视频";
+    el(".rm-video-result").hidden = !selected;
+    const output = el("[data-result]");
+    const source = selected?.ref ? remakeMedia(selected.ref) : "";
+    output.hidden = !source;
+    if (source && output.getAttribute("src") !== source) output.src = source;
+    else if (!source) output.removeAttribute("src");
+    el(".rm-video-status").textContent = selected?.error || (selected && active(selected) ? "正在处理镜头视频…" : "");
+    const review = el(".rm-video-review");
+    review.replaceChildren();
+    if (selected) {
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", "镜头视频版本");
+      videos.forEach((v, i) => select.append(new Option(`视频 ${i + 1} · ${shot.adopted_video === v.job && !shot.keep_original ? "已采用" : v.ref ? "待审核" : v.state === "error" ? "失败" : "处理中"}`, v.job)));
+      select.value = selected.job;
+      select.onchange = () => { videoId = select.value; renderVideo(); };
+      review.append(select, button("播放原镜头", () => {
+        originalEnd = shot.end;
+        player.currentTime = shot.start;
+        player.play().catch(error => status(error.message));
+      }, busy));
+      if (source && (shot.adopted_video !== selected.job || shot.keep_original)) {
+        review.append(button("采用此视频", () => change("approve_video", {job:selected.job}), busy));
+      }
+    }
+    const exp = session.export;
+    const exportButton = el("[data-export]");
+    exportButton.hidden = !session.shots.some(s => s.adopted_video && !s.keep_original);
+    exportButton.disabled = busy || !!exp && active(exp);
+    exportButton.textContent = exp && active(exp) ? "合成中…" : "合成并保留原声";
+    const download = el("[data-download]");
+    const watch = el("[data-watch]");
+    download.hidden = !exp?.ref;
+    watch.hidden = download.hidden;
+    if (exp?.ref) {
+      watch.href = download.href = remakeMedia(exp.ref);
+      download.download = exp.ref.split("/").at(-1);
+    }
+    if (exp?.error && !el(".rm-status").textContent) status(exp.error);
   }
 
   function button(label, handler, disabled) {
@@ -186,8 +263,9 @@ async function openVideoRemake(video) {
   function schedulePoll() {
     clearTimeout(timer);
     if (!panel.isConnected || !session) return;
-    const ids = session.shots.flatMap(shot => Object.values(shot.frames))
-      .flatMap(frame => frame.previews.filter(active).map(item => item.job));
+    const versions = session.shots.flatMap(shot => [...Object.values(shot.frames).flatMap(frame => frame.previews), ...(shot.videos || [])]);
+    if (session.export) versions.push(session.export);
+    const ids = versions.filter(active).map(item => item.job);
     if (!ids.length) return;
     timer = setTimeout(async () => {
       if (!panel.isConnected) return;
@@ -210,10 +288,11 @@ async function openVideoRemake(video) {
     revision++;
     busy = true;
     renderPanel();
-    status({analyze:"正在拆分与分析镜头…",select:"正在处理选区…",preview:"正在提交预览…"}[action] || "");
+    status({analyze:"正在拆分与分析镜头…",select:"正在处理选区…",preview:"正在提交预览…",generate_video:"正在提交镜头生成…",export:"正在提交成片合成…"}[action] || "");
     try {
       session = await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, ...extra});
       if (action === "preview") versionId = null;
+      if (action === "generate_video") videoId = null;
       status("");
     } catch (error) { status(error.message); }
     finally { busy = false; renderPanel(); schedulePoll(); }
@@ -225,6 +304,9 @@ async function openVideoRemake(video) {
   el("[data-generate]").onclick = () => change("preview", {
     asset:el("[data-role]").value, view:el("[data-view]").value, note:el(".rm-note input").value,
   });
+  el("[data-motion]").oninput = event => motionDrafts.set(shotIndex, event.target.value);
+  el("[data-generate-video]").onclick = () => change("generate_video", {motion:el("[data-motion]").value});
+  el("[data-export]").onclick = () => change("export");
   for (const control of panel.querySelectorAll("[data-mode]")) {
     control.onclick = () => {
       mode = control.dataset.mode;

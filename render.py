@@ -111,15 +111,17 @@ def _fitter(W: int, H: int, mode: str):
     return fit
 
 
-def clip_frames(path: Path, t0: float, t1: float, fit):
+def clip_frames(path: Path, t0: float, t1: float, fit, frame_count=None):
     """Frames of [t0, t1) resampled to FPS (each tick shows the frame on screen at that time)."""
     import av
-    n = max(1, int(round((t1 - t0) * FPS)))
-    out, k = [], 0
+    n = frame_count if frame_count is not None else max(1, int(round((t1 - t0) * FPS)))
+    k = 0
     with av.open(str(path)) as c:
+        stream = c.streams.video[0]
+        origin = float((stream.start_time or 0) * stream.time_base) if frame_count is not None else 0
         last = None
         for f in c.decode(video=0):
-            t = float(f.time or 0)
+            t = float(f.time if f.time is not None else origin) - origin
             while k < n and t0 + k / FPS <= t + 1e-6:
                 src = f if last is None or t0 + k / FPS >= t - 0.5 / FPS else last
                 yield fit(src.to_image())
@@ -189,7 +191,38 @@ def cue_times(lines, start: float, end: float):
 
 # ------------------------------------------------------------------ the renderer
 
-def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cancelled=lambda: False) -> dict:
+def original_pcm(path: Path, length: int):
+    """Keep the original soundtrack aligned to the video time origin."""
+    import av
+    import numpy as np
+    pcm = np.zeros((2, length), np.float32)
+    with av.open(str(path)) as source:
+        if not source.streams.audio:
+            return pcm
+        video = source.streams.video[0]
+        origin = float((video.start_time or 0) * video.time_base)
+        resample = av.AudioResampler(format="fltp", layout="stereo", rate=SR)
+        cursor = 0
+
+        def write(samples):
+            nonlocal cursor
+            chunk = samples.to_ndarray()
+            at = round((samples.time - origin) * SR) if samples.time is not None else cursor
+            cursor = at + chunk.shape[1]
+            start, end = max(0, at), min(length, cursor)
+            if start < end:
+                pcm[:, start:end] = chunk[:, start - at:end - at]
+
+        for frame in source.decode(audio=0):
+            for samples in resample.resample(frame):
+                write(samples)
+        for samples in resample.resample(None):
+            write(samples)
+    return pcm
+
+
+def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cancelled=lambda: False,
+           *, source_audio: Path | None = None) -> dict:
     import av
     import numpy as np
     from PIL import Image
@@ -202,10 +235,13 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
         w, h, dur, _ = probe(p)
         t0 = max(0.0, float(c.get("in") or 0))
         t1 = float(c.get("out") or dur)
-        t1 = min(max(t1, t0 + 0.5), dur if dur > 0 else t1)
-        info.append({"path": p, "t0": t0, "t1": t1, "n": max(1, int(round((t1 - t0) * FPS))),
+        exact = c.get("frames") if source_audio is not None else None
+        if exact is None:
+            t1 = min(max(t1, t0 + 0.5), dur if dur > 0 else t1)
+        info.append({"path": p, "t0": t0, "t1": t1, "n": exact if exact is not None else max(1, int(round((t1 - t0) * FPS))),
                      "trans": c.get("trans") or "cut", "vol": float(c.get("volume", 1.0)), "subs": c.get("subs") or [], "w": w, "h": h})
-    W, H = target_size(info[0]["w"], info[0]["h"], spec.get("aspect") or "source")
+    w, h = probe(source_audio)[:2] if source_audio is not None else (info[0]["w"], info[0]["h"])
+    W, H = target_size(w, h, spec.get("aspect") or "source")
     fit = _fitter(W, H, spec.get("fit") or "pad")
     nt = max(1, int(round(TRANS * FPS)))
     # timeline layout: a fade overlaps the next clip by nt frames; a dip to black does not
@@ -222,6 +258,8 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
     pcm = np.zeros((2, int(round(total / FPS * SR)) + SR), np.float32)
     speech = np.zeros(pcm.shape[1], np.float32)        # 1 where dialogue / narration is heard (for ducking)
     for i, c in enumerate(info):
+        if source_audio is not None:
+            break
         a = read_audio(c["path"], c["t0"], c["t1"]) * c["vol"]
         L = a.shape[1]
         g = np.ones(L, np.float32)
@@ -271,6 +309,8 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
     peak = float(np.max(np.abs(pcm))) if pcm.size else 0
     if peak > 0.98:
         pcm *= 0.98 / peak
+    if source_audio is not None:
+        pcm = original_pcm(source_audio, int(round(total / FPS * SR)))
 
     # ---- subtitles on the timeline
     cues = []
@@ -323,7 +363,8 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
         for i, c in enumerate(info):
             blend_in = list(held); held.clear()
             nb = int(TRANS / 2 * FPS)
-            for j, arr in enumerate(clip_frames(c["path"], c["t0"], c["t1"], fit)):
+            frames = c["n"] if source_audio is not None else None
+            for j, arr in enumerate(clip_frames(c["path"], c["t0"], c["t1"], fit, frames)):
                 if j < len(blend_in):                       # crossfade
                     a = (j + 1) / (len(blend_in) + 1)
                     arr = (blend_in[j].astype(np.float32) * (1 - a) + arr.astype(np.float32) * a).astype(np.uint8)

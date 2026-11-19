@@ -1446,34 +1446,47 @@ RENDER_LOCK = asyncio.Lock()
 async def render_film(req):
     """成片: render a timeline in the background; it is tracked like a generation job (poll /api/jobs)."""
     p = await req.json()
-    spec = p.get("spec") or {}
+    return enqueue_film(req, p.get("spec") or {}, label=p.get("label"))
+
+
+def enqueue_film(req, spec, *, label=None, source_audio=None, board=None):
     clips = [c for c in spec.get("clips") or [] if c.get("ref")]
     if not clips:
         raise bad("时间线上没有视频")
     secs = sum(max(0.5, float(c.get("out") or 8) - float(c.get("in") or 0)) for c in clips)
     jid = "r" + uuid.uuid4().hex[:12]
     j = JOBS[jid] = {"id": jid, "kind": "render", "state": "queued", "created": time.time(),
-                     "meta": {"label": clean(p.get("label"))[:60] or "成片", "est": round(3 + secs * FPS_EST, 1), "cls": "render", "units": secs,
-                              "mode_name": "成片"}}
+                     "meta": {"label": clean(label)[:60] or "成片", "est": round(3 + secs * FPS_EST, 1), "cls": "render", "units": secs,
+                              "uid": req["user"]["id"], "board": board, "mode_name": "成片"}}
+    db.task_start(id=jid, user_id=req["user"]["id"], board_id=board, capability="render",
+                  label=j["meta"]["label"])
 
     async def run():
         async with RENDER_LOCK:
             if j.get("cancel"):
-                j["state"] = "error"; j["error"] = "已取消"; return
+                j.update(state="error", error="已取消")
+                log_end(j)
+                return
             j["state"] = "running"; j["started"] = time.time()
+            db.task_update(jid, state="running", started=j["started"])
 
             def prog(a, b):
                 j["value"], j["max"] = a, b
             try:
-                r = await asyncio.get_running_loop().run_in_executor(None, lambda: film.render(COMFY_DIR, spec, prog, lambda: j.get("cancel")))
+                r = await asyncio.to_thread(film.render, COMFY_DIR, spec, prog, lambda: j.get("cancel"), source_audio=source_audio)
             except film.Cancelled:
-                j["state"] = "error"; j["error"] = "已取消"; return
+                j.update(state="error", error="已取消")
+                log_end(j)
+                return
             except Exception as e:
-                j["state"] = "error"; j["error"] = f"合成失败：{e}"[:500]; return
+                j.update(state="error", error=f"合成失败：{e}"[:500])
+                log_end(j)
+                return
             extra = {"cover": r.get("cover"), "cover_url": "/media?ref=" + quote(r["cover"], safe="") if r.get("cover") else None}
             j["outputs"] = [{"ref": r["ref"], "url": "/media?ref=" + quote(r["ref"], safe=""),
                              "meta": {"width": r["w"], "height": r["h"], "duration": r["seconds"]}, "extra": extra}]
             j["finished"] = time.time(); j["state"] = "done"
+            log_end(j)
             record(j)
     asyncio.create_task(run())
     return web.json_response({"ids": [jid], "meta": j["meta"]})

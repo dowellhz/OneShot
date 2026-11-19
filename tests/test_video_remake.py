@@ -1,16 +1,20 @@
+import asyncio
 import json
+from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
 import av
+import numpy as np
 from aiohttp import web
 from PIL import Image
 
 import db
 import image_editor
 import server
+import video_remake
 
 
 class Request(dict):
@@ -35,6 +39,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.enterContext(patch.object(server, "COMFY_DIR", root / "media"))
         self.enterContext(patch.object(server, "BOARDS", root / "boards"))
         self.enterContext(patch.object(server, "LIBRARY", root / "library.json"))
+        self.enterContext(patch.object(server, "JOBS", {}))
+        self.enterContext(patch.object(server, "RENDER_LOCK", asyncio.Lock()))
         self.addCleanup(db.conn().close)
         server.BOARDS.mkdir()
         self.user = {"id": 7, "role": "member"}
@@ -102,6 +108,102 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(reopened["role"]["asset"], asset["id"])
         kept = await act("keep")
         self.assertTrue(kept["shots"][0]["keep_original"])
+
+    async def test_reviewed_shot_export_keeps_source_cut_and_continuous_audio(self):
+        source = self.make_clip("original", seconds=4, color=(210, 30, 30), frequency=440)
+        remake = self.make_clip("replacement", seconds=3, color=(30, 210, 30), frequency=880)
+        too_short = self.make_clip("short", seconds=1, color=(30, 30, 210), frequency=880)
+        board = {"owner": 7, "nodes": [{"id":"n3", "type":"video", "versions":[{"ref":source}]}]}
+        server.board_path("test").write_text(json.dumps(board))
+        shot_frame = video_remake.frame_record(self.source["ref"], (64, 64))
+        shot_frame["previews"] = [{
+            "job":"frame-preview", "state":"done", "ref":self.source["ref"],
+            "asset":{"name":"新角色", "ref":self.source["ref"]},
+        }]
+        shot_frame["approved"] = "frame-preview"
+        key = (7, "test", "n3", source)
+        video_remake.save(key, {"shots":[
+            {"start":0, "end":2, "summary":{"action":["转身"], "camera":"固定机位"},
+             "frames":{"first":shot_frame, "middle":video_remake.frame_record(self.source["ref"], (64, 64))}},
+            {"start":2, "end":4, "summary":{},
+             "frames":{"first":video_remake.frame_record(self.source["ref"], (64, 64))}},
+        ]})
+
+        async def act(action, **kwargs):
+            response = await server.remake(Request(source, self.user, {"action":action,"shot":0,**kwargs}))
+            return json.loads(response.body)
+
+        results = iter([too_short, remake])
+        requests = []
+        async def generate(req, raw):
+            requests.append(raw)
+            job = f"shot-gen-{len(requests)}"
+            db.task_start(id=job, user_id=7, board_id="test", state="done", outputs=[next(results)])
+            return web.json_response({"ids":[job]})
+
+        with patch.object(server, "generate_request", side_effect=generate):
+            await act("generate_video", motion="第一秒回头")
+            self.assertEqual(requests[0]["images"][0]["ref"], self.source["ref"])
+            self.assertIn("第一秒回头", requests[0]["prompt"])
+            with self.assertRaises(web.HTTPBadRequest):
+                await act("approve_video", job="shot-gen-1")
+            with self.assertRaises(web.HTTPBadRequest):
+                await act("export")
+            await act("generate_video")
+        await act("approve_video", job="shot-gen-2")
+        submitted = await act("export")
+        job = submitted["export"]["job"]
+        for _ in range(150):
+            task = db.one("SELECT state,outputs,error FROM tasks WHERE id=?", job)
+            if task["state"] in ("done","error"):
+                break
+            await asyncio.sleep(.02)
+        self.assertEqual(task["state"], "done", task["error"])
+        final = json.loads(task["outputs"])[0]
+        path = server.tools.ref_path(server.COMFY_DIR, final)
+        self.assertAlmostEqual(server.film.probe(path)[2], 4, places=2)
+        with av.open(str(path)) as container:
+            frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
+        self.assertEqual(len(frames), 4 * server.film.FPS)
+        self.assertGreater(frames[47][0,0,1], frames[47][0,0,0])
+        self.assertGreater(frames[48][0,0,0], frames[48][0,0,1])
+        audio = server.film.read_audio(path)[0]
+        for t in (1, 3):
+            chunk = audio[t * server.film.SR:(t + 1) * server.film.SR]
+            frequency = np.argmax(np.abs(np.fft.rfft(chunk)))
+            self.assertEqual(frequency, 440)
+        server.JOBS.pop(job)
+        reopened = json.loads((await server.remake(Request(source, self.user))).body)
+        self.assertEqual(reopened["export"]["ref"], final)
+
+    @staticmethod
+    def make_clip(name, seconds, color, frequency):
+        path, ref = server.tools._new(server.COMFY_DIR, "input", name, ".mp4")
+        rate = server.film.SR
+        with av.open(str(path), "w") as clip:
+            video = clip.add_stream("libx264", rate=24)
+            video.width = video.height = 64
+            video.pix_fmt = "yuv420p"
+            audio = clip.add_stream("aac", rate=rate)
+            audio.layout = "stereo"
+            for _ in range(24 * seconds):
+                image = av.VideoFrame.from_image(Image.new("RGB", (64,64), color))
+                for packet in video.encode(image):
+                    clip.mux(packet)
+            for packet in video.encode():
+                clip.mux(packet)
+            for i in range(0, rate * seconds, 1024):
+                times = np.arange(i, min(i + 1024, rate * seconds)) / rate
+                samples = (np.sin(2 * np.pi * frequency * times) * .25).astype(np.float32)
+                frame = av.AudioFrame.from_ndarray(np.stack([samples, samples]), format="fltp", layout="stereo")
+                frame.sample_rate = rate
+                frame.time_base = Fraction(1, rate)
+                frame.pts = i
+                for packet in audio.encode(frame):
+                    clip.mux(packet)
+            for packet in audio.encode():
+                clip.mux(packet)
+        return ref
 
     @staticmethod
     async def no_vision(req, coroutine):

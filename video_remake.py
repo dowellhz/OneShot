@@ -16,6 +16,7 @@ from creative_memory import IMAGE_EXT, character_notes, fail
 MAX_SECONDS = 60
 MAX_SHOTS = 12
 MAX_PREVIEWS = 20
+VIDEO_EXT = {".mp4", ".webm", ".mov", ".mkv", ".m4v"}
 VIEWS = {"main", "face", "side", "back", "detail"}
 _writes = set()
 
@@ -52,23 +53,38 @@ def job_status(host, owner, job_id):
     return "queued", [], None
 
 
-def update_previews(host, owner, session):
+def sync_job(host, owner, record, extensions):
+    if record.get("state") in ("done", "error"):
+        return
+    state, refs, error = job_status(host, owner, record["job"])
+    record["state"] = state or "queued"
+    if state == "done":
+        ref = next((r for r in refs if isinstance(r, str) and Path(r).suffix.lower() in extensions), "")
+        if ref:
+            record["ref"] = ref
+        else:
+            record.update(state="error", error="任务没有返回所需的媒体文件")
+    elif state == "error":
+        record["error"] = error or "生成失败"
+
+
+def update_jobs(host, owner, session):
     for shot in session["shots"]:
         for frame in shot["frames"].values():
             for preview in frame["previews"]:
-                if preview.get("state") in ("done", "error"):
-                    continue
-                state, refs, error = job_status(host, owner, preview["job"])
-                if state == "done":
-                    ref = next((r for r in refs if isinstance(r, str) and Path(r).suffix.lower() in IMAGE_EXT), "")
-                    if ref:
-                        preview.update(state="done", ref=ref)
-                    else:
-                        preview.update(state="error", error="任务没有返回图片")
-                elif state == "error":
-                    preview.update(state="error", error=error or "生成失败")
-                else:
-                    preview["state"] = state
+                sync_job(host, owner, preview, IMAGE_EXT)
+        for video in shot.get("videos", []):
+            sync_job(host, owner, video, VIDEO_EXT)
+    if session.get("export"):
+        sync_job(host, owner, session["export"], VIDEO_EXT)
+
+
+def completed(versions, job):
+    return next((v for v in versions if v["job"] == job and v["state"] == "done" and v.get("ref")), None)
+
+
+def pending(versions):
+    return any(item["state"] not in ("done", "error") for item in versions)
 
 
 def frame_record(ref, dimensions):
@@ -80,7 +96,10 @@ async def analyze(req, host, source):
         _, _, duration, _ = host.film.probe(host.tools.ref_path(host.COMFY_DIR, source))
         if not 0 < duration <= MAX_SECONDS:
             raise ValueError(f"角色替换预览支持 {MAX_SECONDS} 秒以内的原片")
-        return host.tools.find_shots(host.COMFY_DIR, source, MAX_SHOTS)
+        cut = host.tools.find_shots(host.COMFY_DIR, source, MAX_SHOTS, relative_time=True)
+        cut["duration"] = duration
+        cut["shots"][-1]["end"] = duration
+        return cut
     try:
         cut = await asyncio.to_thread(cut_video)
     except Exception as error:
@@ -174,7 +193,7 @@ def role_reference(req, board, data):
 async def generate_preview(req, host, key, frame, data):
     if not frame.get("selection"):
         fail("请先在原片画面中选中待替换的人物")
-    if any(p["state"] not in ("done", "error") for p in frame["previews"]):
+    if pending(frame["previews"]):
         fail("此画面已有生成任务，请等待完成", 409)
     if len(frame["previews"]) >= MAX_PREVIEWS:
         fail("此画面已达到预览版本上限")
@@ -201,15 +220,113 @@ async def generate_preview(req, host, key, frame, data):
     except (ValueError, OSError) as error:
         fail(str(error))
     payload["images"].append({"ref": reference})
-    response = await host.generate_request(req, payload)
-    ids = json.loads(response.body).get("ids") or []
-    if not ids:
-        fail("生成服务未返回任务编号")
-    frame["previews"].append({
-        "job": ids[0], "state": "queued", "mask": selection["mask"],
+    preview = submitted_job(await host.generate_request(req, payload))
+    preview.update({
+        "mask": selection["mask"],
         "asset": {"id": asset["id"], "name": asset["name"], "view": view, "ref": reference},
     })
+    frame["previews"].append(preview)
     return {"asset": asset["id"], "view": view}
+
+
+def submitted_job(response):
+    ids = json.loads(response.body).get("ids") or []
+    if not ids:
+        fail("服务未返回任务编号")
+    return {"job": ids[0], "state": "queued"}
+
+
+async def generate_shot(req, host, key, shot, data):
+    first = shot["frames"]["first"]
+    approved = completed(first["previews"], first.get("approved"))
+    if not approved:
+        fail("请先采用这个镜头的首帧预览")
+    videos = shot.setdefault("videos", [])
+    if pending(videos):
+        fail("此镜头正在生成，请等待完成", 409)
+    if len(videos) >= MAX_PREVIEWS:
+        fail("此镜头已达到视频版本上限")
+    length = round(shot["end"] - shot["start"], 3)
+    if length <= 0 or length > 14:
+        fail("请先剪出 14 秒以内的镜头，或保留原镜头")
+    instructions = data.get("motion", "")
+    if not isinstance(instructions, str):
+        fail("动作要求格式不正确")
+    summary = shot["summary"]
+    action = summary.get("action") or []
+    if not isinstance(action, list):
+        action = []
+    segments = [summary.get("camera"), *action, instructions[:1600]]
+    motion = "。".join(part for part in segments if isinstance(part, str) and part.strip())
+    prompt = (
+        f"从输入首帧开始。角色的身份、服装、光线和周围场景与首帧一致。"
+        f"用原镜头的机位与节奏，在前 {length:g} 秒完成镜头动作。"
+        + (motion.replace("@", "＠") if motion else "沿用首帧构图，保持动作自然。")
+    )[:3000]
+    raw = {
+        "kind": "video", "board": key[1], "label": "镜头重制 · " + approved["asset"]["name"],
+        "prompt": prompt, "duration": max(2, length), "ar": first["w"] / first["h"], "quality": "std",
+        "count": 1, "mode": "fl2v", "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
+    }
+    version = submitted_job(await host.generate_request(req, raw))
+    version.update(first_frame=approved["ref"], asset=approved["asset"], motion=instructions[:1600])
+    videos.append(version)
+
+
+async def approve_video(host, shot, job):
+    version = completed(shot.get("videos", []), job)
+    if not version:
+        fail("请选择已完成的视频版本")
+    try:
+        _, _, duration, _ = await asyncio.to_thread(host.film.probe, host.tools.ref_path(host.COMFY_DIR, version["ref"]))
+    except Exception:
+        fail("视频文件无法播放，请重新生成")
+    expected_frames = round(shot["end"] * host.film.FPS) - round(shot["start"] * host.film.FPS)
+    if duration * host.film.FPS + .51 < expected_frames:
+        fail("生成的视频短于原镜头，请重试或保留原镜头")
+    version["duration"] = duration
+    shot["adopted_video"] = version["job"]
+    shot["keep_original"] = False
+
+
+def export_plan(session, source, fps, duration):
+    clips = []
+    last_tick = 0
+    kept = 0
+    for index, shot in enumerate(session["shots"]):
+        end = round(min(duration, shot["end"]) * fps)
+        if index == len(session["shots"]) - 1:
+            end = round(duration * fps)
+        frames = end - last_tick
+        if frames <= 0:
+            continue
+        version = None
+        if not shot.get("keep_original"):
+            version = completed(shot.get("videos", []), shot.get("adopted_video"))
+            if not version and (shot.get("videos") or any(f.get("approved") for f in shot["frames"].values())):
+                fail(f"镜头 {index + 1} 待审核，请采用视频或选择保留原镜头")
+        if version:
+            clips.append({"ref": version["ref"], "in": 0, "out": frames / fps, "frames": frames})
+        else:
+            clips.append({"ref": source, "in": last_tick / fps, "out": end / fps, "frames": frames})
+            kept += 1
+        last_tick = end
+    if kept == len(clips):
+        fail("请至少采用一个重制视频镜头")
+    return {"clips": clips, "fit": "pad", "subtitles": False}
+
+
+async def export_video(req, host, key, session):
+    if session.get("export") and pending([session["export"]]):
+        fail("成片正在合成，请等待完成", 409)
+    source = host.tools.ref_path(host.COMFY_DIR, key[3])
+    try:
+        _, _, duration, _ = await asyncio.to_thread(host.film.probe, source)
+    except Exception:
+        fail("无法读取原片时间轴")
+    spec = export_plan(session, key[3], host.film.FPS, duration)
+    session["export"] = submitted_job(host.enqueue_film(req, spec, label="视频重制 · 合成",
+                                                      source_audio=source, board=key[1]))
 
 
 async def handle(req, host):
@@ -220,7 +337,7 @@ async def handle(req, host):
     if req.method == "GET":
         session = load(key)
         if session:
-            update_previews(host, key[0], session)
+            update_jobs(host, key[0], session)
         return web.json_response(session)
     data = await req.json()
     if not isinstance(data, dict):
@@ -234,28 +351,34 @@ async def handle(req, host):
         if action == "analyze":
             if session is None:
                 session = await analyze(req, host, source)
+        elif session and action == "export":
+            update_jobs(host, key[0], session)
+            await export_video(req, host, key, session)
         elif session:
-            update_previews(host, key[0], session)
+            update_jobs(host, key[0], session)
             shot, frame = selected_frame(session, data)
             if action == "select":
                 await select_area(req, host, frame, data)
             elif action == "preview":
                 session["role"] = await generate_preview(req, host, key, frame, data)
             elif action == "approve":
-                preview = next((p for p in frame["previews"] if p["job"] == data.get("job") and p["state"] == "done"), None)
+                preview = completed(frame["previews"], data.get("job"))
                 if not preview or not preview.get("ref"):
                     fail("请选择已完成的预览")
                 for item in shot["frames"].values():
                     item.pop("approved", None)
                 frame["approved"] = preview["job"]
-                shot["keep_original"] = False
+            elif action == "generate_video":
+                await generate_shot(req, host, key, shot, data)
+            elif action == "approve_video":
+                await approve_video(host, shot, data.get("job"))
             elif action == "keep":
                 shot["keep_original"] = True
             else:
                 fail("未知的视频重制操作")
         else:
             fail("请先分析原片")
-        update_previews(host, key[0], session)
+        update_jobs(host, key[0], session)
         save(key, session)
         return web.json_response(session)
     finally:

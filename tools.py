@@ -137,7 +137,7 @@ async def describe(llm: LLM, comfy_dir: Path, images: list, mode: str) -> dict:
 
 # ------------------------------------------------------------------ 拉片
 
-def find_shots(comfy_dir: Path, ref: str, max_shots: int = 12) -> dict:
+def find_shots(comfy_dir: Path, ref: str, max_shots: int = 12, *, relative_time=False) -> dict:
     """Cut detection on 4 fps samples; each shot's first frame is saved as an input image."""
     import av
     import numpy as np
@@ -146,9 +146,10 @@ def find_shots(comfy_dir: Path, ref: str, max_shots: int = 12) -> dict:
     with av.open(str(src)) as c:
         vs = c.streams.video[0]
         dur = float(vs.duration * vs.time_base) if vs.duration else float(c.duration or 0) / 1e6
+        origin = float((vs.start_time or 0) * vs.time_base) if relative_time else 0
         nxt = 0.0
         for f in c.decode(video=0):
-            t = float(f.time or 0)
+            t = float(f.time if f.time is not None else origin) - origin
             if t + 1e-6 < nxt:
                 continue
             nxt = t + 0.25
