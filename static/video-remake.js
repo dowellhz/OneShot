@@ -31,8 +31,8 @@ async function openVideoRemake(video) {
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
         <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span>
-          <button type="button" data-batch-previews hidden title="为已确认映射且已圈出人物的镜头提交首帧预览">批量生成首帧</button>
-          <button type="button" data-batch-videos hidden title="为已采用首帧的镜头提交视频生成">批量生成镜头视频</button></div>
+          <button type="button" data-batch-previews hidden title="为已确认映射且已圈出人物的镜头生成首帧或首次入画帧">批量生成起始帧</button>
+          <button type="button" data-batch-videos hidden title="为已采用首帧或首次入画帧的镜头提交视频生成">批量生成镜头视频</button></div>
         <details class="rm-mapping" hidden>
           <summary>跨镜头人物映射</summary>
           <p class="rm-mapping-status"></p>
@@ -288,6 +288,13 @@ async function openVideoRemake(video) {
     return Array.isArray(shot.summary?.characters) ? shot.summary.characters.filter(name => typeof name === "string" && name.trim()) : [];
   }
 
+  function startPreviewKey(shot) {
+    if (!personAbsent(shot.frames.first)) return "first";
+    return Object.keys(shot.frames)
+      .filter(key => Number.isInteger(shot.frames[key].correction_tick) && personSelection(shot.frames[key]))
+      .sort((a, b) => shot.frames[a].correction_tick - shot.frames[b].correction_tick)[0];
+  }
+
   function batchPreviews() {
     const mapping = session?.mapping;
     const asset = assets.find(item => item.id === mapping?.asset);
@@ -295,14 +302,16 @@ async function openVideoRemake(video) {
     const queue = [];
     for (const index of mapping.shots) {
       const shot = session.shots[index];
-      const frame = shot.frames.first;
+      const key = startPreviewKey(shot);
+      if (!key) continue;
+      const frame = shot.frames[key];
       const selection = personSelection(frame);
       if (!selection || shot.keep_original || frame.previews.some(active)) continue;
       const view = chosenView(asset, shot);
       const note = (readDraft("note", shot) ?? "").slice(0, 800);
       const hasPreview = frame.previews.some(p => p.ref && matchesPerson(p) && p.mask === selection.mask &&
         (p.protection || null) === (frame.protection?.mask || null) && (p.asset?.view || "main") === view && (p.note || "") === note);
-      if (!hasPreview) queue.push({shot:index, view, note});
+      if (!hasPreview) queue.push({shot:index, frame:key, view, note});
     }
     return queue;
   }
@@ -313,9 +322,7 @@ async function openVideoRemake(video) {
       const preview = adoptedPreview(first);
       return preview ? {preview, ref:preview.ref, entryTick:0} : null;
     }
-    const entry = Object.values(shot.frames)
-      .filter(frame => Number.isInteger(frame.correction_tick) && personSelection(frame))
-      .sort((a, b) => a.correction_tick - b.correction_tick)[0];
+    const entry = shot.frames[startPreviewKey(shot)];
     const preview = entry && adoptedPreview(entry);
     if (!preview || preview.mask !== personSelection(entry).mask) return null;
     return {preview, ref:first.ref, entryTick:entry.correction_tick - Math.round(shot.start * RM_FPS)};
@@ -395,18 +402,16 @@ async function openVideoRemake(video) {
   }
 
   function previewStatus(shot) {
-    const first = shot.frames.first;
-    if (personAbsent(first)) {
-      const start = shotStart(shot);
-      return start && matchesPerson(start.preview) ? " · 已采用入画帧" : " · 待设置入画帧";
-    }
-    const approved = adoptedPreview(first);
-    if (approved && matchesPerson(approved)) return " · 已采用首帧";
-    const latest = first.previews.filter(matchesPerson).at(-1);
-    if (!latest) return "";
-    if (active(latest)) return " · 首帧生成中";
-    if (latest.error === "已取消") return " · 首帧已取消";
-    return latest.ref ? " · 首帧待审核" : " · 首帧失败";
+    const key = startPreviewKey(shot);
+    if (!key) return " · 待设置入画帧";
+    const label = key === "first" ? "首帧" : "入画帧";
+    const start = shotStart(shot);
+    if (start && matchesPerson(start.preview)) return ` · 已采用${label}`;
+    const latest = shot.frames[key].previews.filter(matchesPerson).at(-1);
+    if (!latest) return key === "first" ? "" : " · 入画帧待生成";
+    if (active(latest)) return ` · ${label}生成中`;
+    if (latest.error === "已取消") return ` · ${label}已取消`;
+    return ` · ${label}${latest.ref ? "待审核" : "失败"}`;
   }
 
   function renderMapping(shots) {
@@ -469,7 +474,7 @@ async function openVideoRemake(video) {
 
   function renderBatchButtons() {
     for (const [selector, count, label] of [
-      ["[data-batch-previews]", batchPreviews().length, "批量生成首帧"],
+      ["[data-batch-previews]", batchPreviews().length, "批量生成起始帧"],
       ["[data-batch-videos]", batchVideos().length, "批量生成镜头视频"],
     ]) {
       const batch = el(selector);
@@ -521,9 +526,10 @@ async function openVideoRemake(video) {
     const options = el("[data-frame]");
     const corrections = Object.entries(shot.frames).filter(([, item]) => Number.isInteger(item.correction_tick))
       .sort(([, a], [, b]) => a.correction_tick - b.correction_tick);
-    const first = adoptedPreview(shot.frames.first);
+    const first = shotStart(shot)?.preview;
+    const startKey = startPreviewKey(shot);
     const choices = [["first", "镜头首帧"], ["middle", "镜头中间帧"], ...corrections.map(([key, item]) =>
-      [key, `校正帧 · ${item.at.toFixed(2)} 秒${personAbsent(item) ? " · 人物出画" : item.approved
+      [key, `${key === startKey ? "首次入画帧" : "校正帧"} · ${item.at.toFixed(2)} 秒${personAbsent(item) ? " · 人物出画" : item.approved
         ? matchesFirst(adoptedPreview(item), first) ? " · 动作关键帧" : first ? " · 角色与首帧不同" : " · 等待首帧"
         : ""}`])];
     if (JSON.stringify(choices) !== options.dataset.choices) {
@@ -921,7 +927,7 @@ async function openVideoRemake(video) {
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的首帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (["analyze", "map_person", "remove_mapping"].includes(action)) fillViews();
@@ -937,6 +943,15 @@ async function openVideoRemake(video) {
       if (["generate_video", "batch_videos", "localize"].includes(action)) videoId = null;
       if (action === "batch_previews" || action === "batch_videos") {
         const {submitted, skipped, failed} = session[action];
+        if (action === "batch_previews" && submitted.includes(shotIndex)) {
+          const key = startPreviewKey(currentShot());
+          if (key && key !== "first" && key !== frameKey) {
+            frameKey = key;
+            stopComparison();
+            originalEnd = null;
+            player.currentTime = currentFrame().at;
+          }
+        }
         const items = [`已提交 ${submitted.length} 个镜头`];
         if (skipped.length) items.push(`跳过 ${skipped.length} 个镜头`);
         for (const result of failed) items.push(`镜头 ${result.shot + 1} 未提交（${result.error}）`);

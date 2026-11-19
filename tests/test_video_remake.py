@@ -471,8 +471,13 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             return json.loads(response.body)
 
         await act("map_person", person="人物甲", asset=asset["id"], shots=[0,1])
-        for index in range(3):
+        for index in (0, 2):
             await act("select", shot=index, rect=[.25,.25,.75,.75])
+        await act("set_absence", shot=1, frame="first", absent=True)
+        entry = (await act("capture_correction", shot=1, at=1.25))["captured_frame"]
+        later = (await act("capture_correction", shot=1, at=1.5))["captured_frame"]
+        for key in (later, entry):
+            await act("select", shot=1, frame=key, rect=[.25,.25,.75,.75])
         requests = []
 
         async def submit(req, payload):
@@ -488,12 +493,15 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
 
         async def batch(*shots):
             return (await act("batch_previews", person="人物甲", asset=asset["id"], shots=[
-                {"shot":index, "view":view} for index, view in shots
+                {"shot":index, "frame":entry if index == 1 else "first", "view":view} for index, view in shots
             ]))["batch_previews"]
 
         with patch.object(server, "_generate_request", side_effect=submit):
             with self.assertRaises(web.HTTPBadRequest):
                 await batch((0, "main"), (2, "main"))
+            stale = await act("batch_previews", person="人物甲", asset=asset["id"],
+                              shots=[{"shot":1, "frame":later}])
+            self.assertIn("入画帧已变更", stale["batch_previews"]["failed"][0]["error"])
             self.assertEqual(len(requests), 0)
             partial = await batch((0, "main"), (1, "main"))
             self.assertEqual(partial["submitted"], [0])
@@ -510,7 +518,12 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertIn("保留茶杯", requests[-1]["prompt"])
         await act("approve", shot=0, job="batch-1")
         db.task_start(id="batch-3", user_id=7, state="done", outputs=[self.source["ref"]])
-        await act("approve", shot=1, job="batch-3")
+        frames = (await act())["shots"][1]["frames"]
+        self.assertEqual(frames["first"]["previews"], [])
+        self.assertEqual(frames[later]["previews"], [])
+        self.assertEqual(frames[entry]["previews"][0]["job"], "batch-3")
+        await act("approve", shot=1, frame=entry, job="batch-3")
+        server.providers.seed()
         video_requests = []
 
         async def submit_video(req, payload):
@@ -534,6 +547,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(len(video_requests), 2)
         self.assertIn("回头", video_requests[0]["prompt"])
         self.assertIn("挥手", video_requests[1]["prompt"])
+        self.assertEqual(video_requests[1]["images"][1]["time"], .25)
 
     async def test_reviewed_shot_export_keeps_source_cut_and_continuous_audio(self):
         source = self.make_clip("original", seconds=4, color=lambda tick: (210 if tick < 24 else 160, 30, 30),

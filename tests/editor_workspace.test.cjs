@@ -538,10 +538,13 @@ async function run(){
   }
   if(operation?.action==='batch_previews'){
    assert.equal(operation.person,'人物 A');
-   assert.deepEqual(operation.shots,[{shot:0,view:'face',note:'保留茶杯'}]);
-   remakeOptions={asset:operation.asset,view:operation.shots[0].view};
-   frame.previews.push({job:'remake-first',state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森',view:'face'},
-    source_person:'人物 A',mask:frame.selection.mask,protection:frame.protection.mask,note:'保留茶杯'});
+   const target=frame.person_absent ? 'entry' : 'first';
+   const view=target==='first' ? 'face' : 'main', note=target==='first' ? '保留茶杯' : '尚未提交的修改要求';
+   assert.deepEqual(operation.shots,[{shot:0,frame:target,view,note}]);
+   remakeOptions={asset:operation.asset,view};
+   const selected=remakeSession.shots[0].frames[target];
+   selected.previews.push({job:'remake-'+target,state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森',view},
+    source_person:'人物 A',mask:selected.selection.mask,protection:selected.protection?.mask,note});
    remakeSession.batch_previews={submitted:[0],skipped:[],failed:[]};
   }
   if(operation?.action==='approve')remakeSession.shots[0].frames[operation.frame].approved=operation.job;
@@ -737,6 +740,16 @@ async function run(){
    vtMerge([splitOriginal.id,mergePeer.id],mergePeer.id)`),true,'clips with remake provenance can merge using compatible generation inputs');
  equal(evaluate('vtResolve("pendingVideo",originalRef).node.id'),evaluate('mergePeer.id'),'original source moves back into a merged tab');
  equal(evaluate('B.edges.filter(e=>e.relation==="remake").every(e=>e.from===mergePeer.id)'),true,'all remake links now point to the merged source node');
+ const entryShot=remakeSession.shots[0];
+ entryShot.frames.first.person_absent={source:'人物 A'};
+ entryShot.frames.entry={ref:entryShot.frames.first.ref,w:640,h:480,at:.75,correction_tick:18,previews:[],
+  selection:{...entryShot.frames.first.selection}};
+ evaluate('switchVersion(mergePeer,vtResolve("pendingVideo",originalRef).index)');
+ await evaluate('openVideoRemake(mergePeer)');
+ evaluate('$("[data-batch-previews]").click()');
+ await ready('$("#videoRemake [data-frame]").value==="entry" && $$(".rm-review button").some(b=>b.textContent==="用作动作关键帧")',
+  'batching an off-screen shot opens its first visible frame for review');
+ evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
  console.log('Video remake DOM passed: analyze, select, preview, review remade shots, correct tracking, localize, export, and first-frame handoff.');
  console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');

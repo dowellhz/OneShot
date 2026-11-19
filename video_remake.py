@@ -646,7 +646,10 @@ async def queue_shots(req, host, key, session, data):
             note = item.get("note", "")
             if not isinstance(note, str):
                 fail("镜头修改要求格式不正确")
-            inputs[index] = {"asset":mapping["asset"], "view":view, "note":note[:800]}
+            frame_key = item.get("frame", "first")
+            if not isinstance(frame_key, str):
+                fail("预览画面格式不正确")
+            inputs[index] = {"asset":mapping["asset"], "view":view, "note":note[:800], "frame":frame_key}
         else:
             motion, first_job = item.get("motion", ""), item.get("first_job")
             if not isinstance(motion, str) or not isinstance(first_job, str) or not first_job:
@@ -678,8 +681,11 @@ async def queue_shots(req, host, key, session, data):
 
 
 async def queue_one_shot(req, host, key, shot, params, mapping, preview):
-    frame = shot["frames"]["first"]
     if preview:
+        frame_key = start_preview_key(shot, mapping)
+        if frame_key != params["frame"]:
+            fail("镜头的首帧或入画帧已变更，请核对后重试", 409)
+        frame = shot["frames"][frame_key]
         selection = person_selection(frame, mapping)
         protection = frame.get("protection", {}).get("mask")
         if not selection or pending(frame["previews"]) or any(
@@ -717,10 +723,19 @@ def correction_frames(shot):
     return sorted((f for f in shot["frames"].values() if "correction_tick" in f), key=lambda f: f["correction_tick"])
 
 
+def start_preview_key(shot, mapping):
+    frames = shot["frames"]
+    if not person_absent(frames["first"], mapping):
+        return "first"
+    eligible = (key for key, frame in frames.items()
+                if "correction_tick" in frame and person_selection(frame, mapping))
+    return min(eligible, key=lambda key: frames[key]["correction_tick"], default=None)
+
+
 def shot_start(shot, mapping, fps):
     first = shot["frames"]["first"]
     if person_absent(first, mapping):
-        entry = next((frame for frame in correction_frames(shot) if person_selection(frame, mapping)), None)
+        entry = shot["frames"].get(start_preview_key(shot, mapping))
         if entry:
             approved = completed(entry["previews"], entry.get("approved"))
             if approved and matches_mapping(approved, mapping) and approved.get("mask") == person_selection(entry, mapping)["mask"]:
