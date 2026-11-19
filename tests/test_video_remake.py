@@ -1,6 +1,8 @@
 import asyncio
+import io
 import json
 import time
+from contextlib import asynccontextmanager, redirect_stdout
 from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,15 +12,18 @@ from unittest.mock import patch
 
 import av
 import numpy as np
-from aiohttp import web
+from aiohttp import StreamReader, web
+from aiohttp.base_protocol import BaseProtocol
+from aiohttp.test_utils import make_mocked_request
 from PIL import Image, ImageDraw
+from yarl import URL
 
 import db
 import image_editor
 import server
 import video_remake
 import video_matte
-from scripts.smoke_video_remake import verify_export
+from scripts import smoke_video_remake
 
 
 class Request(dict):
@@ -1057,6 +1062,65 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(stale["export_state"], "stale")
         self.assertIsNone(stale["export_ref"])
 
+        source_ref = self.make_clip("smoke-source", seconds=2, color=(40, 70, 100), frequency=440)
+        source_path = server.tools.ref_path(server.COMFY_DIR, source_ref)
+        reference_path = server.tools.ref_path(server.COMFY_DIR, self.source["ref"])
+        app = web.Application()
+        app["http"] = engine
+        app["llm"] = vision
+        app["creative_memory"] = server.creative_memory.Store(server)
+        app.add_routes(server.routes)
+        app.add_routes(server.creative_memory.routes)
+
+        @asynccontextmanager
+        async def request(method, path, *, params=None, data=None, allow_redirects=False, **options):
+            url = URL(path).with_query(params or {})
+            headers, payload = None, None
+            if data is not None:
+                form = data()
+                headers = form.headers
+                loop = asyncio.get_running_loop()
+                payload = StreamReader(BaseProtocol(loop), limit=2**16)
+
+                async def write(chunk):
+                    payload.feed_data(chunk)
+
+                await form.write(SimpleNamespace(write=write))
+                payload.feed_eof()
+            req = make_mocked_request(method, str(url), app=app, headers=headers, payload=payload)
+            req._match_info = await app.router.resolve(req)
+            req._match_info.add_app(app)
+            req["user"] = self.user
+
+            async def body():
+                return options["json"]
+
+            req.json = body
+            response = await req.match_info.handler(req)
+            if isinstance(response, web.FileResponse):
+                async def chunks(size):
+                    yield server.tools.ref_path(server.COMFY_DIR, params["ref"]).read_bytes()
+
+                yield SimpleNamespace(status=response.status, content=SimpleNamespace(iter_chunked=chunks))
+            else:
+                async def response_json():
+                    return json.loads(response.body)
+
+                yield SimpleNamespace(status=response.status, json=response_json)
+
+        client = SimpleNamespace(request=request, get=lambda path, **kwargs: request("GET", path, **kwargs))
+        output_dir = server.BOARDS.parent / "smoke-result"
+        output_dir.mkdir()
+        args = SimpleNamespace(source=source_path, reference=reference_path, output=output_dir, shot=1,
+                               timeout=15, person=None, rect=[.25, .25, .75, .75], motion="缓慢转身")
+        with patch.object(server, "to_english", translated), redirect_stdout(io.StringIO()):
+            await smoke_video_remake.smoke(client, args)
+        evidence = json.loads((output_dir / "report.json").read_text())
+        self.assertGreater(evidence["export"]["audio_correlation"], .99)
+        self.assertEqual(evidence["export"]["seconds"], 2)
+        self.assertEqual([call["kind"] for call in calls], ["image", "video", "image", "video"])
+        self.assertEqual({path.name for path in output_dir.iterdir()}, {"preview.png", "localized.mp4", "export.mp4", "report.json"})
+
     async def test_batch_first_previews_saves_accepted_jobs_and_retries_only_missing_shots(self):
         source = self.make_clip("batch", seconds=3, color=(210, 30, 30), frequency=440)
         server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
@@ -1377,11 +1441,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         final = json.loads(task["outputs"])[0]
         path = server.tools.ref_path(server.COMFY_DIR, final)
         self.assertAlmostEqual(server.film.probe(path)[2], 4, places=2)
-        evidence = verify_export(server.tools.ref_path(server.COMFY_DIR, source), path)
+        evidence = smoke_video_remake.verify_export(server.tools.ref_path(server.COMFY_DIR, source), path)
         self.assertGreater(evidence["audio_correlation"], .99)
         different_sound = self.make_clip("different-audio", seconds=4, color=(180, 30, 30), frequency=880)
         with self.assertRaisesRegex(RuntimeError, "原声音轨或时间轴不匹配"):
-            verify_export(server.tools.ref_path(server.COMFY_DIR, different_sound), path)
+            smoke_video_remake.verify_export(server.tools.ref_path(server.COMFY_DIR, different_sound), path)
         with av.open(str(path)) as container:
             frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
         self.assertEqual(len(frames), 4 * server.film.FPS)
