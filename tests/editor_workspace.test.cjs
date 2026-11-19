@@ -482,6 +482,7 @@ async function run(){
  const previousFetch=w.fetch;
  w.__memories.find(a=>a.id==='char').character_views.face='input:h3studio/headshot.png';
  let remakeSession=null, remakeSelection, remakeOptions, remakeMotion, beforeSplit;
+ const reviewedMotion='第一秒回头\n固定机位\n镜头内 1.00 秒，抬起右手';
  w.fetch=async(url,options={})=>{
   if(!String(url).startsWith('/api/video-remake/'))return previousFetch(url,options);
   const operation=options.body&&JSON.parse(options.body);
@@ -536,8 +537,11 @@ async function run(){
   }
   if(operation?.action==='approve')remakeSession.shots[0].frames[operation.frame].approved=operation.job;
   if(operation?.action==='clear_guide')delete remakeSession.shots[0].frames[operation.frame].approved;
+  if(operation?.action==='analyze_motion'){
+   remakeSession.shots[0].motion_analysis={source_person:'人物 A',camera:'固定机位',beats:[{tick:24,action:'抬起右手'}]};
+  }
   if(operation?.action==='batch_videos'){
-   assert.deepEqual(operation.shots,[{shot:0,first_job:'remake-first',motion:'第一秒回头'}]);
+   assert.deepEqual(operation.shots,[{shot:0,first_job:'remake-first',motion:reviewedMotion}]);
    remakeMotion=operation.shots[0].motion;
    remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4',
     first_frame:frame.previews[0].ref,motion:remakeMotion,asset:{id:'char'},source_person:'人物 A'}];
@@ -605,9 +609,16 @@ async function run(){
  assert.equal(remakeOptions.view,'face','close-up suggests an approved headshot');
  evaluate('$$(".rm-review button").find(b=>b.textContent==="采用此预览").click()');
  await ready('$$(".rm-review button").some(b=>b.textContent==="用作视频首帧")','approve exposes first-frame action');
- evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("[data-batch-videos]").click()`);
+ evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("[data-analyze-motion]").click()`);
+ await ready('!!$("[data-motion-beats] button") && !$("[data-use-motion]").disabled','motion analysis exposes an actionable sampled timeline');
+ equal(evaluate('motionField.value'),'第一秒回头','analysis does not change the edited draft');
+ evaluate('$("[data-motion-beats] button").click()');
+ equal(evaluate('$("#videoRemake .rm-source video").currentTime'),1.5,'motion time seeks relative to the current shot');
+ evaluate('$("[data-use-motion]").click();$("[data-use-motion]").click()');
+ equal(evaluate('motionField.value'),reviewedMotion,'applying motion notes preserves existing text and skips duplicate lines');
+ evaluate('$("[data-batch-videos]").click()');
  await ready('!!$("#videoRemake [data-result]").getAttribute("src")','remade video can be reviewed in workspace');
- assert.equal(remakeMotion,'第一秒回头');
+ assert.equal(remakeMotion,reviewedMotion);
  equal(evaluate('$("[data-batch-videos]").disabled'),true,'completed recipe is skipped by the video batch');
  evaluate(`const comparedSource=$("#videoRemake .rm-source video"), comparedResult=$("#videoRemake [data-result]");
   for(const media of [comparedSource, comparedResult]) {

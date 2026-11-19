@@ -86,6 +86,14 @@ async function openVideoRemake(video) {
           <h3>重制这个镜头</h3>
           <p class="rm-motion-hint">先采用首帧预览，再生成视频。</p>
           <div class="rm-actions">
+            <button type="button" data-analyze-motion>分析原片动作</button>
+            <button type="button" data-use-motion hidden>追加到动作说明</button>
+          </div>
+          <div class="rm-motion-analysis" hidden>
+            <p data-camera-motion></p>
+            <ol data-motion-beats aria-label="镜头内的动作时间点"></ol>
+          </div>
+          <div class="rm-actions">
             <label>动作与运镜<textarea data-motion rows="2" maxlength="1600" placeholder="补充动作时机、人物与道具的互动，或说明镜头如何运动"></textarea></label>
             <button type="button" data-generate-video>生成镜头视频</button>
           </div>
@@ -305,6 +313,41 @@ async function openVideoRemake(video) {
 
   function shotMotion(shot) {
     return motionDrafts.get(shotKey(shot)) ?? shot.videos?.at(-1)?.motion ?? "";
+  }
+
+  function motionAnalysis(shot) {
+    const analysis = shot.motion_analysis;
+    return analysis && analysis.source_person === (session.mapping?.source ?? null) ? analysis : null;
+  }
+
+  function renderMotionAnalysis(shot) {
+    const analysis = motionAnalysis(shot);
+    const control = el("[data-analyze-motion]");
+    control.disabled = busy || !inScope(shotIndex);
+    control.textContent = analysis ? "重新分析原片动作" : "分析原片动作";
+    const use = el("[data-use-motion]");
+    use.hidden = !analysis;
+    use.disabled = busy;
+    el(".rm-motion-analysis").hidden = !analysis;
+    const camera = el("[data-camera-motion]");
+    camera.textContent = analysis?.camera || "";
+    camera.hidden = !camera.textContent;
+    el("[data-motion-beats]").replaceChildren(...(analysis?.beats || []).map(beat => {
+      const time = beat.tick / RM_FPS;
+      const row = document.createElement("li");
+      const jump = button(`${time.toFixed(2)} 秒`, () => {
+        stopComparison();
+        if (!player.paused) player.pause();
+        originalEnd = null;
+        player.currentTime = (Math.round(shot.start * RM_FPS) + beat.tick) / RM_FPS;
+        renderCutControls();
+      }, busy);
+      jump.title = "定位到这张原片采样画面";
+      const action = document.createElement("span");
+      action.textContent = beat.action;
+      row.append(jump, action);
+      return row;
+    }));
   }
 
   function batchVideos() {
@@ -558,6 +601,7 @@ async function openVideoRemake(video) {
 
   function renderVideo() {
     const shot = currentShot();
+    renderMotionAnalysis(shot);
     const videos = shot.videos || [];
     const latest = videos.at(-1);
     const selected = videos.find(v => v.job === videoId) || latest;
@@ -776,7 +820,7 @@ async function openVideoRemake(video) {
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的首帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的首帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (action === "analyze") fillViews();
@@ -870,6 +914,19 @@ async function openVideoRemake(video) {
   el("[data-motion]").oninput = event => {
     motionDrafts.set(shotKey(), event.target.value);
     renderBatchButtons();
+  };
+  el("[data-analyze-motion]").onclick = () => change("analyze_motion");
+  el("[data-use-motion]").onclick = () => {
+    const analysis = motionAnalysis(currentShot());
+    if (!analysis) return;
+    const notes = [analysis.camera, ...analysis.beats.map(beat => `镜头内 ${(beat.tick / RM_FPS).toFixed(2)} 秒，${beat.action}`)].filter(Boolean);
+    const input = el("[data-motion]");
+    const existing = input.value.split("\n");
+    const combined = [input.value, ...notes.filter(note => !existing.includes(note))].filter(Boolean).join("\n");
+    if (combined.length > input.maxLength) return status("追加后会超过动作说明字数，请先精简已有内容");
+    input.value = combined;
+    input.dispatchEvent(new Event("input"));
+    input.focus();
   };
   el("[data-generate-video]").onclick = () => change("generate_video", {motion:el("[data-motion]").value});
   el("[data-export]").onclick = () => change("export");

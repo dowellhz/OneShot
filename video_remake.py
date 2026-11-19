@@ -244,6 +244,66 @@ def original_frames(host, source, ticks, *, display=True):
     return selected
 
 
+def sample_shot_motion(host, source, shot, display):
+    from rewriter import encode_image_part
+    fps = host.film.FPS
+    start = round(shot["start"] * fps)
+    count = round(shot["end"] * fps) - start
+    if count <= 0:
+        raise ValueError("镜头中没有可用画面")
+    offsets = {round(i * (count - 1) / 5) for i in range(6)}
+    first = shot["frames"]["first"]
+    scale = min(1, 640 / max(first["w"], first["h"]))
+    size = (max(1, round(first["w"] * scale)), max(1, round(first["h"] * scale)))
+    path = host.tools.ref_path(host.COMFY_DIR, source)
+    samples = []
+    with closing(host.film.video_ticks(path, start / fps, count, relative_time=True)) as frames:
+        for tick, frame in enumerate(frames):
+            if tick in offsets:
+                image = host.film.frame_image(frame, display=display, thumbnail_size=size)
+                samples.append((tick, encode_image_part(image, 640)))
+    if not samples:
+        raise ValueError("镜头中没有可用画面")
+    return samples
+
+
+def person_appearance(session, mapping):
+    if not mapping:
+        return ""
+    return mapping.get("look") or next((p["look"] for p in session.get("source_people", [])
+                                         if p["name"] == mapping["source"]), "")
+
+
+async def analyze_motion(req, host, source, session, shot, mapping):
+    fps = host.film.FPS
+    person = mapping["source"] if mapping else None
+    try:
+        samples = await asyncio.to_thread(sample_shot_motion, host, source, shot, session.get("display_oriented", False))
+        analysis = await host.tools.describe_shot_motion(req.app["llm"], samples, fps, person,
+                                                        person_appearance(session, mapping))
+    except Exception:
+        fail("无法分析此镜头的动作，可手动填写动作与运镜")
+    if not isinstance(analysis, dict):
+        fail("动作分析结果格式不正确，请重试")
+    camera = analysis.get("camera")
+    camera = camera.strip()[:240] if isinstance(camera, str) else ""
+    beats = {}
+    rows = analysis.get("beats")
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            number, action = row.get("sample"), row.get("action")
+            if type(number) is int and 1 <= number <= len(samples) and isinstance(action, str) and action.strip():
+                beats.setdefault(samples[number - 1][0], action.strip()[:220])
+    if not camera and not beats:
+        fail("动作分析未返回可用内容，请重试")
+    shot["motion_analysis"] = {
+        "camera":camera, "beats":[{"tick":tick, "action":action} for tick, action in sorted(beats.items())],
+        "source_person":person,
+    }
+
+
 async def edit_cuts(req, host, source, session, data):
     old_shots = session["shots"]
     index = data.get("shot")
@@ -459,7 +519,7 @@ async def locate_person(req, host, session, frame, data):
         await select_area(req, host, frame, {"point": hint["point"]}, "selection", source_person=source)
         return
 
-    appearance = look or next((p["look"] for p in session.get("source_people", []) if p["name"] == source), "")
+    appearance = person_appearance(session, mapping)
     if not appearance and re.fullmatch(r"人物\s*\d+", source):
         fail("请在人物映射中补充原片外貌提示，例如服装颜色或明显配饰")
     try:
@@ -928,7 +988,7 @@ async def handle(req, host):
             scoped = mapped_shots(session)
             if (scoped is not None and data["shot"] not in scoped and
                     action in ("preview", "approve", "generate_video", "localize", "approve_video",
-                               "locate_person", "apply_person_hint", "set_absence")):
+                               "locate_person", "apply_person_hint", "set_absence", "analyze_motion")):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
             if action == "set_absence":
                 absent = data.get("absent")
@@ -954,6 +1014,8 @@ async def handle(req, host):
                     await select_area(req, host, frame, data, layer, source_person=person)
             elif action in ("locate_person", "apply_person_hint"):
                 await locate_person(req, host, session, frame, data)
+            elif action == "analyze_motion":
+                await analyze_motion(req, host, source, session, shot, mapping)
             elif action == "capture_correction":
                 response["captured_frame"] = await capture_correction(host, source, shot, data.get("at"),
                                                                       display=session.get("display_oriented", False))

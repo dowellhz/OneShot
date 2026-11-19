@@ -51,6 +51,11 @@
 .rm-motion { margin-top: 15px; border-top: 1px solid var(--line2); padding-top: 10px; }
 .rm-motion h3 { font-size: var(--fs-body); margin: 0 0 4px; }
 .rm-motion-hint, .rm-video-status { color: #a6a6b0; margin: 0; }
+.rm-motion-analysis { margin-top: 8px; padding: 8px; background: #202025; border: 1px solid var(--line2); border-radius: 8px; }
+.rm-motion-analysis p { margin: 0 0 6px; }
+.rm-motion-analysis ol { list-style: none; display: grid; gap: 5px; margin: 0; padding: 0; }
+.rm-motion-analysis li { display: flex; align-items: baseline; gap: 8px; overflow-wrap: anywhere; }
+.rm-motion-analysis li button { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .rm-motion .rm-actions label { flex: 1 1 180px; }
 #videoRemake textarea {
   border: 1px solid var(--line2); border-radius: 7px; padding: 7px 9px; resize: vertical;

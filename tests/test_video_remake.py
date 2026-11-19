@@ -74,6 +74,26 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         middle = shots[0]["frames"]["middle"]
         self.assertNotIn(round(middle["at"] * 24), (18, 19))
 
+        class MotionVision:
+            async def chat(self, system, content, **kwargs):
+                images = [item for item in content if item["type"] == "image_url"]
+                self_test.assertEqual(len(images), 6)
+                self_test.assertIn("镜头内第 0.458 秒", content[-2]["text"])
+                return json.dumps({"camera":"固定机位", "beats":[
+                    {"sample":6,"action":"结束停留"}, {"sample":2,"action":"在画面右侧"},
+                    {"sample":2,"action":"重复描述"}, {"sample":48,"action":"无效时间点"},
+                ]})
+
+        self_test = self
+        request = Request(source, self.user, {"action":"analyze_motion", "shot":1})
+        request.app["llm"] = MotionVision()
+        analyzed = json.loads((await server.remake(request)).body)
+        notes = analyzed["shots"][1]["motion_analysis"]
+        self.assertEqual(notes, {"camera":"固定机位", "beats":[{"tick":2,"action":"在画面右侧"},
+            {"tick":11,"action":"结束停留"}], "source_person":None})
+        reopened = json.loads((await server.remake(Request(source, self.user))).body)
+        self.assertEqual(reopened["shots"][1]["motion_analysis"], notes)
+
     @skipUnless(hasattr(av.video.stream.VideoStream, "set_display_rotation"), "rotated MP4 fixture needs PyAV display matrix writing")
     async def test_rotated_phone_video_uses_display_coordinates_through_export(self):
         def clip(name, image, rotated=False):

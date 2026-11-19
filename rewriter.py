@@ -189,7 +189,12 @@ def _ref(comfy_dir: Path, ref: str) -> Path:
 
 def image_part(path: Path, max_side=896):
     from PIL import Image
-    im = Image.open(path).convert("RGB")
+    with Image.open(path) as image:
+        return encode_image_part(image, max_side)
+
+
+def encode_image_part(image, max_side=896):
+    im = image.convert("RGB")
     im.thumbnail((max_side, max_side))
     buf = io.BytesIO()
     im.save(buf, "JPEG", quality=88)

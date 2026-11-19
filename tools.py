@@ -233,6 +233,22 @@ async def locate_shot_person(llm: LLM, comfy_dir: Path, ref: str, person: str, l
     return {"point": result.get("point")}
 
 
+async def describe_shot_motion(llm: LLM, samples, fps, person, appearance):
+    system = (
+        "按时间顺序比较同一镜头的采样画面，描述看得见的人物动作、停顿、入画、出画、道具互动以及运镜。"
+        "指定了原片人物时重点描述此人，无法辨认时标明。动作归到能看到它的采样编号，不推测准确起止时刻、音频或台词。"
+        '只用中文输出 JSON 对象 {"camera":"机位和运镜","beats":[{"sample":1,"action":"可见动作"}]}。'
+        "保持短句，只给关键变化，同一个采样编号最多一项。"
+    )
+    content = []
+    if person:
+        content.append({"type": "text", "text": json.dumps({"name":person, "appearance":appearance}, ensure_ascii=False)})
+    for number, (tick, image) in enumerate(samples, 1):
+        content.append({"type":"text", "text":f"采样 {number}，镜头内第 {tick / fps:.3f} 秒"})
+        content.append(image)
+    return parse_json(await llm.chat(system, content, max_tokens=1000, temperature=0.2))
+
+
 # ------------------------------------------------------------------ grid split
 
 def split_grid(comfy_dir: Path, ref: str, rows: int, cols: int) -> list:
