@@ -447,6 +447,12 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reopened = await act()
         self.assertEqual(reopened["shots"][0]["frames"]["first"]["approved"], job)
         self.assertEqual(reopened["role"]["asset"], asset["id"])
+        await act("select", rect=[.3,.3,.7,.7])
+        with self.assertRaises(web.HTTPConflict) as changed:
+            await act("generate_video")
+        self.assertIn("首帧选区已更新", changed.exception.text)
+        with self.assertRaises(web.HTTPConflict):
+            await act("approve", job=job)
         kept = await act("keep")
         self.assertTrue(kept["shots"][0]["keep_original"])
 
@@ -657,6 +663,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reviewed = await act("approve", frame=correction, job="guide")
         self.assertEqual(reviewed["shots"][0]["frames"]["first"]["approved"], "frame-preview")
         self.assertEqual(reviewed["shots"][0]["frames"][correction]["approved"], "guide")
+        snapshot = reviewed["shots"][0]
+        snapshot["frames"][correction]["protection"] = {"mask":corrected_mask}
+        with self.assertRaises(web.HTTPConflict) as outdated:
+            video_remake.shot_guides(snapshot, shot_frame["previews"][0], server.film.FPS, reviewed["mapping"])
+        self.assertIn("1.00 秒的动作关键帧选区已更新", outdated.exception.text)
         exit_frame = (await act("capture_correction", at=1.25))["captured_frame"]
         await act("set_absence", frame=exit_frame, absent=True)
         return_frame = (await act("capture_correction", at=1.5))["captured_frame"]

@@ -766,13 +766,21 @@ def start_preview_key(shot, mapping):
     return min(eligible, key=lambda key: frames[key]["correction_tick"], default=None)
 
 
+def preview_matches_regions(frame, preview, mapping):
+    selection = person_selection(frame, mapping)
+    return ((not selection or selection["mask"] == preview.get("mask")) and
+            frame.get("protection", {}).get("mask") == preview.get("protection"))
+
+
 def shot_start(shot, mapping, fps):
     first = shot["frames"]["first"]
     if person_absent(first, mapping):
         entry = shot["frames"].get(start_preview_key(shot, mapping))
         if entry:
             approved = completed(entry["previews"], entry.get("approved"))
-            if approved and matches_mapping(approved, mapping) and approved.get("mask") == person_selection(entry, mapping)["mask"]:
+            if approved and matches_mapping(approved, mapping):
+                if not preview_matches_regions(entry, approved, mapping):
+                    fail("入画帧选区已更新，请重新生成并采用预览", 409)
                 return first["ref"], approved, entry["correction_tick"] - round(shot["start"] * fps)
         fail("请在人物首次入画的校正帧中选中人物，生成预览并用作动作关键帧")
     approved = completed(first["previews"], first.get("approved"))
@@ -780,6 +788,8 @@ def shot_start(shot, mapping, fps):
         fail("请先采用这个镜头的首帧预览")
     if not matches_mapping(approved, mapping):
         fail("首帧属于之前的人物映射，请重新生成并采用首帧")
+    if not preview_matches_regions(first, approved, mapping):
+        fail("首帧选区已更新，请重新生成并采用预览", 409)
     return approved["ref"], approved, 0
 
 
@@ -793,6 +803,8 @@ def shot_guides(shot, approved, fps, mapping=None, entry_tick=0):
         preview = completed(frame["previews"], frame.get("approved"))
         if (preview and preview["asset"]["id"] == approved["asset"]["id"] and
                 preview.get("source_person") == approved.get("source_person")):
+            if not preview_matches_regions(frame, preview, mapping):
+                fail(f"{frame['correction_tick'] / fps:.2f} 秒的动作关键帧选区已更新，请重新生成预览或取消此关键帧", 409)
             guides.append({"tick": tick, "ref": preview["ref"]})
     return guides
 
@@ -1134,6 +1146,8 @@ async def handle(req, host):
                     fail("请选择已完成的预览")
                 if not matches_mapping(preview, mapping):
                     fail("这个预览属于之前的人物映射，请为当前角色重新生成")
+                if not preview_matches_regions(frame, preview, mapping):
+                    fail("此预览的选区已更新，请重新生成预览", 409)
                 frame["approved"] = preview["job"]
             elif action == "clear_guide":
                 if "correction_tick" not in frame:

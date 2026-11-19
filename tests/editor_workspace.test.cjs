@@ -534,8 +534,10 @@ async function run(){
   }
   if(operation?.action==='preview'){
    remakeOptions=operation;
-   remakeSession.shots[0].frames[operation.frame].previews.push({
+   const selected=remakeSession.shots[0].frames[operation.frame];
+   selected.previews.push({
     job:'remake-'+operation.frame,state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森'},source_person:'人物 A',
+    mask:selected.selection.mask,protection:selected.protection?.mask,
    });
   }
   if(operation?.action==='batch_previews'){
@@ -762,10 +764,15 @@ async function run(){
  equal(evaluate('vtResolve("pendingVideo",originalRef).node.id'),evaluate('mergePeer.id'),'original source moves back into a merged tab');
  equal(evaluate('B.edges.filter(e=>e.relation==="remake").every(e=>e.from===mergePeer.id)'),true,'all remake links now point to the merged source node');
  const entryShot=remakeSession.shots[0];
+ evaluate('switchVersion(mergePeer,vtResolve("pendingVideo",originalRef).index)');
+ delete entryShot.frames.first.protection;
+ await evaluate('openVideoRemake(mergePeer)');
+ equal(evaluate('$("[data-generate-video]").disabled && $(".rm-motion-hint").textContent.includes("首帧选区已更新")'),true,
+  'changed foreground protection requires a new approved first-frame preview');
+ evaluate('$("#videoRemake [data-close]").click()');
  entryShot.frames.first.person_absent={source:'人物 A'};
  entryShot.frames.entry={ref:entryShot.frames.first.ref,w:640,h:480,at:.75,correction_tick:18,previews:[],
   selection:{...entryShot.frames.first.selection}};
- evaluate('switchVersion(mergePeer,vtResolve("pendingVideo",originalRef).index)');
  await evaluate('openVideoRemake(mergePeer)');
  evaluate('$("[data-batch-previews]").click()');
  await ready('$("#videoRemake [data-frame]").value==="entry" && $$(".rm-review button").some(b=>b.textContent==="用作动作关键帧")',
