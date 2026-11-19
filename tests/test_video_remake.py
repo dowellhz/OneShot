@@ -98,6 +98,38 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["shots"][1]["motion_analysis"], notes)
 
+    async def test_assistant_reads_the_bound_video_remake_session_for_its_user(self):
+        db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test'),(8,'member','test')")
+        source, other = "input:h3studio/source.mp4", "input:h3studio/other.mp4"
+        server.board_path("test").write_text(json.dumps({"owner":7, "shared":True, "nodes":[
+            {"id":"n3", "type":"video", "cur":1, "versions":[{"ref":source}, {"ref":other}]},
+        ]}))
+        frame = video_remake.frame_record(self.source["ref"], (64,64))
+        frame["previews"] = [{"job":"assistant-preview", "state":"queued"}]
+        key = (7, "test", "n3", source)
+        video_remake.save(key, {
+            "shots":[{"start":0, "end":2, "frames":{"first":frame}}],
+            "mapping":{"source":"原片人物", "asset":"role", "asset_name":"新角色", "shots":[0]},
+        })
+        db.task_start(id="assistant-preview", user_id=7, state="done", outputs=[self.source["ref"]])
+        service = server.agent_chat.AgentService({}, server)
+        run = {"board_id":"test", "data":{"bindings":{"n3":source}}}
+        params = {"node_id":"n3"}
+        result = await service.execute(run, self.user, "status", "video_remake_status", params)
+        self.assertEqual(result["remake"], {"node_id":"n3", "source_ref":source})
+        self.assertTrue(result["analyzed"])
+        self.assertEqual(result["mapping"]["asset"], "新角色")
+        self.assertFalse(result["can_export"])
+        self.assertEqual(result["shots"][0]["number"], 1)
+        self.assertFalse(result["shots"][0]["pending"])
+        self.assertIn("待审核", result["shots"][0]["review_issue"])
+        self.assertEqual(video_remake.load(key)["shots"][0]["frames"]["first"]["previews"][0]["state"], "queued")
+        self.assertEqual(server.JOBS, {})
+        shared_user = {"id":8, "role":"member"}
+        self.assertFalse((await service.execute(run, shared_user, "status", "video_remake_status", params))["analyzed"])
+        run["data"]["bindings"] = {}
+        self.assertFalse((await service.execute(run, self.user, "status", "video_remake_status", params))["analyzed"])
+
     async def test_long_shot_splits_into_balanced_segments_and_can_be_undone(self):
         source = self.make_clip("long-shot", seconds=30, color=lambda tick: (20 + (tick // 232) * 50, 20, 20), frequency=440)
         server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[

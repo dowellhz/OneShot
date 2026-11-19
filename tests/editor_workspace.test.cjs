@@ -837,6 +837,13 @@ async function run(){
  await ready('$$(".rm-shots button").length===3 && $("[data-cut=split_long_shot]").hidden && !$("[data-cut=undo_cut]").hidden',
   'automatic splitting updates the shot list and exposes undo');
  evaluate('$("#videoRemake [data-close]").click()');
+ evaluate(`const pinnedIndex=vtResolve("pendingVideo",originalRef).index;
+ switchVersion(mergePeer,mergePeer.cur===0?1:0);
+ $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({remake:{node_id:"pendingVideo",source_ref:originalRef}}));
+ $("#acMessages [data-remake-node]").click();`);
+ await ready('!!$("#videoRemake .rm-shots button") && mergePeer.cur===pinnedIndex',
+  'the assistant action opens the pinned source version even after its tab moved');
+ evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
  evaluate(`$("#upBtn").click();
  const uploadEntry=$("#file");

@@ -1,6 +1,6 @@
 "use strict";
 const AC={session:null,board:null,events:[],runs:[],cursor:0,open:false,polling:false,sending:false,refs:null,base:new Map(),pending:new Map(),calls:new Map(),epoch:0};
-const AC_LABELS={canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
+const AC_LABELS={video_remake_status:"读取视频重制进度",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
 const AC_STATES={thinking:"正在理解与规划…",running:"正在执行…",stopping:"正在停止，保留已完成结果…",stopped:"本轮已停止",done:"本轮已结束",error:"本轮执行中断"};
 const AC_PHASES={queued:"排队",loading:"加载模型",encoding:"处理提示词与图片",sampling:"生成",decoding:"解码",compositing:"合成",done:"完成",error:"失败"};
 const acClone=v=>JSON.parse(JSON.stringify(v));
@@ -49,7 +49,12 @@ function acRenderRefs(){if(!$("#acRefs")||!B)return;$("#acRefs").innerHTML=acRef
 async function acPick(){const box=$("#acPicker");box.hidden=!box.hidden;if(box.hidden)return;const memories=await cmList(true).catch(()=>[]);box.innerHTML=memories.map(a=>`<button type="button" data-memory="${esc(a.id)}">@${esc(a.name)} · ${esc(cmKind(a))}</button>`).join("")+B.nodes.slice(0,200).map(n=>`<button type="button" data-node="${esc(n.id)}">${esc(n.name)} · ${TYPE_CN[n.type]}</button>`).join("")||"画布还没有节点";$$("[data-memory]",box).forEach(b=>b.onclick=()=>{const a=memories.find(a=>a.id===b.dataset.memory);if(a)cmInsert($("#acInput"),a);box.hidden=true;});$$("[data-node]",box).forEach(b=>b.onclick=()=>{AC.refs=[...new Set([...acRefs().map(n=>n.id),b.dataset.node])].slice(0,30);box.hidden=true;acRenderRefs();$("#acInput").focus();});}
 async function acFocus(ids,editor=false){if(AC.board!==boardId)return;const nodes=ids.map(id=>vtResolve(id)?.node).filter(Boolean);if(!nodes.length)return;sel=new Set(nodes.map(n=>n.id));updateSel();fit(nodes);if(editor&&nodes.length===1&&nodes[0].type==="image")await openImageEditor(nodes[0]);}
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
-function acResultCards(result){const made=result.nodes||[];if(!made.length)return "";return `<div class="ac-results">${made.map(item=>{const n=vtResolve(item.id,item.ref)?.node,v=acResultVersion(item);if(item.type==="video"||n?.type==="video")return `<div class="ac-result ac-video"><video controls playsinline preload="metadata" src="/media?ref=${encodeURIComponent(v.ref)}" aria-label="生成的视频"></video><button type="button" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">定位视频</button></div>`;return `<button type="button" class="ac-result" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">${v?.ref?`<img loading="lazy" alt="生成结果" src="/media?ref=${encodeURIComponent(v.ref)}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;}).join("")}</div>`;}
+function acResultCards(result){
+ if (result.remake) {
+  const {node_id, source_ref} = result.remake;
+  return `<button type="button" data-remake-node="${esc(node_id)}" data-remake-ref="${esc(source_ref)}">打开视频重制</button>`;
+ }
+ const made=result.nodes||[];if(!made.length)return "";return `<div class="ac-results">${made.map(item=>{const n=vtResolve(item.id,item.ref)?.node,v=acResultVersion(item);if(item.type==="video"||n?.type==="video")return `<div class="ac-result ac-video"><video controls playsinline preload="metadata" src="/media?ref=${encodeURIComponent(v.ref)}" aria-label="生成的视频"></video><button type="button" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">定位视频</button></div>`;return `<button type="button" class="ac-result" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">${v?.ref?`<img loading="lazy" alt="生成结果" src="/media?ref=${encodeURIComponent(v.ref)}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;}).join("")}</div>`;}
 
 function acAddChoices(message, event) {
  const prose = Array.from(message.children).filter(el => !["OL","UL","PRE","BLOCKQUOTE"].includes(el.tagName));
@@ -160,7 +165,16 @@ function initAgentChat(){
  $("#acInput").oninput=()=>{acRenderState();};$("#acInput").onkeydown=e=>{e.stopPropagation();if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();acSend();}};
  $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{try{await flushSave();await acApi(`/api/chat/runs/${AC.runs[0].id}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
- $("#acMessages").onclick=e=>{const b=e.target.closest("[data-focus]");if(b){const resolved=vtResolve(b.dataset.focus,b.dataset.versionRef);if(resolved){switchVersion(resolved.node,resolved.index);acFocus([resolved.node.id]);}}};
+ $("#acMessages").onclick=e=>{
+  const remake=e.target.closest("[data-remake-node]");
+  if(remake){
+   const target=vtResolve(remake.dataset.remakeNode,remake.dataset.remakeRef);
+   if(!target || target.node.type!=="video" || target.node.versions[target.index]?.ref!==remake.dataset.remakeRef){toast("原片版本已不存在");return;}
+   if(target.node.cur!==target.index && !switchVersion(target.node,target.index))return;
+   openVideoRemake(target.node);
+   return;
+  }
+  const b=e.target.closest("[data-focus]");if(b){const resolved=vtResolve(b.dataset.focus,b.dataset.versionRef);if(resolved){switchVersion(resolved.node,resolved.index);acFocus([resolved.node.id]);}}};
  pane.addEventListener("pointerdown",e=>e.stopPropagation());pane.addEventListener("wheel",e=>e.stopPropagation(),{passive:true});pane.addEventListener("keydown",e=>e.stopPropagation());
  $(".ac-head",pane).addEventListener("pointerdown",e=>{if(e.button!==0||e.target.closest("button"))return;e.preventDefault();const r=pane.getBoundingClientRect(),start={x:e.clientX,y:e.clientY};pane.classList.add("floating");pane.style.height=r.height+"px";pane.style.width=r.width+"px";pane.style.left=r.left+"px";pane.style.top=r.top+"px";const move=ev=>{pane.style.left=Math.max(0,Math.min(innerWidth-r.width, r.left+ev.clientX-start.x))+"px";pane.style.top=Math.max(8,Math.min(innerHeight-150,r.top+ev.clientY-start.y))+"px";};const end=()=>{removeEventListener("pointermove",move);removeEventListener("pointerup",end);removeEventListener("pointercancel",end);acStoreWindow();};addEventListener("pointermove",move);addEventListener("pointerup",end);addEventListener("pointercancel",end);});
  try{const layout=JSON.parse(localStorage.getItem("h3.chat.window"));if(layout?.floating){pane.classList.add("floating");for(const k of ["left","top","width","height"])if(Number.isFinite(layout[k]))pane.style[k]=Math.max(k==="width"?300:k==="height"?300:8,Math.min(layout[k],k==="left"?innerWidth-300:k==="top"?innerHeight-150:k==="width"?innerWidth-16:innerHeight-24))+"px";}}catch{}

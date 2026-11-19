@@ -7,8 +7,11 @@ import math
 import uuid
 import time
 
+from aiohttp import web
 
-NAMES = {"video_generate", "video_regenerate"}
+import video_remake
+
+NAMES = {"video_generate", "video_regenerate", "video_remake_status"}
 
 
 def result_id(cid):
@@ -114,14 +117,15 @@ def register(tool, prop, node, prompt):
     tool("video_regenerate", "重新生成已有视频，复用提示词、时长、关键帧连线和配置。可用replacements替换关键帧。结果在原视频节点追加版本，用Tab切换，历史视频与输入连线保留。", {
         **options, "node_id": node, "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
+    tool("video_remake_status", "读取原片视频版本的角色替换进度，包括待审核镜头和成片状态。不启动分析或生成。", {"node_id": node}, ["node_id"])
 
 
-def video_node(s, run, user, nid):
+def video_node(s, run, user, nid, *, allow_film=False):
     b = s.board(user, run["board_id"])
     n = next((n for n in b.get("nodes", []) if n["id"] == nid), None)
     if not n or n.get("type") != "video":
         raise ValueError("视频节点已不存在，请重新读取画布")
-    if n.get("data", {}).get("film"):
+    if not allow_film and n.get("data", {}).get("film"):
         raise ValueError("这是剪辑成片，请使用原始镜头视频重新生成")
     return b, n
 
@@ -170,6 +174,8 @@ def plan_payload(s, run, user, frames, duration, data, prompt):
 
 
 async def execute(s, run, user, cid, name, args):
+    if name == "video_remake_status":
+        return remake_status(s, run, user, args["node_id"])
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -217,6 +223,45 @@ async def execute(s, run, user, cid, name, args):
             target_data.update(prompt=args["prompt"], pmode="free")
     return await s.submit_generation(run, user, cid, payload, args.get("name") or (original.get("name", "视频") + " · 重生成" if original else "助手视频"),
                                      s.host.generate_request, target_id=original["id"] if original else None, target_data=target_data)
+
+
+def remake_status(s, run, user, nid):
+    _, n = video_node(s, run, user, nid, allow_film=True)
+    ref = run["data"].get("bindings", {}).get(nid) or (s.current(n) or {}).get("ref")
+    try:
+        key = video_remake.remake_key(s.host, user, run["board_id"], nid, ref)
+    except web.HTTPException:
+        raise ValueError("原片版本已不存在，请重新选择视频") from None
+    session = video_remake.load(key)
+    result = {"remake": {"node_id": nid, "source_ref": ref}, "shots": [], "analyzed": False}
+    if not session or not session["shots"]:
+        return {**result, "text": "该原片尚未分析，可打开视频重制工作区开始。"}
+    video_remake.update_jobs(s.host, user["id"], session)
+    review = video_remake.export_review(session)
+    mapping = session.get("mapping")
+    out = session.get("export") or {}
+    issues = {item["shot"]: item["error"] for item in review["remaining"]}
+    for index, shot in enumerate(session["shots"]):
+        frame_key = video_remake.start_preview_key(shot, mapping)
+        frame = shot["frames"].get(frame_key, {})
+        videos = shot.get("videos", [])
+        frames = [item for record in shot["frames"].values() for item in record["previews"]]
+        adopted_frame = video_remake.completed(frame.get("previews", []), frame.get("approved"))
+        result["shots"].append({
+            "number": index + 1, "start": shot["start"], "end": shot["end"],
+            "keep_original": bool(shot.get("keep_original") or mapping and index not in mapping["shots"]),
+            "start_frame_selected": bool(video_remake.person_selection(frame, mapping)),
+            "start_frame_approved": bool(adopted_frame and video_remake.matches_mapping(adopted_frame, mapping) and
+                                         video_remake.preview_matches_regions(frame, adopted_frame, mapping)),
+            "video_available": any(item.get("ref") and video_remake.matches_mapping(item, mapping) for item in videos),
+            "pending": video_remake.pending(frames + videos), "review_issue": issues.get(index),
+        })
+    count = len(result["shots"])
+    return {**result, "analyzed": True, "text": f"共 {count} 个镜头，{len(issues)} 个待审核。",
+            "mapping": {"source": mapping["source"], "asset": mapping.get("asset_name")} if mapping else None,
+            "adopted": review["adopted"], "can_export": bool(review["adopted"] and not issues and
+                                                          out.get("state") not in ("queued", "running")),
+            "export_state": "stale" if out.get("stale") else out.get("state")}
 
 
 async def describe(s, run, user, nid):
