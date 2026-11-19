@@ -531,41 +531,39 @@ async def generate_preview(req, host, key, frame, data, mapping=None):
     return {"asset": asset["id"], "view": view}
 
 
-async def queue_first_previews(req, host, key, session, data):
+async def queue_shots(req, host, key, session, data):
     mapping = session.get("mapping")
     if not mapping or data.get("asset") != mapping["asset"] or data.get("person") != mapping["source"]:
         fail("人物映射已更新，请核对后重新提交", 409)
     requests = data.get("shots")
     if not isinstance(requests, list) or not 1 <= len(requests) <= MAX_SHOTS:
-        fail("请选择要生成首帧的镜头")
-    views = {}
+        fail("请选择要批量生成的镜头")
+    inputs = {}
+    previews_only = data["action"] == "batch_previews"
     scope = mapped_shots(session)
     for item in requests:
         index = item.get("shot") if isinstance(item, dict) else None
-        if type(index) is not int or index not in scope or index in views:
+        if type(index) is not int or index not in scope or index in inputs:
             fail("批量生成的镜头必须在人物映射范围内，且不可重复")
-        view = item.get("view", "main")
-        if not isinstance(view, str) or view not in VIEWS:
-            fail("镜头参考角度无效")
-        views[index] = view
+        if previews_only:
+            view = item.get("view", "main")
+            if not isinstance(view, str) or view not in VIEWS:
+                fail("镜头参考角度无效")
+            inputs[index] = {"asset":mapping["asset"], "view":view}
+        else:
+            motion, first_job = item.get("motion", ""), item.get("first_job")
+            if not isinstance(motion, str) or not isinstance(first_job, str) or not first_job:
+                fail("请提供已采用的首帧和有效的动作说明")
+            inputs[index] = {"motion":motion[:1600], "first_job":first_job}
 
     outcome = {"submitted": [], "skipped": [], "failed": []}
-    for index, view in views.items():
+    for index, params in inputs.items():
         shot = session["shots"][index]
-        frame = shot["frames"]["first"]
-        selection = person_selection(frame, mapping)
-        previews = frame["previews"]
-        protection = frame.get("protection", {}).get("mask")
-        # A repeat click or retry must not queue the same prepared shot twice.
-        ready = selection and any(
-            p.get("ref") and matches_mapping(p, mapping)
-            and p.get("mask") == selection["mask"] and p.get("protection") == protection for p in previews
-        )
-        if shot.get("keep_original") or not selection or pending(previews) or ready:
+        if shot.get("keep_original"):
             outcome["skipped"].append(index)
             continue
         try:
-            await generate_preview(req, host, key, frame, {"asset": mapping["asset"], "view": view}, mapping)
+            submitted = await queue_one_shot(req, host, key, shot, params, mapping, previews_only)
         except web.HTTPException as error:
             try:
                 message = json.loads(error.text).get("error") or error.reason
@@ -575,10 +573,37 @@ async def queue_first_previews(req, host, key, session, data):
         except Exception:
             outcome["failed"].append({"shot": index, "error": "生成服务未能提交任务"})
         else:
-            outcome["submitted"].append(index)
-            # Keep each accepted task reachable even if a later service call fails.
-            save(key, session)
+            outcome["submitted" if submitted else "skipped"].append(index)
+            if submitted:
+                # Keep each task reachable even if a later service call fails.
+                save(key, session)
     return outcome
+
+
+async def queue_one_shot(req, host, key, shot, params, mapping, preview):
+    frame = shot["frames"]["first"]
+    if preview:
+        selection = person_selection(frame, mapping)
+        protection = frame.get("protection", {}).get("mask")
+        if not selection or pending(frame["previews"]) or any(
+            p.get("ref") and matches_mapping(p, mapping) and
+            p.get("mask") == selection["mask"] and p.get("protection") == protection for p in frame["previews"]
+        ):
+            return False
+        await generate_preview(req, host, key, frame, params, mapping)
+    else:
+        approved = completed(frame["previews"], frame.get("approved"))
+        if not approved or params["first_job"] != approved["job"] or not matches_mapping(approved, mapping):
+            fail("已采用的首帧有变更，请核对后重试", 409)
+        videos = shot.get("videos", [])
+        guides = shot_guides(shot, approved, host.film.FPS)
+        if pending(videos) or any(
+            v.get("ref") and matches_mapping(v, mapping) and v.get("first_frame") == approved["ref"] and
+            v.get("guides", []) == guides and v.get("motion", "") == params["motion"] for v in videos
+        ):
+            return False
+        await generate_shot(req, host, key, shot, params, mapping)
+    return True
 
 
 def submitted_job(response):
@@ -586,6 +611,19 @@ def submitted_job(response):
     if not ids:
         fail("服务未返回任务编号")
     return {"job": ids[0], "state": "queued"}
+
+
+def shot_guides(shot, approved, fps):
+    start_tick = round(shot["start"] * fps)
+    guides = []
+    for frame in shot["frames"].values():
+        if "correction_tick" not in frame:
+            continue
+        preview = completed(frame["previews"], frame.get("approved"))
+        if (preview and preview["asset"]["id"] == approved["asset"]["id"] and
+                preview.get("source_person") == approved.get("source_person")):
+            guides.append({"tick": frame["correction_tick"] - start_tick, "ref": preview["ref"]})
+    return sorted(guides, key=lambda guide: guide["tick"])
 
 
 async def generate_shot(req, host, key, shot, data, mapping=None):
@@ -624,16 +662,7 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         "count": 1, "mode": "fl2v", "_preserve_speech_motion": True,
         "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
     }
-    start_tick = round(shot["start"] * host.film.FPS)
-    guides = []
-    for frame in shot["frames"].values():
-        if "correction_tick" not in frame:
-            continue
-        preview = completed(frame["previews"], frame.get("approved"))
-        if (preview and preview["asset"]["id"] == approved["asset"]["id"] and
-                preview.get("source_person") == approved.get("source_person")):
-            guides.append({"tick": frame["correction_tick"] - start_tick, "ref": preview["ref"]})
-    guides.sort(key=lambda guide: guide["tick"])
+    guides = shot_guides(shot, approved, host.film.FPS)
     if guides:
         provider = host.providers.get("local_h3")
         if not provider or not provider["enabled"]:
@@ -820,9 +849,9 @@ async def handle(req, host):
             set_mapping(req, board, session, data)
         elif session and action == "remove_mapping":
             session.pop("mapping", None)
-        elif session and action == "batch_previews":
+        elif session and action in ("batch_previews", "batch_videos"):
             update_jobs(host, key[0], session)
-            response["batch_previews"] = await queue_first_previews(req, host, key, session, data)
+            response[action] = await queue_shots(req, host, key, session, data)
         elif session and action in CUT_ACTIONS:
             update_jobs(host, key[0], session)
             response["selected_shot"] = await edit_cuts(req, host, source, session, data)

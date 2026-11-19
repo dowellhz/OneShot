@@ -30,7 +30,8 @@ async function openVideoRemake(video) {
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
         <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span>
-          <button type="button" data-batch-previews hidden title="为已确认映射且已圈出人物的镜头提交首帧预览">批量生成首帧</button></div>
+          <button type="button" data-batch-previews hidden title="为已确认映射且已圈出人物的镜头提交首帧预览">批量生成首帧</button>
+          <button type="button" data-batch-videos hidden title="为已采用首帧的镜头提交视频生成">批量生成镜头视频</button></div>
         <details class="rm-mapping" hidden>
           <summary>跨镜头人物映射</summary>
           <p class="rm-mapping-status"></p>
@@ -272,6 +273,41 @@ async function openVideoRemake(video) {
     return queue;
   }
 
+  function shotGuides(shot, first) {
+    const guides = [];
+    for (const frame of Object.values(shot.frames)) {
+      if (!Number.isInteger(frame.correction_tick)) continue;
+      const guide = adoptedPreview(frame);
+      if (matchesFirst(guide, first)) guides.push({tick:frame.correction_tick - Math.round(shot.start * RM_FPS), ref:guide.ref});
+    }
+    return guides.sort((a, b) => a.tick - b.tick);
+  }
+
+  function shotMotion(shot) {
+    return motionDrafts.get(shotKey(shot)) ?? shot.videos?.at(-1)?.motion ?? "";
+  }
+
+  function batchVideos() {
+    if (!session?.mapping) return [];
+    const queue = [];
+    for (const index of session.mapping.shots) {
+      const shot = session.shots[index];
+      const first = adoptedPreview(shot.frames.first);
+      const versions = shot.videos || [];
+      const duration = Math.round((shot.end - shot.start) * 1000) / 1000;
+      if (!first || !matchesPerson(first) || shot.keep_original || versions.some(active) || duration <= 0 || duration > 14) continue;
+      const guides = shotGuides(shot, first);
+      const motion = shotMotion(shot).slice(0, 1600);
+      const ready = versions.some(v => {
+        const used = v.guides || [];
+        return v.ref && matchesPerson(v) && v.first_frame === first.ref && (v.motion || "") === motion &&
+          used.length === guides.length && guides.every((guide, i) => guide.tick === used[i].tick && guide.ref === used[i].ref);
+      });
+      if (!ready) queue.push({shot:index, first_job:first.job, motion});
+    }
+    return queue;
+  }
+
   function previewStatus(shot) {
     const first = shot.frames.first;
     const approved = adoptedPreview(first);
@@ -340,6 +376,18 @@ async function openVideoRemake(video) {
     }
   }
 
+  function renderBatchButtons() {
+    for (const [selector, count, label] of [
+      ["[data-batch-previews]", batchPreviews().length, "批量生成首帧"],
+      ["[data-batch-videos]", batchVideos().length, "批量生成镜头视频"],
+    ]) {
+      const batch = el(selector);
+      batch.hidden = !session?.mapping;
+      batch.disabled = busy || !count;
+      batch.textContent = count ? `${label}（${count} 个镜头）` : label;
+    }
+  }
+
   function renderPanel() {
     if (!panel.isConnected) return;
     const shots = session?.shots || [];
@@ -349,11 +397,7 @@ async function openVideoRemake(video) {
     el(".rm-editor").hidden = !shots.length;
     renderMapping(shots);
     renderCutControls();
-    const batch = el("[data-batch-previews]");
-    const count = batchPreviews().length;
-    batch.hidden = !session?.mapping;
-    batch.disabled = busy || !count;
-    batch.textContent = count ? `批量生成首帧（${count} 个镜头）` : "批量生成首帧";
+    renderBatchButtons();
     if (!shots.length) return;
     const shot = currentShot();
     if (!currentFrame()) frameKey = "first";
@@ -366,7 +410,7 @@ async function openVideoRemake(video) {
       const chosen = item.videos?.find(v => v.job === item.adopted_video);
       card.textContent = `镜头 ${i + 1} · ${item.start.toFixed(2)}–${item.end.toFixed(2)} 秒` +
         (!inScope(i) ? " · 不在替换范围" : item.keep_original ? " · 保留原片" :
-          chosen && matchesPerson(chosen) ? " · 已采用视频" : previewStatus(item));
+          item.videos?.some(active) ? " · 视频生成中" : chosen && matchesPerson(chosen) ? " · 已采用视频" : previewStatus(item));
       card.onclick = () => {
         if (busy) return;
         stopComparison();
@@ -489,16 +533,14 @@ async function openVideoRemake(video) {
     const first = shot.frames.first;
     const approved = adoptedPreview(first);
     const firstApproved = !!approved && matchesPerson(approved);
-    const guides = firstApproved ? Object.values(shot.frames).filter(frame => {
-      return Number.isInteger(frame.correction_tick) && matchesFirst(adoptedPreview(frame), approved);
-    }).length : 0;
+    const guides = firstApproved ? shotGuides(shot, approved).length : 0;
     el(".rm-motion-hint").textContent = !inScope(shotIndex) ? "该镜头不在替换范围，合成时使用原片。" : firstApproved
       ? guides ? `本次将用本地 H3 按原片时间生成，采用 ${guides} 张动作关键帧。生成后请核对动作和口型。`
         : "可在校正帧添加动作关键帧。生成后请对照原片检查动作和口型。"
       : approved ? "首帧属于之前的人物映射，请为当前角色重新生成并采用。"
       : "先在「镜头首帧」中采用替换预览。";
     const input = el("[data-motion]");
-    const motion = motionDrafts.get(shotKey()) ?? latest?.motion ?? "";
+    const motion = shotMotion(shot);
     if (input.value !== motion) input.value = motion;
     el("[data-generate-video]").disabled = busy || !inScope(shotIndex) || !firstApproved || videos.some(active);
     el("[data-generate-video]").textContent = latest ? "重试镜头视频" : "生成镜头视频";
@@ -697,7 +739,7 @@ async function openVideoRemake(video) {
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的首帧预览…",generate_video:"正在提交镜头生成…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的首帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (action === "analyze") fillViews();
@@ -710,9 +752,9 @@ async function openVideoRemake(video) {
         versionId = null;
       }
       if (action === "preview" || action === "batch_previews") versionId = null;
-      if (action === "generate_video" || action === "localize") videoId = null;
-      if (action === "batch_previews") {
-        const {submitted, skipped, failed} = session.batch_previews;
+      if (["generate_video", "batch_videos", "localize"].includes(action)) videoId = null;
+      if (action === "batch_previews" || action === "batch_videos") {
+        const {submitted, skipped, failed} = session[action];
         const items = [`已提交 ${submitted.length} 个镜头`];
         if (skipped.length) items.push(`跳过 ${skipped.length} 个镜头`);
         for (const result of failed) items.push(`镜头 ${result.shot + 1} 未提交（${result.error}）`);
@@ -725,10 +767,15 @@ async function openVideoRemake(video) {
   }
 
   el("[data-analyze]").onclick = () => change("analyze");
-  el("[data-batch-previews]").onclick = () => {
-    const shots = batchPreviews();
-    if (shots.length) change("batch_previews", {shots, asset:session.mapping.asset, person:session.mapping.source});
-  };
+  for (const [selector, action, prepare] of [
+    ["[data-batch-previews]", "batch_previews", batchPreviews],
+    ["[data-batch-videos]", "batch_videos", batchVideos],
+  ]) {
+    el(selector).onclick = () => {
+      const shots = prepare();
+      if (shots.length) change(action, {shots, asset:session.mapping.asset, person:session.mapping.source});
+    };
+  }
   for (const control of panel.querySelectorAll("[data-cut], [data-step]")) {
     control.onclick = () => {
       stopComparison();
@@ -782,7 +829,10 @@ async function openVideoRemake(video) {
   el("[data-generate]").onclick = () => change("preview", {
     asset:el("[data-role]").value, view:el("[data-view]").value, note:el(".rm-note input").value,
   });
-  el("[data-motion]").oninput = event => motionDrafts.set(shotKey(), event.target.value);
+  el("[data-motion]").oninput = event => {
+    motionDrafts.set(shotKey(), event.target.value);
+    renderBatchButtons();
+  };
   el("[data-generate-video]").onclick = () => change("generate_video", {motion:el("[data-motion]").value});
   el("[data-export]").onclick = () => change("export");
   el("[data-insert-export]").onclick = () => insertRemadeVideo(session.export);

@@ -531,9 +531,12 @@ async function run(){
   }
   if(operation?.action==='approve')remakeSession.shots[0].frames[operation.frame].approved=operation.job;
   if(operation?.action==='clear_guide')delete remakeSession.shots[0].frames[operation.frame].approved;
-  if(operation?.action==='generate_video'){
-   remakeMotion=operation.motion;
-   remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4',asset:{id:'char'},source_person:'人物 A'}];
+  if(operation?.action==='batch_videos'){
+   assert.deepEqual(operation.shots,[{shot:0,first_job:'remake-first',motion:'第一秒回头'}]);
+   remakeMotion=operation.shots[0].motion;
+   remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4',
+    first_frame:frame.previews[0].ref,motion:remakeMotion,asset:{id:'char'},source_person:'人物 A'}];
+   remakeSession.batch_videos={submitted:[0],skipped:[],failed:[]};
   }
   if(operation?.action==='localize'){
    assert.equal(operation.job,'shot-video');
@@ -593,9 +596,10 @@ async function run(){
  assert.equal(remakeOptions.view,'face','close-up suggests an approved headshot');
  evaluate('$$(".rm-review button").find(b=>b.textContent==="采用此预览").click()');
  await ready('$$(".rm-review button").some(b=>b.textContent==="用作视频首帧")','approve exposes first-frame action');
- evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("#videoRemake [data-generate-video]").click()`);
+ evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("[data-batch-videos]").click()`);
  await ready('!!$("#videoRemake [data-result]").getAttribute("src")','remade video can be reviewed in workspace');
  assert.equal(remakeMotion,'第一秒回头');
+ equal(evaluate('$("[data-batch-videos]").disabled'),true,'completed recipe is skipped by the video batch');
  evaluate(`const comparedSource=$("#videoRemake .rm-source video"), comparedResult=$("#videoRemake [data-result]");
   for(const media of [comparedSource, comparedResult]) {
    let paused=true;

@@ -200,7 +200,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             "ref":self.source["ref"], "source_board":"test",
         })
         video_remake.save((7, "test", "n3", source), {"shots":[
-            {"start":index, "end":index + 1, "frames":{"first":video_remake.frame_record(self.source["ref"], (64,64))}}
+            {"start":index, "end":index + 1, "summary":{},
+             "frames":{"first":video_remake.frame_record(self.source["ref"], (64,64))}}
             for index in range(3)
         ]})
 
@@ -242,6 +243,32 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             self.assertEqual(await batch((0, "main"), (1, "main")),
                              {"submitted":[], "skipped":[0,1], "failed":[]})
         self.assertEqual(len(requests), 3)
+        await act("approve", shot=0, job="batch-1")
+        db.task_start(id="batch-3", user_id=7, state="done", outputs=[self.source["ref"]])
+        await act("approve", shot=1, job="batch-3")
+        video_requests = []
+
+        async def submit_video(req, payload):
+            video_requests.append(payload)
+            job = f"movie-{len(video_requests)}"
+            db.task_start(id=job, user_id=7, state="done", outputs=[source])
+            return web.json_response({"ids":[job]})
+
+        video_inputs = [{"shot":0, "first_job":"batch-1", "motion":"回头"},
+                        {"shot":1, "first_job":"batch-3", "motion":"挥手"}]
+        with patch.object(server, "_generate_request", side_effect=submit_video):
+            mismatch = await act("batch_videos", person="人物甲", asset=asset["id"], shots=[
+                {"shot":0, "first_job":"stale", "motion":"回头"},
+            ])
+            self.assertEqual(mismatch["batch_videos"]["failed"][0]["shot"], 0)
+            self.assertEqual(video_requests, [])
+            queued = await act("batch_videos", person="人物甲", asset=asset["id"], shots=video_inputs)
+            self.assertEqual(queued["batch_videos"]["submitted"], [0,1])
+            repeated = await act("batch_videos", person="人物甲", asset=asset["id"], shots=video_inputs)
+            self.assertEqual(repeated["batch_videos"]["skipped"], [0,1])
+        self.assertEqual(len(video_requests), 2)
+        self.assertIn("回头", video_requests[0]["prompt"])
+        self.assertIn("挥手", video_requests[1]["prompt"])
 
     async def test_reviewed_shot_export_keeps_source_cut_and_continuous_audio(self):
         source = self.make_clip("original", seconds=4, color=lambda tick: (210 if tick < 24 else 160, 30, 30),
