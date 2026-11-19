@@ -1452,13 +1452,13 @@ async def render_film(req):
     return enqueue_film(req, p.get("spec") or {}, label=p.get("label"))
 
 
-def enqueue_film(req, spec, *, label=None, source_audio=None, board=None):
+def enqueue_film(req, spec, *, label=None, source_audio=None, board=None, display=True):
     clips = [c for c in spec.get("clips") or [] if c.get("ref")]
     if not clips:
         raise bad("时间线上没有视频")
     secs = sum(max(0.5, float(c.get("out") or 8) - float(c.get("in") or 0)) for c in clips)
     def render_timeline(progress, cancelled):
-        return film.render(COMFY_DIR, spec, progress, cancelled, source_audio=source_audio)
+        return film.render(COMFY_DIR, spec, progress, cancelled, source_audio=source_audio, display=display)
     return enqueue_render(req, render_timeline, seconds=secs, label=label, board=board)
 
 

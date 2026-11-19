@@ -333,8 +333,6 @@ def concat(comfy_dir: Path, refs: list) -> dict:
 
 
 def video_info(path: Path) -> dict:
-    import av
-    with av.open(str(path)) as c:
-        v = c.streams.video[0]
-        dur = float(v.duration * v.time_base) if v.duration else float(c.duration or 0) / 1e6
-        return {"w": v.codec_context.width, "h": v.codec_context.height, "seconds": round(dur, 2)}
+    from render import probe
+    w, h, duration, _ = probe(path)
+    return {"w": w, "h": h, "seconds": round(duration, 2)}

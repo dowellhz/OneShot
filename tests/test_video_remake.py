@@ -3,13 +3,13 @@ import json
 from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest import IsolatedAsyncioTestCase
+from unittest import IsolatedAsyncioTestCase, skipUnless
 from unittest.mock import patch
 
 import av
 import numpy as np
 from aiohttp import web
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import db
 import image_editor
@@ -73,6 +73,77 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             self.assertTrue(np.allclose(pixels[:3], colors(tick), atol=5))
         middle = shots[0]["frames"]["middle"]
         self.assertNotIn(round(middle["at"] * 24), (18, 19))
+
+    @skipUnless(hasattr(av.video.stream.VideoStream, "set_display_rotation"), "rotated MP4 fixture needs PyAV display matrix writing")
+    async def test_rotated_phone_video_uses_display_coordinates_through_export(self):
+        def clip(name, image, rotated=False):
+            path, ref = server.tools._new(server.COMFY_DIR, "input", name, ".mp4")
+            with av.open(str(path), "w") as output:
+                stream = output.add_stream("libx264", rate=24)
+                stream.width, stream.height = image.size
+                stream.pix_fmt = "yuv420p"
+                if rotated:
+                    stream.set_display_rotation(90, hflip=True)
+                for _ in range(48):
+                    for packet in stream.encode(av.VideoFrame.from_image(image)):
+                        output.mux(packet)
+                for packet in stream.encode():
+                    output.mux(packet)
+            return path, ref
+
+        landscape = Image.new("RGB", (96, 64), (200, 30, 30))
+        draw = ImageDraw.Draw(landscape)
+        draw.rectangle((48, 0, 95, 31), fill=(30, 30, 200))
+        draw.rectangle((48, 32, 95, 63), fill=(30, 160, 30))
+        path, source = clip("phone", landscape, rotated=True)
+        _, replacement = clip("portrait", Image.new("RGB", (64, 96), (210, 210, 30)))
+        self.assertEqual(server.film.probe(path, display=False)[:2], (96, 64))
+        self.assertEqual(server.tools.video_info(path), {"w":64, "h":96, "seconds":2})
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+
+        async def act(action, **fields):
+            response = await server.remake(Request(source, self.user, {"action":action, "shot":0, **fields}))
+            return json.loads(response.body)
+
+        with patch.object(server, "llm_call", side_effect=self.no_vision):
+            analyzed = await act("analyze")
+        first = analyzed["shots"][0]["frames"]["first"]
+        self.assertEqual((first["w"], first["h"]), (64, 96))
+        image = image_editor.load(server.COMFY_DIR, first["ref"])
+        self.assertGreater(image.getpixel((8, 8))[1], 140)
+        self.assertGreater(image.getpixel((56, 8))[2], 180)
+        capture = await act("capture_correction", at=1)
+        frame = capture["shots"][0]["frames"][capture["captured_frame"]]
+        self.assertEqual((frame["w"], frame["h"]), (64, 96))
+        session = await act("select", rect=[.58,.15,.9,.4])
+        first = session["shots"][0]["frames"]["first"]
+        session["shots"][0]["videos"] = [{
+            "job":"portrait-remake", "state":"done", "ref":replacement,
+            "first_frame":first["ref"], "mask":first["selection"]["mask"], "asset":{"id":"test"},
+        }]
+        video_remake.save((7, "test", "n3", source), session)
+        local = await act("localize", job="portrait-remake")
+        job = local["shots"][0]["videos"][-1]["job"]
+        await self.wait_for_render(job)
+        await act("approve_video", job=job)
+        export = await act("export")
+        task = await self.wait_for_render(export["export"]["job"])
+        final = server.tools.ref_path(server.COMFY_DIR, json.loads(task["outputs"])[0])
+        self.assertEqual(server.film.probe(final)[:2], (64, 96))
+        with av.open(str(final)) as result:
+            frame = next(result.decode(video=0)).to_ndarray(format="rgb24")
+        self.assertGreater(frame[22,48,0], 185)
+        self.assertGreater(frame[22,48,1], 185)
+        self.assertGreater(frame[8,8,1], 140)
+        self.assertGreater(frame[8,56,2], 180)
+        legacy = video_remake.original_frames(server, source, {0}, display=False)[0]
+        video_remake.save((7, "test", "n3", source), {"shots":[{"start":0, "end":2,
+            "frames":{"first":legacy}, "summary":{}}]})
+        old_capture = await act("capture_correction", at=1)
+        old_frame = old_capture["shots"][0]["frames"][old_capture["captured_frame"]]
+        self.assertEqual((old_frame["w"], old_frame["h"]), (96, 64))
 
     async def test_shot_preview_uses_asset_reference_and_preserves_unselected_pixels(self):
         path, source = server.tools._new(server.COMFY_DIR, "input", "remake-test", ".mp4")

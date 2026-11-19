@@ -13,12 +13,15 @@ Timeline spec (all times in seconds):
 """
 from __future__ import annotations
 
+import struct
 import time
 import uuid
 from collections import deque
 from contextlib import closing
 from fractions import Fraction
 from pathlib import Path
+
+from PIL import Image
 
 FPS = 24
 SR = 44100
@@ -42,12 +45,51 @@ def _new(comfy_dir: Path, kind: str, prefix: str, ext: str):
     return d / name, f"{kind}:h3studio/{name}"
 
 
-def probe(path: Path):
+DISPLAY_TRANSFORMS = {
+    (-1, 0, 0, 1): Image.Transpose.FLIP_LEFT_RIGHT,
+    (1, 0, 0, -1): Image.Transpose.FLIP_TOP_BOTTOM,
+    (-1, 0, 0, -1): Image.Transpose.ROTATE_180,
+    (0, -1, 1, 0): Image.Transpose.ROTATE_90,
+    (0, 1, -1, 0): Image.Transpose.ROTATE_270,
+    (0, 1, 1, 0): Image.Transpose.TRANSPOSE,
+    (0, -1, -1, 0): Image.Transpose.TRANSVERSE,
+}
+SWAPS_AXES = {Image.Transpose.ROTATE_90, Image.Transpose.ROTATE_270, Image.Transpose.TRANSPOSE, Image.Transpose.TRANSVERSE}
+
+
+def display_transform(frame):
+    matrix = frame.side_data.get("DISPLAYMATRIX")
+    if matrix is None or matrix.buffer_size < 36:
+        return None
+    a, b, u, c, d, v, _, _, w = struct.unpack_from("=9i", bytes(matrix))
+    if u or v or w <= 0:
+        return None
+    signs = tuple(1 if value > 1 else -1 if value < -1 else 0 for value in (a, b, c, d))
+    return DISPLAY_TRANSFORMS.get(signs)
+
+
+def frame_image(frame, *, display=True, thumbnail_size=None):
+    transform = display_transform(frame) if display else None
+    if thumbnail_size:
+        w, h = thumbnail_size[::-1] if transform in SWAPS_AXES else thumbnail_size
+        frame = frame.reformat(width=w, height=h, format="rgb24")
+    image = frame.to_image()
+    return image.transpose(transform) if transform is not None else image
+
+
+def probe(path: Path, *, display=True):
     import av
     with av.open(str(path)) as c:
         v = c.streams.video[0]
         dur = float(v.duration * v.time_base) if v.duration else float(c.duration or 0) / 1e6
-        return v.codec_context.width, v.codec_context.height, dur, bool(c.streams.audio)
+        w, h = v.codec_context.width, v.codec_context.height
+        if display:
+            frame = next(c.decode(video=0), None)
+            if frame is not None:
+                w, h = frame.width, frame.height
+                if display_transform(frame) in SWAPS_AXES:
+                    w, h = h, w
+        return w, h, dur, bool(c.streams.audio)
 
 
 def read_audio(path: Path, t0: float = 0.0, t1: float | None = None):
@@ -112,12 +154,12 @@ def _fitter(W: int, H: int, mode: str):
     return fit
 
 
-def clip_frames(path: Path, t0: float, t1: float, fit, frame_count=None):
+def clip_frames(path: Path, t0: float, t1: float, fit, frame_count=None, *, display=True):
     """Frames of [t0, t1) resampled to FPS (each tick shows the frame on screen at that time)."""
     n = frame_count if frame_count is not None else max(1, int(round((t1 - t0) * FPS)))
     with closing(video_ticks(path, t0, n, relative_time=frame_count is not None)) as frames:
         for frame in frames:
-            yield fit(frame.to_image())
+            yield fit(frame_image(frame, display=display))
 
 
 def video_ticks(path: Path, start: float, count: int, *, relative_time: bool):
@@ -229,7 +271,7 @@ def original_pcm(path: Path, length: int):
 
 
 def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cancelled=lambda: False,
-           *, source_audio: Path | None = None) -> dict:
+           *, source_audio: Path | None = None, display=True) -> dict:
     import av
     import numpy as np
     from PIL import Image
@@ -239,7 +281,7 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
     info = []
     for c in clips:
         p = _ref_path(comfy_dir, c["ref"])
-        w, h, dur, _ = probe(p)
+        w, h, dur, _ = probe(p, display=display)
         t0 = max(0.0, float(c.get("in") or 0))
         t1 = float(c.get("out") or dur)
         exact = c.get("frames") if source_audio is not None else None
@@ -247,7 +289,7 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
             t1 = min(max(t1, t0 + 0.5), dur if dur > 0 else t1)
         info.append({"path": p, "t0": t0, "t1": t1, "n": exact if exact is not None else max(1, int(round((t1 - t0) * FPS))),
                      "trans": c.get("trans") or "cut", "vol": float(c.get("volume", 1.0)), "subs": c.get("subs") or [], "w": w, "h": h})
-    w, h = probe(source_audio)[:2] if source_audio is not None else (info[0]["w"], info[0]["h"])
+    w, h = probe(source_audio, display=display)[:2] if source_audio is not None else (info[0]["w"], info[0]["h"])
     W, H = target_size(w, h, spec.get("aspect") or "source")
     fit = _fitter(W, H, spec.get("fit") or "pad")
     nt = max(1, int(round(TRANS * FPS)))
@@ -371,7 +413,7 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
             blend_in = list(held); held.clear()
             nb = int(TRANS / 2 * FPS)
             frames = c["n"] if source_audio is not None else None
-            for j, arr in enumerate(clip_frames(c["path"], c["t0"], c["t1"], fit, frames)):
+            for j, arr in enumerate(clip_frames(c["path"], c["t0"], c["t1"], fit, frames, display=display)):
                 if j < len(blend_in):                       # crossfade
                     a = (j + 1) / (len(blend_in) + 1)
                     arr = (blend_in[j].astype(np.float32) * (1 - a) + arr.astype(np.float32) * a).astype(np.uint8)
@@ -435,7 +477,7 @@ def cover_frame(comfy_dir: Path, ref: str, at: float) -> dict:
     img = None
     with av.open(str(src)) as c:
         for f in c.decode(video=0):
-            img = f.to_image()
+            img = frame_image(f)
             if float(f.time or 0) >= at:
                 break
     if img is None:

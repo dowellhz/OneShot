@@ -61,10 +61,10 @@ class MaskTrack:
         return self.cv.resize(self.mask, (width, height), interpolation=self.cv.INTER_NEAREST)
 
 
-def backward_masks(path, start, end, shape, fit, intervals, corrections, load_mask, cv, progress, cancelled):
+def backward_masks(path, start, end, shape, fit, intervals, corrections, load_mask, cv, progress, cancelled, *, display):
     last_anchor = intervals[-1][1]
     grays = []
-    with closing(render.clip_frames(path, start, end, fit, last_anchor + 1)) as frames:
+    with closing(render.clip_frames(path, start, end, fit, last_anchor + 1, display=display)) as frames:
         for index, frame in enumerate(frames):
             if cancelled():
                 raise render.Cancelled()
@@ -135,7 +135,7 @@ def composite_frame(original, replacement, original_mask, replacement_mask, cv, 
 
 
 def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled, *,
-                   corrections=None, protections=None):
+                   corrections=None, protections=None, display=True):
     import av
     try:
         import cv2 as cv
@@ -144,12 +144,12 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
 
     original = render._ref_path(root, source_ref)
     replacement = render._ref_path(root, video_ref)
-    width, height, _, _ = render.probe(original)
+    width, height, _, _ = render.probe(original, display=display)
     width, height = render.target_size(width, height, "source")
     total = round(end * render.FPS) - round(start * render.FPS)
     if total <= 0:
         raise ValueError("镜头时长无效")
-    if render.probe(replacement)[2] * render.FPS + .51 < total:
+    if render.probe(replacement, display=False)[2] * render.FPS + .51 < total:
         raise ValueError("生成视频短于原镜头")
     fit = render._fitter(width, height, "pad")
     def load_mask(ref):
@@ -168,13 +168,14 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
     backward = {}
     if intervals:
         backward = backward_masks(original, start, end, tracking_shape(width, height), fit,
-                                  intervals, corrections, load_mask, cv, lambda done: progress(done, work), cancelled)
+                                  intervals, corrections, load_mask, cv, lambda done: progress(done, work), cancelled,
+                                  display=display)
         progress(preparation, work)
     foreground_track = None
     original_track = replacement_track = None
     absent = False
-    originals = render.clip_frames(original, start, end, fit, total)
-    replacements = render.clip_frames(replacement, 0, total / render.FPS, fit, total)
+    originals = render.clip_frames(original, start, end, fit, total, display=display)
+    replacements = render.clip_frames(replacement, 0, total / render.FPS, fit, total, display=display)
     path, ref = render._new(root, "output", "remake-local", ".mp4")
     frames = 0
     try:

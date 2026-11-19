@@ -137,7 +137,8 @@ async def analyze(req, host, source):
             "frames": {"first": {**frame_record(item["ref"], size), "at": item["start"]},
                        "middle": {**frame_record(item["mid"], size), "at": item["mid_at"]}},
         })
-    return {"duration": cut["duration"], "warning": warning, "shots": shots, "source_people": people}
+    return {"duration": cut["duration"], "warning": warning, "shots": shots, "source_people": people,
+            "display_oriented": True}
 
 
 async def summarize_shots(req, host, cut):
@@ -172,13 +173,13 @@ async def summarize_shots(req, host, cut):
 def find_shots(host, source):
     import numpy as np
     path = host.tools.ref_path(host.COMFY_DIR, source)
-    _, _, duration, _ = host.film.probe(path)
+    _, _, duration, _ = host.film.probe(path, display=False)
     fps = host.film.FPS
     ticks = round(duration * fps)
     if ticks <= 0 or duration > MAX_SECONDS:
         raise ValueError(f"角色替换支持 {MAX_SECONDS} 秒以内、至少包含一帧的原片")
     with closing(host.film.video_ticks(path, 0, ticks, relative_time=True)) as frames:
-        thumbnails = [frame.reformat(width=64, height=36, format="rgb24").to_ndarray() for frame in frames]
+        thumbnails = [np.asarray(host.film.frame_image(frame, thumbnail_size=(64, 36))) for frame in frames]
     if not thumbnails:
         raise ValueError("无法读取原片画面")
 
@@ -224,7 +225,7 @@ def find_shots(host, source):
     return {"duration": duration, "shots": shots}
 
 
-def original_frames(host, source, ticks):
+def original_frames(host, source, ticks, *, display=True):
     if not ticks:
         return {}
     fps = host.film.FPS
@@ -235,7 +236,8 @@ def original_frames(host, source, ticks):
     with closing(frames):
         for tick, frame in enumerate(frames, start):
             if tick in ticks:
-                saved = image_editor.save(host.COMFY_DIR, frame.to_image(), "remake-frame", "input")
+                image = host.film.frame_image(frame, display=display)
+                saved = image_editor.save(host.COMFY_DIR, image, "remake-frame", "input")
                 selected[tick] = {**frame_record(saved["ref"], (saved["w"], saved["h"])), "at": tick / fps}
     if len(selected) != len(ticks):
         raise ValueError("没有可用的画面")
@@ -299,7 +301,8 @@ async def edit_cuts(req, host, source, session, data):
         shots = [existing.get((start, end)) or archive.get(f"{start}:{end}") for start, end in new_ranges]
         fresh = [i for i, shot in enumerate(shots) if shot is None]
         spans = [new_ranges[i] for i in fresh]
-        frames = original_frames(host, source, {tick for start, end in spans for tick in (start, (start + end) // 2)})
+        frames = original_frames(host, source, {tick for start, end in spans for tick in (start, (start + end) // 2)},
+                                 display=session.get("display_oriented", False))
         for i, (start, end) in zip(fresh, spans):
             first, middle = frames[start], frames[(start + end) // 2]
             shots[i] = {"start": start / fps, "end": end / fps, "summary": {},
@@ -356,7 +359,7 @@ def selected_frame(session, data):
     return shot, shot["frames"][frame_key]
 
 
-async def capture_correction(host, source, shot, value):
+async def capture_correction(host, source, shot, value, *, display):
     if type(value) not in (int, float) or not 0 <= value <= MAX_SECONDS:
         fail("请先将原片定位到镜头内")
     fps = host.film.FPS
@@ -371,7 +374,7 @@ async def capture_correction(host, source, shot, value):
         fail(f"每个镜头最多保存 {MAX_CORRECTIONS} 张校正帧")
 
     try:
-        frames = await asyncio.to_thread(original_frames, host, source, {tick})
+        frames = await asyncio.to_thread(original_frames, host, source, {tick}, display=display)
     except (ValueError, OSError):
         fail("无法读取校正画面")
     shot["frames"][frame_key] = {
@@ -717,7 +720,7 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
     videos.append(version)
 
 
-def localize_shot(req, host, key, shot, job, mapping=None):
+def localize_shot(req, host, key, shot, job, mapping=None, *, display):
     videos = shot.get("videos", [])
     generated = completed(videos, job)
     if not generated or generated.get("mode") == "local":
@@ -772,7 +775,7 @@ def localize_shot(req, host, key, shot, job, mapping=None):
     def composite(progress, cancelled):
         return video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], mask,
                                           start, end, progress, cancelled, corrections=corrections,
-                                          protections=protections)
+                                          protections=protections, display=display)
 
     response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
     version = submitted_job(response)
@@ -848,13 +851,14 @@ async def export_video(req, host, key, session):
     if session.get("export") and pending([session["export"]]):
         fail("成片正在合成，请等待完成", 409)
     source = host.tools.ref_path(host.COMFY_DIR, key[3])
+    display = session.get("display_oriented", False)
     try:
-        w, h, duration, _ = await asyncio.to_thread(host.film.probe, source)
+        w, h, duration, _ = await asyncio.to_thread(host.film.probe, source, display=display)
     except Exception:
         fail("无法读取原片时间轴")
     spec = export_plan(session, key[3], host.film.FPS, duration)
     session["export"] = submitted_job(host.enqueue_film(req, spec, label="视频重制 · 合成",
-                                                      source_audio=source, board=key[1]))
+                                                      source_audio=source, board=key[1], display=display))
     output_w, output_h = host.film.target_size(w, h, "source")
     seconds = sum(clip["frames"] for clip in spec["clips"]) / host.film.FPS
     session["export"].update(w=output_w, h=output_h, duration=seconds, clips=spec["clips"])
@@ -951,7 +955,8 @@ async def handle(req, host):
             elif action in ("locate_person", "apply_person_hint"):
                 await locate_person(req, host, session, frame, data)
             elif action == "capture_correction":
-                response["captured_frame"] = await capture_correction(host, source, shot, data.get("at"))
+                response["captured_frame"] = await capture_correction(host, source, shot, data.get("at"),
+                                                                      display=session.get("display_oriented", False))
             elif action == "remove_correction":
                 if "correction_tick" not in frame:
                     fail("请选择要移除的校正帧")
@@ -974,7 +979,7 @@ async def handle(req, host):
             elif action == "generate_video":
                 await generate_shot(req, host, key, shot, data, mapping)
             elif action == "localize":
-                localize_shot(req, host, key, shot, data.get("job"), mapping)
+                localize_shot(req, host, key, shot, data.get("job"), mapping, display=session.get("display_oriented", False))
             elif action == "approve_video":
                 await approve_video(host, shot, data.get("job"), mapping)
             elif action == "keep":
