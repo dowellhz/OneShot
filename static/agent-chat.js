@@ -51,11 +51,11 @@ async function acFocus(ids,editor=false){if(AC.board!==boardId)return;const node
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
 function acResultCards(result){
  if (result.remake) {
-  const {node_id, source_ref, shot_number, shot_start, frame, video_job} = result.remake;
+  const {node_id, source_ref, shot_number, shot_start, frame, preview_job, video_job} = result.remake;
   const locate = Number.isFinite(shot_start) && Number.isInteger(shot_number);
   const label = locate ? result.location ? `确认镜头 ${shot_number} 的人物位置` : `打开重制镜头 ${shot_number}` : "打开视频重制";
   const open = (text, job) => {
-   const target = locate ? ` data-remake-start="${shot_start}" data-remake-frame="${esc(frame || "")}" data-remake-video-job="${esc(job || "")}"` : "";
+   const target = locate ? ` data-remake-start="${shot_start}" data-remake-frame="${esc(frame || "")}" data-remake-preview-job="${esc(preview_job || "")}" data-remake-video-job="${esc(job || "")}"` : "";
    return `<button type="button" data-remake-node="${esc(node_id)}" data-remake-ref="${esc(source_ref)}"${target}>${esc(text)}</button>`;
   };
   let review = "";
@@ -164,13 +164,13 @@ function acAppendEvent(e,replay=false){
   if(e.kind==="assistant")acAddChoices(el,e);
  }
  if(e.kind==="tool_start"){el=document.createElement("details");el.className="ac-call";el.dataset.call=d.call_id;el.dataset.tool=d.name;el.innerHTML=`<summary>${esc(AC_LABELS[d.name]||d.name)} · 执行中</summary><div class="ac-progress"></div><div class="ac-output"></div>`;AC.calls.set(d.call_id,el);}
- if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){if(d.result.review_versions?.length || d.name==="video_remake_export"&&d.result.export_ref)el.open=true;el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":d.result.adopted?"已采用："+d.result.adopted.map(a=>a.name).join("、"):d.result.memories?`找到 ${d.result.memories.length} 条创作记忆。`:d.result.memory?"已保存记忆："+d.result.memory.name:"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
+ if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){if(d.result.review_versions?.length || d.result.preview?.completed?.length || d.result.video?.completed || d.name==="video_remake_export"&&d.result.export_ref)el.open=true;el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":d.result.adopted?"已采用："+d.result.adopted.map(a=>a.name).join("、"):d.result.memories?`找到 ${d.result.memories.length} 条创作记忆。`:d.result.memory?"已保存记忆："+d.result.memory.name:"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
  if(e.kind==="progress"){
   el=AC.calls.get(d.call_id);
   if(el){
    const progress=d.jobs.map(j=>{const phase=AC_PHASES[j.phase]||AC_PHASES[j.state]||"处理中",pct=j.max?` · ${Math.min(j.state==="done"?100:99,Math.round((j.value||0)/j.max*100))}%`:"";return phase+pct+(j.ahead?` · 前方 ${j.ahead} 个任务`:"");}).join(" / ");
    $(".ac-progress",el).textContent=progress;
-   if(el.dataset.tool==="video_remake_export")$("summary",el).textContent=`${AC_LABELS.video_remake_export} · ${progress}`;
+   if(["video_remake_export","video_remake_preview","video_remake_generate"].includes(el.dataset.tool))$("summary",el).textContent=`${AC_LABELS[el.dataset.tool]} · ${progress}`;
   }
   return;
  }
@@ -243,7 +243,7 @@ function initAgentChat(){
    if(target.node.cur!==target.index && !switchVersion(target.node,target.index))return;
    const start=remake.dataset.remakeStart;
    openVideoRemake(target.node,{shotStart:start===undefined ? undefined : Number(start), frame:remake.dataset.remakeFrame,
-    videoJob:remake.dataset.remakeVideoJob});
+    previewJob:remake.dataset.remakePreviewJob,videoJob:remake.dataset.remakeVideoJob});
    return;
   }
   const b=e.target.closest("[data-focus]");if(b){const resolved=vtResolve(b.dataset.focus,b.dataset.versionRef);if(resolved){switchVersion(resolved.node,resolved.index);acFocus([resolved.node.id]);}}};

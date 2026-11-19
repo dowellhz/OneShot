@@ -410,6 +410,14 @@ async def preview_remake(s, run, user, cid, args):
         result["text"] += f"另有 {len(needs_selection)} 个镜头需要先确认选区。"
     if outcome["failed"]:
         result["text"] += f"{len(outcome['failed'])} 个镜头提交失败。"
+    if submitted:
+        frames_by_shot = {item["shot"]: item["frame"] for item in requests}
+        targets = []
+        for index in submitted:
+            frame = frames_by_shot[index]
+            job = session["shots"][index]["frames"][frame]["previews"][-1]["job"]
+            targets.append({"shot": index, "frame": frame, "job": job})
+        return await wait_remake_generation(s, run, user, cid, key, nid, "preview", targets, result["preview"])
     return result
 
 
@@ -445,13 +453,56 @@ async def generate_remake(s, run, user, cid, args):
     result["video"] = {"shot": index + 1, "submitted": bool(outcome["submitted"])}
     if outcome["submitted"]:
         job = session["shots"][index]["videos"][-1]["job"]
-        result["remake"]["video_job"] = job
-        result["text"] = f"已提交镜头 {index + 1} 的重制视频，完成后可在工作区审核。"
+        return await wait_remake_generation(s, run, user, cid, key, nid, "video",
+                                            [{"shot": index, "job": job}], result["video"])
     elif outcome["failed"]:
         result["video"]["error"] = outcome["failed"][0]["error"]
         result["text"] = f"镜头 {index + 1} 提交失败。{result['video']['error']}"
     else:
         result["text"] = f"镜头 {index + 1} 正在处理或已有匹配的视频版本。"
+    return result
+
+
+async def wait_remake_generation(s, run, user, cid, key, nid, kind, targets, outcome):
+    return await s.wait_submitted_jobs(run, user, cid, {
+        "ids": [target["job"] for target in targets],
+        "remake_generation": {"key": key, "node_id": nid, "kind": kind, "targets": targets, "outcome": outcome},
+    })
+
+
+def finish_remake_generation(s, run, user, info, states):
+    key = authorized_remake_key(s, run, user, info)
+    session = video_remake.load(key)
+    result = remake_status(s.host, info["node_id"], key, session)
+    kind = info["kind"]
+    outcome = copy.deepcopy(info["outcome"])
+    completed = []
+    failed = outcome.setdefault("failed", [])
+    shots = (session or {}).get("shots", [])
+    for target in info["targets"]:
+        index, job = target["shot"], target["job"]
+        shot = shots[index] if index < len(shots) else {}
+        frame = shot.get("frames", {}).get(target.get("frame"), {})
+        versions = frame.get("previews", []) if kind == "preview" else shot.get("videos", [])
+        if video_remake.completed(versions, job):
+            completed.append(target)
+        else:
+            failed.append({"shot": index + 1, "error": states[job].get("error") or "画面或剪辑点已更新，请在重制工作区核对"})
+    result[kind] = outcome
+    outcome["completed"] = [item["shot"] + 1 for item in completed] if kind == "preview" else bool(completed)
+    if completed:
+        target = completed[0]
+        index = target["shot"]
+        result["remake"].update(shot_number=index + 1, shot_start=shots[index]["start"])
+        if kind == "preview":
+            result["remake"].update(frame=target["frame"], preview_job=target["job"])
+        else:
+            result["remake"]["video_job"] = target["job"]
+        result["text"] = f"{len(completed)} 个换角预览已生成，可打开审核。" if kind == "preview" else f"镜头 {index + 1} 的重制视频已生成，可打开审核。"
+        if failed:
+            result["text"] += f"另有 {len(failed)} 个镜头待处理。"
+    else:
+        result["error"] = failed[0]["error"]
     return result
 
 
@@ -517,12 +568,17 @@ async def export_remake(s, run, user, cid, args):
     })
 
 
-def finish_remake_export(s, run, user, pending, state):
-    info = pending["remake_export"]
+def authorized_remake_key(s, run, user, info):
     key = tuple(info["key"])
     if key[:2] != (user["id"], run["board_id"]):
-        raise ValueError("无权读取该成片任务")
+        raise ValueError("无权读取该视频重制任务")
     s.board(user, key[1])
+    return key
+
+
+def finish_remake_export(s, run, user, pending, state):
+    info = pending["remake_export"]
+    key = authorized_remake_key(s, run, user, info)
     session = video_remake.load(key)
     result = remake_status(s.host, info["node_id"], key, session)
     if state["state"] == "error":

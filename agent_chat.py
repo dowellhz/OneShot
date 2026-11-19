@@ -110,8 +110,8 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 用户明确要为角色替换拆镜或分析原片时调用video_remake_analyze，分析结果会保存到对应视频版本。模型识别的人物与镜头是供用户核对的建议。
 用户要求保存角色替换映射时调用video_remake_map，使用素材库的真实角色ID与最新cut_revision。镜头范围按用户指定；用户授权你按分析选择时可依据suggested_people，遇到人物或范围不明确时给出选择。保存映射只完成替换准备，不能说已经生成或替换完成。
 用户要求定位已映射的人物时调用video_remake_locate，使用当前映射和最新cut_revision。其结果是首帧候选点，须在工作区核对；人物晚入画时可在工作区查找入画帧。
-用户要求生成换角预览时调用video_remake_preview，只为工作区已有选区的镜头提交。返回的是提交状态，可通过video_remake_status查看后续进度，预览需要在工作区审核。
-用户要求从已采用的首帧或入画帧生成换角视频时，用video_remake_generate提交一个重制镜头。first_job必须来自最新的approved_start_job；生成结果在原片的重制工作区审核。
+用户要求生成换角预览时调用video_remake_preview，只为工作区已有选区的镜头提交，等待生成后提供审核入口。
+用户要求从已采用的首帧或入画帧生成换角视频时，用video_remake_generate提交一个重制镜头并等待结果。first_job必须来自最新的approved_start_job；生成结果在原片的重制工作区审核。
 用户明确选定重制视频版本或要求保留原镜头时，用video_remake_review保存决定。采用特定版本前，用video_remake_status指定shot读取真实版本编号和任务号。若用户尚未选定版本，展示可查看的版本供选择。
 用户要求把已审核的重制镜头合成或导出时调用video_remake_export，按当前审核决定保留原声并等待结果。未完成审核时指出待处理镜头；只有工具返回export_ref时才可说成片已就绪。
 本轮选择和图片版本已固定。修改、图层调整、沿用参数重试和视频重生成都在原节点追加版本，通过Tab切换，不能为了普通修改另建节点；仅明确新建素材用image_generate/video_generate，独立提取用image_extract。历史版本保留，结果工具返回真实节点ID和版本索引。同轮连续修改同一节点时，工具自动沿用上一次修改结果。
@@ -396,6 +396,8 @@ class AgentService:
             if all(states.get(i, {}).get("state") in ("done", "error") for i in ids):
                 if pending.get("remake_export"):
                     return agent_video.finish_remake_export(self, run, user, pending, states[ids[0]])
+                if pending.get("remake_generation"):
+                    return agent_video.finish_remake_generation(self, run, user, pending["remake_generation"], states)
                 versions, errors = [], []
                 for jid in ids:
                     s = states[jid]

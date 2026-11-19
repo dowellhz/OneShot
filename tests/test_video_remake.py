@@ -223,7 +223,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             "action":"select", "shot":1, "frame":correction, "rect":[.2,.2,.8,.8], "cut_revision":revision,
         }))
         db.conn().executescript(server.agent_chat.SCHEMA)
-        run.update(id="assistant-preview", state="running")
+        now = time.time()
+        run.update(id="assistant-preview", session_id="assistant-remake", state="running", created=now)
+        db.run("INSERT INTO chat_sessions VALUES(?,?,?,?,?,?)", run["session_id"], 7, "test", "换角预览", now, now)
+        db.run("INSERT INTO chat_runs VALUES(?,?,?,?,?,?,?,?,?,?)", run["id"], run["session_id"], 7, "test",
+               "preview", "running", json.dumps(run["data"]), None, now, now)
         db.run("INSERT INTO chat_calls VALUES(?,?,?,?,?,?,?)", "preview", run["id"], "video_remake_preview",
                json.dumps(preview_args), "executing", None, 0)
 
@@ -239,13 +243,19 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                 await service.execute(run, self.user, "preview", "video_remake_preview", preview_args)
             run["data"]["generated"] = 0
             queued = await service.execute(run, self.user, "preview", "video_remake_preview", preview_args)
-            repeated = await service.execute(run, self.user, "preview", "video_remake_preview", preview_args)
+            repeated = await service.execute(run, self.user, "repeat-preview", "video_remake_preview", preview_args)
         submit.assert_awaited_once()
         self.assertEqual(queued["preview"]["submitted"], [2])
+        self.assertEqual(queued["preview"]["completed"], [2])
         self.assertEqual(queued["remake"]["frame"], correction)
+        self.assertEqual(queued["remake"]["preview_job"], "assistant-image")
         self.assertEqual(repeated["preview"]["skipped"], [2])
         self.assertEqual(run["data"]["generated"], 1)
-        self.assertEqual(db.one("SELECT state FROM chat_calls WHERE id=?", "preview")["state"], "submitting")
+        pending_call = db.one("SELECT state,result FROM chat_calls WHERE id=?", "preview")
+        self.assertEqual(pending_call["state"], "waiting")
+        server.JOBS.pop("assistant-image")
+        resumed = await service.wait_jobs(run, self.user, "preview", json.loads(pending_call["result"]))
+        self.assertEqual(resumed["remake"], queued["remake"])
         workspace = json.loads((await server.remake(Request(source, self.user))).body)
         entry = workspace["shots"][1]["frames"][correction]
         self.assertEqual(entry["previews"][0]["job"], "assistant-image")
@@ -276,12 +286,12 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             with self.assertRaises(server.agent_chat.ToolError):
                 await service.execute(run, self.user, "video", "video_remake_generate", video_args)
         submit_video.assert_awaited_once()
-        self.assertEqual(generated["video"], {"shot":2, "submitted":True})
+        self.assertEqual(generated["video"], {"shot":2, "submitted":True, "completed":True, "failed":[]})
         self.assertEqual(generated["remake"]["video_job"], "assistant-video")
         workspace = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(workspace["shots"][1]["videos"][-1]["job"], "assistant-video")
         self.assertFalse(workspace["shots"][1].get("adopted_video"))
-        self.assertEqual(server.JOBS, {})
+        self.assertEqual(set(server.JOBS), {"assistant-image", "assistant-video"})
 
     async def test_long_shot_splits_into_balanced_segments_and_can_be_undone(self):
         source = self.make_clip("long-shot", seconds=30, color=lambda tick: (20 + (tick // 232) * 50, 20, 20), frequency=440)

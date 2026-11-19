@@ -16,7 +16,7 @@ async function remakeRequest(url, data) {
   return result;
 }
 
-async function openVideoRemake(video, {shotStart: initialShotStart, frame: initialFrame, videoJob: initialVideoJob} = {}) {
+async function openVideoRemake(video, {shotStart: initialShotStart, frame: initialFrame, previewJob: initialPreviewJob, videoJob: initialVideoJob} = {}) {
   const source = curV(video);
   if (!source?.ref) return toast("请先上传或生成视频");
   await flushSave();
@@ -1269,6 +1269,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
       if (index >= 0) {
         shotIndex = index;
         if (initialFrame && Object.hasOwn(currentShot().frames, initialFrame)) frameKey = initialFrame;
+        if (initialPreviewJob && currentFrame().previews.some(version => version.job === initialPreviewJob)) versionId = initialPreviewJob;
         if (initialVideoJob && currentShot().videos?.some(version => version.job === initialVideoJob)) videoId = initialVideoJob;
         player.currentTime = currentFrame().at ?? initialShotStart;
       } else {
