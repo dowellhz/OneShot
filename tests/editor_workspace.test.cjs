@@ -521,6 +521,14 @@ async function run(){
     job:'remake-'+operation.frame,state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森'},source_person:'人物 A',
    });
   }
+  if(operation?.action==='batch_previews'){
+   assert.equal(operation.person,'人物 A');
+   assert.deepEqual(operation.shots,[{shot:0,view:'face'}]);
+   remakeOptions={asset:operation.asset,view:operation.shots[0].view};
+   frame.previews.push({job:'remake-first',state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森'},
+    source_person:'人物 A',mask:frame.selection.mask,protection:frame.protection.mask});
+   remakeSession.batch_previews={submitted:[0],skipped:[],failed:[]};
+  }
   if(operation?.action==='approve')remakeSession.shots[0].frames[operation.frame].approved=operation.job;
   if(operation?.action==='clear_guide')delete remakeSession.shots[0].frames[operation.frame].approved;
   if(operation?.action==='generate_video'){
@@ -578,8 +586,9 @@ async function run(){
   rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:80,clientY:18}));
   rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:120,clientY:28}));`);
  await ready('!$(".rm-protection").hidden && !$(".rm-mask").hidden','foreground and replacement selections are shown separately');
- evaluate(`const rmRole=$("[data-role]",$("#videoRemake"));rmRole.value="char";rmRole.dispatchEvent(new Event("change"));$("#videoRemake [data-generate]").click()`);
+ evaluate('$("[data-batch-previews]").click()');
  await ready('!!$("#videoRemake .rm-output img")','role preview displays in workspace');
+ equal(evaluate('$("[data-batch-previews]").disabled'),true,'a finished matching first-frame preview removes the shot from the batch');
  assert.equal(remakeOptions.asset,'char');
  assert.equal(remakeOptions.view,'face','close-up suggests an approved headshot');
  evaluate('$$(".rm-review button").find(b=>b.textContent==="采用此预览").click()');

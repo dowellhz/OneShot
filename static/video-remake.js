@@ -29,7 +29,8 @@ async function openVideoRemake(video) {
   panel.innerHTML = `<header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
-        <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span></div>
+        <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span>
+          <button type="button" data-batch-previews hidden title="为已确认映射且已圈出人物的镜头提交首帧预览">批量生成首帧</button></div>
         <details class="rm-mapping" hidden>
           <summary>跨镜头人物映射</summary>
           <p class="rm-mapping-status"></p>
@@ -116,7 +117,7 @@ async function openVideoRemake(video) {
   const status = message => { el(".rm-status").textContent = message; };
   const currentShot = () => session?.shots[shotIndex];
   const currentFrame = () => currentShot()?.frames[frameKey];
-  const shotKey = () => currentShot() ? `${currentShot().start}:${currentShot().end}` : "";
+  const shotKey = (shot = currentShot()) => shot ? `${shot.start}:${shot.end}` : "";
   const personSelection = frame => {
     const selection = frame.selection;
     return selection?.source_person && session.mapping && selection.source_person !== session.mapping.source ? null : selection;
@@ -231,11 +232,16 @@ async function openVideoRemake(video) {
     return "main";
   }
 
+  function chosenView(asset, shot) {
+    const choice = viewChoices.get(shotKey(shot) + ":" + asset?.id);
+    return choice === "main" || asset?.character_views?.[choice] ? choice : suggestedView(asset, shot);
+  }
+
   function fillViews() {
     const asset = assets.find(item => item.id === el("[data-role]").value);
     const views = el("[data-view]");
     const recommended = suggestedView(asset, currentShot());
-    const value = viewChoices.get(shotKey() + ":" + asset?.id) || recommended;
+    const value = chosenView(asset, currentShot());
     views.replaceChildren();
     for (const [view, label] of Object.entries(RM_VIEW_NAMES)) {
       if (view === "main" || asset?.character_views?.[view]) {
@@ -247,6 +253,33 @@ async function openVideoRemake(video) {
 
   function shotPeople(shot) {
     return Array.isArray(shot.summary?.characters) ? shot.summary.characters.filter(name => typeof name === "string" && name.trim()) : [];
+  }
+
+  function batchPreviews() {
+    const mapping = session?.mapping;
+    const asset = assets.find(item => item.id === mapping?.asset);
+    if (!asset) return [];
+    const queue = [];
+    for (const index of mapping.shots) {
+      const shot = session.shots[index];
+      const frame = shot.frames.first;
+      const selection = personSelection(frame);
+      if (!selection || shot.keep_original || frame.previews.some(active)) continue;
+      const hasPreview = frame.previews.some(p => p.ref && matchesPerson(p) && p.mask === selection.mask &&
+        (p.protection || null) === (frame.protection?.mask || null));
+      if (!hasPreview) queue.push({shot:index, view:chosenView(asset, shot)});
+    }
+    return queue;
+  }
+
+  function previewStatus(shot) {
+    const first = shot.frames.first;
+    const approved = adoptedPreview(first);
+    if (approved && matchesPerson(approved)) return " · 已采用首帧";
+    const latest = first.previews.filter(matchesPerson).at(-1);
+    if (!latest) return "";
+    if (active(latest)) return " · 首帧生成中";
+    return latest.ref ? " · 首帧待审核" : " · 首帧失败";
   }
 
   function renderMapping(shots) {
@@ -316,6 +349,11 @@ async function openVideoRemake(video) {
     el(".rm-editor").hidden = !shots.length;
     renderMapping(shots);
     renderCutControls();
+    const batch = el("[data-batch-previews]");
+    const count = batchPreviews().length;
+    batch.hidden = !session?.mapping;
+    batch.disabled = busy || !count;
+    batch.textContent = count ? `批量生成首帧（${count} 个镜头）` : "批量生成首帧";
     if (!shots.length) return;
     const shot = currentShot();
     if (!currentFrame()) frameKey = "first";
@@ -328,7 +366,7 @@ async function openVideoRemake(video) {
       const chosen = item.videos?.find(v => v.job === item.adopted_video);
       card.textContent = `镜头 ${i + 1} · ${item.start.toFixed(2)}–${item.end.toFixed(2)} 秒` +
         (!inScope(i) ? " · 不在替换范围" : item.keep_original ? " · 保留原片" :
-          chosen && matchesPerson(chosen) ? " · 已采用视频" : Object.values(item.frames).some(f => f.approved) ? " · 已采用预览" : "");
+          chosen && matchesPerson(chosen) ? " · 已采用视频" : previewStatus(item));
       card.onclick = () => {
         if (busy) return;
         stopComparison();
@@ -659,7 +697,7 @@ async function openVideoRemake(video) {
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",generate_video:"正在提交镜头生成…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的首帧预览…",generate_video:"正在提交镜头生成…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (action === "analyze") fillViews();
@@ -671,14 +709,26 @@ async function openVideoRemake(video) {
         frameKey = "first";
         versionId = null;
       }
-      if (action === "preview") versionId = null;
+      if (action === "preview" || action === "batch_previews") versionId = null;
       if (action === "generate_video" || action === "localize") videoId = null;
-      status(cutAction && session.mapping ? "剪辑点已更新，请核对人物映射范围。" : "");
+      if (action === "batch_previews") {
+        const {submitted, skipped, failed} = session.batch_previews;
+        const items = [`已提交 ${submitted.length} 个镜头`];
+        if (skipped.length) items.push(`跳过 ${skipped.length} 个镜头`);
+        for (const result of failed) items.push(`镜头 ${result.shot + 1} 未提交（${result.error}）`);
+        status(items.join("。"));
+      } else {
+        status(cutAction && session.mapping ? "剪辑点已更新，请核对人物映射范围。" : "");
+      }
     } catch (error) { status(error.message); }
     finally { busy = false; renderPanel(); schedulePoll(); }
   }
 
   el("[data-analyze]").onclick = () => change("analyze");
+  el("[data-batch-previews]").onclick = () => {
+    const shots = batchPreviews();
+    if (shots.length) change("batch_previews", {shots, asset:session.mapping.asset, person:session.mapping.source});
+  };
   for (const control of panel.querySelectorAll("[data-cut], [data-step]")) {
     control.onclick = () => {
       stopComparison();

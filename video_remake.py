@@ -523,11 +523,62 @@ async def generate_preview(req, host, key, frame, data, mapping=None):
     preview = submitted_job(await host.generate_request(req, payload))
     preview.update({
         "mask": selection["mask"],
+        "protection": protection,
         "source_person": mapping["source"] if mapping else None,
         "asset": {"id": asset["id"], "name": asset["name"], "view": view, "ref": reference},
     })
     frame["previews"].append(preview)
     return {"asset": asset["id"], "view": view}
+
+
+async def queue_first_previews(req, host, key, session, data):
+    mapping = session.get("mapping")
+    if not mapping or data.get("asset") != mapping["asset"] or data.get("person") != mapping["source"]:
+        fail("人物映射已更新，请核对后重新提交", 409)
+    requests = data.get("shots")
+    if not isinstance(requests, list) or not 1 <= len(requests) <= MAX_SHOTS:
+        fail("请选择要生成首帧的镜头")
+    views = {}
+    scope = mapped_shots(session)
+    for item in requests:
+        index = item.get("shot") if isinstance(item, dict) else None
+        if type(index) is not int or index not in scope or index in views:
+            fail("批量生成的镜头必须在人物映射范围内，且不可重复")
+        view = item.get("view", "main")
+        if not isinstance(view, str) or view not in VIEWS:
+            fail("镜头参考角度无效")
+        views[index] = view
+
+    outcome = {"submitted": [], "skipped": [], "failed": []}
+    for index, view in views.items():
+        shot = session["shots"][index]
+        frame = shot["frames"]["first"]
+        selection = person_selection(frame, mapping)
+        previews = frame["previews"]
+        protection = frame.get("protection", {}).get("mask")
+        # A repeat click or retry must not queue the same prepared shot twice.
+        ready = selection and any(
+            p.get("ref") and matches_mapping(p, mapping)
+            and p.get("mask") == selection["mask"] and p.get("protection") == protection for p in previews
+        )
+        if shot.get("keep_original") or not selection or pending(previews) or ready:
+            outcome["skipped"].append(index)
+            continue
+        try:
+            await generate_preview(req, host, key, frame, {"asset": mapping["asset"], "view": view}, mapping)
+        except web.HTTPException as error:
+            try:
+                message = json.loads(error.text).get("error") or error.reason
+            except (ValueError, AttributeError):
+                message = error.reason
+            outcome["failed"].append({"shot": index, "error": message})
+        except Exception:
+            outcome["failed"].append({"shot": index, "error": "生成服务未能提交任务"})
+        else:
+            outcome["submitted"].append(index)
+            # Keep each accepted task reachable even if a later service call fails.
+            save(key, session)
+    return outcome
 
 
 def submitted_job(response):
@@ -769,6 +820,9 @@ async def handle(req, host):
             set_mapping(req, board, session, data)
         elif session and action == "remove_mapping":
             session.pop("mapping", None)
+        elif session and action == "batch_previews":
+            update_jobs(host, key[0], session)
+            response["batch_previews"] = await queue_first_previews(req, host, key, session, data)
         elif session and action in CUT_ACTIONS:
             update_jobs(host, key[0], session)
             response["selected_shot"] = await edit_cuts(req, host, source, session, data)

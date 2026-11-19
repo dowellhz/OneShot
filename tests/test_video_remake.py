@@ -189,6 +189,60 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         kept = await act("keep")
         self.assertTrue(kept["shots"][0]["keep_original"])
 
+    async def test_batch_first_previews_saves_accepted_jobs_and_retries_only_missing_shots(self):
+        source = self.make_clip("batch", seconds=3, color=(210, 30, 30), frequency=440)
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n1", "type":"image", "versions":[self.source]},
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+        asset = server.creative_memory.Store(server).put(self.user, {
+            "name":"替换角色", "kind":"character", "board":"test",
+            "ref":self.source["ref"], "source_board":"test",
+        })
+        video_remake.save((7, "test", "n3", source), {"shots":[
+            {"start":index, "end":index + 1, "frames":{"first":video_remake.frame_record(self.source["ref"], (64,64))}}
+            for index in range(3)
+        ]})
+
+        async def act(action=None, **fields):
+            response = await server.remake(Request(source, self.user, {"action":action, **fields} if action else None))
+            return json.loads(response.body)
+
+        await act("map_person", person="人物甲", asset=asset["id"], shots=[0,1])
+        for index in range(3):
+            await act("select", shot=index, rect=[.25,.25,.75,.75])
+        requests = []
+
+        async def submit(req, payload):
+            requests.append(payload)
+            job = f"batch-{len(requests)}"
+            if len(requests) == 1:
+                db.task_start(id=job, user_id=7, state="done", outputs=[self.source["ref"]])
+            elif len(requests) == 2:
+                saved = video_remake.load((7, "test", "n3", source))
+                self.assertEqual(saved["shots"][0]["frames"]["first"]["previews"][0]["job"], "batch-1")
+                raise server.bad("任务暂时无法提交")
+            return web.json_response({"ids":[job]})
+
+        async def batch(*shots):
+            return (await act("batch_previews", person="人物甲", asset=asset["id"], shots=[
+                {"shot":index, "view":view} for index, view in shots
+            ]))["batch_previews"]
+
+        with patch.object(server, "_generate_request", side_effect=submit):
+            with self.assertRaises(web.HTTPBadRequest):
+                await batch((0, "main"), (2, "main"))
+            self.assertEqual(len(requests), 0)
+            partial = await batch((0, "main"), (1, "main"))
+            self.assertEqual(partial["submitted"], [0])
+            self.assertEqual(partial["failed"], [{"shot":1, "error":"任务暂时无法提交"}])
+            self.assertEqual((await act())["shots"][0]["frames"]["first"]["previews"][0]["job"], "batch-1")
+            self.assertEqual(await batch((0, "main"), (1, "main")),
+                             {"submitted":[1], "skipped":[0], "failed":[]})
+            self.assertEqual(await batch((0, "main"), (1, "main")),
+                             {"submitted":[], "skipped":[0,1], "failed":[]})
+        self.assertEqual(len(requests), 3)
+
     async def test_reviewed_shot_export_keeps_source_cut_and_continuous_audio(self):
         source = self.make_clip("original", seconds=4, color=lambda tick: (210 if tick < 24 else 160, 30, 30),
                                 frequency=440, audio_delay=.5)
