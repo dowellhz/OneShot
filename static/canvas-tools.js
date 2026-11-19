@@ -79,7 +79,7 @@ function ctFlowPositions(nodes,edges,obstacles=[],sizeOf=size){
     const vids=component.filter(n=>n.type==="video").sort(order),rank=new Map(vids.map((n,i)=>[n.id,i]));
     const imageRank=n=>{const outgoing=links.filter(e=>e.from===n.id&&rank.has(e.to));if(!outgoing.length)return [Infinity,0];
       const e=outgoing.sort((a,b)=>rank.get(a.to)-rank.get(b.to))[0],role=e.role||"auto",video=byId.get(e.to);
-      const frames=links.filter(f=>f.to===e.to&&(f.role||"auto")!=="subject");
+      const frames=links.filter(f=>f.to===e.to&&byId.get(f.from)?.type==="image"&&(f.role||"auto")!=="subject");
       const ordered=[...frames.filter(f=>f.role==="first"),...frames.filter(f=>!["first","last"].includes(f.role)),...frames.filter(f=>f.role==="last")];
       const frameRank=role==="subject"||(role==="auto"&&video.data.mode==="reference")?-1:role==="first"?0:role==="last"?1000:e.time!=null?Number(e.time):ordered.indexOf(e)*1000/Math.max(1,ordered.length-1);
       return [rank.get(e.to),frameRank];};

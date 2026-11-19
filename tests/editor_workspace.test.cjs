@@ -529,10 +529,13 @@ async function run(){
   }
   if(operation?.action==='localize'){
    assert.equal(operation.job,'shot-video');
-   remakeSession.shots[0].videos.push({job:'shot-local',mode:'local',state:'done',ref:'output:h3studio/shot-local.mp4',asset:{id:'char'},source_person:'人物 A'});
+   remakeSession.shots[0].videos.push({job:'shot-local',mode:'local',state:'done',ref:'output:h3studio/shot-local.mp4',
+    asset:{id:'char'},source_person:'人物 A',first_frame:frame.previews[0].ref,
+    guides:[{ref:'output:h3studio/shot-guide.png',tick:12}],w:640,h:480,duration:3});
   }
   if(operation?.action==='approve_video')remakeSession.shots[0].adopted_video=operation.job;
-  if(operation?.action==='export')remakeSession.export={job:'export-job',state:'done',ref:'output:h3studio/assembled.mp4'};
+  if(operation?.action==='export')remakeSession.export={job:'export-job',state:'done',ref:'output:h3studio/assembled.mp4',
+   w:640,h:480,duration:3,clips:[{ref:'output:h3studio/shot-local.mp4',in:0,out:3,frames:72}]};
   if(operation?.action==='split_shot'){
    assert.equal(operation.cut_revision,0);
    assert.equal(operation.at,1.25);
@@ -630,6 +633,32 @@ async function run(){
  equal(evaluate('B.nodes.at(-1).data.prompt'),'缓慢转身','new video receives analyzed motion description');
  equal(evaluate('B.edges.at(-1).from'),evaluate('B.nodes.at(-2).id'),'approved frame linked to new video');
  equal(evaluate('!!$("#videoRemake")'),false,'handoff returns to canvas');
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ evaluate('$$(".rm-video-review button").find(b=>b.textContent==="镜头放入画布").click()');
+ equal(evaluate('B.nodes.length'),beforeRemake+4,'shot handoff adds a video and guide while reusing the first frame');
+ const shotNode=evaluate('B.nodes.at(-1).id');
+ equal(evaluate(`const shotHandoff=node(${JSON.stringify(shotNode)});
+  B.edges.filter(e=>e.to===shotHandoff.id).map(e=>[e.relation||e.role,e.source_ref||curV(node(e.from)).ref,e.time??null])`),
+  [['remake',evaluate('curV(node("pendingVideo")).ref'),null],['first','output:h3studio/remake.png',0],
+   ['keyframe','output:h3studio/shot-guide.png',.5]],'shot keeps original video provenance and exact timed frame connections');
+ remakeSession.shots[0].videos.push({...remakeSession.shots[0].videos.at(-1),job:'shot-local-2',ref:'output:h3studio/shot-local-2.mp4',guides:[]});
+ remakeSession.shots[0].adopted_video='shot-local-2';
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ evaluate('$$(".rm-video-review button").find(b=>b.textContent==="镜头放入画布").click()');
+ equal(evaluate('[shotHandoff.versions.length,curV(shotHandoff).ref]'),[2,'output:h3studio/shot-local-2.mp4'],'another reviewed result becomes a tab');
+ evaluate('switchVersion(shotHandoff,0)');
+ equal(evaluate('B.edges.filter(e=>e.to===shotHandoff.id).map(e=>e.relation||e.role)'),['remake','first','keyframe'],'switching tabs restores each result’s connections');
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ evaluate('$("[data-insert-export]").click()');
+ equal(evaluate('const exportHandoff=B.nodes.at(-1);[curV(exportHandoff).ref,curV(exportHandoff).remake.clips[0].frames]'),
+  ['output:h3studio/assembled.mp4',72],'finished export retains the render snapshot on the canvas');
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ evaluate('$("[data-insert-export]").click()');
+ equal(evaluate('B.nodes.filter(n=>n.versions.some(v=>v.ref==="output:h3studio/assembled.mp4")).length'),1,'repeated handoff selects the existing export');
+ evaluate('const originalTab=node("pendingVideo"),originalRef=curV(originalTab).ref;vtSplit(originalTab.id,originalTab.cur)');
+ equal(evaluate('const splitOriginal=vtResolve("pendingVideo",originalRef).node;B.edges.filter(e=>e.relation==="remake").every(e=>e.from===splitOriginal.id)'),true,'origin links follow the pinned video version when split');
+ evaluate('switchVersion(shotHandoff,1)');
+ equal(evaluate('B.edges.find(e=>e.to===shotHandoff.id&&e.relation==="remake").from'),evaluate('splitOriginal.id'),'the other result tab points to the moved origin too');
  w.fetch=previousFetch;
  console.log('Video remake DOM passed: analyze, select, preview, review remade shots, correct tracking, localize, export, and first-frame handoff.');
  console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');

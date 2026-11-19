@@ -602,7 +602,8 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
     version = submitted_job(await host.generate_request(req, raw))
     version.update(first_frame=approved["ref"], mask=approved.get("mask"), asset=approved["asset"],
                    source_person=approved.get("source_person"),
-                   motion=instructions[:1600], guides=guides)
+                   motion=instructions[:1600], guides=guides, prompt=prompt,
+                   generation={key: raw[key] for key in ("duration", "quality", "provider") if key in raw})
     videos.append(version)
 
 
@@ -648,6 +649,7 @@ def localize_shot(req, host, key, shot, job, mapping=None):
     version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
                    asset=generated["asset"], source_person=generated.get("source_person"),
                    motion=generated.get("motion", ""), guides=generated.get("guides", []),
+                   prompt=generated.get("prompt", ""), generation=generated.get("generation", {}),
                    corrections=corrections, protections=protections)
     videos.append(version)
 
@@ -659,13 +661,13 @@ async def approve_video(host, shot, job, mapping=None):
     if not matches_mapping(version, mapping):
         fail("视频属于之前的人物映射，请重新生成当前角色的视频")
     try:
-        _, _, duration, _ = await asyncio.to_thread(host.film.probe, host.tools.ref_path(host.COMFY_DIR, version["ref"]))
+        w, h, duration, _ = await asyncio.to_thread(host.film.probe, host.tools.ref_path(host.COMFY_DIR, version["ref"]))
     except Exception:
         fail("视频文件无法播放，请重新生成")
     expected_frames = round(shot["end"] * host.film.FPS) - round(shot["start"] * host.film.FPS)
     if duration * host.film.FPS + .51 < expected_frames:
         fail("生成的视频短于原镜头，请重试或保留原镜头")
-    version["duration"] = duration
+    version.update(w=w, h=h, duration=duration)
     shot["adopted_video"] = version["job"]
     shot["keep_original"] = False
 
@@ -705,12 +707,27 @@ async def export_video(req, host, key, session):
         fail("成片正在合成，请等待完成", 409)
     source = host.tools.ref_path(host.COMFY_DIR, key[3])
     try:
-        _, _, duration, _ = await asyncio.to_thread(host.film.probe, source)
+        w, h, duration, _ = await asyncio.to_thread(host.film.probe, source)
     except Exception:
         fail("无法读取原片时间轴")
     spec = export_plan(session, key[3], host.film.FPS, duration)
     session["export"] = submitted_job(host.enqueue_film(req, spec, label="视频重制 · 合成",
                                                       source_audio=source, board=key[1]))
+    output_w, output_h = host.film.target_size(w, h, "source")
+    seconds = sum(clip["frames"] for clip in spec["clips"]) / host.film.FPS
+    session["export"].update(w=output_w, h=output_h, duration=seconds, clips=spec["clips"])
+
+
+def refresh_export_status(session, source, fps):
+    export = session.get("export")
+    if not export or not export.get("clips"):
+        return
+    try:
+        current = export_plan(session, source, fps, export["duration"])
+    except web.HTTPBadRequest:
+        export["stale"] = True
+    else:
+        export["stale"] = current["clips"] != export["clips"]
 
 
 def public_session(session, **extra):
@@ -810,6 +827,7 @@ async def handle(req, host):
         else:
             fail("请先分析原片")
         update_jobs(host, key[0], session)
+        refresh_export_status(session, source, host.film.FPS)
         save(key, session)
         return web.json_response(public_session(session, **response))
     finally:

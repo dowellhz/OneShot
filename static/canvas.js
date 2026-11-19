@@ -258,14 +258,19 @@ function rememberVideoVersion(n) {
   if (!Array.isArray(v.input_edges)) v.input_edges = JSON.parse(JSON.stringify(B.edges.filter(e => e.to === n.id)));
   if (!v.node_data) v.node_data = JSON.parse(JSON.stringify(n.data));
 }
-function switchVersion(n, i) {
+function validVideoInput(edge) {
+  const type = node(edge.from)?.type;
+  return type === "image" || type === "text" || (type === "video" && edge.relation === "remake");
+}
+function switchVersion(n, i, {recordUndo = true} = {}) {
   if (!Number.isInteger(i) || !n.versions[i] || i === n.cur) return false;
   if (n.job || prepping.has(n.id) || (IMAGE_EDITOR?.n === n && (IMAGE_EDITOR.busy || IMAGE_EDITOR.agentSelection))) { toast("请等待当前任务完成后再切换版本"); return false; }
-  checkpoint(); rememberVideoVersion(n);
+  if (recordUndo) checkpoint();
+  rememberVideoVersion(n);
   const v = n.versions[i];
   if (n.type === "video") {
     if (Array.isArray(v.input_edges)) {
-      const edges = v.input_edges.filter(e => e.to === n.id && e.from !== n.id && ["image", "text"].includes(node(e.from)?.type));
+      const edges = v.input_edges.filter(e => e.to === n.id && e.from !== n.id && validVideoInput(e));
       B.edges = B.edges.filter(e => e.to !== n.id).concat(JSON.parse(JSON.stringify(edges)));
       if (edges.length !== v.input_edges.length) toast("部分历史输入节点已删除，已恢复仍存在的连线");
     }
@@ -410,7 +415,14 @@ function drawEdges() {
     const d = curve(port(a, "out"), port(b, "in"));
     g.innerHTML = `<path class="hit" d="${d}"></path><path class="vis" d="${d}"></path>`;
     if (selEdge === e) g.classList.add("sel");
-    if (a.type === "image" && b.type === "video") {
+    if (e.relation === "remake") {
+      g.classList.add("remake-edge");
+      const pa = port(a, "out"), pb = port(b, "in"), label = document.createElement("div");
+      label.className = "elabel remake-label";
+      label.style.left = (pa.x + pb.x) / 2 + "px"; label.style.top = (pa.y + pb.y) / 2 + "px";
+      label.textContent = "原片";
+      world.appendChild(label);
+    } else if (a.type === "image" && b.type === "video") {
       const p = plans[b.id] || (plans[b.id] = plan(b)), k = p.es.indexOf(e);
       const pa = port(a, "out"), pb = port(b, "in"), lb = document.createElement("div");
       lb.className = "elabel" + (p.roles[k] === "subject" ? " subj" : "");

@@ -28,6 +28,8 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #edges .hit { stroke: transparent; stroke-width: 16; fill: none; pointer-events: stroke; cursor: pointer; }
 #edges .vis { fill: none; stroke: var(--edge); stroke-width: 2; transition: stroke .15s; }
 #edges g:hover .vis, #edges g.sel .vis { stroke: #9a9aa4; }
+#edges .remake-edge .vis { stroke-dasharray: 6 5; }
+.elabel.remake-label { pointer-events: none; }
 #edges .tmp { fill: none; stroke: #9a9aa4; stroke-width: 2; stroke-dasharray: 5 5; }
 .elabel { position: absolute; transform: translate(-50%, -50%); z-index: 4; padding: 2px 9px; border-radius: 9px; background: #1d1d21; border: 1px solid var(--line2);
   color: #cfcfd5; font-size: var(--fs-caption); white-space: nowrap; cursor: pointer; }

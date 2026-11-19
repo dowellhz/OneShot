@@ -14,6 +14,7 @@ function vtSignature(n){
     return [e.from,role,time==null?null:Math.round(time*1000)/1000];
   });
   for(const e of B.edges.filter(e=>e.to===n.id&&node(e.from)?.type==="text"))entries.push([e.from,"text",null]);
+  for(const e of B.edges.filter(e=>e.to===n.id&&e.relation==="remake"))entries.push([e.from,"remake",e.source_ref]);
   return JSON.stringify(entries.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
 }
 function vtMergeInfo(ids){
@@ -47,7 +48,7 @@ function vtSnapshot(n,i){
 }
 function vtRetargetVersion(v,id){return {...v,input_edges:(v.input_edges||[]).map(e=>({...e,to:id}))};}
 function vtSetInputs(n){
-  const v=curV(n),edges=(v?.input_edges||[]).filter(e=>e.from!==n.id&&["image","text"].includes(node(e.from)?.type)).map(e=>({...e,to:n.id}));
+  const v=curV(n),edges=(v?.input_edges||[]).filter(e=>e.from!==n.id&&validVideoInput(e)).map(e=>({...e,to:n.id}));
   B.edges=B.edges.filter(e=>e.to!==n.id).concat(vtClone(edges));
   if(v?.node_data)n.data=vtClone(v.node_data);
 }
@@ -67,6 +68,14 @@ function vtMerge(ids,targetId,before=null){
 }
 function vtMoveReferences(oldId,newId){
   for(const n of B.nodes){for(const c of n.data?.film?.clips||[])if(c.node===oldId)c.node=newId;for(const s of n.data?.made||[])if(s.vid===oldId)s.vid=newId;}
+}
+function vtMoveRemakeSource(oldId,newId,ref){
+  const move=edges=>{for(const e of edges||[])if(e.relation==="remake"&&e.from===oldId&&e.source_ref===ref)e.from=newId;};
+  move(B.edges);
+  for(const n of B.nodes)for(const v of n.versions){
+    move(v.input_edges);
+    if(v.remake?.source_node===oldId&&v.remake.source_ref===ref)v.remake.source_node=newId;
+  }
 }
 function vtSplit(id,index,all=false){
   const n=node(id);
@@ -89,6 +98,10 @@ function vtSplit(id,index,all=false){
   vtSetInputs(n);
   const positions=ctAvoidObstacles(made.map(({id,x,y})=>({id,x,y})),made,B.nodes);
   for(const m of made){Object.assign(m,positions.find(p=>p.id===m.id));B.nodes.push(m);B.edges.push(...vtClone(m.versions[0].input_edges.filter(e=>node(e.from))));}
+  for(const m of made){
+    const ref=curV(m).ref;
+    if(!n.versions.some(v=>v.ref===ref))vtMoveRemakeSource(id,m.id,ref);
+  }
   const originalGroups=new Set(versions.flatMap(v=>v.tab_origin?.groups||[]));
   for(const g of B.groups||[])if(g.nodes.includes(id)){
     if(originalGroups.has(g.id)&&!keep.some(({v})=>v.tab_origin?.groups?.includes(g.id)))g.nodes=g.nodes.filter(nid=>nid!==id);

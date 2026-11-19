@@ -305,6 +305,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             await act("export")
         await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0])
         submitted = await act("export")
+        self.assertEqual([(c["ref"], c["frames"]) for c in submitted["export"]["clips"]],
+                         [(video_remake.completed(submitted["shots"][0]["videos"], local_job)["ref"], 48), (source, 48)])
+        self.assertEqual((submitted["export"]["w"], submitted["export"]["h"], submitted["export"]["duration"]), (64, 64, 4))
         job = submitted["export"]["job"]
         task = await self.wait_for_render(job)
         final = json.loads(task["outputs"])[0]
@@ -330,6 +333,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.JOBS.pop(job)
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["export"]["ref"], final)
+        self.assertTrue((await act("keep"))["export"]["stale"])
+        self.assertFalse((await act("approve_video", job=local_job))["export"]["stale"])
 
         with patch.object(server, "llm_call", side_effect=self.no_vision):
             split = await act("split_shot", at=1.02)
