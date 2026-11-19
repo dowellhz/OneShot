@@ -91,6 +91,9 @@ async function openVideoRemake(video) {
   const matchesPerson = version => !session?.mapping || (
     version?.asset?.id === session.mapping.asset && version.source_person === session.mapping.source
   );
+  const adoptedPreview = frame => frame.previews.find(item => item.job === frame.approved && item.ref);
+  const matchesFirst = (guide, first) => !!guide && !!first && matchesPerson(first) &&
+    guide.asset?.id === first.asset?.id && guide.source_person === first.source_person;
   const status = message => { el(".rm-status").textContent = message; };
   const currentShot = () => session?.shots[shotIndex];
   const currentFrame = () => currentShot()?.frames[frameKey];
@@ -234,8 +237,11 @@ async function openVideoRemake(video) {
     const options = el("[data-frame]");
     const corrections = Object.entries(shot.frames).filter(([, item]) => Number.isInteger(item.correction_tick))
       .sort(([, a], [, b]) => a.correction_tick - b.correction_tick);
+    const first = adoptedPreview(shot.frames.first);
     const choices = [["first", "镜头首帧"], ["middle", "镜头中间帧"], ...corrections.map(([key, item]) =>
-      [key, `校正帧 · ${item.at.toFixed(2)} 秒`])];
+      [key, `校正帧 · ${item.at.toFixed(2)} 秒${item.approved
+        ? matchesFirst(adoptedPreview(item), first) ? " · 动作关键帧" : first ? " · 角色与首帧不同" : " · 等待首帧"
+        : ""}`])];
     if (JSON.stringify(choices) !== options.dataset.choices) {
       options.replaceChildren(...choices.map(([key, label]) => new Option(label, key)));
       options.dataset.choices = JSON.stringify(choices);
@@ -245,7 +251,6 @@ async function openVideoRemake(video) {
     el("[data-capture-correction]").disabled = busy;
     el("[data-remove-correction]").hidden = !isCorrection;
     el("[data-remove-correction]").disabled = busy;
-    el(".rm-role").hidden = isCorrection;
     const role = el("[data-role]");
     role.disabled = busy || !!session.mapping;
     if (session.mapping && role.value !== session.mapping.asset) {
@@ -279,8 +284,8 @@ async function openVideoRemake(video) {
       image.src = link.href; image.alt = "角色替换预览";
       link.append(image); output.append(link);
     } else {
-      output.textContent = isCorrection ? "在左侧点选或框选人物。此选区用于下一次局部合成。"
-        : version?.error || (version ? version.state === "running" ? "正在生成…" : "等待生成…" : "生成后显示在这里");
+      output.textContent = version?.error || (version ? version.state === "running" ? "正在生成…" : "等待生成…"
+        : isCorrection ? "生成替换预览后，可在此审核为动作关键帧。" : "生成后显示在这里");
     }
     const review = el(".rm-review");
     review.replaceChildren();
@@ -294,11 +299,12 @@ async function openVideoRemake(video) {
     }
     if (version?.ref) {
       if (version.job !== frame.approved) {
-        review.append(button("采用此预览", () => change("approve", {job:version.job}),
+        review.append(button(isCorrection ? "用作动作关键帧" : "采用此预览", () => change("approve", {job:version.job}),
           busy || !inScope(shotIndex) || !matchesPerson(version)));
       } else {
         review.append(button("放入画布", () => insertPreview(version, frame, false), busy));
         if (frameKey === "first") review.append(button("用作视频首帧", () => insertPreview(version, frame, true), busy));
+        if (isCorrection) review.append(button("取消动作关键帧", () => change("clear_guide"), busy));
       }
     }
     if (!shot.keep_original) review.append(button("保留这个原镜头", () => change("keep"), busy));
@@ -313,10 +319,14 @@ async function openVideoRemake(video) {
     const latest = videos.at(-1);
     const selected = videos.find(v => v.job === videoId) || latest;
     const first = shot.frames.first;
-    const approved = first.previews.find(item => item.job === first.approved);
+    const approved = adoptedPreview(first);
     const firstApproved = !!approved && matchesPerson(approved);
+    const guides = firstApproved ? Object.values(shot.frames).filter(frame => {
+      return Number.isInteger(frame.correction_tick) && matchesFirst(adoptedPreview(frame), approved);
+    }).length : 0;
     el(".rm-motion-hint").textContent = !inScope(shotIndex) ? "该镜头不在替换范围，合成时使用原片。" : firstApproved
-      ? "生成后请对照原片检查动作和口型。合成时按原镜头长度截取。"
+      ? guides ? `本次将用本地 H3 按原片时间生成，采用 ${guides} 张动作关键帧。生成后请核对动作和口型。`
+        : "可在校正帧添加动作关键帧。生成后请对照原片检查动作和口型。"
       : approved ? "首帧属于之前的人物映射，请为当前角色重新生成并采用。"
       : "先在「镜头首帧」中采用替换预览。";
     const input = el("[data-motion]");
@@ -337,7 +347,10 @@ async function openVideoRemake(video) {
     if (selected) {
       const select = document.createElement("select");
       select.setAttribute("aria-label", "镜头视频版本");
-      videos.forEach((v, i) => select.append(new Option(`${i + 1}. ${v.mode === "local" ? "局部合成" : "整镜重制"} · ${!matchesPerson(v) ? "旧映射" : shot.adopted_video === v.job && !shot.keep_original ? "已采用" : v.ref ? "待审核" : v.state === "error" ? "失败" : "处理中"}`, v.job)));
+      videos.forEach((v, i) => {
+        const label = v.mode === "local" ? "局部合成" : v.guides?.length ? `按 ${v.guides.length} 张动作关键帧重制` : "整镜重制";
+        select.append(new Option(`${i + 1}. ${label} · ${!matchesPerson(v) ? "旧映射" : shot.adopted_video === v.job && !shot.keep_original ? "已采用" : v.ref ? "待审核" : v.state === "error" ? "失败" : "处理中"}`, v.job));
+      });
       select.value = selected.job;
       select.onchange = () => { videoId = select.value; renderVideo(); };
       review.append(select, button("播放原镜头", () => {

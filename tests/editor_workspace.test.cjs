@@ -509,9 +509,12 @@ async function run(){
   }
   if(operation?.action==='preview'){
    remakeOptions=operation;
-   frame.previews.push({job:'remake-job',state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森'},source_person:'人物 A'});
+   remakeSession.shots[0].frames[operation.frame].previews.push({
+    job:'remake-'+operation.frame,state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森'},source_person:'人物 A',
+   });
   }
-  if(operation?.action==='approve')frame.approved=operation.job;
+  if(operation?.action==='approve')remakeSession.shots[0].frames[operation.frame].approved=operation.job;
+  if(operation?.action==='clear_guide')delete remakeSession.shots[0].frames[operation.frame].approved;
   if(operation?.action==='generate_video'){
    remakeMotion=operation.motion;
    remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4',asset:{id:'char'},source_person:'人物 A'}];
@@ -554,13 +557,19 @@ async function run(){
  await ready('!!$("#videoRemake [data-result]").getAttribute("src")','remade video can be reviewed in workspace');
  assert.equal(remakeMotion,'第一秒回头');
  evaluate('$("#videoRemake video").currentTime=1;$("#videoRemake [data-capture-correction]").click()');
- await ready('$("#videoRemake [data-frame]").value==="correction-24" && $("#videoRemake .rm-role").hidden','capture opens frame only for tracking correction');
+ await ready('$("#videoRemake [data-frame]").value==="correction-24" && !$("#videoRemake .rm-role").hidden','correction frame offers role preview generation');
  evaluate('$("#videoRemake [data-clear-protection]").click()');
  await ready('$(".rm-selection-status").textContent.includes("从此帧停止保护")','stop marker can terminate foreground tracking on correction frame');
  evaluate('remakeLayer.value="selection";remakeLayer.dispatchEvent(new Event("change"))');
  evaluate(`rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:80,clientY:15}));
   rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:200,clientY:37}));`);
  await ready('!$(".rm-mask").hidden && $$(".rm-video-review button").some(b=>!b.disabled && b.textContent.includes("1 张校正帧"))','correction counted by local render control');
+ evaluate('$("#videoRemake [data-generate]").click()');
+ await ready('$$(".rm-review button").some(b=>!b.disabled && b.textContent==="用作动作关键帧")','correction preview can be reviewed as a timed guide');
+ evaluate('$$(".rm-review button").find(b=>b.textContent==="用作动作关键帧").click()');
+ await ready('$(".rm-motion-hint").textContent.includes("1 张动作关键帧") && !$("#videoRemake [data-generate-video]").disabled','guide and first frame remain adopted together');
+ evaluate('$$(".rm-review button").find(b=>b.textContent==="取消动作关键帧").click()');
+ await ready('!$(".rm-motion-hint").textContent.includes("1 张动作关键帧") && !$("#videoRemake [data-generate-video]").disabled','guide removal preserves the adopted first frame');
  evaluate('$$(".rm-video-review button").find(b=>b.textContent.startsWith("跟踪人物并局部合成")).click()');
  await ready('$("#videoRemake [data-result]").getAttribute("src")?.includes("shot-local.mp4")','local result is selectable alongside original generation');
  evaluate('$$(".rm-video-review button").find(b=>b.textContent==="采用此视频").click()');

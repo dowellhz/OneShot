@@ -169,7 +169,6 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                 await act("approve_video", job="shot-gen-1")
             with self.assertRaises(web.HTTPBadRequest):
                 await act("export")
-            await act("generate_video")
         with self.assertRaises(web.HTTPBadRequest):
             await act("capture_correction", at=2.5)
         captured = await act("capture_correction", at=1)
@@ -177,6 +176,28 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(captured["shots"][0]["frames"][correction]["correction_tick"], 24)
         selected_frame = await act("select", frame=correction, rect=[.375,.25,.875,.75])
         corrected_mask = selected_frame["shots"][0]["frames"][correction]["selection"]["mask"]
+        guide_ref = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "orange"))["ref"]
+
+        async def render_guide(req, payload):
+            db.task_start(id="guide", user_id=7, state="done", outputs=[guide_ref])
+            return web.json_response({"ids":["guide"]})
+
+        with patch.object(server, "_generate_request", side_effect=render_guide):
+            await act("preview", frame=correction, asset=asset["id"])
+        reviewed = await act("approve", frame=correction, job="guide")
+        self.assertEqual(reviewed["shots"][0]["frames"]["first"]["approved"], "frame-preview")
+        self.assertEqual(reviewed["shots"][0]["frames"][correction]["approved"], "guide")
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("generate_video")
+        server.providers.seed()
+        with patch.object(server, "generate_request", side_effect=generate):
+            guided = await act("generate_video")
+        self.assertEqual(requests[1]["provider"], "local_h3")
+        self.assertEqual(guided["shots"][0]["videos"][-1]["guides"], [{"tick":24,"ref":guide_ref}])
+        body, _ = server.engine_body(requests[1])
+        self.assertEqual([frame["frame"] for frame in body["keyframes"]], [0, 24])
+        self.assertEqual(body["keyframes"][1]["path"], str(server.tools.ref_path(server.COMFY_DIR, guide_ref)))
+
         protected = await act("select", layer="protection", rect=[.58,.55,.72,.72])
         protection_mask = protected["shots"][0]["frames"]["first"]["protection"]["mask"]
         await act("clear_protection", frame=correction)

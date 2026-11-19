@@ -349,10 +349,36 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         "prompt": prompt, "duration": max(2, length), "ar": first["w"] / first["h"], "quality": "std",
         "count": 1, "mode": "fl2v", "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
     }
+    start_tick = round(shot["start"] * host.film.FPS)
+    guides = []
+    for frame in shot["frames"].values():
+        if "correction_tick" not in frame:
+            continue
+        preview = completed(frame["previews"], frame.get("approved"))
+        if (preview and preview["asset"]["id"] == approved["asset"]["id"] and
+                preview.get("source_person") == approved.get("source_person")):
+            guides.append({"tick": frame["correction_tick"] - start_tick, "ref": preview["ref"]})
+    guides.sort(key=lambda guide: guide["tick"])
+    if guides:
+        provider = host.providers.get("local_h3")
+        if not provider or not provider["enabled"]:
+            fail("动作关键帧需要启用本地 H3 视频服务")
+        images = raw["images"]
+        for guide in guides:
+            if not host.tools.ref_path(host.COMFY_DIR, guide["ref"]).is_file():
+                fail("动作关键帧文件已丢失，请重新生成并采用")
+            images.append({"ref": guide["ref"], "role": "frame", "time": guide["tick"] / host.film.FPS})
+        # H3 guide positions must leave four frames at the end of the generated clip.
+        final_tick = guides[-1]["tick"]
+        if final_tick > host.frames_for(raw["duration"]) - 4:
+            raw["duration"] = (final_tick + 4) / host.film.FPS
+        for index, image in enumerate(images, 1):
+            image["index"] = index
+        raw.update(planned=True, provider=provider["id"])
     version = submitted_job(await host.generate_request(req, raw))
     version.update(first_frame=approved["ref"], mask=approved.get("mask"), asset=approved["asset"],
                    source_person=approved.get("source_person"),
-                   motion=instructions[:1600])
+                   motion=instructions[:1600], guides=guides)
     videos.append(version)
 
 
@@ -396,7 +422,8 @@ def localize_shot(req, host, key, shot, job, mapping=None):
     version = submitted_job(response)
     version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
                    asset=generated["asset"], source_person=generated.get("source_person"),
-                   motion=generated.get("motion", ""), corrections=corrections, protections=protections)
+                   motion=generated.get("motion", ""), guides=generated.get("guides", []),
+                   corrections=corrections, protections=protections)
     videos.append(version)
 
 
@@ -517,8 +544,6 @@ async def handle(req, host):
                     fail("请选择要移除的校正帧")
                 del shot["frames"][data["frame"]]
             elif action == "preview":
-                if "correction_tick" in frame:
-                    fail("校正帧仅用于跟踪，请切换到首帧或中间帧生成预览")
                 session["role"] = await generate_preview(req, host, key, frame, data, mapping)
             elif action == "approve":
                 preview = completed(frame["previews"], data.get("job"))
@@ -526,9 +551,11 @@ async def handle(req, host):
                     fail("请选择已完成的预览")
                 if not matches_mapping(preview, mapping):
                     fail("这个预览属于之前的人物映射，请为当前角色重新生成")
-                for item in shot["frames"].values():
-                    item.pop("approved", None)
                 frame["approved"] = preview["job"]
+            elif action == "clear_guide":
+                if "correction_tick" not in frame:
+                    fail("请选择要取消的动作关键帧")
+                frame.pop("approved", None)
             elif action == "generate_video":
                 await generate_shot(req, host, key, shot, data, mapping)
             elif action == "localize":
