@@ -58,7 +58,7 @@ def mask_center(mask):
     return (float(xs[0] + xs[-1]) / 2, float(ys[0] + ys[-1]) / 2)
 
 
-def composite_frame(original, replacement, original_mask, replacement_mask, cv):
+def composite_frame(original, replacement, original_mask, replacement_mask, cv, protect_mask=None):
     height, width = original.shape[:2]
     ox, oy = mask_center(original_mask)
     rx, ry = mask_center(replacement_mask)
@@ -71,12 +71,14 @@ def composite_frame(original, replacement, original_mask, replacement_mask, cv):
     overlap = np.count_nonzero(original_mask & moved_mask)
     if overlap < np.count_nonzero(original_mask) * .55:
         raise ValueError("生成角色与原片的轮廓差异过大，请改用整镜重制")
-    blur = cv.GaussianBlur(original_mask, (0, 0), max(.5, min(width, height) / 400))
-    feather = np.where(original_mask > 0, blur, 0).astype("float32")[..., None] / 255
+    editable = original_mask if protect_mask is None else cv.subtract(original_mask, protect_mask)
+    blur = cv.GaussianBlur(editable, (0, 0), max(.5, min(width, height) / 400))
+    feather = np.where(editable > 0, blur, 0).astype("float32")[..., None] / 255
     return np.rint(original * (1 - feather) + aligned * feather).astype("uint8")
 
 
-def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled, *, corrections=None):
+def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled, *,
+                   corrections=None, protections=None):
     import av
     try:
         import cv2 as cv
@@ -100,6 +102,8 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
 
     mask = load_mask(mask_ref)
     corrections = corrections or {}
+    protections = protections or {}
+    foreground_track = None
     originals = render.clip_frames(original, start, end, fit, total)
     replacements = render.clip_frames(replacement, 0, total / render.FPS, fit, total)
     path, ref = render._new(root, "output", "remake-local", ".mp4")
@@ -123,7 +127,17 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
                     replacement_track.advance(b, index)
                     original_mask = original_track.at_size(width, height)
                     replacement_mask = replacement_track.at_size(width, height)
-                rgb = composite_frame(a, b, original_mask, replacement_mask, cv)
+                try:
+                    if index in protections:
+                        ref_at_frame = protections[index]
+                        foreground_track = MaskTrack(a, load_mask(ref_at_frame), cv) if ref_at_frame else None
+                    elif foreground_track is not None:
+                        foreground_track.advance(a, index)
+                except ValueError as error:
+                    at = (round(start * render.FPS) + index) / render.FPS
+                    raise ValueError(f"原片 {at:.2f} 秒的前景保护区无法跟踪，请在附近添加校正帧") from error
+                protect_mask = foreground_track.at_size(width, height) if foreground_track is not None else None
+                rgb = composite_frame(a, b, original_mask, replacement_mask, cv, protect_mask)
                 frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
                 frame.pts, frame.time_base = index, Fraction(1, render.FPS)
                 for packet in stream.encode(frame):

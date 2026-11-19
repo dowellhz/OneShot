@@ -495,15 +495,17 @@ async function run(){
   }
   if(operation?.action==='select'){
    remakeSelection=operation.rect;
-   frame.selection={overlay:'input:h3studio/remake-overlay.png'};
+   remakeSession.shots[0].frames[operation.frame][operation.layer]={
+    mask:'input:h3studio/remake-mask.png',overlay:'input:h3studio/remake-overlay.png',
+   };
   }
   if(operation?.action==='capture_correction'){
    const key='correction-24';
-   remakeSession.shots[0].frames[key]={...structuredClone(frame),correction_tick:24,at:1,selection:null,previews:[]};
+   remakeSession.shots[0].frames[key]={ref:frame.ref,w:frame.w,h:frame.h,correction_tick:24,at:1,previews:[]};
    return {ok:true,json:async()=>({...structuredClone(remakeSession),captured_frame:key}),text:async()=>JSON.stringify({...remakeSession,captured_frame:key})};
   }
-  if(operation?.action==='select' && operation.frame==='correction-24'){
-   remakeSession.shots[0].frames[operation.frame].selection={overlay:'input:h3studio/correction-overlay.png'};
+  if(operation?.action==='clear_protection'){
+   remakeSession.shots[0].frames[operation.frame].protection={mask:null};
   }
   if(operation?.action==='preview'){
    remakeOptions=operation;
@@ -538,6 +540,10 @@ async function run(){
   rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:180,clientY:37}));`);
  await ready('$(".rm-mask").hidden===false','selected mask appears over source');
  assert.equal(remakeSelection.length,4);
+ evaluate(`const remakeLayer=$("#videoRemake [data-layer]");remakeLayer.value="protection";remakeLayer.dispatchEvent(new Event("change"));
+  rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:80,clientY:18}));
+  rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:120,clientY:28}));`);
+ await ready('!$(".rm-protection").hidden && !$(".rm-mask").hidden','foreground and replacement selections are shown separately');
  evaluate(`const rmRole=$("[data-role]",$("#videoRemake"));rmRole.value="char";rmRole.dispatchEvent(new Event("change"));$("#videoRemake [data-generate]").click()`);
  await ready('!!$("#videoRemake .rm-output img")','role preview displays in workspace');
  assert.equal(remakeOptions.asset,'char');
@@ -549,9 +555,12 @@ async function run(){
  assert.equal(remakeMotion,'第一秒回头');
  evaluate('$("#videoRemake video").currentTime=1;$("#videoRemake [data-capture-correction]").click()');
  await ready('$("#videoRemake [data-frame]").value==="correction-24" && $("#videoRemake .rm-role").hidden','capture opens frame only for tracking correction');
+ evaluate('$("#videoRemake [data-clear-protection]").click()');
+ await ready('$(".rm-selection-status").textContent.includes("从此帧停止保护")','stop marker can terminate foreground tracking on correction frame');
+ evaluate('remakeLayer.value="selection";remakeLayer.dispatchEvent(new Event("change"))');
  evaluate(`rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:80,clientY:15}));
   rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:200,clientY:37}));`);
- await ready('$$(".rm-video-review button").some(b=>b.textContent.includes("1 张校正帧"))','correction counted by local render control');
+ await ready('!$(".rm-mask").hidden && $$(".rm-video-review button").some(b=>!b.disabled && b.textContent.includes("1 张校正帧"))','correction counted by local render control');
  evaluate('$$(".rm-video-review button").find(b=>b.textContent.startsWith("跟踪人物并局部合成")).click()');
  await ready('$("#videoRemake [data-result]").getAttribute("src")?.includes("shot-local.mp4")','local result is selectable alongside original generation');
  evaluate('$$(".rm-video-review button").find(b=>b.textContent==="采用此视频").click()');

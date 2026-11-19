@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 
 from aiohttp import web
-from PIL import Image
+from PIL import Image, ImageChops
 
 import db
 import image_editor
@@ -203,17 +203,18 @@ def coordinates(values, length):
     return values
 
 
-def display_mask(root, source_ref, mask_ref):
+def display_mask(root, source_ref, mask_ref, layer):
     mask = image_editor.load(root, mask_ref).convert("L")
     source = image_editor.load(root, source_ref)
     if source.size != mask.size or not mask.getbbox():
-        raise ValueError("未识别到有效人物区域，请重新点选或手动框选")
-    tint = Image.new("RGBA", source.size, (167, 182, 215, 0))
+        raise ValueError("未识别到有效区域，请重新点选或手动框选")
+    color = (220, 169, 111, 0) if layer == "protection" else (167, 182, 215, 0)
+    tint = Image.new("RGBA", source.size, color)
     tint.putalpha(mask.point(lambda value: round(value * .52)))
     return image_editor.save(root, tint, "remake-overlay", "input")["ref"]
 
 
-async def select_area(req, host, frame, data):
+async def select_area(req, host, frame, data, layer):
     w, h = frame["w"], frame["h"]
     if "point" in data:
         x, y = coordinates(data["point"], 2)
@@ -227,15 +228,24 @@ async def select_area(req, host, frame, data):
         x0, x1 = sorted((round(a * w), round(c * w)))
         y0, y1 = sorted((round(b * h), round(d * h)))
         if x1 - x0 < 2 or y1 - y0 < 2:
-            fail("请框出人物区域")
+            fail("请框出有效区域")
         mask = Image.new("L", (w, h))
         mask.paste(255, (x0, y0, x1, y1))
         mask_ref = (await asyncio.to_thread(image_editor.save, host.COMFY_DIR, mask, "remake-mask", "input"))["ref"]
     try:
-        overlay = await asyncio.to_thread(display_mask, host.COMFY_DIR, frame["ref"], mask_ref)
+        overlay = await asyncio.to_thread(display_mask, host.COMFY_DIR, frame["ref"], mask_ref, layer)
     except (ValueError, OSError) as error:
         fail(str(error))
-    frame["selection"] = {"mask": mask_ref, "overlay": overlay}
+    frame[layer] = {"mask": mask_ref, "overlay": overlay}
+
+
+def preview_mask(root, selection, protection):
+    selected = image_editor.load(root, selection).convert("L")
+    protected = image_editor.load(root, protection).convert("L").point(lambda value: 255 if value >= 128 else 0)
+    editable = ImageChops.subtract(selected, protected)
+    if not editable.getbbox():
+        raise ValueError("前景保护区覆盖了整个人物选区，请调整选区")
+    return image_editor.save(root, editable, "remake-editable", "input")["ref"]
 
 
 def role_reference(req, board, data):
@@ -277,8 +287,12 @@ async def generate_preview(req, host, key, frame, data, mapping=None):
     )
     selection = frame["selection"]
     try:
+        protection = frame.get("protection", {}).get("mask")
+        mask = selection["mask"]
+        if protection:
+            mask = await asyncio.to_thread(preview_mask, host.COMFY_DIR, mask, protection)
         payload = await asyncio.to_thread(image_editor.prepare, host.COMFY_DIR, {
-            "ref": frame["ref"], "mask": selection["mask"], "mode": "region", "backend": "h3",
+            "ref": frame["ref"], "mask": mask, "mode": "region", "backend": "h3",
             "board": key[1], "prompt": prompt, "label": f"角色替换预览 · {asset['name']}",
         })
     except (ValueError, OSError) as error:
@@ -367,16 +381,22 @@ def localize_shot(req, host, key, shot, job, mapping=None):
         frame["correction_tick"] - start_tick: frame["selection"]["mask"]
         for frame in shot["frames"].values() if "correction_tick" in frame and frame.get("selection")
     }
+    protections = {
+        frame.get("correction_tick", start_tick) - start_tick: frame["protection"]["mask"]
+        for frame_key, frame in shot["frames"].items()
+        if "protection" in frame and (frame_key == "first" or "correction_tick" in frame)
+    }
 
     def composite(progress, cancelled):
         return video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], mask,
-                                          start, end, progress, cancelled, corrections=corrections)
+                                          start, end, progress, cancelled, corrections=corrections,
+                                          protections=protections)
 
     response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
     version = submitted_job(response)
     version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
                    asset=generated["asset"], source_person=generated.get("source_person"),
-                   motion=generated.get("motion", ""), corrections=corrections)
+                   motion=generated.get("motion", ""), corrections=corrections, protections=protections)
     videos.append(version)
 
 
@@ -479,8 +499,17 @@ async def handle(req, host):
             if (scoped is not None and data["shot"] not in scoped and
                     action in ("preview", "approve", "generate_video", "localize", "approve_video")):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
-            if action == "select":
-                await select_area(req, host, frame, data)
+            if action in ("select", "clear_protection"):
+                layer = "protection" if action == "clear_protection" else data.get("layer", "selection")
+                if layer not in ("selection", "protection"):
+                    fail("请选择人物选区或前景保护区")
+                if layer == "protection" and frame is not shot["frames"]["first"] and "correction_tick" not in frame:
+                    fail("请在首帧或校正帧标记前景保护区")
+                if action == "clear_protection":
+                    # A null anchor stops protection inherited from an earlier frame.
+                    frame["protection"] = {"mask": None}
+                else:
+                    await select_area(req, host, frame, data, layer)
             elif action == "capture_correction":
                 captured_frame = await capture_correction(host, source, shot, data.get("at"))
             elif action == "remove_correction":

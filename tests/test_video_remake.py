@@ -85,6 +85,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with self.assertRaises(web.HTTPBadRequest):
             await act("preview", asset=asset["id"])
         await act("select", rect=[.25, .25, .75, .75])
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("select", frame="middle", layer="protection", rect=[.5, .5, .65, .65])
+        await act("select", layer="protection", rect=[.5, .5, .65, .65])
         job = "remake-test-job"
 
         async def submit(req, payload):
@@ -102,7 +105,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         original = image_editor.load(server.COMFY_DIR, frame["ref"])
         output = image_editor.load(server.COMFY_DIR, result["ref"])
         self.assertEqual(output.getpixel((0, 0)), original.getpixel((0, 0)))
-        self.assertNotEqual(output.getpixel((32, 32)), original.getpixel((32, 32)))
+        self.assertEqual(output.getpixel((36, 36)), original.getpixel((36, 36)))
+        self.assertNotEqual(output.getpixel((25, 25)), original.getpixel((25, 25)))
         await act("approve", job=job)
         reopened = await act()
         self.assertEqual(reopened["shots"][0]["frames"]["first"]["approved"], job)
@@ -173,9 +177,13 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(captured["shots"][0]["frames"][correction]["correction_tick"], 24)
         selected_frame = await act("select", frame=correction, rect=[.375,.25,.875,.75])
         corrected_mask = selected_frame["shots"][0]["frames"][correction]["selection"]["mask"]
+        protected = await act("select", layer="protection", rect=[.58,.55,.72,.72])
+        protection_mask = protected["shots"][0]["frames"]["first"]["protection"]["mask"]
+        await act("clear_protection", frame=correction)
         local = await act("localize", job="shot-gen-2")
         localized = local["shots"][0]["videos"][-1]
         self.assertEqual(localized["corrections"], {"24":corrected_mask})
+        self.assertEqual(localized["protections"], {"0":protection_mask, "24":None})
         local_job = localized["job"]
         await act("remove_correction", frame=correction)
         await self.wait_for_render(local_job)
@@ -200,6 +208,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertGreater(frames[47][0,0,0], frames[47][0,0,1])
         self.assertGreater(frames[23][32,19,1], frames[23][32,19,0])
         self.assertGreater(frames[24][32,19,0], frames[24][32,19,1])
+        self.assertGreater(frames[23][40,41,0], frames[23][40,41,1])
+        self.assertGreater(frames[24][40,41,1], frames[24][40,41,0])
         self.assertGreater(frames[48][32,32,0], frames[48][32,32,1])
         audio = server.film.read_audio(path)[0]
         for t in (1, 3):

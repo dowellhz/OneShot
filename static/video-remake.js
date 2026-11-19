@@ -45,12 +45,14 @@ async function openVideoRemake(video) {
           <button type="button" data-capture-correction>添加当前位置为校正帧</button><button type="button" data-remove-correction hidden>删除校正帧</button></div>
         <p class="rm-summary"></p>
         <div class="rm-actions">
-          <button type="button" data-mode="point" aria-pressed="true">点选人物</button>
+          <select data-layer aria-label="要标记的区域"><option value="selection">替换人物</option><option value="protection">保护前景</option></select>
+          <button type="button" data-mode="point" aria-pressed="true">智能点选</button>
           <button type="button" data-mode="box" aria-pressed="false">框选区域</button>
-          <span class="rm-selection-status">在原画面中点选要替换的人物</span>
+          <button type="button" data-clear-protection hidden>从此帧停止保护</button>
+          <span class="rm-selection-status"></span>
         </div>
         <div class="rm-stage">
-          <div class="rm-frame"><span>原画面</span><div class="rm-surface"><img class="rm-original" alt="原片画面"><img class="rm-mask" alt="" hidden></div></div>
+          <div class="rm-frame"><span>原画面</span><div class="rm-surface"><img class="rm-original" alt="原片画面"><img class="rm-mask" alt="" hidden><img class="rm-mask rm-protection" alt="" hidden></div></div>
           <div class="rm-frame"><span>替换预览</span><div class="rm-output">生成后显示在这里</div></div>
         </div>
         <div class="rm-actions rm-role">
@@ -257,7 +259,14 @@ async function openVideoRemake(video) {
     if (original.getAttribute("src") !== originalUrl) original.src = originalUrl;
     selection.hidden = !frame.selection;
     if (frame.selection) selection.src = remakeMedia(frame.selection.overlay);
-    el(".rm-selection-status").textContent = frame.selection ? "已选区域，可重新点选或框选" : "在原画面中选择要替换的人物";
+    const protection = el(".rm-protection");
+    protection.hidden = !frame.protection?.overlay;
+    if (!protection.hidden) protection.src = remakeMedia(frame.protection.overlay);
+    const layer = el("[data-layer]");
+    layer.hidden = frameKey !== "first" && !isCorrection;
+    if (layer.hidden) layer.value = "selection";
+    layer.disabled = busy;
+    updateSelectionControls();
     const previews = frame.previews;
     const latest = previews.at(-1);
     const version = previews.find(item => item.job === versionId) || latest;
@@ -341,7 +350,7 @@ async function openVideoRemake(video) {
           busy || !inScope(shotIndex) || !matchesPerson(selected)));
       }
       if (source && selected.mode !== "local") {
-        const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) && f.selection).length;
+        const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) && (f.selection || f.protection)).length;
         const caption = count ? `跟踪人物并局部合成（${count} 张校正帧）` : "跟踪人物并局部合成";
         review.append(button(caption, () => change("localize", {job:selected.job}),
           busy || !inScope(shotIndex) || !matchesPerson(selected) || videos.some(active)));
@@ -461,6 +470,8 @@ async function openVideoRemake(video) {
     change("capture_correction", {at:player.currentTime});
   };
   el("[data-remove-correction]").onclick = () => change("remove_correction");
+  el("[data-layer]").onchange = updateSelectionControls;
+  el("[data-clear-protection]").onclick = () => change("clear_protection");
   el("[data-role]").onchange = () => { fillViews(); renderPanel(); };
   el("[data-view]").onchange = event => {
     viewChoices.set(shotIndex + ":" + el("[data-role]").value, event.target.value);
@@ -471,11 +482,24 @@ async function openVideoRemake(video) {
   el("[data-motion]").oninput = event => motionDrafts.set(shotIndex, event.target.value);
   el("[data-generate-video]").onclick = () => change("generate_video", {motion:el("[data-motion]").value});
   el("[data-export]").onclick = () => change("export");
+  function updateSelectionControls() {
+    const frame = currentFrame();
+    const layer = el("[data-layer]").value;
+    const protect = layer === "protection";
+    const clear = el("[data-clear-protection]");
+    clear.hidden = !protect || frame.protection?.mask === null || (frameKey === "first" && !frame.protection);
+    clear.disabled = busy;
+    const instruction = mode === "box" ? "拖动框选" : "在原画面中点选";
+    const target = protect ? "要保留的前景" : "要替换的人物";
+    let message = frame[layer]?.overlay ? `已标记${target}，可重新${mode === "box" ? "框选" : "点选"}` : instruction + target;
+    if (protect && frame.protection?.mask === null) message = "从此帧停止保护，可重新标记前景";
+    el(".rm-selection-status").textContent = message;
+  }
   for (const control of panel.querySelectorAll("[data-mode]")) {
     control.onclick = () => {
       mode = control.dataset.mode;
       for (const item of panel.querySelectorAll("[data-mode]")) item.setAttribute("aria-pressed", String(item === control));
-      el(".rm-selection-status").textContent = mode === "box" ? "在原画面中拖出人物范围" : "在原画面中点选人物";
+      updateSelectionControls();
     };
   }
   const surface = el(".rm-surface");
@@ -496,7 +520,7 @@ async function openVideoRemake(video) {
     const end = point(event);
     const selection = mode === "box" ? {rect:[...dragStart, ...end]} : {point:end};
     dragStart = null;
-    change("select", selection);
+    change("select", {...selection, layer:el("[data-layer]").value});
   };
   try {
     renderPanel();
