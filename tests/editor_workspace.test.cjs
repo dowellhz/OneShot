@@ -480,15 +480,19 @@ async function run(){
  await evaluate('acLoadSession("s1")');
  equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),0,'old choices stay inactive after replay');
  const previousFetch=w.fetch;
+ w.__memories.find(a=>a.id==='char').character_views.face='input:h3studio/headshot.png';
  let remakeSession=null, remakeSelection, remakeOptions, remakeMotion;
  w.fetch=async(url,options={})=>{
   if(!String(url).startsWith('/api/video-remake/'))return previousFetch(url,options);
   const operation=options.body&&JSON.parse(options.body);
   if(operation?.action==='analyze'){
    const frame={ref:'input:h3studio/remake-frame.png',w:640,h:480,previews:[]};
-   remakeSession={shots:[{start:0,end:3,summary:{action:['缓慢转身']},frames:{first:frame,middle:structuredClone(frame)}}]};
+   remakeSession={shots:[{start:0,end:3,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
   }
   const frame=remakeSession?.shots[0].frames.first;
+  if(operation?.action==='map_person'){
+   remakeSession.mapping={source:operation.person,asset:operation.asset,asset_name:'林森新版',shots:operation.shots};
+  }
   if(operation?.action==='select'){
    remakeSelection=operation.rect;
    frame.selection={overlay:'input:h3studio/remake-overlay.png'};
@@ -503,16 +507,16 @@ async function run(){
   }
   if(operation?.action==='preview'){
    remakeOptions=operation;
-   frame.previews.push({job:'remake-job',state:'done',ref:'output:h3studio/remake.png',asset:{name:'林森'}});
+   frame.previews.push({job:'remake-job',state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森'},source_person:'人物 A'});
   }
   if(operation?.action==='approve')frame.approved=operation.job;
   if(operation?.action==='generate_video'){
    remakeMotion=operation.motion;
-   remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4'}];
+   remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4',asset:{id:'char'},source_person:'人物 A'}];
   }
   if(operation?.action==='localize'){
    assert.equal(operation.job,'shot-video');
-   remakeSession.shots[0].videos.push({job:'shot-local',mode:'local',state:'done',ref:'output:h3studio/shot-local.mp4'});
+   remakeSession.shots[0].videos.push({job:'shot-local',mode:'local',state:'done',ref:'output:h3studio/shot-local.mp4',asset:{id:'char'},source_person:'人物 A'});
   }
   if(operation?.action==='approve_video')remakeSession.shots[0].adopted_video=operation.job;
   if(operation?.action==='export')remakeSession.export={job:'export-job',state:'done',ref:'output:h3studio/assembled.mp4'};
@@ -523,6 +527,11 @@ async function run(){
  await ready('$("#videoRemake [data-analyze]")?.disabled===false','remake workspace opens from video menu');
  evaluate('$("#videoRemake [data-analyze]").click()');
  await ready('!!$("#videoRemake .rm-shots button")','analyzed shot visible');
+ evaluate(`const sourcePersonCheck=$("#videoRemake [data-person]");sourcePersonCheck.value="人物 A";sourcePersonCheck.dispatchEvent(new Event("change"));
+   $("#videoRemake [data-map-asset]").value="char";$("#videoRemake [data-map-shots] input").checked=true;
+   $("#videoRemake [data-save-mapping]").click()`);
+ await ready('$("#videoRemake [data-role]").disabled && $(".rm-mapping-status").textContent.includes("人物 A → 林森")','confirmed cross-shot mapping binds role');
+
  evaluate(`$("#videoRemake [data-mode=box]").click();
   const rmSurface=$(".rm-surface");
   rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:60,clientY:15}));
@@ -532,6 +541,7 @@ async function run(){
  evaluate(`const rmRole=$("[data-role]",$("#videoRemake"));rmRole.value="char";rmRole.dispatchEvent(new Event("change"));$("#videoRemake [data-generate]").click()`);
  await ready('!!$("#videoRemake .rm-output img")','role preview displays in workspace');
  assert.equal(remakeOptions.asset,'char');
+ assert.equal(remakeOptions.view,'face','close-up suggests an approved headshot');
  evaluate('$$(".rm-review button").find(b=>b.textContent==="采用此预览").click()');
  await ready('$$(".rm-review button").some(b=>b.textContent==="用作视频首帧")','approve exposes first-frame action');
  evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("#videoRemake [data-generate-video]").click()`);

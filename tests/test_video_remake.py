@@ -115,14 +115,19 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         remake = self.make_clip("replacement", seconds=3, color=(30, 210, 30), frequency=880)
         too_short = self.make_clip("short", seconds=1, color=(30, 30, 210), frequency=880)
         board = {"owner": 7, "nodes": [{"id":"n3", "type":"video", "versions":[{"ref":source}]}]}
+        board["nodes"].append({"id":"n1", "type":"image", "versions":[self.source]})
         server.board_path("test").write_text(json.dumps(board))
+        asset = server.creative_memory.Store(server).put(self.user, {
+            "name":"新角色", "kind":"character", "board":"test", "ref":self.source["ref"], "source_board":"test",
+        })
         shot_frame = video_remake.frame_record(self.source["ref"], (64, 64))
         selected = Image.new("L", (64, 64))
         selected.paste(255, (16,16,48,48))
         mask = image_editor.save(server.COMFY_DIR, selected, "mask", "input")["ref"]
         shot_frame["previews"] = [{
             "job":"frame-preview", "state":"done", "ref":self.source["ref"], "mask":mask,
-            "asset":{"name":"新角色", "ref":self.source["ref"]},
+            "asset":{"id":asset["id"], "name":asset["name"], "ref":self.source["ref"]},
+            "source_person":"穿红衣的人",
         }]
         shot_frame["approved"] = "frame-preview"
         key = (7, "test", "n3", source)
@@ -136,6 +141,13 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         async def act(action, **kwargs):
             response = await server.remake(Request(source, self.user, {"action":action,"shot":0,**kwargs}))
             return json.loads(response.body)
+
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[])
+        mapped = await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0])
+        self.assertEqual(mapped["mapping"]["shots"], [0])
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("generate_video", shot=1)
 
         results = iter([too_short, remake])
         requests = []
@@ -168,6 +180,13 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         await act("remove_correction", frame=correction)
         await self.wait_for_render(local_job)
         await act("approve_video", job=local_job)
+        await act("map_person", person="另一人", asset=asset["id"], shots=[0])
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("export")
+        await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0,1])
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("export")
+        await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0])
         submitted = await act("export")
         job = submitted["export"]["job"]
         task = await self.wait_for_render(job)

@@ -93,6 +93,29 @@ def frame_record(ref, dimensions):
     return {"ref": ref, "w": dimensions[0], "h": dimensions[1], "previews": []}
 
 
+def mapped_shots(session):
+    mapping = session.get("mapping")
+    return set(mapping["shots"]) if mapping else None
+
+
+def matches_mapping(version, mapping):
+    return (not mapping or (version.get("asset", {}).get("id") == mapping["asset"] and
+                            version.get("source_person") == mapping["source"]))
+
+
+def set_mapping(req, board, session, data):
+    source = data.get("person")
+    shots = data.get("shots")
+    if not isinstance(source, str) or not source.strip() or len(source.strip()) > 60:
+        fail("请选择或填写原片人物")
+    if (not isinstance(shots, list) or not shots or
+            any(type(index) is not int or not 0 <= index < len(session["shots"]) for index in shots)):
+        fail("请勾选已确认出现该人物的镜头")
+    asset, _, _ = role_reference(req, board, {**data, "view": "main"})
+    session["mapping"] = {"source": source.strip(), "asset": asset["id"],
+                          "asset_name": asset["name"], "shots": sorted(set(shots))}
+
+
 async def analyze(req, host, source):
     def cut_video():
         _, _, duration, _ = host.film.probe(host.tools.ref_path(host.COMFY_DIR, source))
@@ -229,7 +252,7 @@ def role_reference(req, board, data):
     return asset, view, ref
 
 
-async def generate_preview(req, host, key, frame, data):
+async def generate_preview(req, host, key, frame, data, mapping=None):
     if not frame.get("selection"):
         fail("请先在原片画面中选中待替换的人物")
     if pending(frame["previews"]):
@@ -237,6 +260,8 @@ async def generate_preview(req, host, key, frame, data):
     if len(frame["previews"]) >= MAX_PREVIEWS:
         fail("此画面已达到预览版本上限")
     asset, view, reference = role_reference(req, key[1], data)
+    if mapping and asset["id"] != mapping["asset"]:
+        fail("替换角色已更新，请刷新并确认人物映射", 409)
     if not host.tools.ref_path(host.COMFY_DIR, reference).is_file():
         fail("角色参考图文件找不到")
     note = data.get("note", "")
@@ -262,6 +287,7 @@ async def generate_preview(req, host, key, frame, data):
     preview = submitted_job(await host.generate_request(req, payload))
     preview.update({
         "mask": selection["mask"],
+        "source_person": mapping["source"] if mapping else None,
         "asset": {"id": asset["id"], "name": asset["name"], "view": view, "ref": reference},
     })
     frame["previews"].append(preview)
@@ -275,11 +301,13 @@ def submitted_job(response):
     return {"job": ids[0], "state": "queued"}
 
 
-async def generate_shot(req, host, key, shot, data):
+async def generate_shot(req, host, key, shot, data, mapping=None):
     first = shot["frames"]["first"]
     approved = completed(first["previews"], first.get("approved"))
     if not approved:
         fail("请先采用这个镜头的首帧预览")
+    if not matches_mapping(approved, mapping):
+        fail("首帧属于之前的人物映射，请重新生成并采用首帧")
     videos = shot.setdefault("videos", [])
     if pending(videos):
         fail("此镜头正在生成，请等待完成", 409)
@@ -309,15 +337,18 @@ async def generate_shot(req, host, key, shot, data):
     }
     version = submitted_job(await host.generate_request(req, raw))
     version.update(first_frame=approved["ref"], mask=approved.get("mask"), asset=approved["asset"],
+                   source_person=approved.get("source_person"),
                    motion=instructions[:1600])
     videos.append(version)
 
 
-def localize_shot(req, host, key, shot, job):
+def localize_shot(req, host, key, shot, job, mapping=None):
     videos = shot.get("videos", [])
     generated = completed(videos, job)
     if not generated or generated.get("mode") == "local":
         fail("请选择已完成的整镜重制视频")
+    if not matches_mapping(generated, mapping):
+        fail("视频属于之前的人物映射，请重新生成当前角色的视频")
     if pending(videos):
         fail("此镜头正在处理，请等待完成", 409)
     if len(videos) >= MAX_PREVIEWS:
@@ -344,14 +375,17 @@ def localize_shot(req, host, key, shot, job):
     response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
     version = submitted_job(response)
     version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
-                   asset=generated["asset"], motion=generated.get("motion", ""), corrections=corrections)
+                   asset=generated["asset"], source_person=generated.get("source_person"),
+                   motion=generated.get("motion", ""), corrections=corrections)
     videos.append(version)
 
 
-async def approve_video(host, shot, job):
+async def approve_video(host, shot, job, mapping=None):
     version = completed(shot.get("videos", []), job)
     if not version:
         fail("请选择已完成的视频版本")
+    if not matches_mapping(version, mapping):
+        fail("视频属于之前的人物映射，请重新生成当前角色的视频")
     try:
         _, _, duration, _ = await asyncio.to_thread(host.film.probe, host.tools.ref_path(host.COMFY_DIR, version["ref"]))
     except Exception:
@@ -368,6 +402,7 @@ def export_plan(session, source, fps, duration):
     clips = []
     last_tick = 0
     kept = 0
+    scoped = mapped_shots(session)
     for index, shot in enumerate(session["shots"]):
         end = round(min(duration, shot["end"]) * fps)
         if index == len(session["shots"]) - 1:
@@ -376,9 +411,11 @@ def export_plan(session, source, fps, duration):
         if frames <= 0:
             continue
         version = None
-        if not shot.get("keep_original"):
+        if (scoped is None or index in scoped) and not shot.get("keep_original"):
             version = completed(shot.get("videos", []), shot.get("adopted_video"))
-            if not version and (shot.get("videos") or any(f.get("approved") for f in shot["frames"].values())):
+            if version and not matches_mapping(version, session.get("mapping")):
+                fail(f"镜头 {index + 1} 的视频属于之前的人物映射，请重新审核")
+            if not version and (scoped is not None or shot.get("videos") or any(f.get("approved") for f in shot["frames"].values())):
                 fail(f"镜头 {index + 1} 待审核，请采用视频或选择保留原镜头")
         if version:
             clips.append({"ref": version["ref"], "in": 0, "out": frames / fps, "frames": frames})
@@ -430,9 +467,18 @@ async def handle(req, host):
         elif session and action == "export":
             update_jobs(host, key[0], session)
             await export_video(req, host, key, session)
+        elif session and action == "map_person":
+            set_mapping(req, board, session, data)
+        elif session and action == "remove_mapping":
+            session.pop("mapping", None)
         elif session:
             update_jobs(host, key[0], session)
             shot, frame = selected_frame(session, data)
+            mapping = session.get("mapping")
+            scoped = mapped_shots(session)
+            if (scoped is not None and data["shot"] not in scoped and
+                    action in ("preview", "approve", "generate_video", "localize", "approve_video")):
+                fail("此镜头未包含在人物映射范围内，请先确认该镜头")
             if action == "select":
                 await select_area(req, host, frame, data)
             elif action == "capture_correction":
@@ -444,20 +490,22 @@ async def handle(req, host):
             elif action == "preview":
                 if "correction_tick" in frame:
                     fail("校正帧仅用于跟踪，请切换到首帧或中间帧生成预览")
-                session["role"] = await generate_preview(req, host, key, frame, data)
+                session["role"] = await generate_preview(req, host, key, frame, data, mapping)
             elif action == "approve":
                 preview = completed(frame["previews"], data.get("job"))
                 if not preview or not preview.get("ref"):
                     fail("请选择已完成的预览")
+                if not matches_mapping(preview, mapping):
+                    fail("这个预览属于之前的人物映射，请为当前角色重新生成")
                 for item in shot["frames"].values():
                     item.pop("approved", None)
                 frame["approved"] = preview["job"]
             elif action == "generate_video":
-                await generate_shot(req, host, key, shot, data)
+                await generate_shot(req, host, key, shot, data, mapping)
             elif action == "localize":
-                localize_shot(req, host, key, shot, data.get("job"))
+                localize_shot(req, host, key, shot, data.get("job"), mapping)
             elif action == "approve_video":
-                await approve_video(host, shot, data.get("job"))
+                await approve_video(host, shot, data.get("job"), mapping)
             elif action == "keep":
                 shot["keep_original"] = True
             else:

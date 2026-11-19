@@ -57,3 +57,14 @@
 }
 .rm-video-result video { display: block; width: 100%; max-height: 300px; margin-top: 8px; background: #111114; border-radius: 8px; }
 .rm-video-status:empty { display: none; }
+.rm-mapping { margin-top: 10px; padding: 9px; background: #202025; border: 1px solid var(--line2); border-radius: 8px; }
+.rm-mapping summary { cursor: pointer; font-weight: 600; }
+.rm-mapping-status { margin: 7px 0; color: #b2b2bc; }
+.rm-mapping > label { display: grid; gap: 4px; margin: 6px 0; }
+.rm-mapping > label select { max-width: 100% !important; }
+.rm-mapping fieldset { margin: 9px 0 0; padding: 5px; border: 1px solid var(--line2); border-radius: 6px; }
+.rm-mapping [data-map-shots] { max-height: 210px; overflow: auto; }
+.rm-mapping [data-map-shots] label { display: flex; align-items: center; gap: 5px; padding: 3px 0; cursor: pointer; }
+#videoRemake .rm-mapping input[type="checkbox"] { min-height: 0; margin: 2px; }
+.rm-mapping [data-map-shots] img { width: 40px; height: 29px; object-fit: contain; background: #111; border-radius: 4px; }
+.rm-mapping [data-map-shots] small { color: #a0a0ac; }
