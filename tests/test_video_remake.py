@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -833,11 +834,20 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         local_job = localized_version["job"]
         await self.wait_for_render(local_job)
         db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test')")
-        service = server.agent_chat.AgentService({}, server)
-        run = {"board_id":"test", "data":{"bindings":{"n3":source}}}
+        service = server.agent_chat.AgentService({"creative_memory":server.creative_memory.Store(server)}, server)
+        db.conn().executescript(server.agent_chat.SCHEMA)
+        now = time.time()
+        run = {"id":"export-run", "session_id":"export-chat", "board_id":"test",
+               "state":"running", "created":now, "data":{"bindings":{"n3":source}}}
+        db.run("INSERT INTO chat_sessions VALUES(?,?,?,?,?,?)", run["session_id"], 7, "test", "重制导出", now, now)
+        for rid, state in ((run["id"], "running"), ("export-observer", "stopping")):
+            db.run("INSERT INTO chat_runs VALUES(?,?,?,?,?,?,?,?,?,?)", rid, run["session_id"], 7, "test",
+                   rid, state, json.dumps(run["data"]), None, now, now)
+        db.run("INSERT INTO chat_calls VALUES(?,?,?,?,?,?,?)", "export", run["id"], "video_remake_export",
+               "{}", "executing", None, now)
 
-        async def assistant_export(revision=0):
-            return await service.execute(run, self.user, "export", "video_remake_export", {
+        async def assistant_export(revision=0, *, current_run=run, call="export"):
+            return await service.execute(current_run, self.user, call, "video_remake_export", {
                 "node_id":"n3", "cut_revision":revision,
             })
 
@@ -848,14 +858,30 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertIsNone(blocked["export_state"])
         await act("approve_video", job=local_job)
         with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue:
-            submitted = await assistant_export()
-            self.assertIn(submitted["export_state"], ("queued", "running"))
-            export_job = (await act())["export"]["job"]
-            await assistant_export()
-            await self.wait_for_render(export_job)
+            async with server.RENDER_LOCK:
+                waiting = asyncio.create_task(assistant_export())
+                for _ in range(50):
+                    call = db.one("SELECT state,result FROM chat_calls WHERE id=?", "export")
+                    if call["state"] == "waiting":
+                        break
+                    if waiting.done():
+                        await waiting
+                    await asyncio.sleep(.02)
+                self.assertEqual(call["state"], "waiting")
+                pending_export = json.loads(call["result"])
+                export_job = pending_export["ids"][0]
+                observer = {**run, "id":"export-observer"}
+                with self.assertRaisesRegex(server.agent_chat.ToolError, "停止"):
+                    await assistant_export(current_run=observer, call="observe")
+                self.assertFalse(server.JOBS[export_job].get("cancel"))
+            downloadable = await waiting
+            self.assertEqual(downloadable["export_state"], "done")
             server.JOBS.pop(export_job)
-            downloadable = await assistant_export()
+            resumed = await service.wait_jobs(run, self.user, "export", pending_export)
+            self.assertEqual(resumed["export_ref"], downloadable["export_ref"])
+            self.assertEqual((await assistant_export())["export_ref"], downloadable["export_ref"])
         enqueue.assert_called_once()
+        self.assertTrue(db.q("SELECT data FROM chat_events WHERE session_id=? AND kind='progress'", run["session_id"]))
         final = (await act())["export"]
         self.assertEqual(final["state"], "done")
         self.assertEqual(downloadable["export_ref"], final["ref"])

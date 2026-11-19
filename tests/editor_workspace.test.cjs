@@ -255,6 +255,15 @@ async function run(){
  exportCard.innerHTML=evaluate('acResultCards({remake:{node_id:"videoTest",source_ref:"input:h3studio/原片.mp4"},export_ref:"output:h3studio/新成片.mp4"})');
  assert.equal(exportCard.querySelector('a').getAttribute('href'),'/media?ref='+encodeURIComponent('output:h3studio/新成片.mp4'));
  assert.equal(exportCard.querySelector('a').download,'新成片.mp4');
+ evaluate(`acAppendEvent({kind:"tool_start",data:{call_id:"remake-export-call",name:"video_remake_export"}});
+ acAppendEvent({kind:"progress",data:{call_id:"remake-export-call",jobs:[{state:"running",value:1,max:4}]}});
+ `);
+ equal(evaluate('$("[data-call=remake-export-call] summary").textContent.includes("25%")'),true,
+  'export progress remains visible in a collapsed tool result');
+ evaluate(`acAppendEvent({kind:"tool_end",data:{call_id:"remake-export-call",name:"video_remake_export",
+  result:{remake:{node_id:"videoTest",source_ref:"input:h3studio/source.mp4"},export_ref:"output:h3studio/film.mp4"}}});`);
+ equal(evaluate('$("[data-call=remake-export-call] a[download]").download'),'film.mp4','the completed export offers a download in the same turn');
+ equal(evaluate('$("[data-call=remake-export-call]").open'),true,'the completed export shows its download without expanding the card');
  evaluate('node("agentResult").versions[node("agentResult").cur].layer_stack={base_ref:curV(node("n1")).ref,layers:[{id:"base",name:"底图",ref:curV(node("n1")).ref,x:0,y:0,w:512,h:384,opacity:1,visible:true},{id:"generated",name:"生成区域",ref:curV(node("agentResult")).ref,x:0,y:0,w:512,h:384,opacity:.5,visible:true}]}');
  await evaluate('aeOpenLayers("agentResult")');equal(evaluate('IMAGE_EDITOR.layers.map(l=>l.id)'),['base','generated'],'chat layers open with stable IDs');
  await evaluate('aeCompare("agentResult",curV(node("n1")).ref)');equal(evaluate('IMAGE_EDITOR.compareMode'),'wipe','chat before/after compare');

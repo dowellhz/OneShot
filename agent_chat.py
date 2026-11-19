@@ -112,7 +112,7 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 用户要求定位已映射的人物时调用video_remake_locate，使用当前映射和最新cut_revision。其结果是首帧候选点，须在工作区核对；人物晚入画时可在工作区查找入画帧。
 用户要求生成换角预览时调用video_remake_preview，只为工作区已有选区的镜头提交。返回的是提交状态，可通过video_remake_status查看后续进度，预览需要在工作区审核。
 用户要求从已采用的首帧或入画帧生成换角视频时，用video_remake_generate提交一个重制镜头。first_job必须来自最新的approved_start_job；生成结果在原片的重制工作区审核。
-用户要求把已审核的重制镜头合成或导出时调用video_remake_export，按当前审核决定保留原声。未完成审核时指出待处理镜头；已提交合成时说明状态；只有工具返回export_ref时才可说成片已就绪。
+用户要求把已审核的重制镜头合成或导出时调用video_remake_export，按当前审核决定保留原声并等待结果。未完成审核时指出待处理镜头；只有工具返回export_ref时才可说成片已就绪。
 本轮选择和图片版本已固定。修改、图层调整、沿用参数重试和视频重生成都在原节点追加版本，通过Tab切换，不能为了普通修改另建节点；仅明确新建素材用image_generate/video_generate，独立提取用image_extract。历史版本保留，结果工具返回真实节点ID和版本索引。同轮连续修改同一节点时，工具自动沿用上一次修改结果。
 生成工具等待真实任务完成；拿到结果后继续完成排列等剩余步骤。定位操作仅向当前页面发出请求，不能声称用户已经看到。
 每轮最多生成4张图片、1段视频、调用16次工具。达到限制后说明已完成和剩余内容。失败时根据错误修正，不能重复提交状态不明的任务。
@@ -374,13 +374,17 @@ class AgentService:
 
     async def _wait_jobs(self, run, user, cid, pending):
         ids = pending["ids"]
+        cancel_on_stop = pending.get("cancel_on_stop", True)
         last = None
         for _ in range(1800):
             if time.time() - run["created"] > MAX_RUN_SECONDS:
-                await self.cancel_jobs(run, user, ids)
-                raise ToolError("本轮已达到30分钟执行上限，已尝试取消剩余任务，完成结果仍保留")
+                if cancel_on_stop:
+                    await self.cancel_jobs(run, user, ids)
+                    raise ToolError("本轮已达到30分钟执行上限，已尝试取消剩余任务，完成结果仍保留")
+                raise ToolError("本轮等待已超时，原任务可在重制工作区查看")
             if self.stopped(run):
-                await self.cancel_jobs(run, user, ids)
+                if cancel_on_stop:
+                    await self.cancel_jobs(run, user, ids)
                 raise ToolError("用户已停止本轮任务")
             states = await self.response(self.host.jobs, user, query={"ids": ",".join(ids)})
             progress = [{"id": i, **{k: states.get(i, {}).get(k) for k in ("state", "phase", "value", "max", "ahead", "error")}} for i in ids]
@@ -389,6 +393,8 @@ class AgentService:
                 self.emit(run["session_id"], run["id"], "progress", {"call_id": cid, "jobs": progress})
                 last = key
             if all(states.get(i, {}).get("state") in ("done", "error") for i in ids):
+                if pending.get("remake_export"):
+                    return agent_video.finish_remake_export(self, run, user, pending, states[ids[0]])
                 versions, errors = [], []
                 for jid in ids:
                     s = states[jid]
@@ -596,8 +602,11 @@ class AgentService:
             pending["target_data"] = copy.deepcopy(target_data)
         if kind == "video":
             pending["recipe"] = copy.deepcopy(payload)
+        return await self.wait_submitted_jobs(run, user, cid, pending)
+
+    async def wait_submitted_jobs(self, run, user, cid, pending):
         db.run("UPDATE chat_calls SET state='waiting',result=?,updated=? WHERE id=?", dumps(pending), time.time(), cid)
-        self.emit(run["session_id"], run["id"], "submitted", {"call_id": cid, "job_ids": result["ids"]})
+        self.emit(run["session_id"], run["id"], "submitted", {"call_id": cid, "job_ids": pending["ids"]})
         return await self.wait_jobs(run, user, cid, pending)
 
     async def model(self, messages, run):

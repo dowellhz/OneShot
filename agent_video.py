@@ -221,7 +221,7 @@ async def execute(s, run, user, cid, name, args):
     if name == "video_remake_generate":
         return await generate_remake(s, run, user, cid, args)
     if name == "video_remake_export":
-        return await export_remake(s, run, user, args)
+        return await export_remake(s, run, user, cid, args)
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -455,7 +455,7 @@ def export_media(host, export):
         return None
 
 
-async def export_remake(s, run, user, args):
+async def export_remake(s, run, user, cid, args):
     nid = args["node_id"]
     key = remake_source(s, run, user, nid)
     session = video_remake.load(key)
@@ -466,8 +466,9 @@ async def export_remake(s, run, user, args):
     result = remake_status(s.host, nid, key, session)
     export = session.get("export") or {}
     if export.get("state") in ("queued", "running"):
-        result["text"] = "成片正在合成，可打开重制工作区查看进度。"
-        return result
+        return await s.wait_submitted_jobs(run, user, cid, {
+            "ids": [export["job"]], "remake_export": {"key": key, "node_id": nid}, "cancel_on_stop": False,
+        })
     unresolved = next((shot for shot in result["shots"] if shot["review_issue"]), None)
     if unresolved:
         number = unresolved["number"]
@@ -481,8 +482,29 @@ async def export_remake(s, run, user, args):
         result["text"] = "当前审核版本的成片已就绪，可直接下载。"
         return result
     session = await apply_remake_action(s, user, nid, key, {"action": "export", "cut_revision": args["cut_revision"]})
-    result = remake_status(s.host, nid, key, session)
-    result["text"] = "已提交成片合成，将保留原声。可在重制工作区查看进度。"
+    return await s.wait_submitted_jobs(run, user, cid, {
+        "ids": [session["export"]["job"]], "remake_export": {"key": key, "node_id": nid},
+    })
+
+
+def finish_remake_export(s, run, user, pending, state):
+    info = pending["remake_export"]
+    key = tuple(info["key"])
+    if key[:2] != (user["id"], run["board_id"]):
+        raise ValueError("无权读取该成片任务")
+    s.board(user, key[1])
+    session = video_remake.load(key)
+    result = remake_status(s.host, info["node_id"], key, session)
+    if state["state"] == "error":
+        result.pop("export_ref", None)
+        result["error"] = state.get("error") or "成片合成失败"
+    elif ((session or {}).get("export") or {}).get("job") != pending["ids"][0] or result.get("export_state") == "stale":
+        result.pop("export_ref", None)
+        result["text"] = "当前审核内容或成片任务已更新，请打开重制工作区。"
+    elif result.get("export_ref"):
+        result["text"] = "成片已合成并保留原声，可直接下载。"
+    else:
+        result["error"] = "成片文件暂不可用，可在重制工作区重新合成。"
     return result
 
 

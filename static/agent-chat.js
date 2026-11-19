@@ -107,9 +107,17 @@ function acAppendEvent(e,replay=false){
   if(e.kind!=="notice")acMarkdown(el,d.text);else el.textContent=d.text;
   if(e.kind==="assistant")acAddChoices(el,e);
  }
- if(e.kind==="tool_start"){el=document.createElement("details");el.className="ac-call";el.dataset.call=d.call_id;el.innerHTML=`<summary>${esc(AC_LABELS[d.name]||d.name)} · 执行中</summary><div class="ac-progress"></div><div class="ac-output"></div>`;AC.calls.set(d.call_id,el);}
- if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":d.result.adopted?"已采用："+d.result.adopted.map(a=>a.name).join("、"):d.result.memories?`找到 ${d.result.memories.length} 条创作记忆。`:d.result.memory?"已保存记忆："+d.result.memory.name:"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
- if(e.kind==="progress"){el=AC.calls.get(d.call_id);if(el)$(".ac-progress",el).textContent=d.jobs.map(j=>{const phase=AC_PHASES[j.phase]||AC_PHASES[j.state]||"处理中",pct=j.max?` · ${Math.min(j.state==="done"?100:99,Math.round((j.value||0)/j.max*100))}%`:"";return phase+pct+(j.ahead?` · 前方 ${j.ahead} 个任务`:"");}).join(" / ");return;}
+ if(e.kind==="tool_start"){el=document.createElement("details");el.className="ac-call";el.dataset.call=d.call_id;el.dataset.tool=d.name;el.innerHTML=`<summary>${esc(AC_LABELS[d.name]||d.name)} · 执行中</summary><div class="ac-progress"></div><div class="ac-output"></div>`;AC.calls.set(d.call_id,el);}
+ if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){if(d.name==="video_remake_export"&&d.result.export_ref)el.open=true;el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":d.result.adopted?"已采用："+d.result.adopted.map(a=>a.name).join("、"):d.result.memories?`找到 ${d.result.memories.length} 条创作记忆。`:d.result.memory?"已保存记忆："+d.result.memory.name:"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
+ if(e.kind==="progress"){
+  el=AC.calls.get(d.call_id);
+  if(el){
+   const progress=d.jobs.map(j=>{const phase=AC_PHASES[j.phase]||AC_PHASES[j.state]||"处理中",pct=j.max?` · ${Math.min(j.state==="done"?100:99,Math.round((j.value||0)/j.max*100))}%`:"";return phase+pct+(j.ahead?` · 前方 ${j.ahead} 个任务`:"");}).join(" / ");
+   $(".ac-progress",el).textContent=progress;
+   if(el.dataset.tool==="video_remake_export")$("summary",el).textContent=`${AC_LABELS.video_remake_export} · ${progress}`;
+  }
+  return;
+ }
  if(e.kind==="focus"&&!replay){acFocus(d.node_ids,d.open_editor);return;}
  if(typeof aeAppendEvent==="function"&&aeAppendEvent(e,replay))return;
  if(el){$(".ac-empty",box)?.remove();box.append(el);}
