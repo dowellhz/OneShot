@@ -151,9 +151,37 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         failed = json.loads((await server.remake(retry)).body)
         self.assertEqual(failed["shots"], marked["shots"])
         self.assertEqual(failed["warning"], marked["warning"])
+        db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test')")
+        service = server.agent_chat.AgentService({"llm":vision, "creative_memory":server.creative_memory.Store(server)}, server)
+        session_id, run_id = "retry-chat", "retry-run"
+        run_data = {"bindings":{"n3":source}}
+        db.conn().executescript(server.agent_chat.SCHEMA)
+        now = time.time()
+        db.run("INSERT INTO chat_sessions VALUES(?,?,?,?,?,?)", session_id, 7, "test", "重试分析", now, now)
+        db.run("INSERT INTO chat_runs VALUES(?,?,?,?,?,?,?,?,?,?)", run_id, session_id, 7, "test", run_id,
+               "running", json.dumps(run_data), None, now, now)
+        service.emit(session_id, run_id, "model", {"role":"user", "content":"补充缺失的镜头分析"})
+        before = await service.execute({"board_id":"test","data":run_data}, self.user, "status",
+                                       "video_remake_status", {"node_id":"n3"})
+        self.assertEqual(before["missing_analysis_shots"], [2,3])
+        self.assertIn("镜头 2、3 缺少视觉分析", before["text"])
         vision.offline = False
         vision.retry = True
-        recovered = json.loads((await server.remake(retry)).body)
+        tool_call = {
+            "role":"assistant", "content":None, "tool_calls":[{
+                "id":"retry-analysis", "type":"function", "function":{"name":"video_remake_analyze",
+                    "arguments":json.dumps({"node_id":"n3", "retry":True})},
+            }],
+        }
+        with patch.object(service, "model", side_effect=[tool_call, {"role":"assistant", "content":"分析已补齐"}]):
+            await service.work(run_id)
+        self.assertEqual(db.one("SELECT state,error FROM chat_runs WHERE id=?", run_id), {"state":"done","error":None})
+        event = db.one("SELECT data FROM chat_events WHERE run_id=? AND kind='tool_end'", run_id)
+        result = json.loads(event["data"])["result"]
+        self.assertEqual(result["missing_analysis_shots"], [])
+        self.assertIsNone(result["warning"])
+        self.assertIn("已补充 2 个镜头的视觉分析", result["text"])
+        recovered = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertFalse(recovered["warning"])
         self.assertEqual(recovered["shots"][0], marked["shots"][0])
         self.assertEqual(recovered["shots"][3], marked["shots"][3])
@@ -162,7 +190,6 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(recovered["shots"][2]["summary"]["camera"], "横移")
         self.assertEqual([shot["frames"] for shot in recovered["shots"]], [shot["frames"] for shot in marked["shots"]])
         self.assertEqual(recovered["source_people"], [*marked["source_people"], {"name":"绿衣人", "look":"穿绿衣"}])
-        self.assertEqual(json.loads((await server.remake(Request(source, self.user))).body)["shots"], recovered["shots"])
 
     async def test_assistant_reads_the_bound_video_remake_session_for_its_user(self):
         db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test'),(8,'member','test')")

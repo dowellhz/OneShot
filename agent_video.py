@@ -124,7 +124,9 @@ def register(tool, prop, node, prompt):
     tool("video_remake_status", "读取原片视频版本的角色替换进度。指定shot可查看该镜头的已完成视频版本和任务编号。", {
         "node_id": node, "shot": shot_number,
     }, ["node_id"])
-    tool("video_remake_analyze", "在视频重制工作区分析指定原片，按原片时间轴拆分镜头并识别人物。已有分析时直接读取，可继续审核。", {"node_id": node}, ["node_id"])
+    tool("video_remake_analyze", "分析重制原片的镜头和人物。已有分析时读取结果；用户要求重试时设retry=true，补充缺失分析并保留剪辑点和审核决定。", {
+        "node_id": node, "retry": prop("boolean"),
+    }, ["node_id"])
     tool("video_remake_map", "保存角色映射，用资产库角色替换指定原片人物。镜头编号从1开始，使用最近一次重制状态的cut_revision。", {
         "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
         "shots": prop("array", items=prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS),
@@ -219,7 +221,7 @@ async def execute(s, run, user, cid, name, args):
         key = remake_source(s, run, user, nid)
         return remake_status(s.host, nid, key, video_remake.load(key), review_shot=args.get("shot"))
     if name == "video_remake_analyze":
-        return await analyze_remake(s, run, user, args["node_id"])
+        return await analyze_remake(s, run, user, args["node_id"], retry=args.get("retry", False))
     if name == "video_remake_map":
         return await map_remake(s, run, user, args)
     if name == "video_remake_locate":
@@ -299,12 +301,22 @@ async def apply_remake_action(s, user, nid, key, payload):
     return await s.response(invoke, user, payload, query={"source": key[3]})
 
 
-async def analyze_remake(s, run, user, nid):
+async def analyze_remake(s, run, user, nid, *, retry=False):
     key = remake_source(s, run, user, nid)
     session = video_remake.load(key)
     if not session or not session["shots"]:
         session = await apply_remake_action(s, user, nid, key, {"action": "analyze"})
-    return remake_status(s.host, nid, key, session)
+        return remake_status(s.host, nid, key, session)
+    missing = sum(bool(shot.get("analysis_missing")) for shot in session["shots"])
+    if retry and missing:
+        session = await apply_remake_action(s, user, nid, key, {
+            "action": "retry_analysis", "cut_revision": session.get("cut_revision", 0),
+        })
+    result = remake_status(s.host, nid, key, session)
+    recovered = missing - len(result["missing_analysis_shots"])
+    if recovered:
+        result["text"] = f"已补充 {recovered} 个镜头的视觉分析。" + result["text"]
+    return result
 
 
 async def map_remake(s, run, user, args):
@@ -633,9 +645,14 @@ def remake_status(host, nid, key, session, *, review_shot=None):
             "pending": video_remake.pending(frames + videos), "review_issue": issues.get(index),
         })
     count = len(result["shots"])
-    return {**result, "analyzed": True, "text": f"共 {count} 个镜头，{len(issues)} 个待审核。",
+    missing = [index for index, shot in enumerate(session["shots"], 1) if shot.get("analysis_missing")]
+    warning = session.get("warning") or None
+    text = f"共 {count} 个镜头，{len(issues)} 个待审核。"
+    if warning:
+        text += warning
+    return {**result, "analyzed": True, "text": text, "missing_analysis_shots": missing,
             "cut_revision": session.get("cut_revision", 0),
-            "source_people": session.get("source_people", []), "warning": session.get("warning") or None,
+            "source_people": session.get("source_people", []), "warning": warning,
             "mapping": {"source": mapping["source"], "asset": mapping.get("asset_name"), "asset_id": mapping["asset"],
                         "shots": [index + 1 for index in mapping["shots"]]} if mapping else None,
             "adopted": review["adopted"], "can_export": bool(review["adopted"] and not issues and
