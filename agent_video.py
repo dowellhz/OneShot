@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import math
 import uuid
 import time
@@ -12,7 +13,7 @@ from aiohttp import web
 import video_remake
 
 NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze",
-         "video_remake_map", "video_remake_locate", "video_remake_preview"}
+         "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate"}
 
 
 def result_id(cid):
@@ -140,6 +141,12 @@ def register(tool, prop, node, prompt):
             "view": prop("string", enum=sorted(video_remake.VIEWS)), "note": prop("string", maxLength=800),
         }, required=["number"], additionalProperties=False)),
     }, ["node_id", "person", "asset_id", "cut_revision", "shots"])
+    tool("video_remake_generate", "用已采用的起始帧和动作关键帧提交一个重制镜头视频。first_job取自重制状态的approved_start_job。", {
+        "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
+        "cut_revision": prop("integer", minimum=0),
+        "shot": prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS), "first_job": node,
+        "motion": prop("string", maxLength=1600),
+    }, ["node_id", "person", "asset_id", "cut_revision", "shot", "first_job"])
 
 
 def video_node(s, run, user, nid, *, allow_film=False):
@@ -208,6 +215,8 @@ async def execute(s, run, user, cid, name, args):
         return await locate_remake(s, run, user, args)
     if name == "video_remake_preview":
         return await preview_remake(s, run, user, cid, args)
+    if name == "video_remake_generate":
+        return await generate_remake(s, run, user, cid, args)
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -324,15 +333,20 @@ async def locate_remake(s, run, user, args):
     return result
 
 
-async def preview_remake(s, run, user, cid, args):
-    nid = args["node_id"]
-    key = remake_source(s, run, user, nid)
+def mapped_remake(s, run, user, args):
+    key = remake_source(s, run, user, args["node_id"])
     session = video_remake.load(key)
     mapping = (session or {}).get("mapping")
     if not mapping or mapping["source"] != args["person"] or mapping["asset"] != args["asset_id"]:
         raise ValueError("请先读取或保存当前视频版本的人物映射")
     if session.get("cut_revision", 0) != args["cut_revision"]:
         raise ValueError("剪辑点已更新，请重新读取视频重制状态")
+    return key, session, mapping
+
+
+async def preview_remake(s, run, user, cid, args):
+    nid = args["node_id"]
+    key, session, mapping = mapped_remake(s, run, user, args)
     indices = [item["number"] - 1 for item in args["shots"]]
     if len(set(indices)) != len(indices) or any(index not in mapping["shots"] for index in indices):
         raise ValueError("请选择人物映射内的镜头，且每个镜头只提交一次")
@@ -384,6 +398,48 @@ async def preview_remake(s, run, user, cid, args):
     return result
 
 
+async def generate_remake(s, run, user, cid, args):
+    nid = args["node_id"]
+    key, session, mapping = mapped_remake(s, run, user, args)
+    index = args["shot"] - 1
+    if index not in mapping["shots"]:
+        raise ValueError("请选择人物映射内的镜头")
+    shot = session["shots"][index]
+    if shot.get("keep_original"):
+        raise ValueError("此镜头已设为保留原片，请在工作区核对")
+    video_remake.update_jobs(s.host, user["id"], session)
+    try:
+        _, approved, entry_tick = video_remake.shot_start(shot, mapping, s.host.film.FPS)
+        video_remake.shot_guides(shot, approved, s.host.film.FPS, mapping, entry_tick)
+    except web.HTTPException as error:
+        raise ValueError(json.loads(error.text)["error"]) from None
+    if approved["job"] != args["first_job"]:
+        raise ValueError("已采用的起始帧已变更，请重新读取视频重制状态")
+    s.begin_generation(run, cid, "video", 1)
+    session = await apply_remake_action(s, user, nid, key, {
+        "action": "batch_videos", "person": mapping["source"], "asset": mapping["asset"],
+        "shots": [{"shot": index, "first_job": approved["job"], "motion": args.get("motion", "")}],
+        "cut_revision": args["cut_revision"],
+    })
+    outcome = session["batch_videos"]
+    if outcome["skipped"]:
+        run["data"]["generated_video"] -= 1
+        s.update(run)
+    result = remake_status(s.host, nid, key, session)
+    result["remake"].update(shot_number=index + 1, shot_start=shot["start"])
+    result["video"] = {"shot": index + 1, "submitted": bool(outcome["submitted"])}
+    if outcome["submitted"]:
+        job = session["shots"][index]["videos"][-1]["job"]
+        result["remake"]["video_job"] = job
+        result["text"] = f"已提交镜头 {index + 1} 的重制视频，完成后可在工作区审核。"
+    elif outcome["failed"]:
+        result["video"]["error"] = outcome["failed"][0]["error"]
+        result["text"] = f"镜头 {index + 1} 提交失败。{result['video']['error']}"
+    else:
+        result["text"] = f"镜头 {index + 1} 正在处理或已有匹配的视频版本。"
+    return result
+
+
 def remake_status(host, nid, key, session):
     result = {"remake": {"node_id": nid, "source_ref": key[3]}, "shots": [], "analyzed": False}
     if not session or not session["shots"]:
@@ -402,6 +458,8 @@ def remake_status(host, nid, key, session):
         people = shot.get("summary", {}).get("characters")
         hint = frame.get("person_hint") or {}
         selected = bool(video_remake.person_selection(frame, mapping))
+        frame_approved = bool(adopted_frame and video_remake.matches_mapping(adopted_frame, mapping) and
+                              video_remake.preview_matches_regions(frame, adopted_frame, mapping))
         result["shots"].append({
             "number": index + 1, "start": shot["start"], "end": shot["end"],
             "suggested_people": [name[:60] for name in people[:24] if isinstance(name, str)] if isinstance(people, list) else [],
@@ -410,8 +468,8 @@ def remake_status(host, nid, key, session):
             "position_suggested": bool(mapping and not selected and not video_remake.person_absent(frame, mapping) and
                                        hint.get("point") and hint.get("source") == mapping["source"] and
                                        hint.get("look") == mapping.get("look", "")),
-            "start_frame_approved": bool(adopted_frame and video_remake.matches_mapping(adopted_frame, mapping) and
-                                         video_remake.preview_matches_regions(frame, adopted_frame, mapping)),
+            "start_frame_approved": frame_approved,
+            "approved_start_job": adopted_frame["job"] if frame_approved else None,
             "video_available": any(item.get("ref") and video_remake.matches_mapping(item, mapping) for item in videos),
             "pending": video_remake.pending(frames + videos), "review_issue": issues.get(index),
         })

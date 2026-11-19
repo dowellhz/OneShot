@@ -249,6 +249,37 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         entry = workspace["shots"][1]["frames"][correction]
         self.assertEqual(entry["previews"][0]["job"], "assistant-image")
         self.assertNotIn("approved", entry)
+        video_args = {**locate_args, "shot":2, "first_job":"assistant-image", "motion":"第一秒回头"}
+        with self.assertRaisesRegex(ValueError, "首次入画"):
+            await service.execute(run, self.user, "video", "video_remake_generate", video_args)
+        self.assertNotIn("generated_video", run["data"])
+        await server.remake(Request(source, self.user, {
+            "action":"approve", "job":"assistant-image", "shot":1, "frame":correction, "cut_revision":revision,
+        }))
+        ready = await service.execute(run, self.user, "ready", "video_remake_status", {"node_id":"n3"})
+        self.assertEqual(ready["shots"][1]["approved_start_job"], "assistant-image")
+        with self.assertRaisesRegex(ValueError, "起始帧已变更"):
+            await service.execute(run, self.user, "video", "video_remake_generate", {**video_args, "first_job":"old"})
+        server.providers.seed()
+
+        async def generate_video(req, payload):
+            self.assertEqual(payload["provider"], "local_h3")
+            self.assertEqual([item["time"] for item in payload["images"]], [0, .25])
+            self.assertEqual(payload["images"][1]["ref"], self.source["ref"])
+            self.assertIn("第一秒回头", payload["prompt"])
+            db.task_start(id="assistant-video", user_id=7, state="done", outputs=[source])
+            return web.json_response({"ids":["assistant-video"]})
+
+        with patch.object(server, "_generate_request", side_effect=generate_video) as submit_video:
+            generated = await service.execute(run, self.user, "video", "video_remake_generate", video_args)
+            with self.assertRaises(server.agent_chat.ToolError):
+                await service.execute(run, self.user, "video", "video_remake_generate", video_args)
+        submit_video.assert_awaited_once()
+        self.assertEqual(generated["video"], {"shot":2, "submitted":True})
+        self.assertEqual(generated["remake"]["video_job"], "assistant-video")
+        workspace = json.loads((await server.remake(Request(source, self.user))).body)
+        self.assertEqual(workspace["shots"][1]["videos"][-1]["job"], "assistant-video")
+        self.assertFalse(workspace["shots"][1].get("adopted_video"))
         self.assertEqual(server.JOBS, {})
 
     async def test_long_shot_splits_into_balanced_segments_and_can_be_undone(self):
