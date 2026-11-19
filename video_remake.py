@@ -267,20 +267,21 @@ def original_frames(host, source, ticks, *, display=True):
     return selected
 
 
-def sample_shot_motion(host, source, shot, display):
+def sample_shot_frames(host, source, shot, display, offsets=None):
     from rewriter import encode_image_part
     fps = host.film.FPS
     start = round(shot["start"] * fps)
     count = round(shot["end"] * fps) - start
     if count <= 0:
         raise ValueError("镜头中没有可用画面")
-    offsets = {round(i * (count - 1) / 5) for i in range(6)}
+    if offsets is None:
+        offsets = {round(i * (count - 1) / 5) for i in range(6)}
     first = shot["frames"]["first"]
     scale = min(1, 640 / max(first["w"], first["h"]))
     size = (max(1, round(first["w"] * scale)), max(1, round(first["h"] * scale)))
     path = host.tools.ref_path(host.COMFY_DIR, source)
     samples = []
-    with closing(host.film.video_ticks(path, start / fps, count, relative_time=True)) as frames:
+    with closing(host.film.video_ticks(path, start / fps, max(offsets) + 1, relative_time=True)) as frames:
         for tick, frame in enumerate(frames):
             if tick in offsets:
                 image = host.film.frame_image(frame, display=display, thumbnail_size=size)
@@ -301,7 +302,7 @@ async def analyze_motion(req, host, source, session, shot, mapping):
     fps = host.film.FPS
     person = mapping["source"] if mapping else None
     try:
-        samples = await asyncio.to_thread(sample_shot_motion, host, source, shot, session.get("display_oriented", False))
+        samples = await asyncio.to_thread(sample_shot_frames, host, source, shot, session.get("display_oriented", False))
         analysis = await host.tools.describe_shot_motion(req.app["llm"], samples, fps, person,
                                                         person_appearance(session, mapping))
     except Exception:
@@ -325,6 +326,58 @@ async def analyze_motion(req, host, source, session, shot, mapping):
         "camera":camera, "beats":[{"tick":tick, "action":action} for tick, action in sorted(beats.items())],
         "source_person":person,
     }
+
+
+async def suggest_entry(req, host, source, session, shot, mapping, data):
+    if not mapping or mapping["source"] != data.get("person"):
+        fail("请先确认当前镜头的原片人物映射", 409)
+    if not person_absent(shot["frames"]["first"], mapping):
+        fail("请先确认并标记首帧人物出画")
+    person, look = mapping["source"], mapping.get("look") or ""
+    appearance = person_appearance(session, mapping)
+    if not appearance and re.fullmatch(r"人物\s*\d+", person):
+        fail("请在人物映射中补充原片外貌提示，例如服装颜色或明显配饰")
+    fps = host.film.FPS
+    start = round(shot["start"] * fps)
+    display = session.get("display_oriented", False)
+    excluded = {0, *(frame["correction_tick"] - start for frame in correction_frames(shot) if person_absent(frame, mapping))}
+
+    async def locate(offsets=None):
+        samples = await asyncio.to_thread(sample_shot_frames, host, source, shot, display, offsets)
+        samples = [sample for sample in samples if sample[0] not in excluded]
+        if not samples:
+            return None
+        result = await host.tools.locate_shot_entry(req.app["llm"], samples, person, appearance)
+        number = result.get("sample")
+        if number is None:
+            return None
+        if type(number) is not int or not 1 <= number <= len(samples):
+            raise ValueError("Invalid entry frame")
+        tick = samples[number - 1][0]
+        earlier = samples[number - 2][0] if number > 1 else 0
+        return tick, coordinates(result.get("point"), 2), earlier
+
+    try:
+        match = await locate()
+    except Exception:
+        fail("入画帧识别暂不可用，可手动添加校正帧")
+    if not match:
+        fail("采样画面中未能确认人物，可手动定位首次入画位置")
+    tick, point, earlier = match
+    # Check a second set of samples before the first visible match.
+    offsets = {round(earlier + (tick - earlier) * i / 6) for i in range(1, 6)} - excluded - {earlier, tick}
+    if offsets:
+        try:
+            refined = await locate(offsets)
+        except Exception:
+            refined = None
+        if refined:
+            tick, point, _ = refined
+    frame_key = await capture_correction(host, source, shot, (start + tick) / fps, display=display)
+    frame = shot["frames"][frame_key]
+    if not person_selection(frame, mapping):
+        frame["person_hint"] = {"source":person, "look":look, "point":point}
+    return frame_key
 
 
 async def edit_cuts(req, host, source, session, data):
@@ -1145,7 +1198,7 @@ async def handle(req, host):
             scoped = mapped_shots(session)
             if (scoped is not None and data["shot"] not in scoped and
                     action in ("preview", "approve", "generate_video", "localize", "approve_video",
-                               "locate_person", "apply_person_hint", "set_absence", "analyze_motion")):
+                               "locate_person", "apply_person_hint", "set_absence", "analyze_motion", "suggest_entry")):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
             if action == "set_absence":
                 absent = data.get("absent")
@@ -1173,6 +1226,8 @@ async def handle(req, host):
                 await locate_person(req, host, session, frame, data)
             elif action == "analyze_motion":
                 await analyze_motion(req, host, source, session, shot, mapping)
+            elif action == "suggest_entry":
+                response["captured_frame"] = await suggest_entry(req, host, source, session, shot, mapping, data)
             elif action == "capture_correction":
                 response["captured_frame"] = await capture_correction(host, source, shot, data.get("at"),
                                                                       display=session.get("display_oriented", False))

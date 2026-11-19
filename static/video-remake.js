@@ -65,6 +65,7 @@ async function openVideoRemake(video) {
       <section class="rm-editor" hidden>
         <div class="rm-actions"><strong class="rm-shot"></strong><select data-frame aria-label="选取原片画面"></select>
           <button type="button" data-capture-correction>添加当前位置为校正帧</button><button type="button" data-remove-correction hidden>删除校正帧</button>
+          <button type="button" data-suggest-entry hidden>查找入画帧</button>
           <button type="button" data-absence hidden>标记人物出画</button></div>
         <p class="rm-summary"></p>
         <div class="rm-actions">
@@ -591,6 +592,9 @@ async function openVideoRemake(video) {
     const isCorrection = Number.isInteger(frame.correction_tick);
     const absent = personAbsent(frame);
     el("[data-capture-correction]").disabled = busy || playbackError;
+    const suggest = el("[data-suggest-entry]");
+    suggest.hidden = !session.mapping || !inScope(shotIndex) || !personAbsent(shot.frames.first);
+    suggest.disabled = busy;
     el("[data-remove-correction]").hidden = !isCorrection;
     el("[data-remove-correction]").disabled = busy;
     const absence = el("[data-absence]");
@@ -1024,16 +1028,21 @@ async function openVideoRemake(video) {
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",suggest_entry:"正在查找人物入画位置…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (action === "prepare_playback" && session.playback?.ref && player.getAttribute("src") === remakeMedia(session.playback.ref)) {
         player.load();
       }
       if (["analyze", "map_person", "remove_mapping"].includes(action)) fillViews();
-      if (action === "capture_correction" && session.captured_frame) {
+      if (["capture_correction", "suggest_entry"].includes(action) && session.captured_frame) {
         frameKey = session.captured_frame;
         versionId = null;
+        if (action === "suggest_entry") {
+          stopComparison();
+          originalEnd = null;
+          if (!playbackError) player.currentTime = currentFrame().at;
+        }
       }
       if (action === "remove_correction") {
         frameKey = "first";
@@ -1062,6 +1071,9 @@ async function openVideoRemake(video) {
         if (skipped.length) items.push(`跳过 ${skipped.length} 个镜头`);
         for (const result of failed) items.push(`镜头 ${result.shot + 1} 未提交（${result.error}）`);
         status(items.join("。"));
+      } else if (action === "suggest_entry") {
+        status(personSelection(currentFrame()) ? "已定位到候选入画帧，请核对此帧的人物选区。" :
+          "已找到候选入画帧，请核对人物位置后确认。");
       } else {
         status(cutAction && session.mapping ? "剪辑点已更新，请核对人物映射范围。" : "");
       }
@@ -1128,6 +1140,7 @@ async function openVideoRemake(video) {
   };
   el("[data-remove-correction]").onclick = () => change("remove_correction");
   el("[data-absence]").onclick = () => change("set_absence", {absent:!personAbsent(currentFrame())});
+  el("[data-suggest-entry]").onclick = () => change("suggest_entry", {person:session.mapping.source});
   el("[data-layer]").onchange = updateSelectionControls;
   el("[data-locate-person]").onclick = () => change(
     personHint() ? "apply_person_hint" : "locate_person", {person:session.mapping.source},

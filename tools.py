@@ -249,6 +249,19 @@ async def describe_shot_motion(llm: LLM, samples, fps, person, appearance):
     return parse_json(await llm.chat(system, content, max_tokens=1000, temperature=0.2))
 
 
+async def locate_shot_entry(llm: LLM, samples, person, appearance):
+    system = (
+        "这些是同一镜头按时间顺序采样的画面。找出最早能明确辨认指定人物的那张采样。"
+        "按人物名称和外貌核对，人物没有出现、身体太模糊或无法区分时，跳过该采样。"
+        "在选中的画面上标出落在该人物可见身体内部的一点，左上[0,0]，右下[1,1]。"
+        '只输出JSON {"sample":1,"point":[x,y]}，编号从1开始。均无法确认时输出 {"sample":null,"point":null}。'
+    )
+    content = [{"type":"text", "text":json.dumps({"name":person, "appearance":appearance}, ensure_ascii=False)}]
+    for number, (_, image) in enumerate(samples, 1):
+        content.extend([{"type":"text", "text":f"采样 {number}"}, image])
+    return parse_json(await llm.chat(system, content, max_tokens=120, temperature=0.1))
+
+
 # ------------------------------------------------------------------ grid split
 
 def split_grid(comfy_dir: Path, ref: str, rows: int, cols: int) -> list:

@@ -564,7 +564,22 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             locate.assert_not_called()
         for index in (0, 2):
             await act("select", shot=index, rect=[.25,.25,.75,.75])
-        entry = (await act("capture_correction", shot=1, at=1.25))["captured_frame"]
+        async def candidate(llm, samples, person, appearance):
+            self.assertEqual(person, "人物甲")
+            ticks = [tick for tick, _ in samples]
+            if ticks == [5, 9, 14, 18, 23]:
+                return {"sample":2, "point":[.3,.4]}
+            self.assertEqual(ticks, [6, 7, 8])
+            return {"sample":1, "point":[.5,.6]}
+
+        with patch.object(server.tools, "locate_shot_entry", side_effect=candidate) as locate_entry:
+            suggested = await act("suggest_entry", shot=1, person="人物甲")
+        self.assertEqual(locate_entry.await_count, 2)
+        entry = suggested["captured_frame"]
+        located_entry = suggested["shots"][1]["frames"][entry]
+        self.assertEqual(located_entry["at"], 1.25)
+        self.assertEqual(located_entry["person_hint"]["point"], [.5,.6])
+        self.assertNotIn("selection", located_entry)
         later = (await act("capture_correction", shot=1, at=1.5))["captured_frame"]
         for key in (later, entry):
             await act("select", shot=1, frame=key, rect=[.25,.25,.75,.75])

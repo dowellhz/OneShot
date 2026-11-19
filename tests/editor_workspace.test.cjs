@@ -518,7 +518,9 @@ async function run(){
   }
   if(operation?.action==='apply_person_hint'){
    assert.equal(operation.person,'人物 A');
-   frame.selection={overlay:'input:h3studio/remake-overlay.png'};
+   remakeSession.shots[0].frames[operation.frame].selection={
+    mask:'input:h3studio/remake-mask.png',overlay:'input:h3studio/remake-overlay.png',
+   };
   }
   if(operation?.action==='select'){
    remakeSelection=operation.rect;
@@ -530,6 +532,12 @@ async function run(){
    const key='correction-24';
    remakeSession.shots[0].frames[key]={ref:frame.ref,w:frame.w,h:frame.h,correction_tick:24,at:1,previews:[]};
    return {ok:true,json:async()=>({...structuredClone(remakeSession),captured_frame:key}),text:async()=>JSON.stringify({...remakeSession,captured_frame:key})};
+  }
+  if(operation?.action==='suggest_entry'){
+   assert.equal(operation.person,'人物 A');
+   remakeSession.shots[0].frames.entry={ref:frame.ref,w:640,h:480,at:.75,correction_tick:18,previews:[],
+    person_hint:{source:'人物 A',look:'',point:[.35,.45]}};
+   return {ok:true,text:async()=>JSON.stringify({...remakeSession,captured_frame:'entry'})};
   }
   if(operation?.action==='clear_protection'){
    remakeSession.shots[0].frames[operation.frame].protection={mask:null};
@@ -788,9 +796,13 @@ async function run(){
   'changed foreground protection requires a new approved first-frame preview');
  evaluate('$("#videoRemake [data-close]").click()');
  entryShot.frames.first.person_absent={source:'人物 A'};
- entryShot.frames.entry={ref:entryShot.frames.first.ref,w:640,h:480,at:.75,correction_tick:18,previews:[],
-  selection:{...entryShot.frames.first.selection}};
  await evaluate('openVideoRemake(mergePeer)');
+ evaluate('$("[data-suggest-entry]").click()');
+ await ready('$("[data-frame]").value==="entry" && !$(".rm-person-point").hidden && $(".rm-mask").hidden',
+  'entry suggestion jumps to a candidate frame without selecting the person');
+ equal(evaluate('$(".rm-source video").currentTime'),.75,'the original player follows the suggested entry');
+ evaluate('$("[data-locate-person]").click()');
+ await ready('!$("[data-batch-previews]").disabled','confirming the suggested entry enables batch preview');
  evaluate('$("[data-batch-previews]").click()');
  await ready('$("#videoRemake [data-frame]").value==="entry" && $$(".rm-review button").some(b=>b.textContent==="用作动作关键帧")',
   'batching an off-screen shot opens its first visible frame for review');
