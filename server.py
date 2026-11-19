@@ -1454,9 +1454,15 @@ def enqueue_film(req, spec, *, label=None, source_audio=None, board=None):
     if not clips:
         raise bad("时间线上没有视频")
     secs = sum(max(0.5, float(c.get("out") or 8) - float(c.get("in") or 0)) for c in clips)
+    def render_timeline(progress, cancelled):
+        return film.render(COMFY_DIR, spec, progress, cancelled, source_audio=source_audio)
+    return enqueue_render(req, render_timeline, seconds=secs, label=label, board=board)
+
+
+def enqueue_render(req, render_clip, *, seconds, label=None, board=None):
     jid = "r" + uuid.uuid4().hex[:12]
     j = JOBS[jid] = {"id": jid, "kind": "render", "state": "queued", "created": time.time(),
-                     "meta": {"label": clean(label)[:60] or "成片", "est": round(3 + secs * FPS_EST, 1), "cls": "render", "units": secs,
+                     "meta": {"label": clean(label)[:60] or "成片", "est": round(3 + seconds * FPS_EST, 1), "cls": "render", "units": seconds,
                               "uid": req["user"]["id"], "board": board, "mode_name": "成片"}}
     db.task_start(id=jid, user_id=req["user"]["id"], board_id=board, capability="render",
                   label=j["meta"]["label"])
@@ -1473,7 +1479,7 @@ def enqueue_film(req, spec, *, label=None, source_audio=None, board=None):
             def prog(a, b):
                 j["value"], j["max"] = a, b
             try:
-                r = await asyncio.to_thread(film.render, COMFY_DIR, spec, prog, lambda: j.get("cancel"), source_audio=source_audio)
+                r = await asyncio.to_thread(render_clip, prog, lambda: j.get("cancel"))
             except film.Cancelled:
                 j.update(state="error", error="已取消")
                 log_end(j)

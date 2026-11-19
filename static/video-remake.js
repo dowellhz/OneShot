@@ -198,13 +198,14 @@ async function openVideoRemake(video) {
     output.hidden = !source;
     if (source && output.getAttribute("src") !== source) output.src = source;
     else if (!source) output.removeAttribute("src");
-    el(".rm-video-status").textContent = selected?.error || (selected && active(selected) ? "正在处理镜头视频…" : "");
+    el(".rm-video-status").textContent = selected?.error || (selected && active(selected)
+      ? selected.mode === "local" ? "正在跟踪人物并合成…" : "正在处理镜头视频…" : "");
     const review = el(".rm-video-review");
     review.replaceChildren();
     if (selected) {
       const select = document.createElement("select");
       select.setAttribute("aria-label", "镜头视频版本");
-      videos.forEach((v, i) => select.append(new Option(`视频 ${i + 1} · ${shot.adopted_video === v.job && !shot.keep_original ? "已采用" : v.ref ? "待审核" : v.state === "error" ? "失败" : "处理中"}`, v.job)));
+      videos.forEach((v, i) => select.append(new Option(`${i + 1}. ${v.mode === "local" ? "局部合成" : "整镜重制"} · ${shot.adopted_video === v.job && !shot.keep_original ? "已采用" : v.ref ? "待审核" : v.state === "error" ? "失败" : "处理中"}`, v.job)));
       select.value = selected.job;
       select.onchange = () => { videoId = select.value; renderVideo(); };
       review.append(select, button("播放原镜头", () => {
@@ -214,6 +215,9 @@ async function openVideoRemake(video) {
       }, busy));
       if (source && (shot.adopted_video !== selected.job || shot.keep_original)) {
         review.append(button("采用此视频", () => change("approve_video", {job:selected.job}), busy));
+      }
+      if (source && selected.mode !== "local") {
+        review.append(button("跟踪人物并局部合成", () => change("localize", {job:selected.job}), busy || videos.some(active)));
       }
     }
     const exp = session.export;
@@ -288,11 +292,11 @@ async function openVideoRemake(video) {
     revision++;
     busy = true;
     renderPanel();
-    status({analyze:"正在拆分与分析镜头…",select:"正在处理选区…",preview:"正在提交预览…",generate_video:"正在提交镜头生成…",export:"正在提交成片合成…"}[action] || "");
+    status({analyze:"正在拆分与分析镜头…",select:"正在处理选区…",preview:"正在提交预览…",generate_video:"正在提交镜头生成…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
     try {
       session = await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, ...extra});
       if (action === "preview") versionId = null;
-      if (action === "generate_video") videoId = null;
+      if (action === "generate_video" || action === "localize") videoId = null;
       status("");
     } catch (error) { status(error.message); }
     finally { busy = false; renderPanel(); schedulePoll(); }

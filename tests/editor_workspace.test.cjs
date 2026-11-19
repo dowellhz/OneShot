@@ -502,6 +502,10 @@ async function run(){
    remakeMotion=operation.motion;
    remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4'}];
   }
+  if(operation?.action==='localize'){
+   assert.equal(operation.job,'shot-video');
+   remakeSession.shots[0].videos.push({job:'shot-local',mode:'local',state:'done',ref:'output:h3studio/shot-local.mp4'});
+  }
   if(operation?.action==='approve_video')remakeSession.shots[0].adopted_video=operation.job;
   if(operation?.action==='export')remakeSession.export={job:'export-job',state:'done',ref:'output:h3studio/assembled.mp4'};
   return {ok:true,json:async()=>structuredClone(remakeSession),text:async()=>JSON.stringify(remakeSession)};
@@ -525,6 +529,8 @@ async function run(){
  evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("#videoRemake [data-generate-video]").click()`);
  await ready('!!$("#videoRemake [data-result]").getAttribute("src")','remade video can be reviewed in workspace');
  assert.equal(remakeMotion,'第一秒回头');
+ evaluate('$$(".rm-video-review button").find(b=>b.textContent==="跟踪人物并局部合成").click()');
+ await ready('$("#videoRemake [data-result]").getAttribute("src")?.includes("shot-local.mp4")','local result is selectable alongside original generation');
  evaluate('$$(".rm-video-review button").find(b=>b.textContent==="采用此视频").click()');
  await ready('$("#videoRemake [data-export]").hidden===false','review unlocks export');
  evaluate('$("#videoRemake [data-export]").click()');
@@ -537,7 +543,7 @@ async function run(){
  equal(evaluate('B.edges.at(-1).from'),evaluate('B.nodes.at(-2).id'),'approved frame linked to new video');
  equal(evaluate('!!$("#videoRemake")'),false,'handoff returns to canvas');
  w.fetch=previousFetch;
- console.log('Video remake DOM passed: analyze, select, preview, review remade shot, export, and first-frame handoff.');
+ console.log('Video remake DOM passed: analyze, select, preview, review remade and localized shots, export, and first-frame handoff.');
  console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');
  console.log('Asset library DOM passed: entry, categories/search/source/scope, safe labels, preview/history, save/upload/delete, readonly shared assets, canvas import/place, @ citation, and fetch recovery.');
  console.log('Memory DOM passed: @ dropdown, alias/tag filtering, keyboard and mouse completion, no accidental send, duplicate identities and editor scope.');

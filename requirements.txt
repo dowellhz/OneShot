@@ -10,3 +10,4 @@ av
 pillow
 numpy
 cryptography
+opencv-python-headless>=4.10,<5

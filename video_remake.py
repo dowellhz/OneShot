@@ -11,6 +11,7 @@ from PIL import Image
 
 import db
 import image_editor
+import video_matte
 from creative_memory import IMAGE_EXT, character_notes, fail
 
 MAX_SECONDS = 60
@@ -269,7 +270,37 @@ async def generate_shot(req, host, key, shot, data):
         "count": 1, "mode": "fl2v", "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
     }
     version = submitted_job(await host.generate_request(req, raw))
-    version.update(first_frame=approved["ref"], asset=approved["asset"], motion=instructions[:1600])
+    version.update(first_frame=approved["ref"], mask=approved.get("mask"), asset=approved["asset"],
+                   motion=instructions[:1600])
+    videos.append(version)
+
+
+def localize_shot(req, host, key, shot, job):
+    videos = shot.get("videos", [])
+    generated = completed(videos, job)
+    if not generated or generated.get("mode") == "local":
+        fail("请选择已完成的整镜重制视频")
+    if pending(videos):
+        fail("此镜头正在处理，请等待完成", 409)
+    if len(videos) >= MAX_PREVIEWS:
+        fail("此镜头已达到视频版本上限")
+    first = shot["frames"]["first"]
+    seed = next((p for p in first["previews"] if p.get("ref") == generated.get("first_frame")), None)
+    mask = generated.get("mask") or (seed or {}).get("mask")
+    if not mask:
+        fail("这个版本没有首帧选区，请重新采用首帧并生成")
+    start, end = shot["start"], shot["end"]
+    if end - start > 14:
+        fail("局部合成支持 14 秒以内的镜头")
+
+    def composite(progress, cancelled):
+        return video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], mask,
+                                          start, end, progress, cancelled)
+
+    response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
+    version = submitted_job(response)
+    version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
+                   asset=generated["asset"], motion=generated.get("motion", ""))
     videos.append(version)
 
 
@@ -370,6 +401,8 @@ async def handle(req, host):
                 frame["approved"] = preview["job"]
             elif action == "generate_video":
                 await generate_shot(req, host, key, shot, data)
+            elif action == "localize":
+                localize_shot(req, host, key, shot, data.get("job"))
             elif action == "approve_video":
                 await approve_video(host, shot, data.get("job"))
             elif action == "keep":

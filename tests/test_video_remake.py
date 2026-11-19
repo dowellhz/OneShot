@@ -15,6 +15,7 @@ import db
 import image_editor
 import server
 import video_remake
+import video_matte
 
 
 class Request(dict):
@@ -116,8 +117,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         board = {"owner": 7, "nodes": [{"id":"n3", "type":"video", "versions":[{"ref":source}]}]}
         server.board_path("test").write_text(json.dumps(board))
         shot_frame = video_remake.frame_record(self.source["ref"], (64, 64))
+        selected = Image.new("L", (64, 64))
+        selected.paste(255, (16,16,48,48))
+        mask = image_editor.save(server.COMFY_DIR, selected, "mask", "input")["ref"]
         shot_frame["previews"] = [{
-            "job":"frame-preview", "state":"done", "ref":self.source["ref"],
+            "job":"frame-preview", "state":"done", "ref":self.source["ref"], "mask":mask,
             "asset":{"name":"新角色", "ref":self.source["ref"]},
         }]
         shot_frame["approved"] = "frame-preview"
@@ -150,23 +154,22 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             with self.assertRaises(web.HTTPBadRequest):
                 await act("export")
             await act("generate_video")
-        await act("approve_video", job="shot-gen-2")
+        local = await act("localize", job="shot-gen-2")
+        local_job = local["shots"][0]["videos"][-1]["job"]
+        await self.wait_for_render(local_job)
+        await act("approve_video", job=local_job)
         submitted = await act("export")
         job = submitted["export"]["job"]
-        for _ in range(150):
-            task = db.one("SELECT state,outputs,error FROM tasks WHERE id=?", job)
-            if task["state"] in ("done","error"):
-                break
-            await asyncio.sleep(.02)
-        self.assertEqual(task["state"], "done", task["error"])
+        task = await self.wait_for_render(job)
         final = json.loads(task["outputs"])[0]
         path = server.tools.ref_path(server.COMFY_DIR, final)
         self.assertAlmostEqual(server.film.probe(path)[2], 4, places=2)
         with av.open(str(path)) as container:
             frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
         self.assertEqual(len(frames), 4 * server.film.FPS)
-        self.assertGreater(frames[47][0,0,1], frames[47][0,0,0])
-        self.assertGreater(frames[48][0,0,0], frames[48][0,0,1])
+        self.assertGreater(frames[47][32,32,1], frames[47][32,32,0])
+        self.assertGreater(frames[47][0,0,0], frames[47][0,0,1])
+        self.assertGreater(frames[48][32,32,0], frames[48][32,32,1])
         audio = server.film.read_audio(path)[0]
         for t in (1, 3):
             chunk = audio[t * server.film.SR:(t + 1) * server.film.SR]
@@ -175,6 +178,43 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.JOBS.pop(job)
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["export"]["ref"], final)
+
+    async def wait_for_render(self, job):
+        for _ in range(150):
+            task = db.one("SELECT state,outputs,error FROM tasks WHERE id=?", job)
+            if task["state"] in ("done","error"):
+                break
+            await asyncio.sleep(.02)
+        self.assertEqual(task["state"], "done", task["error"])
+        return task
+
+    def test_matte_tracks_motion_and_preserves_background_outside_the_mask(self):
+        import cv2
+        toy = np.random.default_rng(42).integers(40, 240, (24, 24), dtype=np.uint8)
+
+        def frame(x, replacement=False):
+            image = np.full((64, 96, 3), 18 if replacement else 12, dtype=np.uint8)
+            sprite = np.stack([toy, toy, toy], axis=-1)
+            if replacement:
+                sprite[..., 1] = 240
+            image[20:44, x:x+24] = sprite
+            return image
+
+        mask = np.zeros((64, 96), dtype=np.uint8)
+        mask[20:44, 10:34] = 255
+        source_track = video_matte.MaskTrack(frame(10), mask, cv2)
+        generated_track = video_matte.MaskTrack(frame(10, True), mask, cv2)
+        for k in range(1, 19):
+            original = frame(10+k)
+            generated = frame(10+k//2, True)
+            source_track.advance(original, k)
+            generated_track.advance(generated, k)
+        observed = source_track.at_size(96, 64)
+        generated_mask = generated_track.at_size(96, 64)
+        self.assertAlmostEqual(video_matte.mask_center(observed)[0], 39.5, delta=4)
+        result = video_matte.composite_frame(original, generated, observed, generated_mask, cv2)
+        self.assertTrue(np.array_equal(result[observed==0], original[observed==0]))
+        self.assertGreater(result[32,39,1], 170)
 
     @staticmethod
     def make_clip(name, seconds, color, frequency):
