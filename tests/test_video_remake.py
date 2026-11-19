@@ -853,9 +853,6 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         for rid, state in ((run["id"], "running"), ("export-observer", "stopping")):
             db.run("INSERT INTO chat_runs VALUES(?,?,?,?,?,?,?,?,?,?)", rid, run["session_id"], 7, "test",
                    rid, state, json.dumps(run["data"]), None, now, now)
-        db.run("INSERT INTO chat_calls VALUES(?,?,?,?,?,?,?)", "export", run["id"], "video_remake_export",
-               "{}", "executing", None, now)
-
         async def assistant_export(revision=0, *, current_run=run, call="export"):
             return await service.execute(current_run, self.user, call, "video_remake_export", {
                 "node_id":"n3", "cut_revision":revision,
@@ -879,16 +876,29 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(adopted["remake"]["video_job"], local_job)
         self.assertTrue(adopted["can_export"])
         self.assertEqual((await act())["shots"][0]["adopted_video"], local_job)
-        with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue:
+        service.emit(run["session_id"], run["id"], "model",
+                     {"role":"user", "content":"合成重制视频，保留原声"})
+        model_call = {
+            "role":"assistant", "content":None, "tool_calls":[{
+                "id":"export-for-remake", "type":"function",
+                "function":{"name":"video_remake_export",
+                            "arguments":json.dumps({"node_id":"n3", "cut_revision":0})},
+            }],
+        }
+        reply = {"role":"assistant", "content":"成片已就绪"}
+        with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue, \
+                patch.object(service, "model", side_effect=[model_call, reply]) as model:
             async with server.RENDER_LOCK:
-                waiting = asyncio.create_task(assistant_export())
+                waiting = asyncio.create_task(service.work(run["id"]))
                 for _ in range(50):
-                    call = db.one("SELECT state,result FROM chat_calls WHERE id=?", "export")
-                    if call["state"] == "waiting":
+                    call = db.one("SELECT id,state,result FROM chat_calls WHERE run_id=? AND name=?",
+                                  run["id"], "video_remake_export")
+                    if call and call["state"] == "waiting":
                         break
                     if waiting.done():
-                        await waiting
+                        self.fail(db.one("SELECT state,error FROM chat_runs WHERE id=?", run["id"]))
                     await asyncio.sleep(.02)
+                self.assertIsNotNone(call)
                 self.assertEqual(call["state"], "waiting")
                 pending_export = json.loads(call["result"])
                 export_job = pending_export["ids"][0]
@@ -896,10 +906,23 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                 with self.assertRaisesRegex(server.agent_chat.ToolError, "停止"):
                     await assistant_export(current_run=observer, call="observe")
                 self.assertFalse(server.JOBS[export_job].get("cancel"))
-            downloadable = await waiting
+            await waiting
+            completed_call = db.one("SELECT state,result FROM chat_calls WHERE id=?", call["id"])
+            self.assertEqual(completed_call["state"], "done")
+            downloadable = json.loads(completed_call["result"])
             self.assertEqual(downloadable["export_state"], "done")
+            completed_run = db.one("SELECT state,error FROM chat_runs WHERE id=?", run["id"])
+            self.assertEqual(completed_run, {"state":"done", "error":None})
+            delivered = model.await_args_list[1].args[0][-1]
+            self.assertEqual(delivered["role"], "tool")
+            self.assertEqual(delivered["tool_call_id"], "export-for-remake")
+            self.assertEqual(json.loads(delivered["content"])["export_ref"], downloadable["export_ref"])
+            tool_event = db.one("SELECT data FROM chat_events WHERE run_id=? AND kind='tool_end'", run["id"])
+            self.assertEqual(json.loads(tool_event["data"])["result"]["export_ref"], downloadable["export_ref"])
+            reply_event = db.one("SELECT data FROM chat_events WHERE run_id=? AND kind='assistant'", run["id"])
+            self.assertEqual(json.loads(reply_event["data"])["text"], reply["content"])
             server.JOBS.pop(export_job)
-            resumed = await service.wait_jobs(run, self.user, "export", pending_export)
+            resumed = await service.wait_jobs(run, self.user, call["id"], pending_export)
             self.assertEqual(resumed["export_ref"], downloadable["export_ref"])
             self.assertEqual((await assistant_export())["export_ref"], downloadable["export_ref"])
         enqueue.assert_called_once()
