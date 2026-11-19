@@ -16,7 +16,7 @@ async function remakeRequest(url, data) {
   return result;
 }
 
-async function openVideoRemake(video) {
+async function openVideoRemake(video, {shotStart: initialShotStart} = {}) {
   const source = curV(video);
   if (!source?.ref) return toast("请先上传或生成视频");
   await flushSave();
@@ -1264,6 +1264,15 @@ async function openVideoRemake(video) {
     role.append(new Option(assets.length ? "选择资产库角色" : "资产库暂无带参考图的角色", ""));
     assets.forEach(item => role.append(new Option(item.name, item.id)));
     if (assets.some(item => item.id === session?.role?.asset)) role.value = session.role.asset;
+    if (Number.isFinite(initialShotStart)) {
+      const index = session?.shots.findIndex(shot => shot.start === initialShotStart);
+      if (index >= 0) {
+        shotIndex = index;
+        player.currentTime = initialShotStart;
+      } else {
+        status("剪辑点已变更，请在镜头列表中重新选择。");
+      }
+    }
     fillViews();
     busy = false;
     renderPanel();

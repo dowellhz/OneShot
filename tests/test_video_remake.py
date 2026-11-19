@@ -149,6 +149,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
 
             async def chat(self, system, content, **kwargs):
                 self.calls += 1
+                if "这一帧" in system:
+                    assert json.loads(content[0]["text"]) == {"name":"人物甲", "appearance":"红衣"}
+                    return json.dumps({"point":[.4, .6]})
                 return json.dumps({"characters":[{"name":"人物甲", "look":"红衣"}],
                                    "shots":[{"characters":["人物甲"], "camera":"固定机位"}] * 2})
 
@@ -189,6 +192,22 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         workspace = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(workspace["mapping"]["shots"], [1])
         self.assertEqual(workspace["mapping"]["look"], "红衣")
+
+        locate_args = {"node_id":"n3", "person":"人物甲", "asset_id":asset["id"], "cut_revision":mapped["cut_revision"]}
+        with self.assertRaises(server.agent_chat.ToolError):
+            await service.execute(run, self.user, "locate", "video_remake_locate", {**locate_args, "shots":[1]})
+        located = await service.execute(run, self.user, "locate", "video_remake_locate", locate_args)
+        self.assertEqual(located["location"], {"located":[2], "skipped":[], "failed":[]})
+        self.assertEqual(located["remake"]["shot_number"], 2)
+        self.assertEqual(located["remake"]["shot_start"], 1.25)
+        self.assertTrue(located["shots"][1]["position_suggested"])
+        self.assertFalse(located["shots"][1]["start_frame_selected"])
+        workspace = json.loads((await server.remake(Request(source, self.user))).body)
+        self.assertEqual(workspace["shots"][1]["frames"]["first"]["person_hint"]["point"], [.4, .6])
+        repeat = await service.execute(run, self.user, "repeat_location", "video_remake_locate", locate_args)
+        self.assertEqual(repeat["location"]["skipped"], [2])
+        self.assertEqual(repeat["remake"]["shot_number"], 2)
+        self.assertEqual(vision.calls, 3)
         self.assertEqual(server.JOBS, {})
 
     async def test_long_shot_splits_into_balanced_segments_and_can_be_undone(self):

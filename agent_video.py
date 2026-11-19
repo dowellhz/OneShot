@@ -11,7 +11,7 @@ from aiohttp import web
 
 import video_remake
 
-NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze", "video_remake_map"}
+NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze", "video_remake_map", "video_remake_locate"}
 
 
 def result_id(cid):
@@ -125,6 +125,12 @@ def register(tool, prop, node, prompt):
                       minItems=1, maxItems=video_remake.MAX_SHOTS),
         "cut_revision": prop("integer", minimum=0), "look": prop("string", maxLength=240),
     }, ["node_id", "person", "asset_id", "shots", "cut_revision"])
+    tool("video_remake_locate", "为已映射镜头的首帧批量标记候选人物位置，留给用户确认。镜头从1编号，省略shots则使用当前映射的全部镜头。", {
+        "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
+        "shots": prop("array", items=prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS),
+                      minItems=1, maxItems=video_remake.MAX_SHOTS),
+        "cut_revision": prop("integer", minimum=0),
+    }, ["node_id", "person", "asset_id", "cut_revision"])
 
 
 def video_node(s, run, user, nid, *, allow_film=False):
@@ -189,6 +195,8 @@ async def execute(s, run, user, cid, name, args):
         return await analyze_remake(s, run, user, args["node_id"])
     if name == "video_remake_map":
         return await map_remake(s, run, user, args)
+    if name == "video_remake_locate":
+        return await locate_remake(s, run, user, args)
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -278,6 +286,33 @@ async def map_remake(s, run, user, args):
     return result
 
 
+async def locate_remake(s, run, user, args):
+    nid = args["node_id"]
+    key = remake_source(s, run, user, nid)
+    session = video_remake.load(key)
+    mapping = (session or {}).get("mapping")
+    if not mapping or mapping["source"] != args["person"] or mapping["asset"] != args["asset_id"]:
+        raise ValueError("请先读取或保存当前视频版本的人物映射")
+    indices = [number - 1 for number in args["shots"]] if "shots" in args else mapping["shots"]
+    session = await apply_remake_action(s, user, nid, key, {
+        "action": "batch_locate_people", "person": args["person"], "asset": args["asset_id"],
+        "shots": indices, "cut_revision": args["cut_revision"], "look": mapping.get("look", ""),
+    })
+    result = remake_status(s.host, nid, key, session)
+    outcome = session["batch_locate_people"]
+    located = [index + 1 for index in outcome["located"]]
+    result["location"] = {
+        "located": located, "skipped": [index + 1 for index in outcome["skipped"]],
+        "failed": [{"shot": item["shot"] + 1, "error": item["error"]} for item in outcome["failed"]],
+    }
+    suggested = next((shot for shot in result["shots"] if shot["number"] - 1 in indices and shot["position_suggested"]), None)
+    if suggested:
+        result["remake"].update(shot_number=suggested["number"], shot_start=suggested["start"])
+    result["text"] = (f"{len(located)} 个镜头已标出候选位置，请在工作区核对。" if located else
+                      "本次未新增候选位置，可在工作区查看已有标记或手动选择。")
+    return result
+
+
 def remake_status(host, nid, key, session):
     result = {"remake": {"node_id": nid, "source_ref": key[3]}, "shots": [], "analyzed": False}
     if not session or not session["shots"]:
@@ -294,11 +329,16 @@ def remake_status(host, nid, key, session):
         frames = [item for record in shot["frames"].values() for item in record["previews"]]
         adopted_frame = video_remake.completed(frame.get("previews", []), frame.get("approved"))
         people = shot.get("summary", {}).get("characters")
+        hint = frame.get("person_hint") or {}
+        selected = bool(video_remake.person_selection(frame, mapping))
         result["shots"].append({
             "number": index + 1, "start": shot["start"], "end": shot["end"],
             "suggested_people": [name[:60] for name in people[:24] if isinstance(name, str)] if isinstance(people, list) else [],
             "keep_original": bool(shot.get("keep_original") or mapping and index not in mapping["shots"]),
-            "start_frame_selected": bool(video_remake.person_selection(frame, mapping)),
+            "start_frame_selected": selected,
+            "position_suggested": bool(mapping and not selected and not video_remake.person_absent(frame, mapping) and
+                                       hint.get("point") and hint.get("source") == mapping["source"] and
+                                       hint.get("look") == mapping.get("look", "")),
             "start_frame_approved": bool(adopted_frame and video_remake.matches_mapping(adopted_frame, mapping) and
                                          video_remake.preview_matches_regions(frame, adopted_frame, mapping)),
             "video_available": any(item.get("ref") and video_remake.matches_mapping(item, mapping) for item in videos),

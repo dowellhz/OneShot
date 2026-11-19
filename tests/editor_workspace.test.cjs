@@ -837,12 +837,15 @@ async function run(){
  await ready('$$(".rm-shots button").length===3 && $("[data-cut=split_long_shot]").hidden && !$("[data-cut=undo_cut]").hidden',
   'automatic splitting updates the shot list and exposes undo');
  evaluate('$("#videoRemake [data-close]").click()');
+ const locatedShot=remakeSession.shots[1];
+ locatedShot.frames.first.person_hint={source:'人物 A',look:'',point:[.35,.45]};
  evaluate(`const pinnedIndex=vtResolve("pendingVideo",originalRef).index;
  switchVersion(mergePeer,mergePeer.cur===0?1:0);
- $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({remake:{node_id:"pendingVideo",source_ref:originalRef}}));
+ $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({remake:{node_id:"pendingVideo",source_ref:originalRef,
+  shot_number:2,shot_start:${locatedShot.start}}}));
  $("#acMessages [data-remake-node]").click();`);
- await ready('!!$("#videoRemake .rm-shots button") && mergePeer.cur===pinnedIndex',
-  'the assistant action opens the pinned source version even after its tab moved');
+ await ready('$("#videoRemake .rm-shot")?.textContent==="镜头 2" && !$(".rm-person-point").hidden && mergePeer.cur===pinnedIndex',
+  'the assistant opens the located shot on the pinned source version even after its tab moved');
  evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
  evaluate(`$("#upBtn").click();

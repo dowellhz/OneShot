@@ -1,6 +1,6 @@
 "use strict";
 const AC={session:null,board:null,events:[],runs:[],cursor:0,open:false,polling:false,sending:false,refs:null,base:new Map(),pending:new Map(),calls:new Map(),epoch:0};
-const AC_LABELS={video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
+const AC_LABELS={video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
 const AC_STATES={thinking:"正在理解与规划…",running:"正在执行…",stopping:"正在停止，保留已完成结果…",stopped:"本轮已停止",done:"本轮已结束",error:"本轮执行中断"};
 const AC_PHASES={queued:"排队",loading:"加载模型",encoding:"处理提示词与图片",sampling:"生成",decoding:"解码",compositing:"合成",done:"完成",error:"失败"};
 const acClone=v=>JSON.parse(JSON.stringify(v));
@@ -51,8 +51,11 @@ async function acFocus(ids,editor=false){if(AC.board!==boardId)return;const node
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
 function acResultCards(result){
  if (result.remake) {
-  const {node_id, source_ref} = result.remake;
-  return `<button type="button" data-remake-node="${esc(node_id)}" data-remake-ref="${esc(source_ref)}">打开视频重制</button>`;
+  const {node_id, source_ref, shot_number, shot_start} = result.remake;
+  const locate = Number.isFinite(shot_start) && Number.isInteger(shot_number);
+  const target = locate ? ` data-remake-start="${shot_start}"` : "";
+  const label = locate ? `确认镜头 ${shot_number} 的人物位置` : "打开视频重制";
+  return `<button type="button" data-remake-node="${esc(node_id)}" data-remake-ref="${esc(source_ref)}"${target}>${label}</button>`;
  }
  const made=result.nodes||[];if(!made.length)return "";return `<div class="ac-results">${made.map(item=>{const n=vtResolve(item.id,item.ref)?.node,v=acResultVersion(item);if(item.type==="video"||n?.type==="video")return `<div class="ac-result ac-video"><video controls playsinline preload="metadata" src="/media?ref=${encodeURIComponent(v.ref)}" aria-label="生成的视频"></video><button type="button" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">定位视频</button></div>`;return `<button type="button" class="ac-result" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">${v?.ref?`<img loading="lazy" alt="生成结果" src="/media?ref=${encodeURIComponent(v.ref)}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;}).join("")}</div>`;}
 
@@ -171,7 +174,8 @@ function initAgentChat(){
    const target=vtResolve(remake.dataset.remakeNode,remake.dataset.remakeRef);
    if(!target || target.node.type!=="video" || target.node.versions[target.index]?.ref!==remake.dataset.remakeRef){toast("原片版本已不存在");return;}
    if(target.node.cur!==target.index && !switchVersion(target.node,target.index))return;
-   openVideoRemake(target.node);
+   const start=remake.dataset.remakeStart;
+   openVideoRemake(target.node,{shotStart:start===undefined ? undefined : Number(start)});
    return;
   }
   const b=e.target.closest("[data-focus]");if(b){const resolved=vtResolve(b.dataset.focus,b.dataset.versionRef);if(resolved){switchVersion(resolved.node,resolved.index);acFocus([resolved.node.id]);}}};
