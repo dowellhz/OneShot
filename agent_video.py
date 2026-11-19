@@ -11,7 +11,7 @@ from aiohttp import web
 
 import video_remake
 
-NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze"}
+NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze", "video_remake_map"}
 
 
 def result_id(cid):
@@ -119,6 +119,12 @@ def register(tool, prop, node, prompt):
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
     tool("video_remake_status", "读取原片视频版本的角色替换进度，包括待审核镜头和成片状态。不启动分析或生成。", {"node_id": node}, ["node_id"])
     tool("video_remake_analyze", "在视频重制工作区分析指定原片，按原片时间轴拆分镜头并识别人物。已有分析时直接读取，可继续审核。", {"node_id": node}, ["node_id"])
+    tool("video_remake_map", "保存角色映射，用资产库角色替换指定原片人物。镜头编号从1开始，使用最近一次重制状态的cut_revision。", {
+        "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
+        "shots": prop("array", items=prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS),
+                      minItems=1, maxItems=video_remake.MAX_SHOTS),
+        "cut_revision": prop("integer", minimum=0), "look": prop("string", maxLength=240),
+    }, ["node_id", "person", "asset_id", "shots", "cut_revision"])
 
 
 def video_node(s, run, user, nid, *, allow_film=False):
@@ -181,6 +187,8 @@ async def execute(s, run, user, cid, name, args):
         return remake_status(s.host, nid, key, video_remake.load(key))
     if name == "video_remake_analyze":
         return await analyze_remake(s, run, user, args["node_id"])
+    if name == "video_remake_map":
+        return await map_remake(s, run, user, args)
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -239,17 +247,35 @@ def remake_source(s, run, user, nid):
         raise ValueError("原片版本已不存在，请重新选择视频") from None
 
 
+async def apply_remake_action(s, user, nid, key, payload):
+    async def invoke(req):
+        req.method = "POST"
+        req.match_info = {"board": key[1], "node": nid}
+        return await s.host.remake(req)
+
+    return await s.response(invoke, user, payload, query={"source": key[3]})
+
+
 async def analyze_remake(s, run, user, nid):
     key = remake_source(s, run, user, nid)
     session = video_remake.load(key)
     if not session or not session["shots"]:
-        async def analyze(req):
-            req.method = "POST"
-            req.match_info = {"board": run["board_id"], "node": nid}
-            return await s.host.remake(req)
-
-        session = await s.response(analyze, user, {"action": "analyze"}, query={"source": key[3]})
+        session = await apply_remake_action(s, user, nid, key, {"action": "analyze"})
     return remake_status(s.host, nid, key, session)
+
+
+async def map_remake(s, run, user, args):
+    nid = args["node_id"]
+    key = remake_source(s, run, user, nid)
+    session = await apply_remake_action(s, user, nid, key, {
+        "action": "map_person", "person": args["person"], "asset": args["asset_id"],
+        "shots": [number - 1 for number in args["shots"]], "cut_revision": args["cut_revision"],
+        "look": args.get("look", ""),
+    })
+    result = remake_status(s.host, nid, key, session)
+    mapping = session["mapping"]
+    result["text"] = f"已保存人物映射：{mapping['source']} → {mapping['asset_name']}，共 {len(mapping['shots'])} 个镜头。"
+    return result
 
 
 def remake_status(host, nid, key, session):
@@ -267,8 +293,10 @@ def remake_status(host, nid, key, session):
         videos = shot.get("videos", [])
         frames = [item for record in shot["frames"].values() for item in record["previews"]]
         adopted_frame = video_remake.completed(frame.get("previews", []), frame.get("approved"))
+        people = shot.get("summary", {}).get("characters")
         result["shots"].append({
             "number": index + 1, "start": shot["start"], "end": shot["end"],
+            "suggested_people": [name[:60] for name in people[:24] if isinstance(name, str)] if isinstance(people, list) else [],
             "keep_original": bool(shot.get("keep_original") or mapping and index not in mapping["shots"]),
             "start_frame_selected": bool(video_remake.person_selection(frame, mapping)),
             "start_frame_approved": bool(adopted_frame and video_remake.matches_mapping(adopted_frame, mapping) and
@@ -278,8 +306,10 @@ def remake_status(host, nid, key, session):
         })
     count = len(result["shots"])
     return {**result, "analyzed": True, "text": f"共 {count} 个镜头，{len(issues)} 个待审核。",
+            "cut_revision": session.get("cut_revision", 0),
             "source_people": session.get("source_people", []), "warning": session.get("warning") or None,
-            "mapping": {"source": mapping["source"], "asset": mapping.get("asset_name")} if mapping else None,
+            "mapping": {"source": mapping["source"], "asset": mapping.get("asset_name"), "asset_id": mapping["asset"],
+                        "shots": [index + 1 for index in mapping["shots"]]} if mapping else None,
             "adopted": review["adopted"], "can_export": bool(review["adopted"] and not issues and
                                                           out.get("state") not in ("queued", "running")),
             "export_state": "stale" if out.get("stale") else out.get("state")}

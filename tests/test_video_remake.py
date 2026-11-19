@@ -137,6 +137,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         other = "input:h3studio/other.mp4"
         server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
             {"id":"n3", "type":"video", "cur":1, "versions":[{"ref":source}, {"ref":other}]},
+            {"id":"n1", "type":"image", "versions":[self.source]},
         ]}))
 
         class Vision:
@@ -152,13 +153,17 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                                    "shots":[{"characters":["人物甲"], "camera":"固定机位"}] * 2})
 
         vision = Vision()
-        service = server.agent_chat.AgentService({"llm":vision}, server)
+        memory = server.creative_memory.Store(server)
+        asset = memory.put(self.user, {"name":"林森", "kind":"character", "board":"test",
+                                      "ref":self.source["ref"], "source_board":"test"})
+        service = server.agent_chat.AgentService({"llm":vision, "creative_memory":memory}, server)
         run = {"board_id":"test", "data":{"bindings":{"n3":source}}}
         result = await service.execute(run, self.user, "analyze", "video_remake_analyze", {"node_id":"n3"})
         self.assertEqual(result["remake"]["source_ref"], source)
         self.assertTrue(result["analyzed"])
         self.assertIsNone(result["warning"])
         self.assertEqual(result["source_people"], [{"name":"人物甲", "look":"红衣"}])
+        self.assertEqual(result["shots"][0]["suggested_people"], ["人物甲"])
         self.assertEqual([(shot["start"], shot["end"]) for shot in result["shots"]], [(0,1), (1,2)])
         workspace = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(workspace["shots"][0]["summary"]["camera"], "固定机位")
@@ -171,6 +176,19 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(vision.calls, 2)
         self.assertIsNone(again["warning"])
         self.assertEqual([(shot["start"], shot["end"]) for shot in again["shots"]], [(0,1.25), (1.25,2)])
+
+        params = {"node_id":"n3", "person":"人物甲", "asset_id":asset["id"], "shots":[2]}
+        with self.assertRaises(server.agent_chat.ToolError):
+            await service.execute(run, self.user, "map", "video_remake_map", {**params, "cut_revision":result["cut_revision"]})
+        with self.assertRaises(server.agent_chat.ToolError):
+            await service.execute(run, self.user, "map", "video_remake_map", {**params, "cut_revision":again["cut_revision"], "shots":[3]})
+        mapped = await service.execute(run, self.user, "map", "video_remake_map",
+                                       {**params, "cut_revision":again["cut_revision"], "look":"红衣"})
+        self.assertEqual(mapped["mapping"], {"source":"人物甲", "asset":"林森", "asset_id":asset["id"], "shots":[2]})
+        self.assertTrue(mapped["shots"][0]["keep_original"])
+        workspace = json.loads((await server.remake(Request(source, self.user))).body)
+        self.assertEqual(workspace["mapping"]["shots"], [1])
+        self.assertEqual(workspace["mapping"]["look"], "红衣")
         self.assertEqual(server.JOBS, {})
 
     async def test_long_shot_splits_into_balanced_segments_and_can_be_undone(self):
