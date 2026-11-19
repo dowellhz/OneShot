@@ -503,9 +503,11 @@ async function run(){
   if(operation?.action==='map_person'){
    remakeSession.mapping={source:operation.person,asset:operation.asset,asset_name:'林森新版',shots:operation.shots};
   }
-  if(operation?.action==='locate_person'){
-   assert.equal(operation.person,'人物 A');
+  if(operation?.action==='batch_locate_people'){
+   assert.deepEqual({person:operation.person,asset:operation.asset,look:operation.look,shots:operation.shots},
+    {person:'人物 A',asset:'char',look:'',shots:[0]});
    frame.person_hint={source:operation.person,look:'',point:[.35,.45]};
+   remakeSession.batch_locate_people={located:[0],skipped:[],failed:[]};
   }
   if(operation?.action==='apply_person_hint'){
    assert.equal(operation.person,'人物 A');
@@ -598,10 +600,13 @@ async function run(){
  await ready('$("#videoRemake [data-role]").disabled && $(".rm-mapping-status").textContent.includes("人物 A → 林森")','confirmed cross-shot mapping binds role');
  evaluate('$("[data-absence]").click()');
  await ready('$(".rm-motion-hint").textContent.includes("首次入画的位置") && !$("[data-absence]").disabled','absent first frame prompts for an entry keyframe');
+ equal(evaluate('$("[data-batch-locate]").disabled'),true,'batch localization skips an absent first frame');
  evaluate('$("[data-absence]").click()');
- await ready('!$("[data-absence]").disabled && !$("[data-locate-person]").hidden','cancelling first-frame absence restores regular selection');
- evaluate('$("[data-locate-person]").click()');
+ await ready('!$("[data-batch-locate]").disabled','cancelling absence makes the frame eligible for batching');
+ evaluate('$("[data-batch-locate]").click()');
  await ready('!$(".rm-person-point").hidden && $("[data-locate-person]").textContent==="按此位置选中"','model hint is visible before selection');
+ equal(evaluate('$(".rm-shots button").textContent.includes("人物位置待确认") && $("[data-batch-locate]").disabled'),true,
+  'a located shot is marked for review and excluded from repeat batches');
  assert.equal(evaluate('$(".rm-mask").hidden'),true);
  evaluate('$("[data-locate-person]").click()');
  await ready('$(".rm-person-point").hidden && !$(".rm-mask").hidden','confirmed location becomes a selection');

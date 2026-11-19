@@ -471,9 +471,26 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             return json.loads(response.body)
 
         await act("map_person", person="人物甲", asset=asset["id"], shots=[0,1])
+        locate_args = {"person":"人物甲", "asset":asset["id"], "shots":[0,1]}
+        with patch.object(server.tools, "locate_shot_person", side_effect=[{"point":[.5,.5]}, {"point":None}]) as locate:
+            with self.assertRaises(web.HTTPConflict):
+                await act("batch_locate_people", **locate_args, look="旧外貌描述")
+            with self.assertRaises(web.HTTPBadRequest):
+                await act("batch_locate_people", **{**locate_args, "shots":[0,2]})
+            locate.assert_not_called()
+            located = await act("batch_locate_people", **locate_args)
+        self.assertEqual(located["batch_locate_people"]["located"], [0])
+        self.assertEqual(located["batch_locate_people"]["failed"][0]["shot"], 1)
+        first = (await act())["shots"][0]["frames"]["first"]
+        self.assertEqual(first["person_hint"]["point"], [.5,.5])
+        self.assertNotIn("selection", first)
+        await act("set_absence", shot=1, frame="first", absent=True)
+        with patch.object(server.tools, "locate_shot_person") as locate:
+            repeat = await act("batch_locate_people", **locate_args)
+            self.assertEqual(repeat["batch_locate_people"]["skipped"], [0,1])
+            locate.assert_not_called()
         for index in (0, 2):
             await act("select", shot=index, rect=[.25,.25,.75,.75])
-        await act("set_absence", shot=1, frame="first", absent=True)
         entry = (await act("capture_correction", shot=1, at=1.25))["captured_frame"]
         later = (await act("capture_correction", shot=1, at=1.5))["captured_frame"]
         for key in (later, entry):

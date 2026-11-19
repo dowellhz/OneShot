@@ -31,6 +31,7 @@ async function openVideoRemake(video) {
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
         <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span>
+          <button type="button" data-batch-locate hidden title="在已映射的镜头首帧标出人物位置，供逐镜确认">批量定位人物</button>
           <button type="button" data-batch-previews hidden title="为已确认映射且已圈出人物的镜头生成首帧或首次入画帧">批量生成起始帧</button>
           <button type="button" data-batch-videos hidden title="为已采用首帧或首次入画帧的镜头提交视频生成">批量生成镜头视频</button></div>
         <details class="rm-mapping" hidden>
@@ -408,7 +409,10 @@ async function openVideoRemake(video) {
     const start = shotStart(shot);
     if (start && matchesPerson(start.preview)) return ` · 已采用${label}`;
     const latest = shot.frames[key].previews.filter(matchesPerson).at(-1);
-    if (!latest) return key === "first" ? "" : " · 入画帧待生成";
+    if (!latest) {
+      if (key !== "first") return " · 入画帧待生成";
+      return !personSelection(shot.frames.first) && personHint(shot.frames.first) ? " · 人物位置待确认" : "";
+    }
     if (active(latest)) return ` · ${label}生成中`;
     if (latest.error === "已取消") return ` · ${label}已取消`;
     return ` · ${label}${latest.ref ? "待审核" : "失败"}`;
@@ -474,6 +478,7 @@ async function openVideoRemake(video) {
 
   function renderBatchButtons() {
     for (const [selector, count, label] of [
+      ["[data-batch-locate]", batchLocateShots().length, "批量定位人物"],
       ["[data-batch-previews]", batchPreviews().length, "批量生成起始帧"],
       ["[data-batch-videos]", batchVideos().length, "批量生成镜头视频"],
     ]) {
@@ -482,6 +487,14 @@ async function openVideoRemake(video) {
       batch.disabled = busy || !count;
       batch.textContent = count ? `${label}（${count} 个镜头）` : label;
     }
+  }
+
+  function batchLocateShots() {
+    return (session?.mapping?.shots || []).filter(index => {
+      const shot = session.shots[index];
+      const first = shot.frames.first;
+      return !shot.keep_original && !personAbsent(first) && !personSelection(first) && !personHint(first);
+    });
   }
 
   function renderPanel() {
@@ -927,7 +940,7 @@ async function openVideoRemake(video) {
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (["analyze", "map_person", "remove_mapping"].includes(action)) fillViews();
@@ -941,7 +954,13 @@ async function openVideoRemake(video) {
       }
       if (action === "preview" || action === "batch_previews") versionId = null;
       if (["generate_video", "batch_videos", "localize"].includes(action)) videoId = null;
-      if (action === "batch_previews" || action === "batch_videos") {
+      if (action === "batch_locate_people") {
+        const {located, skipped, failed} = session[action];
+        const items = [`${located.length} 个镜头已标出位置，请逐镜确认`];
+        if (skipped.length) items.push(`跳过 ${skipped.length} 个镜头`);
+        for (const result of failed) items.push(`镜头 ${result.shot + 1}（${result.error}）`);
+        status(items.join("。"));
+      } else if (action === "batch_previews" || action === "batch_videos") {
         const {submitted, skipped, failed} = session[action];
         if (action === "batch_previews" && submitted.includes(shotIndex)) {
           const key = startPreviewKey(currentShot());
@@ -964,6 +983,12 @@ async function openVideoRemake(video) {
   }
 
   el("[data-analyze]").onclick = () => change("analyze");
+  el("[data-batch-locate]").onclick = () => {
+    const shots = batchLocateShots();
+    if (!shots.length) return;
+    const {source, asset, look} = session.mapping;
+    change("batch_locate_people", {shots, person:source, asset, look:look || ""});
+  };
   for (const [selector, action, prepare] of [
     ["[data-batch-previews]", "batch_previews", batchPreviews],
     ["[data-batch-videos]", "batch_videos", batchVideos],
@@ -1052,8 +1077,8 @@ async function openVideoRemake(video) {
   el("[data-generate-video]").onclick = () => change("generate_video", {motion:el("[data-motion]").value});
   el("[data-export]").onclick = () => change("export");
   el("[data-insert-export]").onclick = () => insertRemadeVideo(session.export);
-  function personHint() {
-    const hint = currentFrame()?.person_hint;
+  function personHint(frame = currentFrame()) {
+    const hint = frame?.person_hint;
     const mapping = session?.mapping;
     return hint && mapping && hint.source === mapping.source && hint.look === (mapping.look || "") ? hint.point : null;
   }

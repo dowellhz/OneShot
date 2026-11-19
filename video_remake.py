@@ -554,6 +554,40 @@ async def locate_person(req, host, session, frame, data):
     frame["person_hint"] = {"source": source, "look": look, "point": point}
 
 
+async def batch_locate_people(req, host, session, data):
+    mapping = session.get("mapping")
+    if not mapping or (data.get("person"), data.get("asset"), data.get("look", "")) != (
+        mapping["source"], mapping["asset"], mapping.get("look", "")
+    ):
+        fail("人物映射已更新，请核对后重新定位", 409)
+    indices = data.get("shots")
+    scope = mapped_shots(session)
+    if (not isinstance(indices, list) or not 1 <= len(indices) <= MAX_SHOTS or
+            any(type(index) is not int or index not in scope for index in indices) or len(set(indices)) != len(indices)):
+        fail("批量定位的镜头必须在人物映射范围内，且不可重复")
+
+    limiter = asyncio.Semaphore(3)
+
+    async def locate(index):
+        shot = session["shots"][index]
+        frame = shot["frames"]["first"]
+        hint = frame.get("person_hint") or {}
+        if (shot.get("keep_original") or person_absent(frame, mapping) or person_selection(frame, mapping) or
+                (hint.get("source") == mapping["source"] and hint.get("look") == mapping.get("look", ""))):
+            return "skipped", index
+        async with limiter:
+            try:
+                await locate_person(req, host, session, frame, {"action": "locate_person", "person": mapping["source"]})
+            except web.HTTPBadRequest as error:
+                return "failed", {"shot": index, "error": json.loads(error.text)["error"]}
+        return "located", index
+
+    outcome = {"located": [], "skipped": [], "failed": []}
+    for state, item in await asyncio.gather(*(locate(index) for index in indices)):
+        outcome[state].append(item)
+    return outcome
+
+
 def preview_mask(root, selection, protection):
     selected = image_editor.load(root, selection).convert("L")
     protected = image_editor.load(root, protection).convert("L").point(lambda value: 255 if value >= 128 else 0)
@@ -1017,6 +1051,8 @@ async def handle(req, host):
             set_mapping(req, board, session, data)
         elif session and action == "remove_mapping":
             session.pop("mapping", None)
+        elif session and action == "batch_locate_people":
+            response[action] = await batch_locate_people(req, host, session, data)
         elif session and action in ("batch_previews", "batch_videos"):
             update_jobs(host, key[0], session)
             response[action] = await queue_shots(req, host, key, session, data)
