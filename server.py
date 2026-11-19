@@ -477,7 +477,8 @@ async def complete_outputs(j, outputs):
             j.update(outputs=outputs, state="done", phase="done", finished=time.time())
             record(j)
         except Exception as e:
-            j.update(state="error", error=f"图像编辑合成失败：{e}")
+            if not j.get("cancel"):
+                j.update(state="error", error=f"图像编辑合成失败：{e}")
         log_end(j)
 
 
@@ -1261,25 +1262,31 @@ async def jobs(req):
     return web.json_response(out)
 
 
+async def cancel_engine_jobs(app, ids):
+    if not ids:
+        return
+    try:
+        async with app["http"].post(ENGINE + "/cancel", json={"ids": ids}, timeout=aiohttp.ClientTimeout(total=4)):
+            pass
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        pass
+
+
 @routes.post("/api/cancel")
 async def cancel(req):
     u = req["user"]
-    ids = [i for i in (await req.json()).get("ids", []) if i in JOBS and
+    ids = [i for i in (await req.json()).get("ids", []) if isinstance(i, str) and i in JOBS and
            (u["role"] == "admin" or (JOBS[i].get("meta") or {}).get("uid") in (None, u["id"]))]
-    eng = [JOBS[i].get("eid", i) for i in ids if JOBS.get(i, {}).get("out_ref")]
-    if eng:
-        try:
-            async with req.app["http"].post(ENGINE + "/cancel", json={"ids": eng}):
-                pass
-        except Exception:
-            pass
+    eng = []
     for i in ids:
-        if i in JOBS and JOBS[i].get("kind") == "render":
-            JOBS[i]["cancel"] = True
-        if i in JOBS and JOBS[i]["state"] in ("queued", "running"):
-            JOBS[i]["state"] = "error"; JOBS[i]["error"] = "已取消"
-            JOBS[i]["cancel"] = True
-            log_end(JOBS[i])
+        job = JOBS[i]
+        if job["state"] not in ("queued", "running"):
+            continue
+        if job.get("out_ref"):
+            eng.append(job.get("eid", i))
+        job.update(state="error", error="已取消", cancel=True)
+        log_end(job)
+    await cancel_engine_jobs(req.app, eng)
     return web.json_response({"ok": True})
 
 
@@ -1488,8 +1495,11 @@ def enqueue_render(req, render_clip, *, seconds, label=None, board=None):
                 log_end(j)
                 return
             except Exception as e:
-                j.update(state="error", error=f"合成失败：{e}"[:500])
+                if not j.get("cancel"):
+                    j.update(state="error", error=f"合成失败：{e}"[:500])
                 log_end(j)
+                return
+            if j.get("cancel"):
                 return
             extra = {"cover": r.get("cover"), "cover_url": "/media?ref=" + quote(r["cover"], safe="") if r.get("cover") else None}
             j["outputs"] = [{"ref": r["ref"], "url": "/media?ref=" + quote(r["ref"], safe=""),
@@ -1839,6 +1849,10 @@ async def prepare_engine(app, p: dict, pids: list, prev):
             out.parent.mkdir(parents=True, exist_ok=True)
             async with app["http"].post(ENGINE + "/jobs", json={**body, "seed": m["seed"], "out": str(out)}) as r:
                 jr = await r.json()
+            if j.get("cancel"):
+                if jr.get("id"):
+                    await cancel_engine_jobs(app, [jr["id"]])
+                continue
             if "id" not in jr:
                 j["state"] = "error"; j["error"] = f"本地引擎拒绝了任务：{jr.get('error')}"; log_end(j)
                 continue
@@ -1931,7 +1945,10 @@ async def follow_engine(app):
             except Exception:
                 await asyncio.sleep(3); continue
             for i in live:
-                j = JOBS[i]; s = st.get(j.get("eid", i)) or {}
+                j = JOBS.get(i)
+                if not j or j["state"] not in ("queued", "running"):
+                    continue
+                s = st.get(j.get("eid", i)) or {}
                 if s.get("state") == "queued":
                     j["ahead"] = s.get("ahead", 0)
                     j["phase"] = "queued"

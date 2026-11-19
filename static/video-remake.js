@@ -26,7 +26,8 @@ async function openVideoRemake(video) {
   const panel = document.createElement("dialog");
   panel.id = "videoRemake";
   panel.setAttribute("aria-labelledby", "rmTitle");
-  panel.innerHTML = `<header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
+  panel.innerHTML = `<div class="rm-top"><header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
+    <details class="rm-tasks" hidden><summary data-task-summary></summary><ul data-task-list></ul></details></div>
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
         <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span>
@@ -115,6 +116,8 @@ async function openVideoRemake(video) {
   let busy = true, dragStart = null, timer = null, revision = 0;
   let videoId = null, originalEnd = null;
   let comparison = null;
+  let liveJobs = {};
+  const cancelling = new Set();
   const drafts = new Map();
   const draftScope = ME_USER?.id == null ? "" : "oneshot.remake.draft:" +
     JSON.stringify([ME_USER.id, board, video.id, source.ref]) + ":";
@@ -400,6 +403,7 @@ async function openVideoRemake(video) {
     const latest = first.previews.filter(matchesPerson).at(-1);
     if (!latest) return "";
     if (active(latest)) return " · 首帧生成中";
+    if (latest.error === "已取消") return " · 首帧已取消";
     return latest.ref ? " · 首帧待审核" : " · 首帧失败";
   }
 
@@ -483,6 +487,7 @@ async function openVideoRemake(video) {
     renderMapping(shots);
     renderCutControls();
     renderBatchButtons();
+    renderTasks();
     if (!shots.length) return;
     const shot = currentShot();
     if (!currentFrame()) frameKey = "first";
@@ -800,9 +805,7 @@ async function openVideoRemake(video) {
   function schedulePoll() {
     clearTimeout(timer);
     if (!panel.isConnected || !session) return;
-    const versions = session.shots.flatMap(shot => [...Object.values(shot.frames).flatMap(frame => frame.previews), ...(shot.videos || [])]);
-    if (session.export) versions.push(session.export);
-    const ids = versions.filter(active).map(item => item.job);
+    const ids = [...new Set(pendingTasks().map(task => task.job))];
     if (!ids.length) return;
     timer = setTimeout(async () => {
       if (!panel.isConnected) return;
@@ -811,13 +814,90 @@ async function openVideoRemake(video) {
         try {
           const response = await fetch("/api/jobs?ids=" + encodeURIComponent(ids.join(",")));
           if (!response.ok) throw new Error("进度暂不可用，正在重连");
-          await response.json();
+          const jobs = await response.json();
           const result = await remakeRequest(url);
-          if (revision === pendingRevision && !busy && panel.isConnected) { applySession(result); renderPanel(); }
+          if (revision === pendingRevision && !busy && panel.isConnected) {
+            liveJobs = jobs;
+            applySession(result);
+            renderPanel();
+          }
         } catch (error) { status(error.message); }
       }
       schedulePoll();
     }, 1500);
+  }
+
+  function pendingTasks() {
+    const tasks = [];
+    if (session?.export && active(session.export)) tasks.push({job:session.export.job, label:"成片合成"});
+    for (const [index, shot] of (session?.shots || []).entries()) {
+      const label = `镜头 ${index + 1}`;
+      for (const [key, frame] of Object.entries(shot.frames)) {
+        const name = key === "first" ? "首帧预览" : key === "middle" ? "中间帧预览" : `${frame.at.toFixed(2)} 秒校正帧预览`;
+        for (const preview of frame.previews.filter(active)) tasks.push({job:preview.job, label:`${label} · ${name}`});
+      }
+      for (const video of (shot.videos || []).filter(active)) {
+        tasks.push({job:video.job, label:`${label} · ${video.mode === "local" ? "局部合成" : "镜头视频"}`});
+      }
+    }
+    return tasks;
+  }
+
+  function taskProgress(job) {
+    const data = liveJobs[job];
+    if (cancelling.has(job)) return {text:"正在取消", percent:null};
+    if (!data || data.state === "queued") {
+      return {text:data?.prep ? "准备提交" : data?.ahead > 0 ? `排队中 · 前面 ${data.ahead} 个` : "排队中", percent:null};
+    }
+    const percent = Number.isFinite(data.value) && Number.isFinite(data.max) && data.max > 0
+      ? Math.round(100 * Math.max(0, Math.min(1, data.value / data.max))) : null;
+    const phase = EW_PHASES[data.phase] || "处理中";
+    return {text:percent === null ? phase : `${phase} · ${percent}%`, percent};
+  }
+
+  function renderTasks() {
+    const tasks = pendingTasks();
+    const panelTasks = el(".rm-tasks");
+    if (panelTasks.hidden && tasks.length) panelTasks.open = tasks.length === 1;
+    panelTasks.hidden = !tasks.length;
+    el("[data-task-summary]").textContent = tasks.length === 1
+      ? `${tasks[0].label} · ${taskProgress(tasks[0].job).text}` : `${tasks.length} 个任务处理中`;
+    el("[data-task-list]").replaceChildren(...tasks.map(task => {
+      const {text, percent} = taskProgress(task.job);
+      const row = document.createElement("li");
+      const label = document.createElement("span");
+      label.textContent = `${task.label} · ${text}`;
+      row.append(label);
+      if (percent !== null) {
+        const bar = document.createElement("progress");
+        bar.max = 100;
+        bar.value = percent;
+        bar.setAttribute("aria-label", task.label);
+        row.append(bar);
+      }
+      const cancel = button("取消", () => cancelTask(task.job), busy || cancelling.has(task.job));
+      cancel.setAttribute("aria-label", `取消${task.label}`);
+      row.append(cancel);
+      return row;
+    }));
+  }
+
+  async function cancelTask(job) {
+    if (busy || cancelling.has(job)) return;
+    const requestRevision = ++revision;
+    cancelling.add(job);
+    renderTasks();
+    try {
+      await api("/api/cancel", {ids:[job]});
+      const next = await remakeRequest(url);
+      if (!busy && requestRevision === revision && panel.isConnected) applySession(next);
+    } catch (error) {
+      status(error.message);
+    } finally {
+      cancelling.delete(job);
+      renderPanel();
+      schedulePoll();
+    }
   }
 
   function applySession(next) {

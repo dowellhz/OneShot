@@ -3,6 +3,7 @@ import json
 from fractions import Fraction
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, skipUnless
 from unittest.mock import patch
 
@@ -93,6 +94,52 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             {"tick":11,"action":"结束停留"}], "source_person":None})
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["shots"][1]["motion_analysis"], notes)
+
+    async def test_cancelling_while_engine_is_accepting_a_job_stops_that_job(self):
+        pending_id = "p-remake"
+        meta = {"prompt":"remake", "cls":"video", "units":1, "est":10, "label":"重制", "uid":7,
+                "board":"test", "engine":True, "seed":1}
+        server.JOBS[pending_id] = {"id":pending_id, "state":"queued", "meta":meta, "created":0, "prep":True}
+        server.JOBS["other"] = {"state":"queued", "meta":{"uid":7}}
+        db.task_start(id=pending_id, user_id=7, state="queued")
+        submitted = asyncio.Event()
+        engine_reply = asyncio.Event()
+        engine_cancels = []
+
+        class EngineResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def json(self):
+                submitted.set()
+                await engine_reply.wait()
+                return {"id":"engine-accepted"}
+
+        def post(url, json, **kwargs):
+            if url.endswith("/cancel"):
+                engine_cancels.extend(json["ids"])
+            return EngineResponse()
+
+        async def translate(app, payload):
+            return payload
+
+        request = Request("", self.user, {"ids":[pending_id]})
+        request.app.update(http=SimpleNamespace(post=post), llm=SimpleNamespace(running=lambda: False))
+        with patch.object(server, "engine_body", return_value=({}, {})), patch.object(server, "to_english", translate):
+            task = asyncio.create_task(server.prepare_engine(request.app, {}, [pending_id], None))
+            await asyncio.wait_for(submitted.wait(), 1)
+            try:
+                await server.cancel(request)
+            finally:
+                engine_reply.set()
+                await task
+        self.assertEqual(engine_cancels, ["engine-accepted"])
+        self.assertEqual(server.JOBS["other"]["state"], "queued")
+        self.assertEqual(server.JOBS[pending_id]["error"], "已取消")
+        self.assertEqual(db.one("SELECT state FROM tasks WHERE id=?", pending_id)["state"], "error")
 
     @skipUnless(hasattr(av.video.stream.VideoStream, "set_display_rotation"), "rotated MP4 fixture needs PyAV display matrix writing")
     async def test_rotated_phone_video_uses_display_coordinates_through_export(self):

@@ -66,7 +66,7 @@ w.fetch=async(url,options={})=>{
 };
 function evaluate(code){return vm.runInContext(code,dom.getInternalVMContext());}
 function equal(actual,expected,label){assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected,label);}
-async function ready(predicate,label){for(let i=0;i<100;i++){if(evaluate(predicate))return;await pause(10);}throw new Error('Timed out: '+label);}
+async function ready(predicate,label,attempts=100){for(let i=0;i<attempts;i++){if(evaluate(predicate))return;await pause(10);}throw new Error('Timed out: '+label);}
 async function run(){
  const staticFile = url => path.join(root, new URL(url, w.location.href).pathname);
  for (const link of w.document.querySelectorAll('link[rel=stylesheet]')) {
@@ -481,9 +481,18 @@ async function run(){
  equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),0,'old choices stay inactive after replay');
  const previousFetch=w.fetch;
  w.__memories.find(a=>a.id==='char').character_views.face='input:h3studio/headshot.png';
- let remakeSession=null, remakeSelection, remakeOptions, remakeMotion, beforeSplit;
+ let remakeSession=null, remakeSelection, remakeOptions, remakeMotion, beforeSplit, remakeBatches=0;
  const reviewedMotion='第一秒回头\n固定机位\n镜头内 1.00 秒，抬起右手';
  w.fetch=async(url,options={})=>{
+  if(String(url).startsWith('/api/jobs?') && String(url).includes('tracked-shot')){
+   return {ok:true,json:async()=>({'tracked-shot':{state:'running',phase:'sampling',value:2,max:4}})};
+  }
+  if(String(url)==='/api/cancel'){
+   assert.deepEqual(JSON.parse(options.body).ids,['tracked-shot']);
+   const task=remakeSession.shots[0].videos.find(v=>v.job==='tracked-shot');
+   Object.assign(task,{state:'error',error:'已取消'});
+   return {ok:true,text:async()=>'{"ok":true}'};
+  }
   if(!String(url).startsWith('/api/video-remake/'))return previousFetch(url,options);
   const operation=options.body&&JSON.parse(options.body);
   if(operation?.action==='analyze'){
@@ -543,8 +552,10 @@ async function run(){
   if(operation?.action==='batch_videos'){
    assert.deepEqual(operation.shots,[{shot:0,first_job:'remake-first',motion:reviewedMotion}]);
    remakeMotion=operation.shots[0].motion;
-   remakeSession.shots[0].videos=[{job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4',
-    first_frame:frame.previews[0].ref,motion:remakeMotion,asset:{id:'char'},source_person:'人物 A'}];
+   const versions=remakeSession.shots[0].videos ||= [];
+   const task=++remakeBatches===1 ? {job:'tracked-shot',state:'running'}
+    : {job:'shot-video',state:'done',ref:'output:h3studio/shot-remake.mp4'};
+   versions.push({...task,first_frame:frame.previews[0].ref,motion:remakeMotion,asset:{id:'char'},source_person:'人物 A'});
    remakeSession.batch_videos={submitted:[0],skipped:[],failed:[]};
   }
   if(operation?.action==='localize'){
@@ -616,6 +627,12 @@ async function run(){
  equal(evaluate('$("#videoRemake .rm-source video").currentTime'),1.5,'motion time seeks relative to the current shot');
  evaluate('$("[data-use-motion]").click();$("[data-use-motion]").click()');
  equal(evaluate('motionField.value'),reviewedMotion,'applying motion notes preserves existing text and skips duplicate lines');
+ evaluate('$("[data-batch-videos]").click()');
+ await ready('$("[data-task-summary]").textContent.includes("50%") && $("[data-task-list] progress")?.value===50',
+  'remake header reflects the engine’s actual progress',350);
+ evaluate('$("[data-task-list] button").click()');
+ await ready('$(".rm-tasks").hidden && $(".rm-video-status").textContent==="已取消" && !$("[data-batch-videos]").disabled',
+  'cancelling an active shot updates its version and enables retry');
  evaluate('$("[data-batch-videos]").click()');
  await ready('!!$("#videoRemake [data-result]").getAttribute("src")','remade video can be reviewed in workspace');
  assert.equal(remakeMotion,reviewedMotion);
