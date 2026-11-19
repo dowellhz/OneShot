@@ -493,6 +493,14 @@ async function run(){
   if(operation?.action==='map_person'){
    remakeSession.mapping={source:operation.person,asset:operation.asset,asset_name:'林森新版',shots:operation.shots};
   }
+  if(operation?.action==='locate_person'){
+   assert.equal(operation.person,'人物 A');
+   frame.person_hint={source:operation.person,look:'',point:[.35,.45]};
+  }
+  if(operation?.action==='apply_person_hint'){
+   assert.equal(operation.person,'人物 A');
+   frame.selection={overlay:'input:h3studio/remake-overlay.png'};
+  }
   if(operation?.action==='select'){
    remakeSelection=operation.rect;
    remakeSession.shots[0].frames[operation.frame][operation.layer]={
@@ -551,12 +559,17 @@ async function run(){
    $("#videoRemake [data-map-asset]").value="char";$("#videoRemake [data-map-shots] input").checked=true;
    $("#videoRemake [data-save-mapping]").click()`);
  await ready('$("#videoRemake [data-role]").disabled && $(".rm-mapping-status").textContent.includes("人物 A → 林森")','confirmed cross-shot mapping binds role');
+ evaluate('$("[data-locate-person]").click()');
+ await ready('!$(".rm-person-point").hidden && $("[data-locate-person]").textContent==="按此位置选中"','model hint is visible before selection');
+ assert.equal(evaluate('$(".rm-mask").hidden'),true);
+ evaluate('$("[data-locate-person]").click()');
+ await ready('$(".rm-person-point").hidden && !$(".rm-mask").hidden','confirmed location becomes a selection');
 
  evaluate(`$("#videoRemake [data-mode=box]").click();
   const rmSurface=$(".rm-surface");
   rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:60,clientY:15}));
   rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:180,clientY:37}));`);
- await ready('$(".rm-mask").hidden===false','selected mask appears over source');
+ await ready('!$("[data-frame]").disabled && $(".rm-mask").hidden===false','manual selection can adjust the suggested mask');
  assert.equal(remakeSelection.length,4);
  evaluate(`const remakeLayer=$("#videoRemake [data-layer]");remakeLayer.value="protection";remakeLayer.dispatchEvent(new Event("change"));
   rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:80,clientY:18}));

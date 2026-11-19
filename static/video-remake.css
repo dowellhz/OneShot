@@ -39,6 +39,7 @@
 .rm-surface { position: relative; display: inline-flex; max-width: 100%; user-select: none; touch-action: none; cursor: crosshair; }
 .rm-original, .rm-output img { display: block; max-width: 100%; max-height: min(36dvh, 350px); width: auto; height: auto; }
 .rm-mask { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.rm-person-point { position: absolute; width: 13px; height: 13px; border: 2px solid #fff; border-radius: 50%; background: #9baace; box-shadow: 0 0 0 2px #202026; transform: translate(-50%, -50%); pointer-events: none; }
 .rm-output { max-width: 100%; text-align: center; color: #a6a6b0; overflow-wrap: anywhere; }
 .rm-status { border-top: 1px solid var(--line2); color: #c3c3cf; }
 @media (max-width: 680px) {

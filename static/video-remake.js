@@ -35,6 +35,7 @@ async function openVideoRemake(video) {
           <p class="rm-mapping-status"></p>
           <label>原片人物<select data-person></select></label>
           <label data-manual-label hidden>人物称呼<input data-person-manual maxlength="60" placeholder="例如穿红衣的人"></label>
+          <label>原片外貌提示（可选）<input data-person-look maxlength="240" placeholder="例如红色外套、黑色眼镜"></label>
           <label>替换为<select data-map-asset></select></label>
           <fieldset><legend>确认出现该人物的镜头</legend><div data-map-shots></div></fieldset>
           <div class="rm-actions"><button type="button" data-save-mapping>保存映射</button><button type="button" data-clear-mapping hidden>清除映射</button></div>
@@ -63,11 +64,12 @@ async function openVideoRemake(video) {
           <select data-layer aria-label="要标记的区域"><option value="selection">替换人物</option><option value="protection">保护前景</option></select>
           <button type="button" data-mode="point" aria-pressed="true">智能点选</button>
           <button type="button" data-mode="box" aria-pressed="false">框选区域</button>
+          <button type="button" data-locate-person hidden>定位原片人物</button>
           <button type="button" data-clear-protection hidden>从此帧停止保护</button>
           <span class="rm-selection-status"></span>
         </div>
         <div class="rm-stage">
-          <div class="rm-frame"><span>原画面</span><div class="rm-surface"><img class="rm-original" alt="原片画面"><img class="rm-mask" alt="" hidden><img class="rm-mask rm-protection" alt="" hidden></div></div>
+          <div class="rm-frame"><span>原画面</span><div class="rm-surface"><img class="rm-original" alt="原片画面"><img class="rm-mask" alt="" hidden><img class="rm-mask rm-protection" alt="" hidden><span class="rm-person-point" aria-hidden="true" hidden></span></div></div>
           <div class="rm-frame"><span>替换预览</span><div class="rm-output">生成后显示在这里</div></div>
         </div>
         <div class="rm-actions rm-role">
@@ -115,6 +117,10 @@ async function openVideoRemake(video) {
   const currentShot = () => session?.shots[shotIndex];
   const currentFrame = () => currentShot()?.frames[frameKey];
   const shotKey = () => currentShot() ? `${currentShot().start}:${currentShot().end}` : "";
+  const personSelection = frame => {
+    const selection = frame.selection;
+    return selection?.source_person && session.mapping && selection.source_person !== session.mapping.source ? null : selection;
+  };
   function close() {
     clearTimeout(timer);
     stopComparison();
@@ -249,7 +255,7 @@ async function openVideoRemake(video) {
     if (!shots.length) return;
     const mapping = session.mapping;
     const people = [...new Set(shots.flatMap(shotPeople))];
-    const version = JSON.stringify([mapping, people, session.cut_revision, assets.map(asset => asset.id)]);
+    const version = JSON.stringify([mapping, people, session.source_people, session.cut_revision, assets.map(asset => asset.id)]);
     if (editor.dataset.state !== version) {
       editor.dataset.state = version;
       const person = el("[data-person]");
@@ -258,6 +264,7 @@ async function openVideoRemake(video) {
       person.append(new Option("手动填写人物", "__manual__"));
       person.value = mapping ? people.includes(mapping.source) ? mapping.source : "__manual__" : people.length ? "" : "__manual__";
       el("[data-person-manual]").value = mapping?.source || "";
+      el("[data-person-look]").value = mapping?.look || "";
       const asset = el("[data-map-asset]");
       asset.replaceChildren(new Option("选择资产库角色", ""), ...assets.map(item => new Option(item.name, item.id)));
       asset.value = mapping?.asset || el("[data-role]").value;
@@ -292,6 +299,8 @@ async function openVideoRemake(video) {
   function updateSuggestions() {
     const person = el("[data-person]").value;
     el("[data-manual-label]").hidden = person !== "__manual__";
+    const appearance = session.source_people?.find(item => item.name === person)?.look;
+    el("[data-person-look]").placeholder = appearance || "例如红色外套、黑色眼镜";
     for (const hint of panel.querySelectorAll("[data-suggestion]")) {
       const names = shotPeople(session.shots[Number(hint.dataset.suggestion)]);
       hint.textContent = person && names.includes(person) ? "分析建议" : "";
@@ -363,8 +372,9 @@ async function openVideoRemake(video) {
     const original = el(".rm-original"), selection = el(".rm-mask");
     const originalUrl = remakeMedia(frame.ref);
     if (original.getAttribute("src") !== originalUrl) original.src = originalUrl;
-    selection.hidden = !frame.selection;
-    if (frame.selection) selection.src = remakeMedia(frame.selection.overlay);
+    const selectedArea = personSelection(frame);
+    selection.hidden = !selectedArea;
+    if (selectedArea) selection.src = remakeMedia(selectedArea.overlay);
     const protection = el(".rm-protection");
     protection.hidden = !frame.protection?.overlay;
     if (!protection.hidden) protection.src = remakeMedia(frame.protection.overlay);
@@ -409,7 +419,7 @@ async function openVideoRemake(video) {
       }
     }
     if (!shot.keep_original) review.append(button("保留这个原镜头", () => change("keep"), busy));
-    el("[data-generate]").disabled = busy || !inScope(shotIndex) || !frame.selection || !role.value || !!latest && active(latest);
+    el("[data-generate]").disabled = busy || !inScope(shotIndex) || !selectedArea || !role.value || !!latest && active(latest);
     el("[data-frame]").disabled = busy;
     renderVideo();
   }
@@ -490,7 +500,7 @@ async function openVideoRemake(video) {
           busy || !inScope(shotIndex) || !matchesPerson(selected)));
       }
       if (source && selected.mode !== "local") {
-        const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) && (f.selection || f.protection)).length;
+        const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) && (personSelection(f) || f.protection)).length;
         const caption = count ? `跟踪人物并局部合成（${count} 张校正帧）` : "跟踪人物并局部合成";
         review.append(button(caption, () => change("localize", {job:selected.job}),
           busy || !inScope(shotIndex) || !matchesPerson(selected) || videos.some(active)));
@@ -583,7 +593,7 @@ async function openVideoRemake(video) {
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",preview:"正在提交预览…",generate_video:"正在提交镜头生成…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",generate_video:"正在提交镜头生成…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (action === "analyze") fillViews();
@@ -617,11 +627,15 @@ async function openVideoRemake(video) {
       }
     };
   }
-  el("[data-person]").onchange = updateSuggestions;
+  el("[data-person]").onchange = () => {
+    el("[data-person-look]").value = "";
+    updateSuggestions();
+  };
   el("[data-save-mapping]").onclick = () => {
     const source = el("[data-person]").value;
     change("map_person", {
       person: source === "__manual__" ? el("[data-person-manual]").value : source,
+      look: el("[data-person-look]").value,
       asset: el("[data-map-asset]").value,
       shots: Array.from(panel.querySelectorAll("[data-map-shots] input:checked"), box => Number(box.value)),
     });
@@ -641,6 +655,9 @@ async function openVideoRemake(video) {
   };
   el("[data-remove-correction]").onclick = () => change("remove_correction");
   el("[data-layer]").onchange = updateSelectionControls;
+  el("[data-locate-person]").onclick = () => change(
+    personHint() ? "apply_person_hint" : "locate_person", {person:session.mapping.source},
+  );
   el("[data-clear-protection]").onclick = () => change("clear_protection");
   el("[data-role]").onchange = () => { fillViews(); renderPanel(); };
   el("[data-view]").onchange = event => {
@@ -652,6 +669,12 @@ async function openVideoRemake(video) {
   el("[data-motion]").oninput = event => motionDrafts.set(shotKey(), event.target.value);
   el("[data-generate-video]").onclick = () => change("generate_video", {motion:el("[data-motion]").value});
   el("[data-export]").onclick = () => change("export");
+  function personHint() {
+    const hint = currentFrame()?.person_hint;
+    const mapping = session?.mapping;
+    return hint && mapping && hint.source === mapping.source && hint.look === (mapping.look || "") ? hint.point : null;
+  }
+
   function updateSelectionControls() {
     const frame = currentFrame();
     const layer = el("[data-layer]").value;
@@ -661,8 +684,21 @@ async function openVideoRemake(video) {
     clear.disabled = busy;
     const instruction = mode === "box" ? "拖动框选" : "在原画面中点选";
     const target = protect ? "要保留的前景" : "要替换的人物";
-    let message = frame[layer]?.overlay ? `已标记${target}，可重新${mode === "box" ? "框选" : "点选"}` : instruction + target;
+    const selection = protect ? frame.protection : personSelection(frame);
+    let message = selection?.overlay ? `已标记${target}，可重新${mode === "box" ? "框选" : "点选"}` : instruction + target;
     if (protect && frame.protection?.mask === null) message = "从此帧停止保护，可重新标记前景";
+    const locate = el("[data-locate-person]");
+    locate.hidden = protect || !session.mapping || !inScope(shotIndex) || !!selection;
+    locate.disabled = busy;
+    const point = locate.hidden ? null : personHint();
+    locate.textContent = point ? "按此位置选中" : "定位原片人物";
+    const marker = el(".rm-person-point");
+    marker.hidden = !point;
+    if (point) {
+      marker.style.left = `${point[0] * 100}%`;
+      marker.style.top = `${point[1] * 100}%`;
+      message = `请核对「${session.mapping.source}」的位置，也可直接手动选择`;
+    }
     el(".rm-selection-status").textContent = message;
   }
   for (const control of panel.querySelectorAll("[data-mode]")) {

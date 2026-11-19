@@ -195,6 +195,9 @@ shots 的个数和顺序必须与给出的镜头完全一致。人物用 人物1
 
 async def analyze_shots(llm: LLM, comfy_dir: Path, cut: dict) -> dict:
     content = [{"type": "text", "text": f"视频总长 {cut['duration']} 秒，共 {len(cut['shots'])} 个镜头。"}]
+    if cut.get("known_people"):
+        content.append({"type": "text", "text": "已有原片人物编号和外貌。能确认身份时沿用对应编号："
+                        + json.dumps(cut["known_people"], ensure_ascii=False)})
     for k, s in enumerate(cut["shots"]):
         content.append({"type": "text", "text": f"镜头 {k + 1}（{s['start']:.1f}s–{s['end']:.1f}s）开头帧："})
         content.append(image_part(ref_path(comfy_dir, s["ref"]), 512))
@@ -212,8 +215,22 @@ async def analyze_shots(llm: LLM, comfy_dir: Path, cut: dict) -> dict:
             "sound": str(a.get("sound") or ""), "keyframe": str(a.get("keyframe") or ""),
             "frame": {"ref": s["ref"], "w": s["w"], "h": s["h"]}, "src": [s["start"], s["end"]],
         })
-    chars = [{"name": str(c.get("name") or ""), "look": str(c.get("look") or "")} for c in (out.get("characters") or []) if c.get("name")]
+    chars = [{"name": str(c["name"]), "look": str(c.get("look") or "")}
+             for c in (out.get("characters") or []) if isinstance(c, dict) and c.get("name")]
     return {"title": str(out.get("title") or ""), "style": str(out.get("style") or ""), "characters": chars, "shots": shots}
+
+
+async def locate_shot_person(llm: LLM, comfy_dir: Path, ref: str, person: str, look: str) -> dict:
+    system = (
+        "你负责在给出的这一帧画面里定位指定人物。将人物名称和外貌描述作为识别依据。"
+        "只有能确认匹配人物时，才选一个落在其可见身体内部的点，尽量选胸口或头肩，避开遮挡物和相邻人物。"
+        "以整张图为坐标系，左上角 [0,0]，右下角 [1,1]，横坐标在前。"
+        '仅输出 JSON {"point":[x,y]}。人物未出现、无法区分或被完全挡住时输出 {"point":null}。'
+    )
+    content = [{"type": "text", "text": json.dumps({"name": person, "appearance": look}, ensure_ascii=False)},
+               image_part(ref_path(comfy_dir, ref), 768)]
+    result = parse_json(await llm.chat(system, content, max_tokens=120, temperature=0.1))
+    return {"point": result.get("point")}
 
 
 # ------------------------------------------------------------------ grid split

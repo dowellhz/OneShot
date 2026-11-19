@@ -96,22 +96,70 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             "ref": self.source["ref"], "source_board": "test",
         })
 
+        class Vision:
+            via = "test vision"
+            point = [1.5, .5]
+
+            def available(self):
+                return True
+
+            async def chat(self, system, content, **kwargs):
+                if "这一帧" in system:
+                    assert json.loads(content[0]["text"]) == {"name":"人物1", "appearance":"红衣、短发"}
+                    assert content[1]["type"] == "image_url"
+                    return json.dumps({"point":self.point})
+                return json.dumps({"characters":[{"name":"人物1", "look":"红衣、短发"}],
+                                   "shots":[{"characters":["人物1"]}]})
+
+        vision = Vision()
+
         async def act(action=None, **kwargs):
             payload = {"action": action, "shot": 0, **kwargs} if action else None
-            response = await server.remake(Request(source, self.user, payload))
+            req = Request(source, self.user, payload)
+            req.app["llm"] = vision
+            response = await server.remake(req)
             self.assertEqual(response.status, 200)
             return json.loads(response.body)
 
         with self.assertRaises(web.HTTPNotFound):
             await server.remake(Request(source, {"id":8, "role":"member"}))
         self.assertIsNone(await act())
-        with patch.object(server, "llm_call", side_effect=self.no_vision):
-            analyzed = await act("analyze")
+        analyzed = await act("analyze")
+        self.assertEqual(analyzed["source_people"], [{"name":"人物1", "look":"红衣、短发"}])
         frame = analyzed["shots"][0]["frames"]["first"]
         self.assertTrue(frame["ref"].endswith(".png"))
         with self.assertRaises(web.HTTPBadRequest):
             await act("preview", asset=asset["id"])
-        await act("select", rect=[.25, .25, .75, .75])
+        await act("map_person", person="人物1", asset=asset["id"], shots=[0])
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("locate_person", person="人物1")
+        vision.point = [.5, .5]
+        located = await act("locate_person", person="人物1")
+        located_frame = located["shots"][0]["frames"]["first"]
+        self.assertEqual(located_frame["person_hint"]["point"], vision.point)
+        self.assertNotIn("selection", located_frame)
+        await act("map_person", person="人物1", look="戴眼镜", asset=asset["id"], shots=[0])
+        with self.assertRaises(web.HTTPConflict):
+            await act("apply_person_hint", person="人物1")
+        await act("map_person", person="人物1", asset=asset["id"], shots=[0])
+
+        async def segment(app, tool, params):
+            self.assertEqual(tool, "segment")
+            self.assertEqual(params["ref"], frame["ref"])
+            self.assertEqual(params["points"], [{"x":32, "y":32, "positive":True}])
+            mask = Image.new("L", (64, 64))
+            mask.paste(255, (16, 16, 48, 48))
+            return image_editor.save(server.COMFY_DIR, mask, "segment", "input")
+
+        with patch.object(server, "run_image_tool", side_effect=segment):
+            selected = await act("apply_person_hint", person="人物1")
+            self.assertEqual(selected["shots"][0]["frames"]["first"]["selection"]["source_person"], "人物1")
+            with self.assertRaises(web.HTTPConflict):
+                await act("apply_person_hint", person="人物1")
+        await act("map_person", person="另一人", asset=asset["id"], shots=[0])
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("preview", asset=asset["id"])
+        await act("map_person", person="人物1", asset=asset["id"], shots=[0])
         with self.assertRaises(web.HTTPBadRequest):
             await act("select", frame="middle", layer="protection", rect=[.5, .5, .65, .65])
         await act("select", layer="protection", rect=[.5, .5, .65, .65])

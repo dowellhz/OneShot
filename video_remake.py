@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 from contextlib import closing
 from pathlib import Path
 
@@ -108,14 +109,17 @@ def matches_mapping(version, mapping):
 def set_mapping(req, board, session, data):
     source = data.get("person")
     shots = data.get("shots")
+    look = data.get("look", "")
     if not isinstance(source, str) or not source.strip() or len(source.strip()) > 60:
         fail("请选择或填写原片人物")
     if (not isinstance(shots, list) or not shots or
             any(type(index) is not int or not 0 <= index < len(session["shots"]) for index in shots)):
         fail("请勾选已确认出现该人物的镜头")
+    if not isinstance(look, str) or len(look.strip()) > 240:
+        fail("原片外貌提示限 240 字以内")
     asset, _, _ = role_reference(req, board, {**data, "view": "main"})
     session["mapping"] = {"source": source.strip(), "asset": asset["id"],
-                          "asset_name": asset["name"], "shots": sorted(set(shots))}
+                          "asset_name": asset["name"], "shots": sorted(set(shots)), "look": look.strip()}
 
 
 async def analyze(req, host, source):
@@ -123,7 +127,7 @@ async def analyze(req, host, source):
         cut = await asyncio.to_thread(find_shots, host, source)
     except Exception as error:
         fail(str(error)[:200] or "无法读取原片")
-    details, warning = await summarize_shots(req, host, cut)
+    details, people, warning = await summarize_shots(req, host, cut)
     shots = []
     for index, item in enumerate(cut["shots"]):
         size = (item["w"], item["h"])
@@ -133,19 +137,28 @@ async def analyze(req, host, source):
             "frames": {"first": {**frame_record(item["ref"], size), "at": item["start"]},
                        "middle": {**frame_record(item["mid"], size), "at": item["mid_at"]}},
         })
-    return {"duration": cut["duration"], "warning": warning, "shots": shots}
+    return {"duration": cut["duration"], "warning": warning, "shots": shots, "source_people": people}
 
 
 async def summarize_shots(req, host, cut):
     details = []
+    people = []
     warning = ""
     try:
         if "llm" not in req.app:
             raise RuntimeError("视觉模型未配置")
         response = await host.llm_call(req, host.tools.analyze_shots(req.app["llm"], host.COMFY_DIR, cut))
-        details = json.loads(response.body).get("shots") or []
+        analysis = json.loads(response.body)
+        details = analysis.get("shots") or []
         if not isinstance(details, list):
             raise ValueError("镜头分析结果格式不正确")
+        for person in analysis.get("characters") or []:
+            if not isinstance(person, dict):
+                continue
+            name, look = person.get("name"), person.get("look")
+            if isinstance(name, str) and 0 < len(name.strip()) <= 60 and isinstance(look, str) and look.strip():
+                people.append({"name": name.strip(), "look": look.strip()[:240]})
+        people = people[:24]
     except Exception:
         details = []
         warning = "镜头已切分，视觉分析暂不可用，仍可手动选择人物。"
@@ -153,7 +166,7 @@ async def summarize_shots(req, host, cut):
     for index in range(len(cut["shots"])):
         detail = details[index] if index < len(details) and isinstance(details[index], dict) else {}
         summaries.append({field: detail.get(field) for field in ("shot_size", "camera", "scene", "action", "characters")})
-    return summaries, warning
+    return summaries, people, warning
 
 
 def find_shots(host, source):
@@ -298,14 +311,16 @@ async def edit_cuts(req, host, source, session, data):
     except Exception:
         fail("无法读取新剪辑点的原片画面")
     if fresh:
-        cut = {"duration": old[-1] / fps, "shots": [
+        cut = {"duration": old[-1] / fps, "known_people": session.get("source_people"), "shots": [
             {"start": shot["start"], "end": shot["end"], "ref": shot["frames"]["first"]["ref"],
              "mid": shot["frames"].get("middle", shot["frames"]["first"])["ref"]} for shot in shots
         ]}
-        summaries, warning = await summarize_shots(req, host, cut)
+        summaries, people, warning = await summarize_shots(req, host, cut)
         for i in fresh:
             shots[i]["summary"] = summaries[i]
         session["warning"] = warning
+        if not session.get("source_people"):
+            session["source_people"] = people
 
     mapping = session.get("mapping")
     before = mapping.copy() if mapping else None
@@ -384,7 +399,14 @@ def display_mask(root, source_ref, mask_ref, layer):
     return image_editor.save(root, tint, "remake-overlay", "input")["ref"]
 
 
-async def select_area(req, host, frame, data, layer):
+def person_selection(frame, mapping):
+    selection = frame.get("selection")
+    if selection and (not mapping or selection.get("source_person") in (None, mapping["source"])):
+        return selection
+    return None
+
+
+async def select_area(req, host, frame, data, layer, *, source_person=None):
     w, h = frame["w"], frame["h"]
     if "point" in data:
         x, y = coordinates(data["point"], 2)
@@ -407,6 +429,36 @@ async def select_area(req, host, frame, data, layer):
     except (ValueError, OSError) as error:
         fail(str(error))
     frame[layer] = {"mask": mask_ref, "overlay": overlay}
+    if layer == "selection" and source_person is not None:
+        frame[layer]["source_person"] = source_person
+
+
+async def locate_person(req, host, session, frame, data):
+    mapping = session.get("mapping")
+    if not mapping or mapping["source"] != data.get("person"):
+        fail("请先确认当前镜头的原片人物映射", 409)
+    if person_selection(frame, mapping):
+        fail("当前画面已有选区，可直接点选或框选来调整", 409)
+    source, look = mapping["source"], mapping.get("look") or ""
+    if data["action"] == "apply_person_hint":
+        hint = frame.get("person_hint") or {}
+        if hint.get("source") != source or hint.get("look") != look:
+            fail("人物定位已失效，请重新定位", 409)
+        await select_area(req, host, frame, {"point": hint["point"]}, "selection", source_person=source)
+        return
+
+    appearance = look or next((p["look"] for p in session.get("source_people", []) if p["name"] == source), "")
+    if not appearance and re.fullmatch(r"人物\s*\d+", source):
+        fail("请在人物映射中补充原片外貌提示，例如服装颜色或明显配饰")
+    try:
+        result = await host.tools.locate_shot_person(req.app["llm"], host.COMFY_DIR, frame["ref"], source, appearance)
+    except Exception:
+        fail("视觉定位暂不可用，可继续手动点选或框选")
+    point = result.get("point")
+    if point is None:
+        fail("当前画面里无法确认这个人物，请手动选择")
+    point = coordinates(point, 2)
+    frame["person_hint"] = {"source": source, "look": look, "point": point}
 
 
 def preview_mask(root, selection, protection):
@@ -433,7 +485,8 @@ def role_reference(req, board, data):
 
 
 async def generate_preview(req, host, key, frame, data, mapping=None):
-    if not frame.get("selection"):
+    selection = person_selection(frame, mapping)
+    if not selection:
         fail("请先在原片画面中选中待替换的人物")
     if pending(frame["previews"]):
         fail("此画面已有生成任务，请等待完成", 409)
@@ -455,7 +508,6 @@ async def generate_preview(req, host, key, frame, data, mapping=None):
         "保持同画面的其他人物、场景、道具及原有遮挡次序。保持参考角色的面部、服装与配饰左右位置。"
         + context.replace("@", "＠")
     )
-    selection = frame["selection"]
     try:
         protection = frame.get("protection", {}).get("mask")
         mask = selection["mask"]
@@ -575,10 +627,11 @@ def localize_shot(req, host, key, shot, job, mapping=None):
         fail("局部合成支持 14 秒以内的镜头")
 
     start_tick = round(start * host.film.FPS)
-    corrections = {
-        frame["correction_tick"] - start_tick: frame["selection"]["mask"]
-        for frame in shot["frames"].values() if "correction_tick" in frame and frame.get("selection")
-    }
+    corrections = {}
+    for frame in shot["frames"].values():
+        selection = person_selection(frame, mapping)
+        if "correction_tick" in frame and selection:
+            corrections[frame["correction_tick"] - start_tick] = selection["mask"]
     protections = {
         frame.get("correction_tick", start_tick) - start_tick: frame["protection"]["mask"]
         for frame_key, frame in shot["frames"].items()
@@ -708,7 +761,8 @@ async def handle(req, host):
             mapping = session.get("mapping")
             scoped = mapped_shots(session)
             if (scoped is not None and data["shot"] not in scoped and
-                    action in ("preview", "approve", "generate_video", "localize", "approve_video")):
+                    action in ("preview", "approve", "generate_video", "localize", "approve_video",
+                               "locate_person", "apply_person_hint")):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
             if action in ("select", "clear_protection"):
                 layer = "protection" if action == "clear_protection" else data.get("layer", "selection")
@@ -720,7 +774,10 @@ async def handle(req, host):
                     # A null anchor stops protection inherited from an earlier frame.
                     frame["protection"] = {"mask": None}
                 else:
-                    await select_area(req, host, frame, data, layer)
+                    person = mapping["source"] if mapping and data["shot"] in scoped else None
+                    await select_area(req, host, frame, data, layer, source_person=person)
+            elif action in ("locate_person", "apply_person_hint"):
+                await locate_person(req, host, session, frame, data)
             elif action == "capture_correction":
                 response["captured_frame"] = await capture_correction(host, source, shot, data.get("at"))
             elif action == "remove_correction":
