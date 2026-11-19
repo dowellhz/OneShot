@@ -166,7 +166,7 @@ async def analyze(req, host, source):
             "display_oriented": True}
 
 
-async def summarize_shots(req, host, cut):
+async def summarize_shots(req, host, cut, *, required=None):
     details = []
     people = []
     warning = ""
@@ -178,6 +178,13 @@ async def summarize_shots(req, host, cut):
         details = analysis.get("shots") or []
         if not isinstance(details, list):
             raise ValueError("镜头分析结果格式不正确")
+        needed = set(range(1, len(cut["shots"]) + 1)) if required is None else {i + 1 for i in required}
+        missing = sorted(needed.intersection(analysis.get("missing_shots", [])))
+        if len(missing) == len(needed) and required is None:
+            warning = "镜头已切分，视觉分析暂不可用，仍可手动选择人物。"
+        elif missing:
+            numbers = "、".join(str(number) for number in missing)
+            warning = f"镜头 {numbers} 缺少视觉分析，请核对原片并手动选择人物。"
         for person in analysis.get("characters") or []:
             if not isinstance(person, dict):
                 continue
@@ -492,7 +499,7 @@ async def edit_cuts(req, host, source, session, data):
              "w": shot["frames"]["first"]["w"], "h": shot["frames"]["first"]["h"],
              "mid": shot["frames"].get("middle", shot["frames"]["first"])["ref"]} for shot in shots
         ]}
-        summaries, people, warning = await summarize_shots(req, host, cut)
+        summaries, people, warning = await summarize_shots(req, host, cut, required=fresh)
         for i in fresh:
             shots[i]["summary"] = summaries[i]
         session["warning"] = warning

@@ -99,6 +99,43 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["shots"][1]["motion_analysis"], notes)
 
+    async def test_analyzed_people_and_motion_follow_shot_numbers_when_results_are_incomplete(self):
+        colors = [(200, 20, 20), (20, 200, 20), (20, 20, 200), (200, 180, 20)]
+        source = self.make_clip("missing-analysis", seconds=4, color=lambda tick: colors[tick // 24],
+                                frequency=440)
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+
+        class Vision:
+            via = "test vision"
+
+            def available(self):
+                return True
+
+            async def chat(self, system, content, **kwargs):
+                return json.dumps({"characters":[{"name":"红衣人", "look":"穿红衣"}, {"name":"黄衣人", "look":"穿黄衣"}],
+                                   "shots":[
+                    {"shot":4, "characters":"黄衣人", "camera":"缓慢拉远", "action":["抬手"]},
+                    {"shot":1, "characters":["红衣人"], "camera":"固定机位", "action":["转头"]},
+                    {"shot":2, "characters":["红衣人"]},
+                    {"shot":2, "characters":["黄衣人"]},
+                    {"shot":5, "action":["无对应镜头"]},
+                ]})
+
+        req = Request(source, self.user, {"action":"analyze"})
+        req.app["llm"] = Vision()
+        analyzed = json.loads((await server.remake(req)).body)
+        self.assertIn("镜头 2、3 缺少视觉分析", analyzed["warning"])
+        self.assertEqual([(s["start"], s["end"]) for s in analyzed["shots"]], [(0,1), (1,2), (2,3), (3,4)])
+        summaries = [shot["summary"] for shot in analyzed["shots"]]
+        self.assertEqual([s["characters"] for s in summaries], [["红衣人"], [], [], ["黄衣人"]])
+        self.assertEqual([s["camera"] for s in summaries], ["固定机位", "", "", "缓慢拉远"])
+        self.assertEqual([s["action"] for s in summaries], [["转头"], [], [], ["抬手"]])
+        reopened = json.loads((await server.remake(Request(source, self.user))).body)
+        self.assertEqual(reopened["shots"], analyzed["shots"])
+        self.assertEqual(reopened["warning"], analyzed["warning"])
+
     async def test_assistant_reads_the_bound_video_remake_session_for_its_user(self):
         db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test'),(8,'member','test')")
         source, other = "input:h3studio/source.mp4", "input:h3studio/other.mp4"

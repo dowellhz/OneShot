@@ -188,10 +188,11 @@ ANALYZE_SYS = """你是拉片分析师。用户给出一段视频按镜头切开
 逐个镜头分析，只输出 JSON 对象：
 {"title": "概括这段视频", "style": "整体画面风格、色调、光线",
  "characters": [{"name": "人物1", "look": "外貌服装"}],
- "shots": [{"shot_size": "景别", "camera": "机位与运镜（对比开头帧和中间帧判断推/拉/摇/移/跟/固定）", "scene": "场景环境光线",
+ "shots": [{"shot": 1, "shot_size": "景别", "camera": "机位与运镜（对比开头帧和中间帧判断推/拉/摇/移/跟/固定）", "scene": "场景环境光线",
    "characters": ["出现的人物名"], "action": ["这个镜头里按顺序发生的动作，一行一个"], "sound": "推测的环境音和动作音效",
    "keyframe": "开头帧画面的一句话描述"}]}
-shots 的个数和顺序必须与给出的镜头完全一致。人物用 人物1、人物2 命名并保持一致。全部用中文。"""
+每个镜头只输出一次，shot 必须是输入中标注的镜头编号，从 1 开始。shots 的个数和顺序必须与输入一致。
+人物用 人物1、人物2 命名并保持一致。全部用中文。"""
 
 
 async def analyze_shots(llm: LLM, comfy_dir: Path, cut: dict) -> dict:
@@ -205,20 +206,36 @@ async def analyze_shots(llm: LLM, comfy_dir: Path, cut: dict) -> dict:
         content.append({"type": "text", "text": f"镜头 {k + 1} 中间帧："})
         content.append(image_part(ref_path(comfy_dir, s["mid"]), 384))
     out = parse_json(await llm.chat(ANALYZE_SYS, content, max_tokens=3500, temperature=0.3))
-    got = out.get("shots") or []
+    count = len(cut["shots"])
+    got = out.get("shots")
+    records = [item for item in got if isinstance(item, dict)] if isinstance(got, list) else []
+    details = {}
+    duplicates = set()
+    if isinstance(got, list) and len(got) == len(records) == count and all("shot" not in item for item in records):
+        details = dict(enumerate(records, 1))
+    else:
+        for item in records:
+            number = item.get("shot")
+            if type(number) is int and 1 <= number <= count:
+                if number in details:
+                    duplicates.add(number)
+                details[number] = item
+        for number in duplicates:
+            del details[number]
     shots = []
-    for k, s in enumerate(cut["shots"]):
-        a = got[k] if k < len(got) and isinstance(got[k], dict) else {}
+    for number, s in enumerate(cut["shots"], 1):
+        a = details.get(number, {})
         shots.append({
             "duration": min(10, max(3, int(round(s["end"] - s["start"])) or 3)), "shot_size": str(a.get("shot_size") or ""),
             "camera": str(a.get("camera") or ""), "scene": str(a.get("scene") or ""),
-            "characters": [str(c) for c in (a.get("characters") or [])], "action": _lines(a.get("action")), "dialogue": [],
+            "characters": _lines(a.get("characters")), "action": _lines(a.get("action")), "dialogue": [],
             "sound": str(a.get("sound") or ""), "keyframe": str(a.get("keyframe") or ""),
             "frame": {"ref": s["ref"], "w": s["w"], "h": s["h"]}, "src": [s["start"], s["end"]],
         })
     chars = [{"name": str(c["name"]), "look": str(c.get("look") or "")}
              for c in (out.get("characters") or []) if isinstance(c, dict) and c.get("name")]
-    return {"title": str(out.get("title") or ""), "style": str(out.get("style") or ""), "characters": chars, "shots": shots}
+    return {"title": str(out.get("title") or ""), "style": str(out.get("style") or ""), "characters": chars, "shots": shots,
+            "missing_shots": [number for number in range(1, count + 1) if number not in details]}
 
 
 async def locate_shot_person(llm: LLM, comfy_dir: Path, ref: str, person: str, look: str) -> dict:
