@@ -489,6 +489,7 @@ async def edit_cuts(req, host, source, session, data):
     if fresh:
         cut = {"duration": old[-1] / fps, "known_people": session.get("source_people"), "shots": [
             {"start": shot["start"], "end": shot["end"], "ref": shot["frames"]["first"]["ref"],
+             "w": shot["frames"]["first"]["w"], "h": shot["frames"]["first"]["h"],
              "mid": shot["frames"].get("middle", shot["frames"]["first"])["ref"]} for shot in shots
         ]}
         summaries, people, warning = await summarize_shots(req, host, cut)

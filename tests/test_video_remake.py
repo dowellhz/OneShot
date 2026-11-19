@@ -130,6 +130,49 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         run["data"]["bindings"] = {}
         self.assertFalse((await service.execute(run, self.user, "status", "video_remake_status", params))["analyzed"])
 
+    async def test_assistant_analysis_persists_the_pinned_source_and_reuses_saved_shots(self):
+        db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test')")
+        source = self.make_clip("assistant-source", seconds=2,
+                                color=lambda tick: (200, 20, 20) if tick < 24 else (20, 20, 200), frequency=440)
+        other = "input:h3studio/other.mp4"
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "cur":1, "versions":[{"ref":source}, {"ref":other}]},
+        ]}))
+
+        class Vision:
+            via = "test vision"
+            calls = 0
+
+            def available(self):
+                return True
+
+            async def chat(self, system, content, **kwargs):
+                self.calls += 1
+                return json.dumps({"characters":[{"name":"人物甲", "look":"红衣"}],
+                                   "shots":[{"characters":["人物甲"], "camera":"固定机位"}] * 2})
+
+        vision = Vision()
+        service = server.agent_chat.AgentService({"llm":vision}, server)
+        run = {"board_id":"test", "data":{"bindings":{"n3":source}}}
+        result = await service.execute(run, self.user, "analyze", "video_remake_analyze", {"node_id":"n3"})
+        self.assertEqual(result["remake"]["source_ref"], source)
+        self.assertTrue(result["analyzed"])
+        self.assertIsNone(result["warning"])
+        self.assertEqual(result["source_people"], [{"name":"人物甲", "look":"红衣"}])
+        self.assertEqual([(shot["start"], shot["end"]) for shot in result["shots"]], [(0,1), (1,2)])
+        workspace = json.loads((await server.remake(Request(source, self.user))).body)
+        self.assertEqual(workspace["shots"][0]["summary"]["camera"], "固定机位")
+        self.assertIsNone(video_remake.load((7, "test", "n3", other)))
+
+        request = Request(source, self.user, {"action":"move_cut", "shot":1, "at":1.25})
+        request.app["llm"] = vision
+        await server.remake(request)
+        again = await service.execute(run, self.user, "repeat", "video_remake_analyze", {"node_id":"n3"})
+        self.assertEqual(vision.calls, 2)
+        self.assertIsNone(again["warning"])
+        self.assertEqual([(shot["start"], shot["end"]) for shot in again["shots"]], [(0,1.25), (1.25,2)])
+        self.assertEqual(server.JOBS, {})
+
     async def test_long_shot_splits_into_balanced_segments_and_can_be_undone(self):
         source = self.make_clip("long-shot", seconds=30, color=lambda tick: (20 + (tick // 232) * 50, 20, 20), frequency=440)
         server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[

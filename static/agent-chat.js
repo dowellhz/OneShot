@@ -1,6 +1,6 @@
 "use strict";
 const AC={session:null,board:null,events:[],runs:[],cursor:0,open:false,polling:false,sending:false,refs:null,base:new Map(),pending:new Map(),calls:new Map(),epoch:0};
-const AC_LABELS={video_remake_status:"读取视频重制进度",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
+const AC_LABELS={video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
 const AC_STATES={thinking:"正在理解与规划…",running:"正在执行…",stopping:"正在停止，保留已完成结果…",stopped:"本轮已停止",done:"本轮已结束",error:"本轮执行中断"};
 const AC_PHASES={queued:"排队",loading:"加载模型",encoding:"处理提示词与图片",sampling:"生成",decoding:"解码",compositing:"合成",done:"完成",error:"失败"};
 const acClone=v=>JSON.parse(JSON.stringify(v));

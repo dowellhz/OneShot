@@ -11,7 +11,7 @@ from aiohttp import web
 
 import video_remake
 
-NAMES = {"video_generate", "video_regenerate", "video_remake_status"}
+NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze"}
 
 
 def result_id(cid):
@@ -118,6 +118,7 @@ def register(tool, prop, node, prompt):
         **options, "node_id": node, "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
     tool("video_remake_status", "读取原片视频版本的角色替换进度，包括待审核镜头和成片状态。不启动分析或生成。", {"node_id": node}, ["node_id"])
+    tool("video_remake_analyze", "在视频重制工作区分析指定原片，按原片时间轴拆分镜头并识别人物。已有分析时直接读取，可继续审核。", {"node_id": node}, ["node_id"])
 
 
 def video_node(s, run, user, nid, *, allow_film=False):
@@ -175,7 +176,11 @@ def plan_payload(s, run, user, frames, duration, data, prompt):
 
 async def execute(s, run, user, cid, name, args):
     if name == "video_remake_status":
-        return remake_status(s, run, user, args["node_id"])
+        nid = args["node_id"]
+        key = remake_source(s, run, user, nid)
+        return remake_status(s.host, nid, key, video_remake.load(key))
+    if name == "video_remake_analyze":
+        return await analyze_remake(s, run, user, args["node_id"])
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -225,18 +230,33 @@ async def execute(s, run, user, cid, name, args):
                                      s.host.generate_request, target_id=original["id"] if original else None, target_data=target_data)
 
 
-def remake_status(s, run, user, nid):
+def remake_source(s, run, user, nid):
     _, n = video_node(s, run, user, nid, allow_film=True)
     ref = run["data"].get("bindings", {}).get(nid) or (s.current(n) or {}).get("ref")
     try:
-        key = video_remake.remake_key(s.host, user, run["board_id"], nid, ref)
+        return video_remake.remake_key(s.host, user, run["board_id"], nid, ref)
     except web.HTTPException:
         raise ValueError("原片版本已不存在，请重新选择视频") from None
+
+
+async def analyze_remake(s, run, user, nid):
+    key = remake_source(s, run, user, nid)
     session = video_remake.load(key)
-    result = {"remake": {"node_id": nid, "source_ref": ref}, "shots": [], "analyzed": False}
+    if not session or not session["shots"]:
+        async def analyze(req):
+            req.method = "POST"
+            req.match_info = {"board": run["board_id"], "node": nid}
+            return await s.host.remake(req)
+
+        session = await s.response(analyze, user, {"action": "analyze"}, query={"source": key[3]})
+    return remake_status(s.host, nid, key, session)
+
+
+def remake_status(host, nid, key, session):
+    result = {"remake": {"node_id": nid, "source_ref": key[3]}, "shots": [], "analyzed": False}
     if not session or not session["shots"]:
         return {**result, "text": "该原片尚未分析，可打开视频重制工作区开始。"}
-    video_remake.update_jobs(s.host, user["id"], session)
+    video_remake.update_jobs(host, key[0], session)
     review = video_remake.export_review(session)
     mapping = session.get("mapping")
     out = session.get("export") or {}
@@ -258,6 +278,7 @@ def remake_status(s, run, user, nid):
         })
     count = len(result["shots"])
     return {**result, "analyzed": True, "text": f"共 {count} 个镜头，{len(issues)} 个待审核。",
+            "source_people": session.get("source_people", []), "warning": session.get("warning") or None,
             "mapping": {"source": mapping["source"], "asset": mapping.get("asset_name")} if mapping else None,
             "adopted": review["adopted"], "can_export": bool(review["adopted"] and not issues and
                                                           out.get("state") not in ("queued", "running")),
