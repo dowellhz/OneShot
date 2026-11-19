@@ -333,7 +333,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                              {"submitted":[1], "skipped":[0], "failed":[]})
             self.assertEqual(await batch((0, "main"), (1, "main")),
                              {"submitted":[], "skipped":[0,1], "failed":[]})
-        self.assertEqual(len(requests), 3)
+            updated = await act("batch_previews", person="人物甲", asset=asset["id"],
+                                shots=[{"shot":0, "view":"main", "note":"保留茶杯"}])
+            self.assertEqual(updated["batch_previews"]["submitted"], [0])
+        self.assertEqual(len(requests), 4)
+        self.assertIn("保留茶杯", requests[-1]["prompt"])
         await act("approve", shot=0, job="batch-1")
         db.task_start(id="batch-3", user_id=7, state="done", outputs=[self.source["ref"]])
         await act("approve", shot=1, job="batch-3")

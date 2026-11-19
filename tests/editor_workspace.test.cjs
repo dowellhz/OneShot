@@ -529,10 +529,10 @@ async function run(){
   }
   if(operation?.action==='batch_previews'){
    assert.equal(operation.person,'人物 A');
-   assert.deepEqual(operation.shots,[{shot:0,view:'face'}]);
+   assert.deepEqual(operation.shots,[{shot:0,view:'face',note:'保留茶杯'}]);
    remakeOptions={asset:operation.asset,view:operation.shots[0].view};
-   frame.previews.push({job:'remake-first',state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森'},
-    source_person:'人物 A',mask:frame.selection.mask,protection:frame.protection.mask});
+   frame.previews.push({job:'remake-first',state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森',view:'face'},
+    source_person:'人物 A',mask:frame.selection.mask,protection:frame.protection.mask,note:'保留茶杯'});
    remakeSession.batch_previews={submitted:[0],skipped:[],failed:[]};
   }
   if(operation?.action==='approve')remakeSession.shots[0].frames[operation.frame].approved=operation.job;
@@ -602,7 +602,7 @@ async function run(){
   rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:80,clientY:18}));
   rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:120,clientY:28}));`);
  await ready('!$(".rm-protection").hidden && !$(".rm-mask").hidden','foreground and replacement selections are shown separately');
- evaluate('$("[data-batch-previews]").click()');
+ evaluate('const rmNote=$("#videoRemake .rm-note input");rmNote.value="保留茶杯";rmNote.dispatchEvent(new Event("input"));$("[data-batch-previews]").click()');
  await ready('!!$("#videoRemake .rm-output img")','role preview displays in workspace');
  equal(evaluate('$("[data-batch-previews]").disabled'),true,'a finished matching first-frame preview removes the shot from the batch');
  assert.equal(remakeOptions.asset,'char');
@@ -693,6 +693,19 @@ async function run(){
  await evaluate('openVideoRemake(node("pendingVideo"))');
  evaluate('$("[data-insert-export]").click()');
  equal(evaluate('B.nodes.filter(n=>n.versions.some(v=>v.ref==="output:h3studio/assembled.mp4")).length'),1,'repeated handoff selects the existing export');
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ evaluate(`const unsentMotion=$("#videoRemake [data-motion]"),unsentNote=$("#videoRemake .rm-note input"),unsentView=$("#videoRemake [data-view]");
+  unsentMotion.value="尚未提交的动作";unsentMotion.dispatchEvent(new Event("input"));
+  unsentNote.value="尚未提交的修改要求";unsentNote.dispatchEvent(new Event("input"));
+  unsentView.value="main";unsentView.dispatchEvent(new Event("change"));
+  $("#videoRemake [data-close]").click();`);
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ equal(evaluate('[$("#videoRemake [data-motion]").value,$("#videoRemake .rm-note input").value,$("#videoRemake [data-view]").value]'),
+  ['尚未提交的动作','尚未提交的修改要求','main'],'reopening restores the unsent shot draft and chosen view');
+ evaluate('$("#videoRemake [data-close]").click();const originalVersion=node("pendingVideo").cur;switchVersion(node("pendingVideo"),originalVersion===0?1:0)');
+ await evaluate('openVideoRemake(node("pendingVideo"))');
+ equal(evaluate('[$("#videoRemake .rm-note input").value,$("#videoRemake [data-view]").value]'),['','face'],'another source version has its own draft scope');
+ evaluate('$("#videoRemake [data-close]").click();switchVersion(node("pendingVideo"),originalVersion)');
  evaluate('const originalTab=node("pendingVideo"),originalRef=curV(originalTab).ref;vtSplit(originalTab.id,originalTab.cur)');
  equal(evaluate('const splitOriginal=vtResolve("pendingVideo",originalRef).node;B.edges.filter(e=>e.relation==="remake").every(e=>e.from===splitOriginal.id)'),true,'origin links follow the pinned video version when split');
  evaluate('switchVersion(shotHandoff,1)');

@@ -115,8 +115,9 @@ async function openVideoRemake(video) {
   let busy = true, dragStart = null, timer = null, revision = 0;
   let videoId = null, originalEnd = null;
   let comparison = null;
-  const motionDrafts = new Map();
-  const viewChoices = new Map();
+  const drafts = new Map();
+  const draftScope = ME_USER?.id == null ? "" : "oneshot.remake.draft:" +
+    JSON.stringify([ME_USER.id, board, video.id, source.ref]) + ":";
   const inScope = index => !session?.mapping || session.mapping.shots.includes(index);
   const matchesPerson = version => !session?.mapping || (
     version?.asset?.id === session.mapping.asset && version.source_person === session.mapping.source
@@ -128,6 +129,19 @@ async function openVideoRemake(video) {
   const currentShot = () => session?.shots[shotIndex];
   const currentFrame = () => currentShot()?.frames[frameKey];
   const shotKey = (shot = currentShot()) => shot ? `${shot.start}:${shot.end}` : "";
+  const draftKey = (field, shot, asset) => JSON.stringify([shotKey(shot), session?.mapping?.source ?? null, field, asset ?? null]);
+  function readDraft(field, shot = currentShot(), asset) {
+    const key = draftKey(field, shot, asset);
+    if (drafts.has(key)) return drafts.get(key);
+    try { return draftScope ? localStorage.getItem(draftScope + key) : null; }
+    catch { return null; }
+  }
+  function writeDraft(field, value, asset) {
+    const key = draftKey(field, currentShot(), asset);
+    drafts.set(key, value);
+    try { if (draftScope) localStorage.setItem(draftScope + key, value); }
+    catch {}
+  }
   const personAbsent = frame => !!frame?.person_absent && (
     !session.mapping || frame.person_absent.source == null || frame.person_absent.source === session.mapping.source
   );
@@ -247,7 +261,7 @@ async function openVideoRemake(video) {
   }
 
   function chosenView(asset, shot) {
-    const choice = viewChoices.get(shotKey(shot) + ":" + asset?.id);
+    const choice = readDraft("view", shot, asset?.id);
     return choice === "main" || asset?.character_views?.[choice] ? choice : suggestedView(asset, shot);
   }
 
@@ -279,9 +293,11 @@ async function openVideoRemake(video) {
       const frame = shot.frames.first;
       const selection = personSelection(frame);
       if (!selection || shot.keep_original || frame.previews.some(active)) continue;
+      const view = chosenView(asset, shot);
+      const note = (readDraft("note", shot) ?? "").slice(0, 800);
       const hasPreview = frame.previews.some(p => p.ref && matchesPerson(p) && p.mask === selection.mask &&
-        (p.protection || null) === (frame.protection?.mask || null));
-      if (!hasPreview) queue.push({shot:index, view:chosenView(asset, shot)});
+        (p.protection || null) === (frame.protection?.mask || null) && (p.asset?.view || "main") === view && (p.note || "") === note);
+      if (!hasPreview) queue.push({shot:index, view, note});
     }
     return queue;
   }
@@ -312,7 +328,7 @@ async function openVideoRemake(video) {
   }
 
   function shotMotion(shot) {
-    return motionDrafts.get(shotKey(shot)) ?? shot.videos?.at(-1)?.motion ?? "";
+    return readDraft("motion", shot) ?? shot.videos?.filter(matchesPerson).at(-1)?.motion ?? "";
   }
 
   function motionAnalysis(shot) {
@@ -523,6 +539,9 @@ async function openVideoRemake(video) {
       role.value = session.mapping.asset;
       fillViews();
     }
+    const note = el(".rm-note input");
+    const draftNote = readDraft("note") ?? "";
+    if (note.value !== draftNote) note.value = draftNote;
     const summary = shot.summary || {};
     el(".rm-summary").textContent = [summary.shot_size, summary.camera, ...(Array.isArray(summary.action) ? summary.action : [])].filter(Boolean).join(" · ");
     const original = el(".rm-original"), selection = el(".rm-mask");
@@ -823,7 +842,7 @@ async function openVideoRemake(video) {
     status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的首帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
-      if (action === "analyze") fillViews();
+      if (["analyze", "map_person", "remove_mapping"].includes(action)) fillViews();
       if (action === "capture_correction" && session.captured_frame) {
         frameKey = session.captured_frame;
         versionId = null;
@@ -906,13 +925,18 @@ async function openVideoRemake(video) {
   el("[data-clear-protection]").onclick = () => change("clear_protection");
   el("[data-role]").onchange = () => { fillViews(); renderPanel(); };
   el("[data-view]").onchange = event => {
-    viewChoices.set(shotKey() + ":" + el("[data-role]").value, event.target.value);
+    writeDraft("view", event.target.value, el("[data-role]").value);
+    renderBatchButtons();
+  };
+  el(".rm-note input").oninput = event => {
+    writeDraft("note", event.target.value);
+    renderBatchButtons();
   };
   el("[data-generate]").onclick = () => change("preview", {
     asset:el("[data-role]").value, view:el("[data-view]").value, note:el(".rm-note input").value,
   });
   el("[data-motion]").oninput = event => {
-    motionDrafts.set(shotKey(), event.target.value);
+    writeDraft("motion", event.target.value);
     renderBatchButtons();
   };
   el("[data-analyze-motion]").onclick = () => change("analyze_motion");

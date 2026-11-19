@@ -596,6 +596,7 @@ async def generate_preview(req, host, key, frame, data, mapping=None):
     preview.update({
         "mask": selection["mask"],
         "protection": protection,
+        "note": note[:800],
         "source_person": mapping["source"] if mapping else None,
         "asset": {"id": asset["id"], "name": asset["name"], "view": view, "ref": reference},
     })
@@ -621,7 +622,10 @@ async def queue_shots(req, host, key, session, data):
             view = item.get("view", "main")
             if not isinstance(view, str) or view not in VIEWS:
                 fail("镜头参考角度无效")
-            inputs[index] = {"asset":mapping["asset"], "view":view}
+            note = item.get("note", "")
+            if not isinstance(note, str):
+                fail("镜头修改要求格式不正确")
+            inputs[index] = {"asset":mapping["asset"], "view":view, "note":note[:800]}
         else:
             motion, first_job = item.get("motion", ""), item.get("first_job")
             if not isinstance(motion, str) or not isinstance(first_job, str) or not first_job:
@@ -659,7 +663,9 @@ async def queue_one_shot(req, host, key, shot, params, mapping, preview):
         protection = frame.get("protection", {}).get("mask")
         if not selection or pending(frame["previews"]) or any(
             p.get("ref") and matches_mapping(p, mapping) and
-            p.get("mask") == selection["mask"] and p.get("protection") == protection for p in frame["previews"]
+            p.get("mask") == selection["mask"] and p.get("protection") == protection and
+            p.get("asset", {}).get("view", "main") == params["view"] and p.get("note", "") == params["note"]
+            for p in frame["previews"]
         ):
             return False
         await generate_preview(req, host, key, frame, params, mapping)
