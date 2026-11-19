@@ -32,7 +32,8 @@ async function openVideoRemake(video) {
         <nav class="rm-shots" aria-label="原片镜头"></nav>
       </section>
       <section class="rm-editor" hidden>
-        <div class="rm-actions"><strong class="rm-shot"></strong><select data-frame aria-label="选取原片画面"><option value="first">镜头首帧</option><option value="middle">镜头中间帧</option></select></div>
+        <div class="rm-actions"><strong class="rm-shot"></strong><select data-frame aria-label="选取原片画面"></select>
+          <button type="button" data-capture-correction>添加当前位置为校正帧</button><button type="button" data-remove-correction hidden>删除校正帧</button></div>
         <p class="rm-summary"></p>
         <div class="rm-actions">
           <button type="button" data-mode="point" aria-pressed="true">点选人物</button>
@@ -112,7 +113,9 @@ async function openVideoRemake(video) {
     el(".rm-analysis").textContent = session?.warning || (shots.length ? `${shots.length} 个镜头` : "支持 60 秒以内的视频");
     el(".rm-editor").hidden = !shots.length;
     if (!shots.length) return;
-    const shot = currentShot(), frame = currentFrame();
+    const shot = currentShot();
+    if (!currentFrame()) frameKey = "first";
+    const frame = currentFrame();
     const shotList = el(".rm-shots");
     shotList.replaceChildren(...shots.map((item, i) => {
       const card = document.createElement("button");
@@ -123,6 +126,7 @@ async function openVideoRemake(video) {
       card.onclick = () => {
         if (busy) return;
         shotIndex = i;
+        frameKey = "first";
         versionId = null;
         videoId = null;
         originalEnd = null;
@@ -132,6 +136,21 @@ async function openVideoRemake(video) {
       return card;
     }));
     el(".rm-shot").textContent = `镜头 ${shotIndex + 1}`;
+    const options = el("[data-frame]");
+    const corrections = Object.entries(shot.frames).filter(([, item]) => Number.isInteger(item.correction_tick))
+      .sort(([, a], [, b]) => a.correction_tick - b.correction_tick);
+    const choices = [["first", "镜头首帧"], ["middle", "镜头中间帧"], ...corrections.map(([key, item]) =>
+      [key, `校正帧 · ${item.at.toFixed(2)} 秒`])];
+    if (JSON.stringify(choices) !== options.dataset.choices) {
+      options.replaceChildren(...choices.map(([key, label]) => new Option(label, key)));
+      options.dataset.choices = JSON.stringify(choices);
+    }
+    options.value = frameKey;
+    const isCorrection = Number.isInteger(frame.correction_tick);
+    el("[data-capture-correction]").disabled = busy;
+    el("[data-remove-correction]").hidden = !isCorrection;
+    el("[data-remove-correction]").disabled = busy;
+    el(".rm-role").hidden = isCorrection;
     const summary = shot.summary || {};
     el(".rm-summary").textContent = [summary.shot_size, summary.camera, ...(Array.isArray(summary.action) ? summary.action : [])].filter(Boolean).join(" · ");
     const original = el(".rm-original"), selection = el(".rm-mask");
@@ -152,7 +171,8 @@ async function openVideoRemake(video) {
       image.src = link.href; image.alt = "角色替换预览";
       link.append(image); output.append(link);
     } else {
-      output.textContent = version?.error || (version ? version.state === "running" ? "正在生成…" : "等待生成…" : "生成后显示在这里");
+      output.textContent = isCorrection ? "在左侧点选或框选人物。此选区用于下一次局部合成。"
+        : version?.error || (version ? version.state === "running" ? "正在生成…" : "等待生成…" : "生成后显示在这里");
     }
     const review = el(".rm-review");
     review.replaceChildren();
@@ -217,7 +237,9 @@ async function openVideoRemake(video) {
         review.append(button("采用此视频", () => change("approve_video", {job:selected.job}), busy));
       }
       if (source && selected.mode !== "local") {
-        review.append(button("跟踪人物并局部合成", () => change("localize", {job:selected.job}), busy || videos.some(active)));
+        const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) && f.selection).length;
+        const caption = count ? `跟踪人物并局部合成（${count} 张校正帧）` : "跟踪人物并局部合成";
+        review.append(button(caption, () => change("localize", {job:selected.job}), busy || videos.some(active)));
       }
     }
     const exp = session.export;
@@ -295,6 +317,14 @@ async function openVideoRemake(video) {
     status({analyze:"正在拆分与分析镜头…",select:"正在处理选区…",preview:"正在提交预览…",generate_video:"正在提交镜头生成…",localize:"正在提交局部合成…",export:"正在提交成片合成…"}[action] || "");
     try {
       session = await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, ...extra});
+      if (action === "capture_correction" && session.captured_frame) {
+        frameKey = session.captured_frame;
+        versionId = null;
+      }
+      if (action === "remove_correction") {
+        frameKey = "first";
+        versionId = null;
+      }
       if (action === "preview") versionId = null;
       if (action === "generate_video" || action === "localize") videoId = null;
       status("");
@@ -303,7 +333,17 @@ async function openVideoRemake(video) {
   }
 
   el("[data-analyze]").onclick = () => change("analyze");
-  el("[data-frame]").onchange = event => { frameKey = event.target.value; versionId = null; renderPanel(); };
+  el("[data-frame]").onchange = event => {
+    frameKey = event.target.value;
+    versionId = null;
+    if (Number.isFinite(currentFrame().at)) player.currentTime = currentFrame().at;
+    renderPanel();
+  };
+  el("[data-capture-correction]").onclick = () => {
+    if (!player.paused) player.pause();
+    change("capture_correction", {at:player.currentTime});
+  };
+  el("[data-remove-correction]").onclick = () => change("remove_correction");
   el("[data-role]").onchange = () => { fillViews("main"); renderPanel(); };
   el("[data-generate]").onclick = () => change("preview", {
     asset:el("[data-role]").value, view:el("[data-view]").value, note:el(".rm-note input").value,

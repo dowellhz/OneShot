@@ -154,8 +154,18 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             with self.assertRaises(web.HTTPBadRequest):
                 await act("export")
             await act("generate_video")
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("capture_correction", at=2.5)
+        captured = await act("capture_correction", at=1)
+        correction = captured["captured_frame"]
+        self.assertEqual(captured["shots"][0]["frames"][correction]["correction_tick"], 24)
+        selected_frame = await act("select", frame=correction, rect=[.375,.25,.875,.75])
+        corrected_mask = selected_frame["shots"][0]["frames"][correction]["selection"]["mask"]
         local = await act("localize", job="shot-gen-2")
-        local_job = local["shots"][0]["videos"][-1]["job"]
+        localized = local["shots"][0]["videos"][-1]
+        self.assertEqual(localized["corrections"], {"24":corrected_mask})
+        local_job = localized["job"]
+        await act("remove_correction", frame=correction)
         await self.wait_for_render(local_job)
         await act("approve_video", job=local_job)
         submitted = await act("export")
@@ -169,6 +179,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(len(frames), 4 * server.film.FPS)
         self.assertGreater(frames[47][32,32,1], frames[47][32,32,0])
         self.assertGreater(frames[47][0,0,0], frames[47][0,0,1])
+        self.assertGreater(frames[23][32,19,1], frames[23][32,19,0])
+        self.assertGreater(frames[24][32,19,0], frames[24][32,19,1])
         self.assertGreater(frames[48][32,32,0], frames[48][32,32,1])
         audio = server.film.read_audio(path)[0]
         for t in (1, 3):

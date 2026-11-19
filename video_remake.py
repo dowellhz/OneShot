@@ -17,6 +17,7 @@ from creative_memory import IMAGE_EXT, character_notes, fail
 MAX_SECONDS = 60
 MAX_SHOTS = 12
 MAX_PREVIEWS = 20
+MAX_CORRECTIONS = 8
 VIDEO_EXT = {".mp4", ".webm", ".mov", ".mkv", ".m4v"}
 VIEWS = {"main", "face", "side", "back", "detail"}
 _writes = set()
@@ -128,10 +129,47 @@ async def analyze(req, host, source):
 
 def selected_frame(session, data):
     index, frame_key = data.get("shot"), data.get("frame", "first")
-    if type(index) is not int or not 0 <= index < len(session["shots"]) or frame_key not in ("first", "middle"):
+    if type(index) is not int or not 0 <= index < len(session["shots"]) or not isinstance(frame_key, str):
         fail("请先选择镜头和画面")
     shot = session["shots"][index]
+    if frame_key not in shot["frames"]:
+        fail("画面已不存在，请重新选择")
     return shot, shot["frames"][frame_key]
+
+
+async def capture_correction(host, source, shot, value):
+    if type(value) not in (int, float) or not 0 <= value <= MAX_SECONDS:
+        fail("请先将原片定位到镜头内")
+    fps = host.film.FPS
+    start, end = round(shot["start"] * fps), round(shot["end"] * fps)
+    tick = round(value * fps)
+    if not start < tick < end:
+        fail("请将播放器定位到当前镜头的首帧之后、结束之前")
+    frame_key = f"correction-{tick}"
+    if frame_key in shot["frames"]:
+        return frame_key
+    if sum("correction_tick" in frame for frame in shot["frames"].values()) >= MAX_CORRECTIONS:
+        fail(f"每个镜头最多保存 {MAX_CORRECTIONS} 张校正帧")
+
+    def extract():
+        path = host.tools.ref_path(host.COMFY_DIR, source)
+        frames = host.film.clip_frames(path, tick / fps, (tick + 1) / fps, lambda image: image, 1)
+        try:
+            image = next(frames, None)
+            if image is None:
+                raise ValueError("没有可用的画面")
+            return image_editor.save(host.COMFY_DIR, image, "remake-correction", "input")
+        finally:
+            frames.close()
+
+    try:
+        saved = await asyncio.to_thread(extract)
+    except (ValueError, OSError):
+        fail("无法读取校正画面")
+    shot["frames"][frame_key] = {
+        **frame_record(saved["ref"], (saved["w"], saved["h"])), "correction_tick": tick, "at": tick / fps,
+    }
+    return frame_key
 
 
 def coordinates(values, length):
@@ -293,14 +331,20 @@ def localize_shot(req, host, key, shot, job):
     if end - start > 14:
         fail("局部合成支持 14 秒以内的镜头")
 
+    start_tick = round(start * host.film.FPS)
+    corrections = {
+        frame["correction_tick"] - start_tick: frame["selection"]["mask"]
+        for frame in shot["frames"].values() if "correction_tick" in frame and frame.get("selection")
+    }
+
     def composite(progress, cancelled):
         return video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], mask,
-                                          start, end, progress, cancelled)
+                                          start, end, progress, cancelled, corrections=corrections)
 
     response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
     version = submitted_job(response)
     version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
-                   asset=generated["asset"], motion=generated.get("motion", ""))
+                   asset=generated["asset"], motion=generated.get("motion", ""), corrections=corrections)
     videos.append(version)
 
 
@@ -377,6 +421,7 @@ async def handle(req, host):
         fail("此原片正在处理，请稍候", 409)
     _writes.add(key)
     try:
+        captured_frame = None
         session = load(key)
         action = data.get("action")
         if action == "analyze":
@@ -390,7 +435,15 @@ async def handle(req, host):
             shot, frame = selected_frame(session, data)
             if action == "select":
                 await select_area(req, host, frame, data)
+            elif action == "capture_correction":
+                captured_frame = await capture_correction(host, source, shot, data.get("at"))
+            elif action == "remove_correction":
+                if "correction_tick" not in frame:
+                    fail("请选择要移除的校正帧")
+                del shot["frames"][data["frame"]]
             elif action == "preview":
+                if "correction_tick" in frame:
+                    fail("校正帧仅用于跟踪，请切换到首帧或中间帧生成预览")
                 session["role"] = await generate_preview(req, host, key, frame, data)
             elif action == "approve":
                 preview = completed(frame["previews"], data.get("job"))
@@ -413,6 +466,6 @@ async def handle(req, host):
             fail("请先分析原片")
         update_jobs(host, key[0], session)
         save(key, session)
-        return web.json_response(session)
+        return web.json_response({**session, "captured_frame": captured_frame} if captured_frame else session)
     finally:
         _writes.discard(key)

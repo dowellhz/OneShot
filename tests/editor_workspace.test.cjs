@@ -493,6 +493,14 @@ async function run(){
    remakeSelection=operation.rect;
    frame.selection={overlay:'input:h3studio/remake-overlay.png'};
   }
+  if(operation?.action==='capture_correction'){
+   const key='correction-24';
+   remakeSession.shots[0].frames[key]={...structuredClone(frame),correction_tick:24,at:1,selection:null,previews:[]};
+   return {ok:true,json:async()=>({...structuredClone(remakeSession),captured_frame:key}),text:async()=>JSON.stringify({...remakeSession,captured_frame:key})};
+  }
+  if(operation?.action==='select' && operation.frame==='correction-24'){
+   remakeSession.shots[0].frames[operation.frame].selection={overlay:'input:h3studio/correction-overlay.png'};
+  }
   if(operation?.action==='preview'){
    remakeOptions=operation;
    frame.previews.push({job:'remake-job',state:'done',ref:'output:h3studio/remake.png',asset:{name:'林森'}});
@@ -529,13 +537,19 @@ async function run(){
  evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("#videoRemake [data-generate-video]").click()`);
  await ready('!!$("#videoRemake [data-result]").getAttribute("src")','remade video can be reviewed in workspace');
  assert.equal(remakeMotion,'第一秒回头');
- evaluate('$$(".rm-video-review button").find(b=>b.textContent==="跟踪人物并局部合成").click()');
+ evaluate('$("#videoRemake video").currentTime=1;$("#videoRemake [data-capture-correction]").click()');
+ await ready('$("#videoRemake [data-frame]").value==="correction-24" && $("#videoRemake .rm-role").hidden','capture opens frame only for tracking correction');
+ evaluate(`rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:80,clientY:15}));
+  rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:200,clientY:37}));`);
+ await ready('$$(".rm-video-review button").some(b=>b.textContent.includes("1 张校正帧"))','correction counted by local render control');
+ evaluate('$$(".rm-video-review button").find(b=>b.textContent.startsWith("跟踪人物并局部合成")).click()');
  await ready('$("#videoRemake [data-result]").getAttribute("src")?.includes("shot-local.mp4")','local result is selectable alongside original generation');
  evaluate('$$(".rm-video-review button").find(b=>b.textContent==="采用此视频").click()');
  await ready('$("#videoRemake [data-export]").hidden===false','review unlocks export');
  evaluate('$("#videoRemake [data-export]").click()');
  await ready('$("#videoRemake [data-download]").hidden===false','finished export can be downloaded');
  equal(evaluate('$("#videoRemake [data-download]").download'),'assembled.mp4','export download uses assembled file');
+ evaluate(`const rmFrameSelect=$("#videoRemake [data-frame]");rmFrameSelect.value="first";rmFrameSelect.dispatchEvent(new Event("change"))`);
  const beforeRemake=evaluate('B.nodes.length');
  evaluate('$$(".rm-review button").find(b=>b.textContent==="用作视频首帧").click()');
  equal(evaluate('B.nodes.length'),beforeRemake+2,'handoff creates one preview image and one linked video');
@@ -543,7 +557,7 @@ async function run(){
  equal(evaluate('B.edges.at(-1).from'),evaluate('B.nodes.at(-2).id'),'approved frame linked to new video');
  equal(evaluate('!!$("#videoRemake")'),false,'handoff returns to canvas');
  w.fetch=previousFetch;
- console.log('Video remake DOM passed: analyze, select, preview, review remade and localized shots, export, and first-frame handoff.');
+ console.log('Video remake DOM passed: analyze, select, preview, review remade shots, correct tracking, localize, export, and first-frame handoff.');
  console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');
  console.log('Asset library DOM passed: entry, categories/search/source/scope, safe labels, preview/history, save/upload/delete, readonly shared assets, canvas import/place, @ citation, and fetch recovery.');
  console.log('Memory DOM passed: @ dropdown, alias/tag filtering, keyboard and mouse completion, no accidental send, duplicate identities and editor scope.');

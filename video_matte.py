@@ -76,7 +76,7 @@ def composite_frame(original, replacement, original_mask, replacement_mask, cv):
     return np.rint(original * (1 - feather) + aligned * feather).astype("uint8")
 
 
-def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled):
+def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled, *, corrections=None):
     import av
     try:
         import cv2 as cv
@@ -93,9 +93,13 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
     if render.probe(replacement)[2] * render.FPS + .51 < total:
         raise ValueError("生成视频短于原镜头")
     fit = render._fitter(width, height, "pad")
-    mask_image = image_editor.load(root, mask_ref).convert("L")
-    mask = cv.resize(np.array(mask_image), (width, height), interpolation=cv.INTER_NEAREST)
-    mask = np.where(mask >= 128, 255, 0).astype("uint8")
+    def load_mask(ref):
+        image = image_editor.load(root, ref).convert("L")
+        mask = cv.resize(np.array(image), (width, height), interpolation=cv.INTER_NEAREST)
+        return np.where(mask >= 128, 255, 0).astype("uint8")
+
+    mask = load_mask(mask_ref)
+    corrections = corrections or {}
     originals = render.clip_frames(original, start, end, fit, total)
     replacements = render.clip_frames(replacement, 0, total / render.FPS, fit, total)
     path, ref = render._new(root, "output", "remake-local", ".mp4")
@@ -112,7 +116,10 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
                     original_track, replacement_track = MaskTrack(a, mask, cv), MaskTrack(b, mask, cv)
                     original_mask = replacement_mask = mask
                 else:
-                    original_track.advance(a, index)
+                    if index in corrections:
+                        original_track = MaskTrack(a, load_mask(corrections[index]), cv)
+                    else:
+                        original_track.advance(a, index)
                     replacement_track.advance(b, index)
                     original_mask = original_track.at_size(width, height)
                     replacement_mask = replacement_track.at_size(width, height)
