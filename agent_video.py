@@ -13,7 +13,7 @@ from aiohttp import web
 import video_remake
 
 NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze",
-         "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate"}
+         "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate", "video_remake_export"}
 
 
 def result_id(cid):
@@ -147,6 +147,9 @@ def register(tool, prop, node, prompt):
         "shot": prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS), "first_job": node,
         "motion": prop("string", maxLength=1600),
     }, ["node_id", "person", "asset_id", "cut_revision", "shot", "first_job"])
+    tool("video_remake_export", "把已审核的重制镜头与保留原片的镜头合成，保留原声。须使用最新cut_revision；只有用户明确要求重新导出时才设rebuild。", {
+        "node_id": node, "cut_revision": prop("integer", minimum=0), "rebuild": prop("boolean"),
+    }, ["node_id", "cut_revision"])
 
 
 def video_node(s, run, user, nid, *, allow_film=False):
@@ -217,6 +220,8 @@ async def execute(s, run, user, cid, name, args):
         return await preview_remake(s, run, user, cid, args)
     if name == "video_remake_generate":
         return await generate_remake(s, run, user, cid, args)
+    if name == "video_remake_export":
+        return await export_remake(s, run, user, args)
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -440,11 +445,53 @@ async def generate_remake(s, run, user, cid, args):
     return result
 
 
+def export_media(host, export):
+    ref = export.get("ref")
+    if export.get("state") != "done" or export.get("stale") or not ref:
+        return None
+    try:
+        return ref if host.tools.ref_path(host.COMFY_DIR, ref).is_file() else None
+    except ValueError:
+        return None
+
+
+async def export_remake(s, run, user, args):
+    nid = args["node_id"]
+    key = remake_source(s, run, user, nid)
+    session = video_remake.load(key)
+    if not session or not session["shots"]:
+        raise ValueError("请先分析原片")
+    if args["cut_revision"] != session.get("cut_revision", 0):
+        raise ValueError("剪辑点已更新，请重新读取视频重制状态")
+    result = remake_status(s.host, nid, key, session)
+    export = session.get("export") or {}
+    if export.get("state") in ("queued", "running"):
+        result["text"] = "成片正在合成，可打开重制工作区查看进度。"
+        return result
+    unresolved = next((shot for shot in result["shots"] if shot["review_issue"]), None)
+    if unresolved:
+        number = unresolved["number"]
+        result["remake"].update(shot_number=number, shot_start=unresolved["start"])
+        result["text"] = f"镜头 {number} {unresolved['review_issue']}"
+        return result
+    if not result["can_export"]:
+        result["text"] = "请先采用至少一个重制镜头。"
+        return result
+    if result["export_ref"] and not args.get("rebuild"):
+        result["text"] = "当前审核版本的成片已就绪，可直接下载。"
+        return result
+    session = await apply_remake_action(s, user, nid, key, {"action": "export", "cut_revision": args["cut_revision"]})
+    result = remake_status(s.host, nid, key, session)
+    result["text"] = "已提交成片合成，将保留原声。可在重制工作区查看进度。"
+    return result
+
+
 def remake_status(host, nid, key, session):
     result = {"remake": {"node_id": nid, "source_ref": key[3]}, "shots": [], "analyzed": False}
     if not session or not session["shots"]:
         return {**result, "text": "该原片尚未分析，可打开视频重制工作区开始。"}
     video_remake.update_jobs(host, key[0], session)
+    video_remake.refresh_export_status(session, key[3], host.film.FPS)
     review = video_remake.export_review(session)
     mapping = session.get("mapping")
     out = session.get("export") or {}
@@ -481,7 +528,8 @@ def remake_status(host, nid, key, session):
                         "shots": [index + 1 for index in mapping["shots"]]} if mapping else None,
             "adopted": review["adopted"], "can_export": bool(review["adopted"] and not issues and
                                                           out.get("state") not in ("queued", "running")),
-            "export_state": "stale" if out.get("stale") else out.get("state")}
+            "export_state": "stale" if out.get("stale") else out.get("state"),
+            "export_ref": export_media(host, out)}
 
 
 async def describe(s, run, user, nid):

@@ -832,13 +832,33 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(localized_version["mask"], result["mask"])
         local_job = localized_version["job"]
         await self.wait_for_render(local_job)
+        db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test')")
+        service = server.agent_chat.AgentService({}, server)
+        run = {"board_id":"test", "data":{"bindings":{"n3":source}}}
+
+        async def assistant_export(revision=0):
+            return await service.execute(run, self.user, "export", "video_remake_export", {
+                "node_id":"n3", "cut_revision":revision,
+            })
+
+        with self.assertRaisesRegex(ValueError, "剪辑点已更新"):
+            await assistant_export(1)
+        blocked = await assistant_export()
+        self.assertEqual(blocked["remake"]["shot_number"], 1)
+        self.assertIsNone(blocked["export_state"])
         await act("approve_video", job=local_job)
-        export = await act("export")
-        export_job = export["export"]["job"]
-        await self.wait_for_render(export_job)
-        server.JOBS.pop(export_job)
+        with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue:
+            submitted = await assistant_export()
+            self.assertIn(submitted["export_state"], ("queued", "running"))
+            export_job = (await act())["export"]["job"]
+            await assistant_export()
+            await self.wait_for_render(export_job)
+            server.JOBS.pop(export_job)
+            downloadable = await assistant_export()
+        enqueue.assert_called_once()
         final = (await act())["export"]
         self.assertEqual(final["state"], "done")
+        self.assertEqual(downloadable["export_ref"], final["ref"])
         with av.open(str(server.tools.ref_path(server.COMFY_DIR, final["ref"]))) as movie:
             first = next(movie.decode(video=0)).to_ndarray(format="rgb24")
         self.assertTrue(np.allclose(first[0,0], original.getpixel((0, 0))[:3], atol=8))
@@ -854,6 +874,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             await act("approve", job=job)
         kept = await act("keep")
         self.assertTrue(kept["shots"][0]["keep_original"])
+        stale = await assistant_export()
+        self.assertEqual(stale["export_state"], "stale")
+        self.assertIsNone(stale["export_ref"])
 
     async def test_batch_first_previews_saves_accepted_jobs_and_retries_only_missing_shots(self):
         source = self.make_clip("batch", seconds=3, color=(210, 30, 30), frequency=440)

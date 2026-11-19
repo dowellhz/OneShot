@@ -251,6 +251,10 @@ async function run(){
  assert.equal(markdown.querySelectorAll('script,svg,[onerror],[onload],[style],.ac-conflict').length,0);assert(!markdown.querySelector('a').hasAttribute('href'));
  const videoHTML=evaluate('acResultCards({nodes:[{id:"videoTest",type:"video",ref:"output:h3studio/test.mp4",name:"视频"}]})');
  assert.match(videoHTML,/<video controls/);assert(!videoHTML.includes('<img'));
+ const exportCard=w.document.createElement('div');
+ exportCard.innerHTML=evaluate('acResultCards({remake:{node_id:"videoTest",source_ref:"input:h3studio/原片.mp4"},export_ref:"output:h3studio/新成片.mp4"})');
+ assert.equal(exportCard.querySelector('a').getAttribute('href'),'/media?ref='+encodeURIComponent('output:h3studio/新成片.mp4'));
+ assert.equal(exportCard.querySelector('a').download,'新成片.mp4');
  evaluate('node("agentResult").versions[node("agentResult").cur].layer_stack={base_ref:curV(node("n1")).ref,layers:[{id:"base",name:"底图",ref:curV(node("n1")).ref,x:0,y:0,w:512,h:384,opacity:1,visible:true},{id:"generated",name:"生成区域",ref:curV(node("agentResult")).ref,x:0,y:0,w:512,h:384,opacity:.5,visible:true}]}');
  await evaluate('aeOpenLayers("agentResult")');equal(evaluate('IMAGE_EDITOR.layers.map(l=>l.id)'),['base','generated'],'chat layers open with stable IDs');
  await evaluate('aeCompare("agentResult",curV(node("n1")).ref)');equal(evaluate('IMAGE_EDITOR.compareMode'),'wipe','chat before/after compare');
