@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from contextlib import closing
 from pathlib import Path
 
 from aiohttp import web
@@ -118,16 +119,8 @@ def set_mapping(req, board, session, data):
 
 
 async def analyze(req, host, source):
-    def cut_video():
-        _, _, duration, _ = host.film.probe(host.tools.ref_path(host.COMFY_DIR, source))
-        if not 0 < duration <= MAX_SECONDS:
-            raise ValueError(f"角色替换预览支持 {MAX_SECONDS} 秒以内的原片")
-        cut = host.tools.find_shots(host.COMFY_DIR, source, MAX_SHOTS, relative_time=True)
-        cut["duration"] = duration
-        cut["shots"][-1]["end"] = duration
-        return cut
     try:
-        cut = await asyncio.to_thread(cut_video)
+        cut = await asyncio.to_thread(find_shots, host, source)
     except Exception as error:
         fail(str(error)[:200] or "无法读取原片")
     details, warning = await summarize_shots(req, host, cut)
@@ -137,7 +130,8 @@ async def analyze(req, host, source):
         shots.append({
             "start": item["start"], "end": item["end"],
             "summary": details[index],
-            "frames": {"first": frame_record(item["ref"], size), "middle": frame_record(item["mid"], size)},
+            "frames": {"first": {**frame_record(item["ref"], size), "at": item["start"]},
+                       "middle": {**frame_record(item["mid"], size), "at": item["mid_at"]}},
         })
     return {"duration": cut["duration"], "warning": warning, "shots": shots}
 
@@ -162,18 +156,77 @@ async def summarize_shots(req, host, cut):
     return summaries, warning
 
 
-def original_frame(host, source, tick):
-    fps = host.film.FPS
+def find_shots(host, source):
+    import numpy as np
     path = host.tools.ref_path(host.COMFY_DIR, source)
-    frames = host.film.clip_frames(path, tick / fps, (tick + 1) / fps, lambda image: image, 1)
-    try:
-        image = next(frames, None)
-        if image is None:
-            raise ValueError("没有可用的画面")
-        saved = image_editor.save(host.COMFY_DIR, image, "remake-frame", "input")
-        return frame_record(saved["ref"], (saved["w"], saved["h"]))
-    finally:
-        frames.close()
+    _, _, duration, _ = host.film.probe(path)
+    fps = host.film.FPS
+    ticks = round(duration * fps)
+    if ticks <= 0 or duration > MAX_SECONDS:
+        raise ValueError(f"角色替换支持 {MAX_SECONDS} 秒以内、至少包含一帧的原片")
+    with closing(host.film.video_ticks(path, 0, ticks, relative_time=True)) as frames:
+        thumbnails = [frame.reformat(width=64, height=36, format="rgb24").to_ndarray() for frame in frames]
+    if not thumbnails:
+        raise ValueError("无法读取原片画面")
+
+    # Favor a sharp color or layout change that persists beyond a one- or two-frame flash.
+    scores = [0.0] + [float(np.mean(np.abs(b.astype("int16") - a))) for a, b in zip(thumbnails, thumbnails[1:])]
+    candidates = []
+    min_gap = 6
+    for tick in range(min_gap, len(thumbnails) - min_gap + 1):
+        score = scores[tick]
+        if score < 20:
+            continue
+        nearby = scores[tick - 4:tick] + scores[tick + 1:tick + 5]
+        if score < 2.5 * float(np.median(nearby)):
+            continue
+        before = np.median(thumbnails[tick - 5:tick], axis=0)
+        after = np.median(thumbnails[tick:tick + 5], axis=0)
+        if float(np.mean(np.abs(after - before))) >= max(15, score * .55):
+            candidates.append((score, tick))
+    cuts = [0, ticks]
+    for _, tick in sorted(candidates, reverse=True):
+        if len(cuts) == MAX_SHOTS + 1:
+            break
+        if all(abs(tick - cut) >= min_gap for cut in cuts):
+            cuts.append(tick)
+    cuts.sort()
+
+    spans = []
+    scores.append(0.0)
+    for start, end in zip(cuts, cuts[1:]):
+        middle = (start + end) // 2
+        # A representative frame should stay near the midpoint without landing on a flash.
+        stable = [tick for tick in range(max(start, middle - 3), min(end, middle + 4))
+                  if max(scores[tick], scores[tick + 1]) < 20]
+        middle = min(stable, key=lambda tick: abs(tick - middle), default=middle)
+        spans.append((start, middle, end))
+    selected = original_frames(host, source, {tick for start, middle, _ in spans for tick in (start, middle)})
+    shots = []
+    for start, middle, end in spans:
+        first = selected[start]
+        shots.append({"start": start / fps, "end": duration if end == ticks else end / fps,
+                      "ref": first["ref"], "mid": selected[middle]["ref"], "mid_at": middle / fps,
+                      "w": first["w"], "h": first["h"]})
+    return {"duration": duration, "shots": shots}
+
+
+def original_frames(host, source, ticks):
+    if not ticks:
+        return {}
+    fps = host.film.FPS
+    start = min(ticks)
+    path = host.tools.ref_path(host.COMFY_DIR, source)
+    selected = {}
+    frames = host.film.video_ticks(path, start / fps, max(ticks) - start + 1, relative_time=True)
+    with closing(frames):
+        for tick, frame in enumerate(frames, start):
+            if tick in ticks:
+                saved = image_editor.save(host.COMFY_DIR, frame.to_image(), "remake-frame", "input")
+                selected[tick] = {**frame_record(saved["ref"], (saved["w"], saved["h"])), "at": tick / fps}
+    if len(selected) != len(ticks):
+        raise ValueError("没有可用的画面")
+    return selected
 
 
 async def edit_cuts(req, host, source, session, data):
@@ -230,20 +283,14 @@ async def edit_cuts(req, host, source, session, data):
             archive[f"{start}:{end}"] = shot
 
     def capture():
-        shots, fresh = [], []
-        for span in new_ranges:
-            start, end = span
-            shot = existing.get(span) or archive.get(f"{start}:{end}")
-            if shot is None:
-                first = original_frame(host, source, start)
-                if end - start > 1:
-                    middle = original_frame(host, source, (start + end) // 2)
-                else:
-                    middle = frame_record(first["ref"], (first["w"], first["h"]))
-                shot = {"start": start / fps, "end": end / fps, "summary": {},
-                        "frames": {"first": first, "middle": middle}}
-                fresh.append(len(shots))
-            shots.append(shot)
+        shots = [existing.get((start, end)) or archive.get(f"{start}:{end}") for start, end in new_ranges]
+        fresh = [i for i, shot in enumerate(shots) if shot is None]
+        spans = [new_ranges[i] for i in fresh]
+        frames = original_frames(host, source, {tick for start, end in spans for tick in (start, (start + end) // 2)})
+        for i, (start, end) in zip(fresh, spans):
+            first, middle = frames[start], frames[(start + end) // 2]
+            shots[i] = {"start": start / fps, "end": end / fps, "summary": {},
+                        "frames": {"first": {**first, "previews": []}, "middle": {**middle, "previews": []}}}
         return shots, fresh
 
     try:
@@ -309,11 +356,11 @@ async def capture_correction(host, source, shot, value):
         fail(f"每个镜头最多保存 {MAX_CORRECTIONS} 张校正帧")
 
     try:
-        frame = await asyncio.to_thread(original_frame, host, source, tick)
+        frames = await asyncio.to_thread(original_frames, host, source, {tick})
     except (ValueError, OSError):
         fail("无法读取校正画面")
     shot["frames"][frame_key] = {
-        **frame, "correction_tick": tick, "at": tick / fps,
+        **frames[tick], "correction_tick": tick,
     }
     return frame_key
 

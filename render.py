@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 import uuid
 from collections import deque
+from contextlib import closing
 from fractions import Fraction
 from pathlib import Path
 
@@ -113,24 +114,30 @@ def _fitter(W: int, H: int, mode: str):
 
 def clip_frames(path: Path, t0: float, t1: float, fit, frame_count=None):
     """Frames of [t0, t1) resampled to FPS (each tick shows the frame on screen at that time)."""
-    import av
     n = frame_count if frame_count is not None else max(1, int(round((t1 - t0) * FPS)))
+    with closing(video_ticks(path, t0, n, relative_time=frame_count is not None)) as frames:
+        for frame in frames:
+            yield fit(frame.to_image())
+
+
+def video_ticks(path: Path, start: float, count: int, *, relative_time: bool):
+    """Yield decoded frames on the render timeline without converting their pixels."""
+    import av
     k = 0
     with av.open(str(path)) as c:
         stream = c.streams.video[0]
-        origin = float((stream.start_time or 0) * stream.time_base) if frame_count is not None else 0
+        origin = float((stream.start_time or 0) * stream.time_base) if relative_time else 0
         last = None
         for f in c.decode(video=0):
             t = float(f.time if f.time is not None else origin) - origin
-            while k < n and t0 + k / FPS <= t + 1e-6:
-                src = f if last is None or t0 + k / FPS >= t - 0.5 / FPS else last
-                yield fit(src.to_image())
+            while k < count and start + k / FPS <= t + 1e-6:
+                yield f if last is None or start + k / FPS >= t - 0.5 / FPS else last
                 k += 1
-            if k >= n:
+            if k >= count:
                 break
             last = f
-        while k < n and last is not None:      # the clip is shorter than asked: hold the last frame
-            yield fit(last.to_image())
+        while k < count and last is not None:  # the clip is shorter than asked: hold the last frame
+            yield last
             k += 1
 
 

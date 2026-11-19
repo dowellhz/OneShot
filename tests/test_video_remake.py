@@ -47,6 +47,33 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.user = {"id": 7, "role": "member"}
         self.source = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "red"), "asset", "input")
 
+    async def test_analysis_finds_color_cuts_on_the_render_timeline_without_splitting_flashes(self):
+        def colors(tick):
+            if tick in (18, 19):
+                return (255, 255, 255)
+            if tick < 37:
+                return (200, 20, 20)
+            if tick < 49:
+                return (20, 112, 20)
+            return (25, 25, 210)
+
+        source = self.make_clip("precise-cuts", seconds=3, color=colors, frequency=440)
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+        with patch.object(server, "llm_call", side_effect=self.no_vision):
+            response = await server.remake(Request(source, self.user, {"action":"analyze"}))
+        shots = json.loads(response.body)["shots"]
+        self.assertEqual([round(shot["start"] * 24) for shot in shots], [0, 37, 49])
+        self.assertEqual([round(shot["end"] * 24) for shot in shots], [37, 49, 72])
+        for index, tick in enumerate((0, 37, 49)):
+            record = shots[index]["frames"]["first"]
+            self.assertAlmostEqual(record["at"], tick / 24)
+            pixels = image_editor.load(server.COMFY_DIR, record["ref"]).getpixel((32, 32))
+            self.assertTrue(np.allclose(pixels[:3], colors(tick), atol=5))
+        middle = shots[0]["frames"]["middle"]
+        self.assertNotIn(round(middle["at"] * 24), (18, 19))
+
     async def test_shot_preview_uses_asset_reference_and_preserves_unselected_pixels(self):
         path, source = server.tools._new(server.COMFY_DIR, "input", "remake-test", ".mp4")
         with av.open(str(path), "w") as clip:
