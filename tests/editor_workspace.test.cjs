@@ -580,12 +580,22 @@ async function run(){
    const splitFrame={ref:frame.ref,w:frame.w,h:frame.h,previews:[]};
    remakeSession.shots=[{...shot,end:operation.at,videos:[]},
     {start:operation.at,end:shot.end,summary:{},frames:{first:splitFrame,middle:splitFrame}}];
+   remakeSession.mapping.shots=[0,1];
    Object.assign(remakeSession,{cut_revision:1,can_undo_cut:true,selected_shot:1});
    remakeSession.export.stale=true;
   }
   if(operation?.action==='undo_cut'){
    assert.equal(operation.cut_revision,1);
    remakeSession={...beforeSplit,cut_revision:2,can_undo_cut:false,selected_shot:0};
+  }
+  if(remakeSession){
+   const review={adopted:0,remaining:[]};
+   for (const shot of remakeSession.mapping?.shots || []){
+    const item=remakeSession.shots[shot];
+    if(item.videos?.some(video=>video.job===item.adopted_video))review.adopted++;
+    else review.remaining.push({shot,error:'待审核，请采用视频或选择保留原镜头'});
+   }
+   remakeSession.export_review=review;
   }
   return {ok:true,json:async()=>structuredClone(remakeSession),text:async()=>JSON.stringify(remakeSession)};
  };
@@ -598,6 +608,8 @@ async function run(){
    $("#videoRemake [data-map-asset]").value="char";$("#videoRemake [data-map-shots] input").checked=true;
    $("#videoRemake [data-save-mapping]").click()`);
  await ready('$("#videoRemake [data-role]").disabled && $(".rm-mapping-status").textContent.includes("人物 A → 林森")','confirmed cross-shot mapping binds role');
+ equal(evaluate('$("[data-review-next]").textContent==="1 个镜头待审核" && $("[data-export]").disabled'),true,
+  'an unresolved mapped shot is listed before submitting export');
  evaluate('$("[data-absence]").click()');
  await ready('$(".rm-motion-hint").textContent.includes("首次入画的位置") && !$("[data-absence]").disabled','absent first frame prompts for an entry keyframe');
  equal(evaluate('$("[data-batch-locate]").disabled'),true,'batch localization skips an absent first frame');
@@ -680,13 +692,17 @@ async function run(){
  evaluate('$$(".rm-video-review button").find(b=>b.textContent.startsWith("跟踪人物并局部合成")).click()');
  await ready('$("#videoRemake [data-result]").getAttribute("src")?.includes("shot-local.mp4")','local result is selectable alongside original generation');
  evaluate('$$(".rm-video-review button").find(b=>b.textContent==="采用此视频").click()');
- await ready('$("#videoRemake [data-export]").hidden===false','review unlocks export');
+ await ready('!$("[data-export]").disabled && $("[data-review-next]").hidden','review unlocks export');
  evaluate('$("#videoRemake [data-export]").click()');
  await ready('$("#videoRemake [data-download]").hidden===false','finished export can be downloaded');
  equal(evaluate('$("#videoRemake [data-download]").download'),'assembled.mp4','export download uses assembled file');
  evaluate(`$(".rm-cuts").open=true;comparedSource.currentTime=1.25;comparedSource.dispatchEvent(new Event("timeupdate"));
   $("[data-cut=split_shot]").click();`);
  await ready('$$(".rm-shots button").length===2 && $(".rm-shot").textContent==="镜头 2" && $("[data-download]").hidden','split updates the active shot and hides the stale export');
+ equal(evaluate('$("[data-review-next]").textContent==="2 个镜头待审核" && $("[data-export]").disabled'),true,
+  'editing the cut exposes both unresolved shots and disables export');
+ evaluate('$("[data-review-next]").click()');
+ equal(evaluate('$(".rm-shot").textContent'),'镜头 1','the review shortcut takes the user to the next unresolved shot');
  evaluate('$("[data-cut=undo_cut]").click()');
  await ready('$$(".rm-shots button").length===1 && $(".rm-shot").textContent==="镜头 1"','undo restores the earlier shot');
  evaluate(`const rmFrameSelect=$("#videoRemake [data-frame]");rmFrameSelect.value="first";rmFrameSelect.dispatchEvent(new Event("change"))`);

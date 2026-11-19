@@ -26,7 +26,7 @@ async function openVideoRemake(video) {
   const panel = document.createElement("dialog");
   panel.id = "videoRemake";
   panel.setAttribute("aria-labelledby", "rmTitle");
-  panel.innerHTML = `<div class="rm-top"><header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
+  panel.innerHTML = `<div class="rm-top"><header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-review-next hidden></button><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
     <details class="rm-tasks" hidden><summary data-task-summary></summary><ul data-task-list></ul></details></div>
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
@@ -518,9 +518,11 @@ async function openVideoRemake(video) {
       card.type = "button";
       card.setAttribute("aria-pressed", String(i === shotIndex));
       const chosen = item.videos?.find(v => v.job === item.adopted_video);
+      const reviewIssue = session.export_review?.remaining.find(entry => entry.shot === i);
       card.textContent = `镜头 ${i + 1} · ${item.start.toFixed(2)}–${item.end.toFixed(2)} 秒` +
         (!inScope(i) ? " · 不在替换范围" : item.keep_original ? " · 保留原片" :
-          item.videos?.some(active) ? " · 视频生成中" : chosen && matchesPerson(chosen) ? " · 已采用视频" : previewStatus(item));
+          item.videos?.some(active) ? " · 视频生成中" : chosen && !reviewIssue && matchesPerson(chosen) ? " · 已采用视频" :
+            chosen && reviewIssue ? " · 需要重新审核" : previewStatus(item));
       card.onclick = () => {
         if (busy) return;
         stopComparison();
@@ -716,10 +718,24 @@ async function openVideoRemake(video) {
       }
     }
     const exp = session.export;
+    const {adopted, remaining} = session.export_review;
+    const next = remaining.find(entry => entry.shot > shotIndex) || remaining[0];
+    const nextReview = el("[data-review-next]");
+    nextReview.hidden = !next;
+    nextReview.disabled = busy;
+    if (next) {
+      nextReview.textContent = `${remaining.length} 个镜头待审核`;
+      nextReview.title = `镜头 ${next.shot + 1} ${next.error}`;
+      nextReview.onclick = () => {
+        const shotButton = el(".rm-shots").children[next.shot];
+        shotButton.click();
+        el(".rm-shots").children[next.shot].focus();
+        status(`镜头 ${next.shot + 1} ${next.error}`);
+      };
+    }
     const exportButton = el("[data-export]");
-    exportButton.hidden = !session.shots.some((s, i) => inScope(i) && !s.keep_original &&
-      s.videos?.some(v => v.job === s.adopted_video && matchesPerson(v)));
-    exportButton.disabled = busy || !!exp && active(exp);
+    exportButton.hidden = !adopted && !remaining.length;
+    exportButton.disabled = busy || !adopted || !!remaining.length || !!exp && active(exp);
     exportButton.textContent = exp && active(exp) ? "合成中…" : "合成并保留原声";
     const download = el("[data-download]");
     const watch = el("[data-watch]");

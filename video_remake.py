@@ -930,7 +930,8 @@ async def approve_video(host, shot, job, mapping=None):
         fail("请选择已完成的视频版本")
     if not matches_mapping(version, mapping):
         fail("视频属于之前的人物映射，请重新生成当前角色的视频")
-    check_video_start(shot, version, mapping)
+    if error := video_start_issue(shot, version, mapping):
+        fail(error)
     try:
         w, h, duration, _ = await asyncio.to_thread(host.film.probe, host.tools.ref_path(host.COMFY_DIR, version["ref"]))
     except Exception:
@@ -943,19 +944,44 @@ async def approve_video(host, shot, job, mapping=None):
     shot["keep_original"] = False
 
 
-def check_video_start(shot, version, mapping):
+def video_start_issue(shot, version, mapping):
     starts_absent = person_absent(shot["frames"]["first"], mapping)
     if starts_absent != bool(version.get("entry_tick")):
-        fail("首帧出画标记已变更，请重新生成并审核镜头视频")
+        return "首帧出画标记已变更，请重新生成并审核镜头视频"
     if starts_absent and version.get("mode") != "local":
-        fail("请先做局部合成以保留开头原片，再采用此镜头")
+        return "请先做局部合成以保留开头原片，再采用此镜头"
+    return None
+
+
+def export_choice(shot, mapping, index):
+    if shot.get("keep_original") or (mapping and index not in mapping["shots"]):
+        return None, None
+    version = completed(shot.get("videos", []), shot.get("adopted_video"))
+    if version:
+        error = video_start_issue(shot, version, mapping) if matches_mapping(version, mapping) else "视频属于之前的人物映射，请重新审核"
+        return version, error
+    if mapping or shot.get("videos") or any(f.get("approved") for f in shot["frames"].values()):
+        return None, "待审核，请采用视频或选择保留原镜头"
+    return None, None
+
+
+def export_review(session):
+    mapping = session.get("mapping")
+    review = {"adopted": 0, "remaining": []}
+    for index, shot in enumerate(session["shots"]):
+        version, error = export_choice(shot, mapping, index)
+        if error:
+            review["remaining"].append({"shot": index, "error": error})
+        elif version:
+            review["adopted"] += 1
+    return review
 
 
 def export_plan(session, source, fps, duration):
     clips = []
     last_tick = 0
     kept = 0
-    scoped = mapped_shots(session)
+    mapping = session.get("mapping")
     for index, shot in enumerate(session["shots"]):
         end = round(min(duration, shot["end"]) * fps)
         if index == len(session["shots"]) - 1:
@@ -963,15 +989,9 @@ def export_plan(session, source, fps, duration):
         frames = end - last_tick
         if frames <= 0:
             continue
-        version = None
-        if (scoped is None or index in scoped) and not shot.get("keep_original"):
-            version = completed(shot.get("videos", []), shot.get("adopted_video"))
-            if version and not matches_mapping(version, session.get("mapping")):
-                fail(f"镜头 {index + 1} 的视频属于之前的人物映射，请重新审核")
-            if version:
-                check_video_start(shot, version, session.get("mapping"))
-            if not version and (scoped is not None or shot.get("videos") or any(f.get("approved") for f in shot["frames"].values())):
-                fail(f"镜头 {index + 1} 待审核，请采用视频或选择保留原镜头")
+        version, error = export_choice(shot, mapping, index)
+        if error:
+            fail(f"镜头 {index + 1} {error}")
         if version:
             clips.append({"ref": version["ref"], "in": 0, "out": frames / fps, "frames": frames})
         else:
@@ -1016,7 +1036,7 @@ def public_session(session, **extra):
     if session is None:
         return None
     return {**{key: value for key, value in session.items() if key not in ("cut_archive", "cut_undo")},
-            "can_undo_cut": bool(session.get("cut_undo")), **extra}
+            "can_undo_cut": bool(session.get("cut_undo")), "export_review": export_review(session), **extra}
 
 
 async def handle(req, host):

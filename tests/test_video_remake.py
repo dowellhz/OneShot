@@ -610,6 +610,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[])
         mapped = await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0])
         self.assertEqual(mapped["mapping"]["shots"], [0])
+        self.assertEqual(mapped["export_review"]["adopted"], 0)
+        self.assertEqual([item["shot"] for item in mapped["export_review"]["remaining"]], [0])
         with self.assertRaises(web.HTTPBadRequest):
             await act("generate_video", shot=1)
 
@@ -698,11 +700,16 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             await act("remove_correction", frame=correction)
             await self.wait_for_render(local_job)
         self.assertEqual(failed_forward, [18])
-        await act("approve_video", job=local_job)
-        await act("map_person", person="另一人", asset=asset["id"], shots=[0])
+        approved = await act("approve_video", job=local_job)
+        self.assertEqual(approved["export_review"], {"adopted":1, "remaining":[]})
+        reassigned = await act("map_person", person="另一人", asset=asset["id"], shots=[0])
+        self.assertEqual(reassigned["export_review"]["adopted"], 0)
+        self.assertIn("之前的人物映射", reassigned["export_review"]["remaining"][0]["error"])
         with self.assertRaises(web.HTTPBadRequest):
             await act("export")
-        await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0,1])
+        expanded = await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0,1])
+        self.assertEqual(expanded["export_review"]["adopted"], 1)
+        self.assertEqual([item["shot"] for item in expanded["export_review"]["remaining"]], [1])
         with self.assertRaises(web.HTTPBadRequest):
             await act("export")
         await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[0])
@@ -741,6 +748,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.JOBS.pop(job)
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["export"]["ref"], final)
+        self.assertEqual(reopened["export_review"], {"adopted":1, "remaining":[]})
         self.assertTrue((await act("keep"))["export"]["stale"])
         self.assertFalse((await act("approve_video", job=local_job))["export"]["stale"])
 
