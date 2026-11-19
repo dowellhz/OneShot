@@ -152,7 +152,7 @@ def composite_frame(original, replacement, original_mask, replacement_mask, cv, 
 
 
 def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled, *,
-                   corrections=None, replacement_corrections=None, protections=None, display=True):
+                   corrections=None, replacement_mask_ref=None, replacement_corrections=None, protections=None, display=True):
     import av
     try:
         import cv2 as cv
@@ -175,6 +175,7 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
         return np.where(mask >= 128, 255, 0).astype("uint8")
 
     mask = load_mask(mask_ref)
+    replacement_seed = load_mask(replacement_mask_ref) if replacement_mask_ref and replacement_mask_ref != mask_ref else mask
     corrections = corrections or {}
     replacement_corrections = replacement_corrections or {}
     protections = protections or {}
@@ -233,7 +234,9 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
                             raise ValueError(f"原片 {at:.2f} 秒的人物选区失稳，请在附近添加校正帧") from error
                     ref_at_guide = replacement_corrections.get(index)
                     if index == 0 or entering or ref_at_guide:
-                        replacement_mask = load_mask(ref_at_guide) if ref_at_guide else original_mask
+                        replacement_mask = replacement_seed if index == 0 else original_mask
+                        if ref_at_guide:
+                            replacement_mask = load_mask(ref_at_guide)
                         replacement_track = MaskTrack(b, replacement_mask, cv)
                     else:
                         try:

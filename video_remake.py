@@ -967,6 +967,8 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
     mask = generated.get("mask") or (seed or {}).get("mask")
     if not mask:
         fail("这个版本没有首帧选区，请重新采用首帧并生成")
+    first_selection = person_selection(first, mapping)
+    source_mask = first_selection["mask"] if first_selection else mask
     start, end = shot["start"], shot["end"]
     fps = host.film.FPS
     if round(end * fps) - round(start * fps) > MAX_SHOT_SECONDS * fps:
@@ -988,9 +990,11 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
         if not selection:
             continue
         guide_ref = guides.get(tick)
-        if guide_ref and any(p.get("ref") == guide_ref and p.get("mask") == selection["mask"]
-                             for p in frame["previews"]):
-            replacement_corrections[tick] = selection["mask"]
+        guide = next((p for p in frame["previews"] if guide_ref and p.get("ref") == guide_ref and p.get("mask") and
+                      p.get("asset", {}).get("id") == generated["asset"]["id"] and
+                      p.get("source_person") == generated.get("source_person")), None)
+        if guide:
+            replacement_corrections[tick] = guide["mask"]
         elif absent:
             fail(f"原片 {frame['correction_tick'] / host.film.FPS:.2f} 秒人物重新入画，请采用此帧为动作关键帧并重新生成镜头视频")
         corrections[tick] = selection["mask"]
@@ -1004,13 +1008,14 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
     }
 
     def composite(progress, cancelled):
-        return video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], mask,
+        return video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], source_mask,
                                           start, end, progress, cancelled, corrections=corrections,
-                                          replacement_corrections=replacement_corrections, protections=protections, display=display)
+                                          replacement_mask_ref=mask, replacement_corrections=replacement_corrections,
+                                          protections=protections, display=display)
 
     response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
     version = submitted_job(response)
-    version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
+    version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask, source_mask=source_mask,
                    entry_tick=entry_tick,
                    asset=generated["asset"], source_person=generated.get("source_person"),
                    motion=generated.get("motion", ""), guides=generated.get("guides", []),

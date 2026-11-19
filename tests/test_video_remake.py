@@ -623,8 +623,13 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             await self.wait_for_render(video_job)
         self.assertEqual(calls[1]["kind"], "video")
         self.assertEqual(calls[1]["image"], str(server.tools.ref_path(server.COMFY_DIR, result["ref"])))
+        adjusted = await act("select", rect=[.20,.25,.75,.75])
+        current_mask = adjusted["shots"][0]["frames"]["first"]["selection"]["mask"]
         localized = await act("localize", job=video_job)
-        local_job = localized["shots"][0]["videos"][-1]["job"]
+        localized_version = localized["shots"][0]["videos"][-1]
+        self.assertEqual(localized_version["source_mask"], current_mask)
+        self.assertEqual(localized_version["mask"], result["mask"])
+        local_job = localized_version["job"]
         await self.wait_for_render(local_job)
         await act("approve_video", job=local_job)
         export = await act("export")
@@ -638,6 +643,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertTrue(np.allclose(first[0,0], original.getpixel((0, 0))[:3], atol=8))
         self.assertTrue(np.allclose(first[36,36], original.getpixel((36, 36))[:3], atol=8))
         self.assertGreater(first[25,25,0], 170)
+        self.assertGreater(first[25,14,0], 140)
 
         await act("select", rect=[.3,.3,.7,.7])
         with self.assertRaises(web.HTTPConflict) as changed:
@@ -916,6 +922,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         body, _ = server.engine_body(requests[1])
         self.assertEqual([frame["frame"] for frame in body["keyframes"]], [0, 24, 36])
         self.assertEqual(body["keyframes"][1]["path"], str(server.tools.ref_path(server.COMFY_DIR, guide_ref)))
+        corrected = await act("select", frame=correction, rect=[.375,.25,.875,.75])
+        revised_mask = corrected["shots"][0]["frames"][correction]["selection"]["mask"]
+        self.assertNotEqual(revised_mask, corrected_mask)
 
         protected = await act("select", layer="protection", rect=[.58,.55,.72,.72])
         protection_mask = protected["shots"][0]["frames"]["first"]["protection"]["mask"]
@@ -935,7 +944,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with patch.object(video_matte.MaskTrack, "advance", lose_forward_track):
             local = await act("localize", job="shot-gen-2")
             localized = local["shots"][0]["videos"][-1]
-            self.assertEqual(localized["corrections"], {"24":corrected_mask, "27":original_only_mask, "30":None, "36":return_mask})
+            self.assertEqual(localized["corrections"], {"24":revised_mask, "27":original_only_mask, "30":None, "36":return_mask})
             self.assertEqual(localized["replacement_corrections"], {"24":corrected_mask, "30":None, "36":return_mask})
             self.assertEqual(localized["protections"], {"0":protection_mask, "24":None})
             local_job = localized["job"]
