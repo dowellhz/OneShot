@@ -42,6 +42,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.enterContext(patch.object(server, "BOARDS", root / "boards"))
         self.enterContext(patch.object(server, "LIBRARY", root / "library.json"))
         self.enterContext(patch.object(server, "JOBS", {}))
+        self.enterContext(patch.object(server, "PREP_TAIL", [None]))
+        self.enterContext(patch.object(server, "STATS", {}))
+        self.enterContext(patch.object(server, "STATS_FILE", root / "stats.json"))
         self.enterContext(patch.object(server, "RENDER_LOCK", asyncio.Lock()))
         self.addCleanup(db.conn().close)
         server.BOARDS.mkdir()
@@ -458,7 +461,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         old_frame = old_capture["shots"][0]["frames"][old_capture["captured_frame"]]
         self.assertEqual((old_frame["w"], old_frame["h"]), (96, 64))
 
-    async def test_shot_preview_uses_asset_reference_and_preserves_unselected_pixels(self):
+    async def test_remake_sends_the_reviewed_asset_preview_to_the_engine_and_exports(self):
         path, source = server.tools._new(server.COMFY_DIR, "input", "remake-test", ".mp4")
         with av.open(str(path), "w") as clip:
             stream = clip.add_stream("libx264", rate=6)
@@ -487,6 +490,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             def available(self):
                 return True
 
+            def running(self):
+                return False
+
             async def chat(self, system, content, **kwargs):
                 if "这一帧" in system:
                     assert json.loads(content[0]["text"]) == {"name":"人物1", "appearance":"红衣、短发"}
@@ -496,11 +502,14 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                                    "shots":[{"characters":["人物1"]}]})
 
         vision = Vision()
+        engine = None
 
         async def act(action=None, **kwargs):
             payload = {"action": action, "shot": 0, **kwargs} if action else None
             req = Request(source, self.user, payload)
             req.app["llm"] = vision
+            if engine:
+                req.app["http"] = engine
             response = await server.remake(req)
             self.assertEqual(response.status, 200)
             return json.loads(response.body)
@@ -547,19 +556,53 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with self.assertRaises(web.HTTPBadRequest):
             await act("select", frame="middle", layer="protection", rect=[.5, .5, .65, .65])
         await act("select", layer="protection", rect=[.5, .5, .65, .65])
-        job = "remake-test-job"
+        rendered = self.make_clip("engine-result", seconds=2, color=(240, 240, 240), frequency=880)
 
-        async def submit(req, payload):
-            self.assertEqual(payload["images"][2]["ref"], self.source["ref"])
-            self.assertIn("@图3", payload["prompt"])
-            synthetic = image_editor.save(server.COMFY_DIR, Image.new("RGB",(64,64),"white"))
-            output = image_editor.composite(server.COMFY_DIR, payload["_image_edit"], [synthetic])[0]
-            db.task_start(id=job, user_id=7, board_id="test", state="done", outputs=[output["ref"]])
-            return web.json_response({"ids":[job]})
+        class EngineResponse:
+            def __init__(self, payload):
+                self.payload = payload
 
-        with patch.object(server, "_generate_request", side_effect=submit):
-            started = await act("preview", asset=asset["id"], view="main")
-        result = started["shots"][0]["frames"]["first"]["previews"][0]
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def raise_for_status(self):
+                pass
+
+            async def json(self):
+                return self.payload
+
+        calls = []
+        outcomes = {}
+
+        def submit(url, json):
+            self.assertTrue(url.endswith("/jobs"))
+            jid = f"e{len(calls) + 1:012x}"
+            calls.append(json)
+            path = Path(json["out"])
+            if json["kind"] == "image":
+                Image.new("RGB", (64,64), "white").save(path)
+            else:
+                path.write_bytes(server.tools.ref_path(server.COMFY_DIR, rendered).read_bytes())
+            outcomes[jid] = {"state":"done", "out":str(path)}
+            return EngineResponse({"id":jid})
+
+        def status(url, params=None, **kwargs):
+            if url.endswith("/status"):
+                return EngineResponse({"ready":True, "image_ready":True})
+            self.assertTrue(url.endswith("/jobs"))
+            return EngineResponse({jid:outcomes[jid] for jid in params["ids"].split(",")})
+
+        engine = SimpleNamespace(get=status, post=submit)
+        server.providers.seed()
+        started = await act("preview", asset=asset["id"], view="main")
+        job = started["shots"][0]["frames"]["first"]["previews"][0]["job"]
+        await self.wait_for_render(job)
+        self.assertEqual(calls[0]["images"][2], str(server.tools.ref_path(server.COMFY_DIR, asset["ref"])))
+        self.assertIn("<Picture 3>", calls[0]["prompt"])
+        result = (await act())["shots"][0]["frames"]["first"]["previews"][0]
         self.assertEqual(result["state"], "done")
         original = image_editor.load(server.COMFY_DIR, frame["ref"])
         output = image_editor.load(server.COMFY_DIR, result["ref"])
@@ -570,6 +613,32 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reopened = await act()
         self.assertEqual(reopened["shots"][0]["frames"]["first"]["approved"], job)
         self.assertEqual(reopened["role"]["asset"], asset["id"])
+
+        async def translated(app, payload):
+            return {**payload, "prompt":"Preserve the reviewed character and camera position."}
+
+        with patch.object(server, "to_english", translated):
+            generated = await act("generate_video")
+            video_job = generated["shots"][0]["videos"][-1]["job"]
+            await self.wait_for_render(video_job)
+        self.assertEqual(calls[1]["kind"], "video")
+        self.assertEqual(calls[1]["image"], str(server.tools.ref_path(server.COMFY_DIR, result["ref"])))
+        localized = await act("localize", job=video_job)
+        local_job = localized["shots"][0]["videos"][-1]["job"]
+        await self.wait_for_render(local_job)
+        await act("approve_video", job=local_job)
+        export = await act("export")
+        export_job = export["export"]["job"]
+        await self.wait_for_render(export_job)
+        server.JOBS.pop(export_job)
+        final = (await act())["export"]
+        self.assertEqual(final["state"], "done")
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR, final["ref"]))) as movie:
+            first = next(movie.decode(video=0)).to_ndarray(format="rgb24")
+        self.assertTrue(np.allclose(first[0,0], original.getpixel((0, 0))[:3], atol=8))
+        self.assertTrue(np.allclose(first[36,36], original.getpixel((36, 36))[:3], atol=8))
+        self.assertGreater(first[25,25,0], 170)
+
         await act("select", rect=[.3,.3,.7,.7])
         with self.assertRaises(web.HTTPConflict) as changed:
             await act("generate_video")
