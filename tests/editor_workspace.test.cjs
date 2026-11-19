@@ -613,6 +613,15 @@ async function run(){
    assert.equal(operation.cut_revision,1);
    remakeSession={...beforeSplit,cut_revision:2,can_undo_cut:false,selected_shot:0};
   }
+  if(operation?.action==='split_long_shot'){
+   const shot=remakeSession.shots[0], span=(shot.end-shot.start)/3;
+   remakeSession.shots=Array.from({length:3},(_,i)=>({
+    ...shot,start:shot.start+i*span,end:shot.start+(i+1)*span,
+    videos:[],frames:{first:{ref:frame.ref,w:frame.w,h:frame.h,previews:[]}},
+   }));
+   remakeSession.mapping.shots=[0,1,2];
+   Object.assign(remakeSession,{cut_revision:remakeSession.cut_revision+1,can_undo_cut:true,selected_shot:0});
+  }
   if(remakeSession){
    const review={adopted:0,remaining:[]};
    for (const shot of remakeSession.mapping?.shots || []){
@@ -819,6 +828,14 @@ async function run(){
  evaluate('const entrySelect=$("[data-frame]");entrySelect.value="entry";entrySelect.dispatchEvent(new Event("change"))');
  equal(evaluate('$("[aria-label=预览版本]").selectedOptions[0].textContent.includes("旧参考图") && !$("[data-batch-previews]").disabled'),true,
   'an updated asset reference re-enables batch generation and marks the older preview');
+ evaluate('$("#videoRemake [data-close]").click()');
+ remakeSession.shots[0].end=29.5;
+ await evaluate('openVideoRemake(mergePeer)');
+ equal(evaluate('$("[data-cut=split_long_shot]").textContent'), '拆成 3 个镜头','an oversized shot shows its balanced split action');
+ equal(evaluate('$("[data-generate-video]").disabled'),true,'oversized shots cannot be sent to generation');
+ evaluate('$("[data-cut=split_long_shot]").click()');
+ await ready('$$(".rm-shots button").length===3 && $("[data-cut=split_long_shot]").hidden && !$("[data-cut=undo_cut]").hidden',
+  'automatic splitting updates the shot list and exposes undo');
  evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
  evaluate(`$("#upBtn").click();

@@ -18,10 +18,11 @@ from creative_memory import IMAGE_EXT, character_notes, fail
 from tools import VIDEO_EXT
 
 MAX_SECONDS = 60
+MAX_SHOT_SECONDS = 14
 MAX_SHOTS = 12
 MAX_PREVIEWS = 20
 MAX_CORRECTIONS = 8
-CUT_ACTIONS = ("split_shot", "move_cut", "merge_shots", "undo_cut")
+CUT_ACTIONS = ("split_shot", "split_long_shot", "move_cut", "merge_shots", "undo_cut")
 VIEWS = {"main", "face", "side", "back", "detail"}
 _writes = set()
 
@@ -399,6 +400,16 @@ async def edit_cuts(req, host, source, session, data):
         if index == 0:
             fail("请选择第二个或后续的镜头")
         del bounds[index]
+    elif action == "split_long_shot":
+        start, end = old[index:index + 2]
+        length = end - start
+        pieces = math.ceil(length / (MAX_SHOT_SECONDS * fps))
+        if pieces < 2:
+            fail(f"此镜头已经在 {MAX_SHOT_SECONDS} 秒以内")
+        if len(old_shots) + pieces - 1 > MAX_SHOTS:
+            fail(f"拆分后会超过 {MAX_SHOTS} 个镜头，请先合并不需要的切点")
+        # Balance the segments so a shot just over the limit doesn't leave a tiny final piece.
+        bounds[index + 1:index + 1] = [start + (length * i) // pieces for i in range(1, pieces)]
     else:
         at = data.get("at")
         if type(at) not in (int, float) or not 0 <= at <= MAX_SECONDS:
@@ -883,9 +894,11 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         fail("此镜头正在生成，请等待完成", 409)
     if len(videos) >= MAX_PREVIEWS:
         fail("此镜头已达到视频版本上限")
-    length = round(shot["end"] - shot["start"], 3)
-    if length <= 0 or length > 14:
-        fail("请先剪出 14 秒以内的镜头，或保留原镜头")
+    fps = host.film.FPS
+    ticks = round(shot["end"] * fps) - round(shot["start"] * fps)
+    length = round(ticks / fps, 3)
+    if not 0 < ticks <= MAX_SHOT_SECONDS * fps:
+        fail(f"请先把镜头拆分到 {MAX_SHOT_SECONDS} 秒以内，或保留原镜头")
     instructions = data.get("motion", "")
     if not isinstance(instructions, str):
         fail("动作要求格式不正确")
@@ -955,8 +968,9 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
     if not mask:
         fail("这个版本没有首帧选区，请重新采用首帧并生成")
     start, end = shot["start"], shot["end"]
-    if end - start > 14:
-        fail("局部合成支持 14 秒以内的镜头")
+    fps = host.film.FPS
+    if round(end * fps) - round(start * fps) > MAX_SHOT_SECONDS * fps:
+        fail(f"局部合成支持 {MAX_SHOT_SECONDS} 秒以内的镜头")
 
     start_tick = round(start * host.film.FPS)
     corrections = {0: None} if starts_absent else {}

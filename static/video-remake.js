@@ -2,6 +2,7 @@
 
 const RM_VIEW_NAMES = {main:"标准主图", face:"正面头肩", side:"侧面", back:"背面", detail:"固定细节"};
 const RM_FPS = 24;
+const RM_MAX_SHOT_SECONDS = 14;
 
 function remakeMedia(ref) {
   return "/media?ref=" + encodeURIComponent(ref);
@@ -101,6 +102,7 @@ async function openVideoRemake(video) {
           <div class="rm-actions">
             <label>动作与运镜<textarea data-motion rows="2" maxlength="1600" placeholder="补充动作时机、人物与道具的互动，或说明镜头如何运动"></textarea></label>
             <button type="button" data-generate-video>生成镜头视频</button>
+            <button type="button" data-cut="split_long_shot" hidden>拆分长镜头</button>
           </div>
           <div class="rm-video-result" hidden>
             <div class="rm-actions rm-video-review"></div>
@@ -419,9 +421,9 @@ async function openVideoRemake(video) {
       const start = shotStart(shot);
       const first = start?.preview;
       const versions = shot.videos || [];
-      const duration = Math.round((shot.end - shot.start) * 1000) / 1000;
+      const duration = (Math.round(shot.end * RM_FPS) - Math.round(shot.start * RM_FPS)) / RM_FPS;
       if (!first || !matchesPerson(first) || !previewMatchesRegions(start.frame, first) ||
-          shot.keep_original || versions.some(active) || duration <= 0 || duration > 14) continue;
+          shot.keep_original || versions.some(active) || duration <= 0 || duration > RM_MAX_SHOT_SECONDS) continue;
       const guides = shotGuides(shot, first, start.entryTick);
       if (!guides) continue;
       const motion = shotMotion(shot).slice(0, 1600);
@@ -706,6 +708,12 @@ async function openVideoRemake(video) {
     el('[data-cut="split_shot"]').disabled = locked || at <= start || at >= end;
     el('[data-cut="move_cut"]').disabled = locked || !shotIndex || at <= previous || at >= end || at === start;
     el('[data-cut="merge_shots"]').disabled = locked || !shotIndex;
+    const longSplit = el('[data-cut="split_long_shot"]');
+    const pieces = Math.ceil((end - start) / (RM_MAX_SHOT_SECONDS * RM_FPS));
+    longSplit.hidden = pieces <= 1 || !inScope(shotIndex);
+    longSplit.disabled = busy || !!session.export && active(session.export) || shot.videos?.some(active) ||
+      Object.values(shot.frames).some(frame => frame.previews.some(active));
+    longSplit.textContent = `拆成 ${pieces} 个镜头`;
     const undo = el('[data-cut="undo_cut"]');
     undo.hidden = !session.can_undo_cut;
     undo.disabled = locked;
@@ -724,8 +732,10 @@ async function openVideoRemake(video) {
     const firstApproved = !!approved && matchesPerson(approved);
     const staleStart = firstApproved && !previewMatchesRegions(start.frame, approved);
     const guides = firstApproved ? shotGuides(shot, approved, start.entryTick) : [];
+    const tooLong = Math.round(shot.end * RM_FPS) - Math.round(shot.start * RM_FPS) > RM_MAX_SHOT_SECONDS * RM_FPS;
     let hint = "先在「镜头首帧」中采用替换预览。";
     if (!inScope(shotIndex)) hint = "该镜头不在替换范围，合成时使用原片。";
+    else if (tooLong) hint = `单个镜头最多生成 ${RM_MAX_SHOT_SECONDS} 秒。拆分后可逐段预览并批量生成。`;
     else if (staleStart) hint = `${startsAbsent ? "入画帧" : "首帧"}选区已更新，请重新生成并采用预览。`;
     else if (!guides) hint = "动作关键帧的选区已更新，请重新生成预览或取消该关键帧。";
     else if (startsAbsent) hint = firstApproved
@@ -738,7 +748,7 @@ async function openVideoRemake(video) {
     const input = el("[data-motion]");
     const motion = shotMotion(shot);
     if (input.value !== motion) input.value = motion;
-    el("[data-generate-video]").disabled = busy || !inScope(shotIndex) || !firstApproved || staleStart || !guides || videos.some(active);
+    el("[data-generate-video]").disabled = busy || !inScope(shotIndex) || tooLong || !firstApproved || staleStart || !guides || videos.some(active);
     el("[data-generate-video]").textContent = latest ? "重试镜头视频" : "生成镜头视频";
     el(".rm-video-result").hidden = !selected;
     const source = selected?.ref ? remakeMedia(selected.ref) : "";
@@ -1027,7 +1037,7 @@ async function openVideoRemake(video) {
     revision++;
     busy = true;
     renderPanel();
-    const cutAction = ["split_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
+    const cutAction = ["split_shot", "split_long_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
     status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",suggest_entry:"正在查找人物入画位置…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));

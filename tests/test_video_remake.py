@@ -95,6 +95,43 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["shots"][1]["motion_analysis"], notes)
 
+    async def test_long_shot_splits_into_balanced_segments_and_can_be_undone(self):
+        source = self.make_clip("long-shot", seconds=30, color=lambda tick: (20 + (tick // 232) * 50, 20, 20), frequency=440)
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+        key = (7, "test", "n3", source)
+        first, tail = (video_remake.frame_record(self.source["ref"], (64,64)) for _ in range(2))
+        first["previews"] = [{"job":"long-preview", "state":"queued"}]
+        original = {"shots":[
+            {"start":0, "end":29, "summary":{}, "frames":{"first":first}},
+            {"start":29, "end":30, "summary":{}, "frames":{"first":tail}},
+        ], "mapping":{"source":"人物甲", "asset":"role", "shots":[0]}}
+        video_remake.save(key, original)
+
+        async def act(action, revision=0):
+            request = Request(source, self.user, {"action":action, "shot":0, "cut_revision":revision})
+            return json.loads((await server.remake(request)).body)
+
+        with self.assertRaises(web.HTTPConflict):
+            await act("split_long_shot")
+        db.task_start(id="long-preview", user_id=7, state="done", outputs=[self.source["ref"]])
+        with patch.object(server, "llm_call", side_effect=self.no_vision):
+            split = await act("split_long_shot")
+        pairs = [(round(shot["start"] * 24), round(shot["end"] * 24)) for shot in split["shots"]]
+        self.assertEqual(pairs, [(0,232), (232,464), (464,696), (696,720)])
+        self.assertEqual(split["mapping"]["shots"], [0,1,2])
+        self.assertEqual(split["selected_shot"], 0)
+        for index in range(3):
+            image = image_editor.load(server.COMFY_DIR, split["shots"][index]["frames"]["first"]["ref"])
+            self.assertAlmostEqual(image.getpixel((32,32))[0], 20 + index * 50, delta=5)
+        with self.assertRaises(web.HTTPBadRequest):
+            await act("split_long_shot", revision=1)
+        undone = await act("undo_cut", revision=1)
+        self.assertEqual([(shot["start"], shot["end"]) for shot in undone["shots"]], [(0,29), (29,30)])
+        self.assertEqual(undone["mapping"]["shots"], [0])
+        self.assertEqual(undone["shots"][0]["frames"]["first"]["previews"][0]["ref"], self.source["ref"])
+
     async def test_cancelling_while_engine_is_accepting_a_job_stops_that_job(self):
         pending_id = "p-remake"
         meta = {"prompt":"remake", "cls":"video", "units":1, "est":10, "label":"重制", "uid":7,
