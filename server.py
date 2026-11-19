@@ -1225,24 +1225,29 @@ async def jobs(req):
     out = {}
     for i in ids:
         j = JOBS.get(i)
-        if not j and len(i) == 13 and i[:1] == "e":
-            j = await recover_engine_job(req.app, i)
+        row = None
+        if not j:
+            row = db.one("SELECT * FROM tasks WHERE id=?", i)
+            if row and u["role"] != "admin" and row["user_id"] != u["id"]:
+                continue
+            if row:
+                j = restore_logged_job(req.app, row)
         if not j:
             # a job from before a restart: ask the history
-            JOBS[i] = j = {"id": i, "state": "queued", "created": time.time(), "meta": {}}
+            JOBS[i] = j = job_from_log(row) if row else {"id": i, "state": "queued", "created": time.time(), "meta": {}}
             restore_image_edit(j)
+            live = set(queue_order)
             try:
                 await finish(req.app, i)
-                live = set()
-                if j["state"] == "queued" and i not in queue_order:
+                if j["state"] in ("queued", "running") and i not in live:
                     async with req.app["http"].get(f"{COMFY}/queue", timeout=aiohttp.ClientTimeout(total=3)) as r:
                         q = await r.json()
                     live = {x[1] for x in q.get("queue_running", []) + q.get("queue_pending", [])}
             except Exception:
                 live = set()
-            if j["state"] == "queued" and i not in live:
+            if j["state"] in ("queued", "running") and i not in live:
                 j["state"] = "error"; j["error"] = "任务已不存在（服务重启过）"
-        if j["state"] in ("queued", "running") and time.time() - j.get("polled", 0) > 10 and i in comfy_ids:
+        if j["state"] in ("queued", "running") and time.time() - j.get("polled", 0) > 10 and not j.get("out_ref") and i in comfy_ids:
             j["polled"] = time.time()
             try:
                 await finish(req.app, i)   # in case a websocket message was missed
@@ -1256,7 +1261,7 @@ async def jobs(req):
             r["eta"] = round(remaining(j))
             if j["state"] == "queued":
                 r["ahead"] = j.get("ahead", 0)
-        r["elapsed"] = round(time.time() - j.get("started", j["created"]), 1)
+        r["elapsed"] = round(time.time() - (j.get("started") or j["created"]), 1)
         out[i] = r
     req.app["creative_memory"].observe(u, out)
     return web.json_response(out)
@@ -1275,12 +1280,18 @@ async def cancel_engine_jobs(app, ids):
 @routes.post("/api/cancel")
 async def cancel(req):
     u = req["user"]
-    ids = [i for i in (await req.json()).get("ids", []) if isinstance(i, str) and i in JOBS and
-           (u["role"] == "admin" or (JOBS[i].get("meta") or {}).get("uid") in (None, u["id"]))]
     eng = []
-    for i in ids:
-        job = JOBS[i]
-        if job["state"] not in ("queued", "running"):
+    for i in (await req.json()).get("ids", []):
+        if not isinstance(i, str):
+            continue
+        job = JOBS.get(i)
+        if not job:
+            row = db.one("SELECT * FROM tasks WHERE id=?", i)
+            if row and (u["role"] == "admin" or row["user_id"] == u["id"]) and row["state"] in ("queued", "running"):
+                job = restore_logged_job(req.app, row)
+        if not job or job["state"] not in ("queued", "running"):
+            continue
+        if u["role"] != "admin" and (job.get("meta") or {}).get("uid") not in (None, u["id"]):
             continue
         if job.get("out_ref"):
             eng.append(job.get("eid", i))
@@ -1857,6 +1868,7 @@ async def prepare_engine(app, p: dict, pids: list, prev):
                 j["state"] = "error"; j["error"] = f"本地引擎拒绝了任务：{jr.get('error')}"; log_end(j)
                 continue
             j.update(meta=m, eid=jr["id"], out_ref=f"output:h3studio/{name}")
+            db.task_update(pid, request=json.dumps({"engine": {"id": j["eid"], "out_ref": j["out_ref"]}}))
             j.pop("prep", None)
         asyncio.create_task(follow_engine(app))
     except Exception as e:
@@ -1901,30 +1913,55 @@ def engine_body(p: dict):
 _following = False
 
 
-async def recover_engine_job(app, eid: str):
-    """A job the engine still knows from before this server restarted: track it again (meta from the task log)."""
-    try:
-        async with app["http"].get(ENGINE + "/jobs", params={"ids": eid}, timeout=aiohttp.ClientTimeout(total=5)) as r:
-            s = (await r.json()).get(eid)
-    except Exception:
-        return None
-    if not s or s.get("state") not in ("queued", "running", "done", "error"):
-        return None
-    row = db.one("SELECT * FROM tasks WHERE id=?", eid) or {}
-    try:
-        uid = int(row.get("user_id")) if row.get("user_id") is not None else None
-    except ValueError:
-        uid = row.get("user_id")
+def job_from_log(row):
     kind = "image" if row.get("capability") == "image" else "video"
-    out = s.get("out")
-    j = {"id": eid, "kind": kind, "state": "queued", "created": float(row.get("created") or time.time()),
-         "meta": {"label": row.get("label"), "uid": uid, "board": row.get("board_id"), "engine": True,
-                  "mode_name": (row.get("model") or "").replace("MiniMax-H3 ", "")},
-         "out_ref": "output:h3studio/" + Path(out).name if out else "output:h3studio/pending", "_logged": row.get("state") in ("done", "error")}
-    JOBS[eid] = j
-    restore_image_edit(j)
-    asyncio.create_task(follow_engine(app))
-    return j
+    return {"id":row["id"], "kind":kind, "state":row["state"], "created":row.get("created") or time.time(),
+            "meta":{"label":row.get("label"), "uid":row.get("user_id"), "board":row.get("board_id"),
+                    "mode_name":(row.get("model") or "").replace("MiniMax-H3 ", "")}}
+
+
+def restore_logged_job(app, row):
+    jid = row["id"]
+    job = job_from_log(row)
+    if row["state"] in ("done", "error"):
+        try:
+            refs = json.loads(row.get("outputs") or "[]")
+        except (ValueError, TypeError):
+            refs = []
+        outputs = []
+        for ref in refs if isinstance(refs, list) else []:
+            if not isinstance(ref, str):
+                continue
+            try:
+                path = tools.ref_path(COMFY_DIR, ref)
+            except ValueError:
+                continue
+            outputs.append({"ref":ref, "url":"/media?ref=" + quote(ref, safe=""),
+                            "meta":media_info(path, job["kind"])})
+        job.update(error=row.get("error"), outputs=outputs, _logged=True)
+        JOBS[jid] = job
+        return job
+    try:
+        receipt = json.loads(row.get("request") or "{}").get("engine") or {}
+    except (AttributeError, TypeError, ValueError):
+        receipt = {}
+    if not isinstance(receipt, dict):
+        receipt = {}
+    if not receipt and len(jid) == 13 and jid[0] == "e" and row.get("provider_kind") == "local_h3":
+        receipt = {"id":jid, "out_ref":"output:h3studio/pending"}
+    if receipt.get("id") and receipt.get("out_ref"):
+        job.update(eid=receipt["id"], out_ref=receipt["out_ref"])
+        job["meta"]["engine"] = True
+        JOBS[jid] = job
+        restore_image_edit(job)
+        asyncio.create_task(follow_engine(app))
+        return job
+    if len(jid) != 13 or jid[0] not in "epxrt":
+        return None
+    job.update(state="error", error="OneShot 已重启，此任务无法恢复，请重试")
+    JOBS[jid] = job
+    log_end(job)
+    return job
 
 
 async def follow_engine(app):
@@ -1941,14 +1978,19 @@ async def follow_engine(app):
             try:
                 async with app["http"].get(ENGINE + "/jobs", params={"ids": ",".join(JOBS[i].get("eid", i) for i in live)},
                                            timeout=aiohttp.ClientTimeout(total=5)) as r:
+                    r.raise_for_status()
                     st = await r.json()
+                if not isinstance(st, dict):
+                    raise ValueError("Invalid engine status response")
             except Exception:
                 await asyncio.sleep(3); continue
             for i in live:
                 j = JOBS.get(i)
                 if not j or j["state"] not in ("queued", "running"):
                     continue
-                s = st.get(j.get("eid", i)) or {}
+                s = st.get(j.get("eid", i))
+                if not isinstance(s, dict):
+                    continue
                 if s.get("state") == "queued":
                     j["ahead"] = s.get("ahead", 0)
                     j["phase"] = "queued"
