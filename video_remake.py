@@ -399,9 +399,16 @@ def display_mask(root, source_ref, mask_ref, layer):
     return image_editor.save(root, tint, "remake-overlay", "input")["ref"]
 
 
+def person_absent(frame, mapping):
+    marker = frame.get("person_absent")
+    return marker is not None and (not mapping or marker.get("source") in (None, mapping["source"]))
+
+
 def person_selection(frame, mapping):
     selection = frame.get("selection")
-    if selection and (not mapping or selection.get("source_person") in (None, mapping["source"])):
+    if selection and not person_absent(frame, mapping) and (
+        not mapping or selection.get("source_person") in (None, mapping["source"])
+    ):
         return selection
     return None
 
@@ -437,6 +444,8 @@ async def locate_person(req, host, session, frame, data):
     mapping = session.get("mapping")
     if not mapping or mapping["source"] != data.get("person"):
         fail("请先确认当前镜头的原片人物映射", 409)
+    if person_absent(frame, mapping):
+        fail("请先取消人物出画标记")
     if person_selection(frame, mapping):
         fail("当前画面已有选区，可直接点选或框选来调整", 409)
     source, look = mapping["source"], mapping.get("look") or ""
@@ -596,7 +605,7 @@ async def queue_one_shot(req, host, key, shot, params, mapping, preview):
         if not approved or params["first_job"] != approved["job"] or not matches_mapping(approved, mapping):
             fail("已采用的首帧有变更，请核对后重试", 409)
         videos = shot.get("videos", [])
-        guides = shot_guides(shot, approved, host.film.FPS)
+        guides = shot_guides(shot, approved, host.film.FPS, mapping)
         if pending(videos) or any(
             v.get("ref") and matches_mapping(v, mapping) and v.get("first_frame") == approved["ref"] and
             v.get("guides", []) == guides and v.get("motion", "") == params["motion"] for v in videos
@@ -613,11 +622,11 @@ def submitted_job(response):
     return {"job": ids[0], "state": "queued"}
 
 
-def shot_guides(shot, approved, fps):
+def shot_guides(shot, approved, fps, mapping=None):
     start_tick = round(shot["start"] * fps)
     guides = []
     for frame in shot["frames"].values():
-        if "correction_tick" not in frame:
+        if "correction_tick" not in frame or person_absent(frame, mapping):
             continue
         preview = completed(frame["previews"], frame.get("approved"))
         if (preview and preview["asset"]["id"] == approved["asset"]["id"] and
@@ -662,7 +671,7 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         "count": 1, "mode": "fl2v", "_preserve_speech_motion": True,
         "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
     }
-    guides = shot_guides(shot, approved, host.film.FPS)
+    guides = shot_guides(shot, approved, host.film.FPS, mapping)
     if guides:
         provider = host.providers.get("local_h3")
         if not provider or not provider["enabled"]:
@@ -709,10 +718,25 @@ def localize_shot(req, host, key, shot, job, mapping=None):
 
     start_tick = round(start * host.film.FPS)
     corrections = {}
-    for frame in shot["frames"].values():
+    guides = {guide["tick"]: guide["ref"] for guide in generated.get("guides", [])}
+    absent = False
+    frames = sorted((f for f in shot["frames"].values() if "correction_tick" in f), key=lambda f: f["correction_tick"])
+    for frame in frames:
+        tick = frame["correction_tick"] - start_tick
+        if person_absent(frame, mapping):
+            corrections[tick] = None
+            absent = True
+            continue
         selection = person_selection(frame, mapping)
-        if "correction_tick" in frame and selection:
-            corrections[frame["correction_tick"] - start_tick] = selection["mask"]
+        if not selection:
+            continue
+        if absent:
+            guide_ref = guides.get(tick)
+            if not guide_ref or not any(p.get("ref") == guide_ref and p.get("mask") == selection["mask"]
+                                       for p in frame["previews"]):
+                fail(f"原片 {frame['correction_tick'] / host.film.FPS:.2f} 秒人物重新入画，请采用此帧为动作关键帧并重新生成镜头视频")
+        corrections[tick] = selection["mask"]
+        absent = False
     protections = {
         frame.get("correction_tick", start_tick) - start_tick: frame["protection"]["mask"]
         for frame_key, frame in shot["frames"].items()
@@ -862,9 +886,17 @@ async def handle(req, host):
             scoped = mapped_shots(session)
             if (scoped is not None and data["shot"] not in scoped and
                     action in ("preview", "approve", "generate_video", "localize", "approve_video",
-                               "locate_person", "apply_person_hint")):
+                               "locate_person", "apply_person_hint", "set_absence")):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
-            if action in ("select", "clear_protection"):
+            if action == "set_absence":
+                absent = data.get("absent")
+                if "correction_tick" not in frame or type(absent) is not bool:
+                    fail("请在校正帧标记人物出画")
+                if absent:
+                    frame["person_absent"] = {"source": mapping["source"] if mapping else None}
+                elif person_absent(frame, mapping):
+                    frame.pop("person_absent")
+            elif action in ("select", "clear_protection"):
                 layer = "protection" if action == "clear_protection" else data.get("layer", "selection")
                 if layer not in ("selection", "protection"):
                     fail("请选择人物选区或前景保护区")
@@ -874,6 +906,8 @@ async def handle(req, host):
                     # A null anchor stops protection inherited from an earlier frame.
                     frame["protection"] = {"mask": None}
                 else:
+                    if layer == "selection" and person_absent(frame, mapping):
+                        fail("请先取消人物出画标记")
                     person = mapping["source"] if mapping and data["shot"] in scoped else None
                     await select_area(req, host, frame, data, layer, source_person=person)
             elif action in ("locate_person", "apply_person_hint"):
@@ -887,6 +921,8 @@ async def handle(req, host):
             elif action == "preview":
                 session["role"] = await generate_preview(req, host, key, frame, data, mapping)
             elif action == "approve":
+                if person_absent(frame, mapping):
+                    fail("请先取消人物出画标记")
                 preview = completed(frame["previews"], data.get("job"))
                 if not preview or not preview.get("ref"):
                     fail("请选择已完成的预览")

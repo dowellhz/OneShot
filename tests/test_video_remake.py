@@ -346,25 +346,39 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         selected_frame = await act("select", frame=correction, rect=[.375,.25,.875,.75])
         corrected_mask = selected_frame["shots"][0]["frames"][correction]["selection"]["mask"]
         guide_ref = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "orange"))["ref"]
+        return_ref = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "green"))["ref"]
+        guide_outputs = iter([("guide", guide_ref), ("return-guide", return_ref)])
 
         async def render_guide(req, payload):
-            db.task_start(id="guide", user_id=7, state="done", outputs=[guide_ref])
-            return web.json_response({"ids":["guide"]})
+            job, ref = next(guide_outputs)
+            db.task_start(id=job, user_id=7, state="done", outputs=[ref])
+            return web.json_response({"ids":[job]})
 
         with patch.object(server, "_generate_request", side_effect=render_guide):
             await act("preview", frame=correction, asset=asset["id"])
         reviewed = await act("approve", frame=correction, job="guide")
         self.assertEqual(reviewed["shots"][0]["frames"]["first"]["approved"], "frame-preview")
         self.assertEqual(reviewed["shots"][0]["frames"][correction]["approved"], "guide")
+        exit_frame = (await act("capture_correction", at=1.25))["captured_frame"]
+        await act("set_absence", frame=exit_frame, absent=True)
+        return_frame = (await act("capture_correction", at=1.5))["captured_frame"]
+        resumed = await act("select", frame=return_frame, rect=[.375,.25,.875,.75])
+        return_mask = resumed["shots"][0]["frames"][return_frame]["selection"]["mask"]
+        with self.assertRaises(web.HTTPBadRequest) as missing_guide:
+            await act("localize", job="shot-gen-1")
+        self.assertIn("人物重新入画", missing_guide.exception.text)
+        with patch.object(server, "_generate_request", side_effect=render_guide):
+            await act("preview", frame=return_frame, asset=asset["id"])
+        await act("approve", frame=return_frame, job="return-guide")
         with self.assertRaises(web.HTTPBadRequest):
             await act("generate_video")
         server.providers.seed()
         with patch.object(server, "generate_request", side_effect=generate):
             guided = await act("generate_video")
         self.assertEqual(requests[1]["provider"], "local_h3")
-        self.assertEqual(guided["shots"][0]["videos"][-1]["guides"], [{"tick":24,"ref":guide_ref}])
+        self.assertEqual(guided["shots"][0]["videos"][-1]["guides"], [{"tick":24,"ref":guide_ref}, {"tick":36,"ref":return_ref}])
         body, _ = server.engine_body(requests[1])
-        self.assertEqual([frame["frame"] for frame in body["keyframes"]], [0, 24])
+        self.assertEqual([frame["frame"] for frame in body["keyframes"]], [0, 24, 36])
         self.assertEqual(body["keyframes"][1]["path"], str(server.tools.ref_path(server.COMFY_DIR, guide_ref)))
 
         protected = await act("select", layer="protection", rect=[.58,.55,.72,.72])
@@ -382,7 +396,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with patch.object(video_matte.MaskTrack, "advance", lose_forward_track):
             local = await act("localize", job="shot-gen-2")
             localized = local["shots"][0]["videos"][-1]
-            self.assertEqual(localized["corrections"], {"24":corrected_mask})
+            self.assertEqual(localized["corrections"], {"24":corrected_mask, "30":None, "36":return_mask})
             self.assertEqual(localized["protections"], {"0":protection_mask, "24":None})
             local_job = localized["job"]
             await act("remove_correction", frame=correction)
@@ -416,6 +430,10 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertGreater(frames[24][32,19,0], frames[24][32,19,1])
         self.assertGreater(frames[23][40,41,0], frames[23][40,41,1])
         self.assertGreater(frames[24][40,41,1], frames[24][40,41,0])
+        self.assertGreater(frames[29][32,32,1], frames[29][32,32,0])
+        for tick in range(30, 36):
+            self.assertGreater(frames[tick][32,32,0], frames[tick][32,32,1])
+        self.assertGreater(frames[36][32,32,1], frames[36][32,32,0])
         self.assertGreater(frames[48][32,32,0], frames[48][32,32,1])
         audio = server.film.read_audio(path)[0]
         self.assertLess(np.max(np.abs(audio[:int(server.film.SR * .4)])), .01)

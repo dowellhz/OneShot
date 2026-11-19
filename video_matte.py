@@ -61,8 +61,8 @@ class MaskTrack:
         return self.cv.resize(self.mask, (width, height), interpolation=self.cv.INTER_NEAREST)
 
 
-def backward_masks(path, start, end, shape, fit, corrections, load_mask, cv, progress, cancelled):
-    last_anchor = max(corrections)
+def backward_masks(path, start, end, shape, fit, intervals, corrections, load_mask, cv, progress, cancelled):
+    last_anchor = intervals[-1][1]
     grays = []
     with closing(render.clip_frames(path, start, end, fit, last_anchor + 1)) as frames:
         for index, frame in enumerate(frames):
@@ -74,8 +74,7 @@ def backward_masks(path, start, end, shape, fit, corrections, load_mask, cv, pro
 
     backwards = {}
     done = len(grays)
-    anchors = [0, *sorted(corrections)]
-    for left, right in zip(anchors, anchors[1:]):
+    for left, right in intervals:
         track = MaskTrack(grays[right], load_mask(corrections[right]), cv)
         for index in range(right - 1, left, -1):
             if cancelled():
@@ -161,14 +160,19 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
     mask = load_mask(mask_ref)
     corrections = corrections or {}
     protections = protections or {}
-    preparation = 2 * max(corrections) + 1 if corrections else 0
+    anchors = [0, *sorted(corrections)]
+    intervals = [(left, right) for left, right in zip(anchors, anchors[1:])
+                 if right - left > 1 and corrections.get(left, mask_ref) and corrections[right]]
+    preparation = 2 * intervals[-1][1] + 1 if intervals else 0
     work = preparation + total
     backward = {}
-    if corrections:
+    if intervals:
         backward = backward_masks(original, start, end, tracking_shape(width, height), fit,
-                                  corrections, load_mask, cv, lambda done: progress(done, work), cancelled)
+                                  intervals, corrections, load_mask, cv, lambda done: progress(done, work), cancelled)
         progress(preparation, work)
     foreground_track = None
+    original_track = replacement_track = None
+    absent = False
     originals = render.clip_frames(original, start, end, fit, total)
     replacements = render.clip_frames(replacement, 0, total / render.FPS, fit, total)
     path, ref = render._new(root, "output", "remake-local", ".mp4")
@@ -181,12 +185,13 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
             for index, (a, b) in enumerate(zip(originals, replacements, strict=True)):
                 if cancelled():
                     raise render.Cancelled()
-                if index == 0:
-                    original_track, replacement_track = MaskTrack(a, mask, cv), MaskTrack(b, mask, cv)
-                    original_mask = replacement_mask = mask
-                else:
-                    if index in corrections:
-                        original_mask = load_mask(corrections[index])
+                if index in corrections:
+                    absent = corrections[index] is None
+                    if absent:
+                        original_track = replacement_track = None
+                if not absent:
+                    if index == 0 or index in corrections:
+                        original_mask = mask if index == 0 else load_mask(corrections[index])
                         original_track = MaskTrack(a, original_mask, cv)
                     else:
                         tail = backward.get(index)
@@ -206,8 +211,12 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
                             original_mask = original_track.at_size(width, height)
                         else:
                             raise ValueError(f"第 {index / render.FPS:.1f} 秒的遮罩无法跟踪，请添加附近的校正帧")
-                    replacement_track.advance(b, index)
-                    replacement_mask = replacement_track.at_size(width, height)
+                    if replacement_track is None:
+                        replacement_mask = original_mask
+                        replacement_track = MaskTrack(b, replacement_mask, cv)
+                    else:
+                        replacement_track.advance(b, index)
+                        replacement_mask = replacement_track.at_size(width, height)
                 try:
                     if index in protections:
                         ref_at_frame = protections[index]
@@ -218,7 +227,7 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
                     at = (round(start * render.FPS) + index) / render.FPS
                     raise ValueError(f"原片 {at:.2f} 秒的前景保护区无法跟踪，请在附近添加校正帧") from error
                 protect_mask = foreground_track.at_size(width, height) if foreground_track is not None else None
-                rgb = composite_frame(a, b, original_mask, replacement_mask, cv, protect_mask)
+                rgb = a if absent else composite_frame(a, b, original_mask, replacement_mask, cv, protect_mask)
                 frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
                 frame.pts, frame.time_base = index, Fraction(1, render.FPS)
                 for packet in stream.encode(frame):

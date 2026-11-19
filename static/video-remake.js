@@ -60,7 +60,8 @@ async function openVideoRemake(video) {
       </section>
       <section class="rm-editor" hidden>
         <div class="rm-actions"><strong class="rm-shot"></strong><select data-frame aria-label="选取原片画面"></select>
-          <button type="button" data-capture-correction>添加当前位置为校正帧</button><button type="button" data-remove-correction hidden>删除校正帧</button></div>
+          <button type="button" data-capture-correction>添加当前位置为校正帧</button><button type="button" data-remove-correction hidden>删除校正帧</button>
+          <button type="button" data-absence hidden>标记人物出画</button></div>
         <p class="rm-summary"></p>
         <div class="rm-actions">
           <select data-layer aria-label="要标记的区域"><option value="selection">替换人物</option><option value="protection">保护前景</option></select>
@@ -119,8 +120,12 @@ async function openVideoRemake(video) {
   const currentShot = () => session?.shots[shotIndex];
   const currentFrame = () => currentShot()?.frames[frameKey];
   const shotKey = (shot = currentShot()) => shot ? `${shot.start}:${shot.end}` : "";
+  const personAbsent = frame => !!frame?.person_absent && (
+    !session.mapping || frame.person_absent.source == null || frame.person_absent.source === session.mapping.source
+  );
   const personSelection = frame => {
     const selection = frame.selection;
+    if (personAbsent(frame)) return null;
     return selection?.source_person && session.mapping && selection.source_person !== session.mapping.source ? null : selection;
   };
   function close() {
@@ -276,7 +281,7 @@ async function openVideoRemake(video) {
   function shotGuides(shot, first) {
     const guides = [];
     for (const frame of Object.values(shot.frames)) {
-      if (!Number.isInteger(frame.correction_tick)) continue;
+      if (!Number.isInteger(frame.correction_tick) || personAbsent(frame)) continue;
       const guide = adoptedPreview(frame);
       if (matchesFirst(guide, first)) guides.push({tick:frame.correction_tick - Math.round(shot.start * RM_FPS), ref:guide.ref});
     }
@@ -431,7 +436,7 @@ async function openVideoRemake(video) {
       .sort(([, a], [, b]) => a.correction_tick - b.correction_tick);
     const first = adoptedPreview(shot.frames.first);
     const choices = [["first", "镜头首帧"], ["middle", "镜头中间帧"], ...corrections.map(([key, item]) =>
-      [key, `校正帧 · ${item.at.toFixed(2)} 秒${item.approved
+      [key, `校正帧 · ${item.at.toFixed(2)} 秒${personAbsent(item) ? " · 人物出画" : item.approved
         ? matchesFirst(adoptedPreview(item), first) ? " · 动作关键帧" : first ? " · 角色与首帧不同" : " · 等待首帧"
         : ""}`])];
     if (JSON.stringify(choices) !== options.dataset.choices) {
@@ -440,9 +445,14 @@ async function openVideoRemake(video) {
     }
     options.value = frameKey;
     const isCorrection = Number.isInteger(frame.correction_tick);
+    const absent = personAbsent(frame);
     el("[data-capture-correction]").disabled = busy;
     el("[data-remove-correction]").hidden = !isCorrection;
     el("[data-remove-correction]").disabled = busy;
+    const absence = el("[data-absence]");
+    absence.hidden = !isCorrection || !inScope(shotIndex);
+    absence.disabled = busy;
+    absence.textContent = absent ? "取消人物出画标记" : "标记人物从此帧出画";
     const role = el("[data-role]");
     role.disabled = busy || !!session.mapping;
     if (session.mapping && role.value !== session.mapping.asset) {
@@ -493,7 +503,7 @@ async function openVideoRemake(video) {
     if (version?.ref) {
       if (version.job !== frame.approved) {
         review.append(button(isCorrection ? "用作动作关键帧" : "采用此预览", () => change("approve", {job:version.job}),
-          busy || !inScope(shotIndex) || !matchesPerson(version)));
+          busy || absent || !inScope(shotIndex) || !matchesPerson(version)));
       } else {
         review.append(button("放入画布", () => insertPreview(version, frame, false), busy));
         if (frameKey === "first") review.append(button("用作视频首帧", () => insertPreview(version, frame, true), busy));
@@ -583,7 +593,8 @@ async function openVideoRemake(video) {
         review.append(button("镜头放入画布", () => insertRemadeVideo(selected, shot), busy));
       }
       if (source && selected.mode !== "local") {
-        const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) && (personSelection(f) || f.protection)).length;
+        const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) &&
+          (personSelection(f) || personAbsent(f) || f.protection)).length;
         const caption = count ? `跟踪人物并局部合成（${count} 张校正帧）` : "跟踪人物并局部合成";
         review.append(button(caption, () => change("localize", {job:selected.job}),
           busy || !inScope(shotIndex) || !matchesPerson(selected) || videos.some(active)));
@@ -817,6 +828,7 @@ async function openVideoRemake(video) {
     change("capture_correction", {at:player.currentTime});
   };
   el("[data-remove-correction]").onclick = () => change("remove_correction");
+  el("[data-absence]").onclick = () => change("set_absence", {absent:!personAbsent(currentFrame())});
   el("[data-layer]").onchange = updateSelectionControls;
   el("[data-locate-person]").onclick = () => change(
     personHint() ? "apply_person_hint" : "locate_person", {person:session.mapping.source},
@@ -852,10 +864,11 @@ async function openVideoRemake(video) {
     const instruction = mode === "box" ? "拖动框选" : "在原画面中点选";
     const target = protect ? "要保留的前景" : "要替换的人物";
     const selection = protect ? frame.protection : personSelection(frame);
+    const absent = !protect && personAbsent(frame);
     let message = selection?.overlay ? `已标记${target}，可重新${mode === "box" ? "框选" : "点选"}` : instruction + target;
     if (protect && frame.protection?.mask === null) message = "从此帧停止保护，可重新标记前景";
     const locate = el("[data-locate-person]");
-    locate.hidden = protect || !session.mapping || !inScope(shotIndex) || !!selection;
+    locate.hidden = protect || absent || !session.mapping || !inScope(shotIndex) || !!selection;
     locate.disabled = busy;
     const point = locate.hidden ? null : personHint();
     locate.textContent = point ? "按此位置选中" : "定位原片人物";
@@ -866,6 +879,7 @@ async function openVideoRemake(video) {
       marker.style.top = `${point[1] * 100}%`;
       message = `请核对「${session.mapping.source}」的位置，也可直接手动选择`;
     }
+    if (absent) message = "局部合成从此帧保留原片。人物重新入画时，请将对应校正帧用作动作关键帧。";
     el(".rm-selection-status").textContent = message;
   }
   for (const control of panel.querySelectorAll("[data-mode]")) {
@@ -882,7 +896,7 @@ async function openVideoRemake(video) {
     return [clamp((event.clientX - rect.left) / (rect.width || 1)), clamp((event.clientY - rect.top) / (rect.height || 1))];
   }
   surface.onpointerdown = event => {
-    if (busy || event.button !== 0) return;
+    if (busy || event.button !== 0 || (personAbsent(currentFrame()) && el("[data-layer]").value === "selection")) return;
     event.preventDefault();
     dragStart = point(event);
     surface.setPointerCapture?.(event.pointerId);

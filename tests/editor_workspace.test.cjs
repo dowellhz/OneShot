@@ -515,6 +515,11 @@ async function run(){
   if(operation?.action==='clear_protection'){
    remakeSession.shots[0].frames[operation.frame].protection={mask:null};
   }
+  if(operation?.action==='set_absence'){
+   const target=remakeSession.shots[0].frames[operation.frame];
+   if(operation.absent)target.person_absent={source:remakeSession.mapping.source};
+   else delete target.person_absent;
+  }
   if(operation?.action==='preview'){
    remakeOptions=operation;
    remakeSession.shots[0].frames[operation.frame].previews.push({
@@ -615,6 +620,11 @@ async function run(){
  equal(evaluate('[comparedSource.paused,comparedResult.paused]'),[true,true],'comparison stops at the original cut');
  evaluate('$("#videoRemake video").currentTime=1;$("#videoRemake [data-capture-correction]").click()');
  await ready('$("#videoRemake [data-frame]").value==="correction-24" && !$("#videoRemake .rm-role").hidden','correction frame offers role preview generation');
+ evaluate('remakeLayer.value="selection";remakeLayer.dispatchEvent(new Event("change"));$("[data-absence]").click()');
+ await ready('$(".rm-selection-status").textContent.includes("从此帧保留原片") && !$("[data-absence]").disabled','absence starts preserving original frames');
+ evaluate('$("[data-absence]").click()');
+ await ready('$("[data-absence]").textContent==="标记人物从此帧出画" && !$("[data-absence]").disabled','absence can be undone without deleting the correction frame');
+ evaluate('remakeLayer.value="protection";remakeLayer.dispatchEvent(new Event("change"))');
  evaluate('$("#videoRemake [data-clear-protection]").click()');
  await ready('$(".rm-selection-status").textContent.includes("从此帧停止保护")','stop marker can terminate foreground tracking on correction frame');
  evaluate('remakeLayer.value="selection";remakeLayer.dispatchEvent(new Event("change"))');
