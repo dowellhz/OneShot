@@ -18,6 +18,7 @@ import image_editor
 import server
 import video_remake
 import video_matte
+from scripts.smoke_video_remake import verify_export
 
 
 class Request(dict):
@@ -1376,6 +1377,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         final = json.loads(task["outputs"])[0]
         path = server.tools.ref_path(server.COMFY_DIR, final)
         self.assertAlmostEqual(server.film.probe(path)[2], 4, places=2)
+        evidence = verify_export(server.tools.ref_path(server.COMFY_DIR, source), path)
+        self.assertGreater(evidence["audio_correlation"], .99)
+        different_sound = self.make_clip("different-audio", seconds=4, color=(180, 30, 30), frequency=880)
+        with self.assertRaisesRegex(RuntimeError, "原声音轨或时间轴不匹配"):
+            verify_export(server.tools.ref_path(server.COMFY_DIR, different_sound), path)
         with av.open(str(path)) as container:
             frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(video=0)]
         self.assertEqual(len(frames), 4 * server.film.FPS)
