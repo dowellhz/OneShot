@@ -115,7 +115,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertTrue(kept["shots"][0]["keep_original"])
 
     async def test_reviewed_shot_export_keeps_source_cut_and_continuous_audio(self):
-        source = self.make_clip("original", seconds=4, color=(210, 30, 30), frequency=440, audio_delay=.5)
+        source = self.make_clip("original", seconds=4, color=lambda tick: (210 if tick < 24 else 160, 30, 30),
+                                frequency=440, audio_delay=.5)
         remake = self.make_clip("replacement", seconds=3, color=(30, 210, 30), frequency=880)
         too_short = self.make_clip("short", seconds=1, color=(30, 30, 210), frequency=880)
         board = {"owner": 7, "nodes": [{"id":"n3", "type":"video", "versions":[{"ref":source}]}]}
@@ -142,9 +143,16 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
              "frames":{"first":video_remake.frame_record(self.source["ref"], (64, 64))}},
         ]})
 
+        cut_revision = 0
+
         async def act(action, **kwargs):
-            response = await server.remake(Request(source, self.user, {"action":action,"shot":0,**kwargs}))
-            return json.loads(response.body)
+            nonlocal cut_revision
+            response = await server.remake(Request(source, self.user, {
+                "action":action, "shot":0, "cut_revision":cut_revision, **kwargs,
+            }))
+            result = json.loads(response.body)
+            cut_revision = result.get("cut_revision", 0)
+            return result
 
         with self.assertRaises(web.HTTPBadRequest):
             await act("map_person", person="穿红衣的人", asset=asset["id"], shots=[])
@@ -248,6 +256,30 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["export"]["ref"], final)
 
+        with patch.object(server, "llm_call", side_effect=self.no_vision):
+            split = await act("split_shot", at=1.02)
+        self.assertEqual(split["selected_shot"], 1)
+        self.assertEqual([(s["start"], s["end"]) for s in split["shots"]], [(0,1), (1,2), (2,4)])
+        self.assertEqual(split["mapping"]["shots"], [0, 1])
+        self.assertNotIn("videos", split["shots"][0])
+        new_first = image_editor.load(server.COMFY_DIR, split["shots"][1]["frames"]["first"]["ref"])
+        self.assertAlmostEqual(new_first.getpixel((32, 32))[0], 160, delta=5)
+        self.assertTrue(split["export"]["stale"])
+        self.assertNotIn("cut_archive", split)
+        with self.assertRaises(web.HTTPConflict):
+            await act("keep", cut_revision=0)
+        restored = await act("undo_cut", shot=1)
+        self.assertEqual(restored["shots"][0]["adopted_video"], local_job)
+        self.assertEqual(restored["mapping"]["shots"], [0])
+
+        with patch.object(server, "llm_call", side_effect=self.no_vision):
+            moved = await act("move_cut", shot=1, at=2.5)
+            self.assertEqual(moved["shots"][0]["end"], 2.5)
+            self.assertEqual(moved["mapping"]["shots"], [])
+            merged = await act("merge_shots", shot=1)
+        self.assertEqual(len(merged["shots"]), 1)
+        self.assertEqual((merged["shots"][0]["start"], merged["shots"][0]["end"]), (0,4))
+
     async def wait_for_render(self, job):
         for _ in range(150):
             task = db.one("SELECT state,outputs,error FROM tasks WHERE id=?", job)
@@ -295,8 +327,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             video.pix_fmt = "yuv420p"
             audio = clip.add_stream("aac", rate=rate)
             audio.layout = "stereo"
-            for _ in range(24 * seconds):
-                image = av.VideoFrame.from_image(Image.new("RGB", (64,64), color))
+            for tick in range(24 * seconds):
+                image = av.VideoFrame.from_image(Image.new("RGB", (64,64), color(tick) if callable(color) else color))
                 for packet in video.encode(image):
                     clip.mux(packet)
             for packet in video.encode():

@@ -18,6 +18,7 @@ MAX_SECONDS = 60
 MAX_SHOTS = 12
 MAX_PREVIEWS = 20
 MAX_CORRECTIONS = 8
+CUT_ACTIONS = ("split_shot", "move_cut", "merge_shots", "undo_cut")
 VIDEO_EXT = {".mp4", ".webm", ".mov", ".mkv", ".m4v"}
 VIEWS = {"main", "face", "side", "back", "detail"}
 _writes = set()
@@ -129,6 +130,19 @@ async def analyze(req, host, source):
         cut = await asyncio.to_thread(cut_video)
     except Exception as error:
         fail(str(error)[:200] or "无法读取原片")
+    details, warning = await summarize_shots(req, host, cut)
+    shots = []
+    for index, item in enumerate(cut["shots"]):
+        size = (item["w"], item["h"])
+        shots.append({
+            "start": item["start"], "end": item["end"],
+            "summary": details[index],
+            "frames": {"first": frame_record(item["ref"], size), "middle": frame_record(item["mid"], size)},
+        })
+    return {"duration": cut["duration"], "warning": warning, "shots": shots}
+
+
+async def summarize_shots(req, host, cut):
     details = []
     warning = ""
     try:
@@ -136,18 +150,138 @@ async def analyze(req, host, source):
             raise RuntimeError("视觉模型未配置")
         response = await host.llm_call(req, host.tools.analyze_shots(req.app["llm"], host.COMFY_DIR, cut))
         details = json.loads(response.body).get("shots") or []
+        if not isinstance(details, list):
+            raise ValueError("镜头分析结果格式不正确")
     except Exception:
+        details = []
         warning = "镜头已切分，视觉分析暂不可用，仍可手动选择人物。"
-    shots = []
-    for index, item in enumerate(cut["shots"]):
-        detail = details[index] if index < len(details) else {}
-        size = (item["w"], item["h"])
-        shots.append({
-            "start": item["start"], "end": item["end"],
-            "summary": {field: detail.get(field) for field in ("shot_size", "camera", "scene", "action", "characters")},
-            "frames": {"first": frame_record(item["ref"], size), "middle": frame_record(item["mid"], size)},
-        })
-    return {"duration": cut["duration"], "warning": warning, "shots": shots}
+    summaries = []
+    for index in range(len(cut["shots"])):
+        detail = details[index] if index < len(details) and isinstance(details[index], dict) else {}
+        summaries.append({field: detail.get(field) for field in ("shot_size", "camera", "scene", "action", "characters")})
+    return summaries, warning
+
+
+def original_frame(host, source, tick):
+    fps = host.film.FPS
+    path = host.tools.ref_path(host.COMFY_DIR, source)
+    frames = host.film.clip_frames(path, tick / fps, (tick + 1) / fps, lambda image: image, 1)
+    try:
+        image = next(frames, None)
+        if image is None:
+            raise ValueError("没有可用的画面")
+        saved = image_editor.save(host.COMFY_DIR, image, "remake-frame", "input")
+        return frame_record(saved["ref"], (saved["w"], saved["h"]))
+    finally:
+        frames.close()
+
+
+async def edit_cuts(req, host, source, session, data):
+    old_shots = session["shots"]
+    index = data.get("shot")
+    if type(index) is not int or not 0 <= index < len(old_shots):
+        fail("请先选中要调整的镜头")
+    fps = host.film.FPS
+    old = [0, *(round(shot["end"] * fps) for shot in old_shots)]
+    bounds = old.copy()
+    focus = old[index]
+    action = data["action"]
+    undo = session.get("cut_undo")
+    if action == "undo_cut":
+        if not undo:
+            fail("没有可以撤销的切镜调整")
+        bounds = undo["bounds"]
+    elif action == "merge_shots":
+        if index == 0:
+            fail("请选择第二个或后续的镜头")
+        del bounds[index]
+    else:
+        at = data.get("at")
+        if type(at) not in (int, float) or not 0 <= at <= MAX_SECONDS:
+            fail("请先定位原片播放位置")
+        tick = round(at * fps)
+        if action == "split_shot":
+            if len(old_shots) >= MAX_SHOTS:
+                fail(f"最多保留 {MAX_SHOTS} 个镜头，请先合并不需要的切点")
+            if not old[index] < tick < old[index + 1]:
+                fail("请将播放器定位到所选镜头内部")
+            bounds.insert(index + 1, tick)
+        else:
+            if index == 0 or not old[index - 1] < tick < old[index + 1] or tick == old[index]:
+                fail("请把播放位置移到分界两侧镜头的范围内")
+            bounds[index] = tick
+        focus = tick
+
+    def ranges(points):
+        return list(zip(points, points[1:]))
+
+    old_ranges, new_ranges = ranges(old), ranges(bounds)
+    existing = dict(zip(old_ranges, old_shots))
+    affected = [shot for span, shot in existing.items() if span not in new_ranges]
+    if any(pending(shot.get("videos", [])) or any(pending(f["previews"]) for f in shot["frames"].values()) for shot in affected):
+        fail("受影响的镜头有任务正在处理，请等待完成", 409)
+    export = session.get("export")
+    if export and pending([export]):
+        fail("成片正在合成，请等待完成后再调整切镜", 409)
+
+    archive = session.setdefault("cut_archive", {})
+    for (start, end), shot in existing.items():
+        if (start, end) not in new_ranges:
+            archive[f"{start}:{end}"] = shot
+
+    def capture():
+        shots, fresh = [], []
+        for span in new_ranges:
+            start, end = span
+            shot = existing.get(span) or archive.get(f"{start}:{end}")
+            if shot is None:
+                first = original_frame(host, source, start)
+                if end - start > 1:
+                    middle = original_frame(host, source, (start + end) // 2)
+                else:
+                    middle = frame_record(first["ref"], (first["w"], first["h"]))
+                shot = {"start": start / fps, "end": end / fps, "summary": {},
+                        "frames": {"first": first, "middle": middle}}
+                fresh.append(len(shots))
+            shots.append(shot)
+        return shots, fresh
+
+    try:
+        shots, fresh = await asyncio.to_thread(capture)
+    except Exception:
+        fail("无法读取新剪辑点的原片画面")
+    if fresh:
+        cut = {"duration": old[-1] / fps, "shots": [
+            {"start": shot["start"], "end": shot["end"], "ref": shot["frames"]["first"]["ref"],
+             "mid": shot["frames"].get("middle", shot["frames"]["first"])["ref"]} for shot in shots
+        ]}
+        summaries, warning = await summarize_shots(req, host, cut)
+        for i in fresh:
+            shots[i]["summary"] = summaries[i]
+        session["warning"] = warning
+
+    mapping = session.get("mapping")
+    before = mapping.copy() if mapping else None
+    if mapping:
+        if action == "undo_cut" and mapping == undo["mapping_after"]:
+            mapping["shots"] = undo["mapping_before"]["shots"]
+        else:
+            confirmed = [old_ranges[i] for i in mapping["shots"]]
+            mapping["shots"] = [
+                i for i, (start, end) in enumerate(new_ranges)
+                if sum(max(0, min(end, b) - max(start, a)) for a, b in confirmed) == end - start
+            ]
+    if action == "undo_cut":
+        session.pop("cut_undo")
+    else:
+        session["cut_undo"] = {"bounds": old, "mapping_before": before, "mapping_after": mapping.copy() if mapping else None}
+    for start, end in new_ranges:
+        archive.pop(f"{start}:{end}", None)
+    if export:
+        export["stale"] = True
+    session["shots"] = shots
+    session["cut_revision"] = session.get("cut_revision", 0) + 1
+    return next(i for i, (_, end) in enumerate(new_ranges) if focus < end)
 
 
 def selected_frame(session, data):
@@ -174,23 +308,12 @@ async def capture_correction(host, source, shot, value):
     if sum("correction_tick" in frame for frame in shot["frames"].values()) >= MAX_CORRECTIONS:
         fail(f"每个镜头最多保存 {MAX_CORRECTIONS} 张校正帧")
 
-    def extract():
-        path = host.tools.ref_path(host.COMFY_DIR, source)
-        frames = host.film.clip_frames(path, tick / fps, (tick + 1) / fps, lambda image: image, 1)
-        try:
-            image = next(frames, None)
-            if image is None:
-                raise ValueError("没有可用的画面")
-            return image_editor.save(host.COMFY_DIR, image, "remake-correction", "input")
-        finally:
-            frames.close()
-
     try:
-        saved = await asyncio.to_thread(extract)
+        frame = await asyncio.to_thread(original_frame, host, source, tick)
     except (ValueError, OSError):
         fail("无法读取校正画面")
     shot["frames"][frame_key] = {
-        **frame_record(saved["ref"], (saved["w"], saved["h"])), "correction_tick": tick, "at": tick / fps,
+        **frame, "correction_tick": tick, "at": tick / fps,
     }
     return frame_key
 
@@ -490,6 +613,13 @@ async def export_video(req, host, key, session):
                                                       source_audio=source, board=key[1]))
 
 
+def public_session(session, **extra):
+    if session is None:
+        return None
+    return {**{key: value for key, value in session.items() if key not in ("cut_archive", "cut_undo")},
+            "can_undo_cut": bool(session.get("cut_undo")), **extra}
+
+
 async def handle(req, host):
     source = req.query.get("source")
     board, node = req.match_info["board"], req.match_info["node"]
@@ -499,7 +629,7 @@ async def handle(req, host):
         session = load(key)
         if session:
             update_jobs(host, key[0], session)
-        return web.json_response(session)
+        return web.json_response(public_session(session))
     data = await req.json()
     if not isinstance(data, dict):
         fail("请求格式不正确")
@@ -507,9 +637,11 @@ async def handle(req, host):
         fail("此原片正在处理，请稍候", 409)
     _writes.add(key)
     try:
-        captured_frame = None
+        response = {}
         session = load(key)
         action = data.get("action")
+        if session and data.get("cut_revision", 0) != session.get("cut_revision", 0):
+            fail("剪辑点已更新，请重新打开视频重制界面", 409)
         if action == "analyze":
             if session is None:
                 session = await analyze(req, host, source)
@@ -520,6 +652,9 @@ async def handle(req, host):
             set_mapping(req, board, session, data)
         elif session and action == "remove_mapping":
             session.pop("mapping", None)
+        elif session and action in CUT_ACTIONS:
+            update_jobs(host, key[0], session)
+            response["selected_shot"] = await edit_cuts(req, host, source, session, data)
         elif session:
             update_jobs(host, key[0], session)
             shot, frame = selected_frame(session, data)
@@ -540,7 +675,7 @@ async def handle(req, host):
                 else:
                     await select_area(req, host, frame, data, layer)
             elif action == "capture_correction":
-                captured_frame = await capture_correction(host, source, shot, data.get("at"))
+                response["captured_frame"] = await capture_correction(host, source, shot, data.get("at"))
             elif action == "remove_correction":
                 if "correction_tick" not in frame:
                     fail("请选择要移除的校正帧")
@@ -572,6 +707,6 @@ async def handle(req, host):
             fail("请先分析原片")
         update_jobs(host, key[0], session)
         save(key, session)
-        return web.json_response({**session, "captured_frame": captured_frame} if captured_frame else session)
+        return web.json_response(public_session(session, **response))
     finally:
         _writes.discard(key)

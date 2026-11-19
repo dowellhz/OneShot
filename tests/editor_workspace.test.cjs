@@ -481,7 +481,7 @@ async function run(){
  equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),0,'old choices stay inactive after replay');
  const previousFetch=w.fetch;
  w.__memories.find(a=>a.id==='char').character_views.face='input:h3studio/headshot.png';
- let remakeSession=null, remakeSelection, remakeOptions, remakeMotion;
+ let remakeSession=null, remakeSelection, remakeOptions, remakeMotion, beforeSplit;
  w.fetch=async(url,options={})=>{
   if(!String(url).startsWith('/api/video-remake/'))return previousFetch(url,options);
   const operation=options.body&&JSON.parse(options.body);
@@ -525,6 +525,21 @@ async function run(){
   }
   if(operation?.action==='approve_video')remakeSession.shots[0].adopted_video=operation.job;
   if(operation?.action==='export')remakeSession.export={job:'export-job',state:'done',ref:'output:h3studio/assembled.mp4'};
+  if(operation?.action==='split_shot'){
+   assert.equal(operation.cut_revision,0);
+   assert.equal(operation.at,1.25);
+   beforeSplit=structuredClone(remakeSession);
+   const shot=remakeSession.shots[0];
+   const splitFrame={ref:frame.ref,w:frame.w,h:frame.h,previews:[]};
+   remakeSession.shots=[{...shot,end:operation.at,videos:[]},
+    {start:operation.at,end:shot.end,summary:{},frames:{first:splitFrame,middle:splitFrame}}];
+   Object.assign(remakeSession,{cut_revision:1,can_undo_cut:true,selected_shot:1});
+   remakeSession.export.stale=true;
+  }
+  if(operation?.action==='undo_cut'){
+   assert.equal(operation.cut_revision,1);
+   remakeSession={...beforeSplit,cut_revision:2,can_undo_cut:false,selected_shot:0};
+  }
   return {ok:true,json:async()=>structuredClone(remakeSession),text:async()=>JSON.stringify(remakeSession)};
  };
  evaluate('ctxMenu({target:els.get("pendingVideo"),clientX:140,clientY:120})');
@@ -590,6 +605,11 @@ async function run(){
  evaluate('$("#videoRemake [data-export]").click()');
  await ready('$("#videoRemake [data-download]").hidden===false','finished export can be downloaded');
  equal(evaluate('$("#videoRemake [data-download]").download'),'assembled.mp4','export download uses assembled file');
+ evaluate(`$(".rm-cuts").open=true;comparedSource.currentTime=1.25;comparedSource.dispatchEvent(new Event("timeupdate"));
+  $("[data-cut=split_shot]").click();`);
+ await ready('$$(".rm-shots button").length===2 && $(".rm-shot").textContent==="镜头 2" && $("[data-download]").hidden','split updates the active shot and hides the stale export');
+ evaluate('$("[data-cut=undo_cut]").click()');
+ await ready('$$(".rm-shots button").length===1 && $(".rm-shot").textContent==="镜头 1"','undo restores the earlier shot');
  evaluate(`const rmFrameSelect=$("#videoRemake [data-frame]");rmFrameSelect.value="first";rmFrameSelect.dispatchEvent(new Event("change"))`);
  const beforeRemake=evaluate('B.nodes.length');
  evaluate('$$(".rm-review button").find(b=>b.textContent==="用作视频首帧").click()');

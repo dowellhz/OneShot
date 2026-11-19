@@ -57,8 +57,9 @@
 }
 .rm-video-result video { display: block; width: 100%; max-height: 300px; margin-top: 8px; background: #111114; border-radius: 8px; }
 .rm-video-status:empty { display: none; }
-.rm-mapping { margin-top: 10px; padding: 9px; background: #202025; border: 1px solid var(--line2); border-radius: 8px; }
-.rm-mapping summary { cursor: pointer; font-weight: 600; }
+.rm-mapping, .rm-cuts { margin-top: 10px; padding: 9px; background: #202025; border: 1px solid var(--line2); border-radius: 8px; }
+.rm-mapping summary, .rm-cuts summary { cursor: pointer; font-weight: 600; }
+.rm-cuts output { color: #a6a6b0; font-variant-numeric: tabular-nums; }
 .rm-mapping-status { margin: 7px 0; color: #b2b2bc; }
 .rm-mapping > label { display: grid; gap: 4px; margin: 6px 0; }
 .rm-mapping > label select { max-width: 100% !important; }
