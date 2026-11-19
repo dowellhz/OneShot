@@ -264,6 +264,53 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(merged["session_node"], "n3")
         self.assertTrue(merged["shots"][0]["keep_original"])
 
+    async def test_variable_rate_source_uses_displayed_frame_in_previews_and_export(self):
+        path, source = server.tools._new(server.COMFY_DIR, "input", "variable-rate", ".mkv")
+        colors = [(200, 20, 20), (20, 200, 20), (20, 20, 200), (200, 200, 20)]
+        with av.open(str(path), "w") as output:
+            stream = output.add_stream("libx264", rate=24)
+            stream.width = stream.height = 64
+            stream.pix_fmt = "yuv420p"
+            stream.codec_context.time_base = Fraction(1, 1000)
+            rate = server.film.SR
+            audio = output.add_stream("pcm_s16le", rate=rate)
+            audio.layout = "stereo"
+            for pts, color in zip((500, 555, 605, 690), colors):
+                frame = av.VideoFrame.from_image(Image.new("RGB", (64, 64), color))
+                frame.pts, frame.time_base = pts, stream.codec_context.time_base
+                for packet in stream.encode(frame):
+                    output.mux(packet)
+            for packet in stream.encode():
+                output.mux(packet)
+            for i in range(0, rate // 2, 1024):
+                times = np.arange(i, min(i + 1024, rate // 2)) / rate
+                samples = (8000 * np.sin(2 * np.pi * 440 * times)).astype(np.int16)
+                frame = av.AudioFrame.from_ndarray(np.repeat(samples, 2)[None, :], format="s16", layout="stereo")
+                frame.sample_rate, frame.time_base = rate, Fraction(1, rate)
+                frame.pts = i + round(.6 * rate)
+                output.mux(audio.encode(frame))
+            output.mux(audio.encode())
+        with av.open(str(path)) as written:
+            self.assertEqual([round(frame.time * 1000) for frame in written.decode(video=0)], [500, 555, 605, 690])
+        duration = server.film.probe(path)[2]
+        self.assertAlmostEqual(duration, .232, delta=.002)
+        expected = [colors[index] for index in (0, 0, 1, 2, 2, 3)]
+        previews = await asyncio.to_thread(video_remake.original_frames, server, source, set(range(6)))
+        for tick, color in enumerate(expected):
+            preview = image_editor.load(server.COMFY_DIR, previews[tick]["ref"])
+            self.assertTrue(np.allclose(preview.getpixel((32, 32))[:3], color, atol=5))
+
+        spec = {"clips":[{"ref":source, "in":0, "out":duration, "frames":6}], "subtitles":False}
+        exported = await asyncio.to_thread(server.film.render, server.COMFY_DIR, spec, source_audio=path)
+        final = server.tools.ref_path(server.COMFY_DIR, exported["ref"])
+        with av.open(str(final)) as result:
+            pixels = [frame.to_ndarray(format="rgb24")[32,32] for frame in result.decode(video=0)]
+        self.assertEqual(len(pixels), 6)
+        self.assertTrue(np.allclose(pixels, expected, atol=8))
+        waveform = server.film.read_audio(final)[0]
+        self.assertLess(np.max(np.abs(waveform[:round(.08 * rate)])), .01)
+        self.assertGreater(np.max(np.abs(waveform[round(.12 * rate):round(.20 * rate)])), .1)
+
     @skipUnless(hasattr(av.video.stream.VideoStream, "set_display_rotation"), "rotated MP4 fixture needs PyAV display matrix writing")
     async def test_rotated_phone_video_uses_display_coordinates_through_export(self):
         def clip(name, image, rotated=False):

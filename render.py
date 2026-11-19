@@ -13,6 +13,7 @@ Timeline spec (all times in seconds):
 """
 from __future__ import annotations
 
+import math
 import struct
 import time
 import uuid
@@ -82,6 +83,18 @@ def probe(path: Path, *, display=True):
     with av.open(str(path)) as c:
         v = c.streams.video[0]
         dur = float(v.duration * v.time_base) if v.duration else float(c.duration or 0) / 1e6
+        if not v.duration and "matroska" in c.format.name.split(","):
+            # Matroska/WebM reports the end timestamp, often with no stream.duration.
+            # Prefer the video track's end so a longer soundtrack won't extend the picture.
+            end = v.metadata.get("DURATION", "")
+            try:
+                hours, minutes, seconds = end.split(":")
+                end_time = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            except ValueError:
+                end_time = dur
+            if not math.isfinite(end_time):
+                end_time = dur
+            dur = max(0, end_time - float((v.start_time or 0) * v.time_base))
         w, h = v.codec_context.width, v.codec_context.height
         if display:
             frame = next(c.decode(video=0), None)
@@ -115,7 +128,6 @@ def read_audio(path: Path, t0: float = 0.0, t1: float | None = None):
 
 
 def target_size(w0: int, h0: int, aspect: str):
-    import math
     ar = {"16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "21:9": 21 / 9}.get(aspect)
     if not ar:
         return w0 - w0 % 2, h0 - h0 % 2
@@ -169,11 +181,14 @@ def video_ticks(path: Path, start: float, count: int, *, relative_time: bool):
     with av.open(str(path)) as c:
         stream = c.streams.video[0]
         origin = float((stream.start_time or 0) * stream.time_base) if relative_time else 0
+        # Coarse container timestamps can round a frame past its nominal tick by half a time base.
+        epsilon = max(1e-6, min(float(stream.time_base) / 2, .0005)) if relative_time else 1e-6
+        lead = epsilon if relative_time else .5 / FPS
         last = None
         for f in c.decode(video=0):
             t = float(f.time if f.time is not None else origin) - origin
-            while k < count and start + k / FPS <= t + 1e-6:
-                yield f if last is None or start + k / FPS >= t - 0.5 / FPS else last
+            while k < count and start + k / FPS <= t + epsilon:
+                yield f if last is None or start + k / FPS >= t - lead else last
                 k += 1
             if k >= count:
                 break
