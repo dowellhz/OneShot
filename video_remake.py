@@ -61,7 +61,13 @@ def remake_key(host, user, board, node, source):
 
 def load(key):
     row = db.one("SELECT data FROM video_remakes WHERE owner=? AND board=? AND node=? AND source=?", *key)
-    return json.loads(row["data"]) if row else None
+    if not row:
+        return None
+    session = json.loads(row["data"])
+    if session.get("warning"):
+        for shot in [*session["shots"], *session.get("cut_archive", {}).values()]:
+            shot.setdefault("analysis_missing", not any(shot.get("summary", {}).values()))
+    return session
 
 
 def save(key, session):
@@ -152,24 +158,25 @@ async def analyze(req, host, source):
         cut = await asyncio.to_thread(find_shots, host, source)
     except Exception as error:
         fail(str(error)[:200] or "无法读取原片")
-    details, people, warning = await summarize_shots(req, host, cut)
+    details, people, missing = await summarize_shots(req, host, cut)
     shots = []
     for index, item in enumerate(cut["shots"]):
         size = (item["w"], item["h"])
         shots.append({
             "start": item["start"], "end": item["end"],
-            "summary": details[index],
+            "summary": details[index], "analysis_missing": index in missing,
             "frames": {"first": {**frame_record(item["ref"], size), "at": item["start"]},
                        "middle": {**frame_record(item["mid"], size), "at": item["mid_at"]}},
         })
-    return {"duration": cut["duration"], "warning": warning, "shots": shots, "source_people": people,
+    return {"duration": cut["duration"], "shots": shots, "source_people": people,
             "display_oriented": True}
 
 
-async def summarize_shots(req, host, cut, *, required=None):
+async def summarize_shots(req, host, cut):
+    count = len(cut["shots"])
     details = []
     people = []
-    warning = ""
+    missing = set(range(count))
     try:
         if "llm" not in req.app:
             raise RuntimeError("视觉模型未配置")
@@ -178,13 +185,8 @@ async def summarize_shots(req, host, cut, *, required=None):
         details = analysis.get("shots") or []
         if not isinstance(details, list):
             raise ValueError("镜头分析结果格式不正确")
-        needed = set(range(1, len(cut["shots"]) + 1)) if required is None else {i + 1 for i in required}
-        missing = sorted(needed.intersection(analysis.get("missing_shots", [])))
-        if len(missing) == len(needed) and required is None:
-            warning = "镜头已切分，视觉分析暂不可用，仍可手动选择人物。"
-        elif missing:
-            numbers = "、".join(str(number) for number in missing)
-            warning = f"镜头 {numbers} 缺少视觉分析，请核对原片并手动选择人物。"
+        missing = {number - 1 for number in analysis.get("missing_shots", [])}
+        missing.update(i for i in range(count) if i >= len(details) or not isinstance(details[i], dict))
         for person in analysis.get("characters") or []:
             if not isinstance(person, dict):
                 continue
@@ -194,12 +196,43 @@ async def summarize_shots(req, host, cut, *, required=None):
         people = people[:24]
     except Exception:
         details = []
-        warning = "镜头已切分，视觉分析暂不可用，仍可手动选择人物。"
+        people = []
+        missing = set(range(count))
     summaries = []
-    for index in range(len(cut["shots"])):
+    for index in range(count):
         detail = details[index] if index < len(details) and isinstance(details[index], dict) else {}
         summaries.append({field: detail.get(field) for field in ("shot_size", "camera", "scene", "action", "characters")})
-    return summaries, people, warning
+    return summaries, people, missing
+
+
+def analysis_warning(shots):
+    missing = [str(index) for index, shot in enumerate(shots, 1) if shot.get("analysis_missing")]
+    if not missing:
+        return ""
+    if len(missing) == len(shots):
+        return "镜头已切分，视觉分析暂不可用。可重试分析或手动选择人物。"
+    return f"镜头 {'、'.join(missing)} 缺少视觉分析，可重试分析或手动选择人物。"
+
+
+async def fill_shot_analysis(req, host, session, shots, indices):
+    if not indices:
+        return
+    cut = {"duration": shots[-1]["end"], "known_people": session.get("source_people"), "shots": []}
+    for shot in shots:
+        first = shot["frames"]["first"]
+        middle = shot["frames"].get("middle", first)
+        cut["shots"].append({"start": shot["start"], "end": shot["end"], "ref": first["ref"],
+                             "w": first["w"], "h": first["h"], "mid": middle["ref"]})
+    summaries, people, missing = await summarize_shots(req, host, cut)
+    for index in indices:
+        shots[index]["analysis_missing"] = index in missing
+        if index not in missing:
+            shots[index]["summary"] = summaries[index]
+    if any(index not in missing for index in indices):
+        known = {person["name"]: person for person in session.get("source_people", [])}
+        for person in people:
+            known.setdefault(person["name"], person)
+        session["source_people"] = list(known.values())[:24]
 
 
 def find_shots(host, source):
@@ -493,18 +526,7 @@ async def edit_cuts(req, host, source, session, data):
         shots, fresh = await asyncio.to_thread(capture)
     except Exception:
         fail("无法读取新剪辑点的原片画面")
-    if fresh:
-        cut = {"duration": old[-1] / fps, "known_people": session.get("source_people"), "shots": [
-            {"start": shot["start"], "end": shot["end"], "ref": shot["frames"]["first"]["ref"],
-             "w": shot["frames"]["first"]["w"], "h": shot["frames"]["first"]["h"],
-             "mid": shot["frames"].get("middle", shot["frames"]["first"])["ref"]} for shot in shots
-        ]}
-        summaries, people, warning = await summarize_shots(req, host, cut, required=fresh)
-        for i in fresh:
-            shots[i]["summary"] = summaries[i]
-        session["warning"] = warning
-        if not session.get("source_people"):
-            session["source_people"] = people
+    await fill_shot_analysis(req, host, session, shots, fresh)
 
     mapping = session.get("mapping")
     before = mapping.copy() if mapping else None
@@ -1245,6 +1267,11 @@ async def handle(req, host):
             await prepare_playback(req, host, key, session)
         elif not session or not session["shots"]:
             fail("请先分析原片")
+        elif action == "retry_analysis":
+            shots = session["shots"]
+            await fill_shot_analysis(req, host, session, shots, [
+                index for index, shot in enumerate(shots) if shot.get("analysis_missing")
+            ])
         elif action == "export":
             update_jobs(host, key[0], session)
             await export_video(req, host, key, session)
@@ -1333,6 +1360,7 @@ async def handle(req, host):
                 fail("未知的视频重制操作")
         update_jobs(host, key[0], session)
         refresh_export_status(session, source, host.film.FPS)
+        session["warning"] = analysis_warning(session["shots"])
         save(key, session)
         return web.json_response(public_session(host, session, session_node=key[2], **response))
     finally:

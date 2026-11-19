@@ -109,11 +109,19 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
 
         class Vision:
             via = "test vision"
+            retry = False
+            offline = False
 
             def available(self):
                 return True
 
             async def chat(self, system, content, **kwargs):
+                if self.offline:
+                    raise RuntimeError("visual model unavailable")
+                if self.retry:
+                    return json.dumps({"characters":[{"name":"红衣人", "look":"错误外貌"}, {"name":"绿衣人", "look":"穿绿衣"}],
+                                       "shots":[{"shot":1,"camera":"错误机位"}, {"shot":2,"characters":["绿衣人"]},
+                                                {"shot":3,"camera":"横移"}, {"shot":4,"camera":"错误机位"}]})
                 return json.dumps({"characters":[{"name":"红衣人", "look":"穿红衣"}, {"name":"黄衣人", "look":"穿黄衣"}],
                                    "shots":[
                     {"shot":4, "characters":"黄衣人", "camera":"缓慢拉远", "action":["抬手"]},
@@ -123,8 +131,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                     {"shot":5, "action":["无对应镜头"]},
                 ]})
 
+        vision = Vision()
         req = Request(source, self.user, {"action":"analyze"})
-        req.app["llm"] = Vision()
+        req.app["llm"] = vision
         analyzed = json.loads((await server.remake(req)).body)
         self.assertIn("镜头 2、3 缺少视觉分析", analyzed["warning"])
         self.assertEqual([(s["start"], s["end"]) for s in analyzed["shots"]], [(0,1), (1,2), (2,3), (3,4)])
@@ -135,6 +144,25 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         reopened = json.loads((await server.remake(Request(source, self.user))).body)
         self.assertEqual(reopened["shots"], analyzed["shots"])
         self.assertEqual(reopened["warning"], analyzed["warning"])
+        marked = json.loads((await server.remake(Request(source, self.user, {"action":"keep", "shot":1}))).body)
+        retry = Request(source, self.user, {"action":"retry_analysis"})
+        retry.app["llm"] = vision
+        vision.offline = True
+        failed = json.loads((await server.remake(retry)).body)
+        self.assertEqual(failed["shots"], marked["shots"])
+        self.assertEqual(failed["warning"], marked["warning"])
+        vision.offline = False
+        vision.retry = True
+        recovered = json.loads((await server.remake(retry)).body)
+        self.assertFalse(recovered["warning"])
+        self.assertEqual(recovered["shots"][0], marked["shots"][0])
+        self.assertEqual(recovered["shots"][3], marked["shots"][3])
+        self.assertTrue(recovered["shots"][1]["keep_original"])
+        self.assertEqual(recovered["shots"][1]["summary"]["characters"], ["绿衣人"])
+        self.assertEqual(recovered["shots"][2]["summary"]["camera"], "横移")
+        self.assertEqual([shot["frames"] for shot in recovered["shots"]], [shot["frames"] for shot in marked["shots"]])
+        self.assertEqual(recovered["source_people"], [*marked["source_people"], {"name":"绿衣人", "look":"穿绿衣"}])
+        self.assertEqual(json.loads((await server.remake(Request(source, self.user))).body)["shots"], recovered["shots"])
 
     async def test_assistant_reads_the_bound_video_remake_session_for_its_user(self):
         db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test'),(8,'member','test')")

@@ -523,7 +523,13 @@ async function run(){
   }
   if(operation?.action==='analyze'){
    const frame={ref:'input:h3studio/remake-frame.png',w:640,h:480,previews:[]};
-   remakeSession={...remakeSession,session_node:'pendingVideo',shots:[{start:.5,end:3.5,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
+   remakeSession={...remakeSession,session_node:'pendingVideo',warning:'镜头已切分，视觉分析暂不可用。',
+    shots:[{start:.5,end:3.5,analysis_missing:true,summary:{},frames:{first:frame,middle:structuredClone(frame)}}]};
+  }
+  if(operation?.action==='retry_analysis'){
+   assert.equal(operation.cut_revision,0);
+   remakeSession.warning='';
+   Object.assign(remakeSession.shots[0],{analysis_missing:false,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'}});
   }
   const frame=remakeSession?.shots[0]?.frames.first;
   if(operation?.action==='map_person'){
@@ -667,6 +673,11 @@ async function run(){
  equal(evaluate('$("[data-playback]").hidden'),true,'loading the compatible video clears the playback error');
  evaluate('$("#videoRemake [data-analyze]").click()');
  await ready('!!$("#videoRemake .rm-shots button")','analyzed shot visible');
+ equal(evaluate('$("[data-analyze]").textContent==="重试视觉分析" && !$("[data-analyze]").hidden'),true,
+  'missing visual analysis can be retried in the same workspace');
+ evaluate('$("[data-analyze]").click()');
+ await ready('$("[data-analyze]").hidden && $(".rm-summary").textContent.includes("缓慢转身")',
+  'retry fills the existing shot summary and removes the retry button');
  evaluate(`const sourcePersonCheck=$("#videoRemake [data-person]");sourcePersonCheck.value="人物 A";sourcePersonCheck.dispatchEvent(new Event("change"));
    $("#videoRemake [data-map-asset]").value="char";$("#videoRemake [data-map-shots] input").checked=true;
    $("#videoRemake [data-save-mapping]").click()`);

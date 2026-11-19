@@ -538,8 +538,10 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     if (!panel.isConnected) return;
     renderPlayback();
     const shots = session?.shots || [];
-    el("[data-analyze]").hidden = !!shots.length;
-    el("[data-analyze]").disabled = busy;
+    const analyze = el("[data-analyze]");
+    analyze.hidden = !!shots.length && !shots.some(shot => shot.analysis_missing);
+    analyze.disabled = busy;
+    analyze.textContent = shots.length ? "重试视觉分析" : "分析原片";
     el(".rm-analysis").textContent = session?.warning || (shots.length ? `${shots.length} 个镜头` : "支持 60 秒以内的视频");
     el(".rm-editor").hidden = !shots.length;
     renderMapping(shots);
@@ -1042,7 +1044,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "split_long_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",suggest_entry:"正在查找人物入画位置…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",retry_analysis:"正在补充缺失的镜头分析…",select:"正在处理选区…",locate_person:"正在识别原片人物…",suggest_entry:"正在查找人物入画位置…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (action === "prepare_playback" && session.playback?.ref && player.getAttribute("src") === remakeMedia(session.playback.ref)) {
@@ -1095,7 +1097,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     finally { busy = false; renderPanel(); schedulePoll(); }
   }
 
-  el("[data-analyze]").onclick = () => change("analyze");
+  el("[data-analyze]").onclick = () => change(session?.shots.length ? "retry_analysis" : "analyze");
   el("[data-prepare-playback]").onclick = () => change("prepare_playback");
   el("[data-batch-locate]").onclick = () => {
     const shots = batchLocateShots();
