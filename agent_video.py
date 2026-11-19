@@ -552,10 +552,12 @@ def remake_status(host, nid, key, session, *, review_shot=None):
             raise ValueError("请选择存在的镜头")
         shot = session["shots"][review_shot - 1]
         result["remake"].update(shot_number=review_shot, shot_start=shot["start"])
+        result["review_board"] = key[1]
+        in_scope = mapping is None or review_shot - 1 in mapping["shots"]
         result["review_versions"] = [
             {"number": index + 1, "job": version["job"], "mode": version.get("mode", "whole"),
              "adopted": not shot.get("keep_original") and shot.get("adopted_video") == version["job"],
-             "review_issue": video_remake.video_start_issue(shot, version, mapping)}
+             "review_issue": video_remake.video_start_issue(shot, version, mapping) if in_scope else "该镜头不在替换范围"}
             for index, version in enumerate(shot.get("videos", []))
             if version["state"] == "done" and version.get("ref") and video_remake.matches_mapping(version, mapping)
         ]

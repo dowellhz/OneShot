@@ -11,6 +11,18 @@
 
 .ac-result.ac-video{max-width:180px;border:1px solid var(--line);border-radius:8px}.ac-video video{display:block;width:170px;max-height:140px;background:#000}.ac-video button{width:100%;font-size:var(--fs-caption)}
 
+.ac-remake-review {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 9px;
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+}
+.ac-remake-review > div { display: flex; flex-wrap: wrap; gap: 6px; }
+#agentChat .ac-remake-review [aria-pressed="true"] { border-color: var(--c-video); }
+.ac-remake-review [data-review-status]:empty { display: none; }
+
 .ac-choices {
   display: grid;
   gap: 8px;

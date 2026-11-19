@@ -607,7 +607,15 @@ async function run(){
     asset:{id:'char'},source_person:'人物 A',first_frame:frame.previews[0].ref,
     guides:[{ref:'output:h3studio/shot-guide.png',tick:12}],w:640,h:480,duration:3});
   }
-  if(operation?.action==='approve_video')remakeSession.shots[0].adopted_video=operation.job;
+  if(['approve_video','keep'].includes(operation?.action)){
+   if(operation.cut_revision!==(remakeSession.cut_revision||0)){
+    const error={error:'剪辑点已更新，请重新打开视频重制界面'};
+    return {ok:false,status:409,text:async()=>JSON.stringify(error),json:async()=>error};
+   }
+   const shot=remakeSession.shots[operation.shot];
+   shot.keep_original=operation.action==='keep';
+   if(!shot.keep_original)shot.adopted_video=operation.job;
+  }
   if(operation?.action==='export')remakeSession.export={job:'export-job',state:'done',ref:'output:h3studio/assembled.mp4',
    w:640,h:480,duration:3,clips:[{ref:'output:h3studio/shot-local.mp4',in:0,out:3,frames:72}]};
   if(operation?.action==='split_shot'){
@@ -875,13 +883,27 @@ async function run(){
   {job:'newer-remake-video',state:'done',ref:'output:h3studio/newer-remake-video.mp4'},
  ];
  evaluate(`$("#acMessages [data-remake-node]").remove();
- $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({review_versions:[
+ $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({review_board:boardId,cut_revision:${remakeSession.cut_revision},review_versions:[
   {number:1,job:"chat-remake-video",adopted:true},{number:2,job:"newer-remake-video"}],remake:{node_id:"pendingVideo",
   source_ref:originalRef,shot_number:2,shot_start:${locatedShot.start}}}));
  $("#acMessages [data-remake-video-job=chat-remake-video]").click();`);
  await ready('$("[data-result]")?.src.includes("chat-remake-video.mp4") && $(".rm-shot").textContent==="镜头 2"',
   'the assistant review menu opens the exact earlier remake version');
  evaluate('$("#videoRemake [data-close]").click()');
+ remakeSession.cut_revision++;
+ evaluate('$("[data-review-job=newer-remake-video]").click()');
+ await ready('$("[data-review-status]").textContent.includes("剪辑点已更新") && !$("[data-review-job=newer-remake-video]").disabled',
+  'a stale review card shows the conflict and leaves the decision available for a retry');
+ assert.notEqual(locatedShot.adopted_video,'newer-remake-video');
+ remakeSession.cut_revision--;
+ evaluate('$("[data-review-job=newer-remake-video]").click()');
+ await ready('$("[data-review-status]").textContent.includes("已采用") && $("[data-review-job=newer-remake-video]").getAttribute("aria-pressed")==="true"',
+  'adopting a version gives direct confirmation in the chat card');
+ assert.equal(locatedShot.adopted_video,'newer-remake-video');
+ evaluate('$("[data-remake-decision=keep]").click()');
+ await ready('$("[data-review-status]").textContent.includes("保留原片") && $("[data-remake-decision=keep]").getAttribute("aria-pressed")==="true"',
+  'the keep button updates the review decision for the same shot');
+ assert.equal(locatedShot.keep_original,true);
  w.fetch=previousFetch;
  evaluate(`$("#upBtn").click();
  const uploadEntry=$("#file");

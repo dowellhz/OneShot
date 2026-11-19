@@ -58,12 +58,63 @@ function acResultCards(result){
    const target = locate ? ` data-remake-start="${shot_start}" data-remake-frame="${esc(frame || "")}" data-remake-video-job="${esc(job || "")}"` : "";
    return `<button type="button" data-remake-node="${esc(node_id)}" data-remake-ref="${esc(source_ref)}"${target}>${esc(text)}</button>`;
   };
-  const versions = (result.review_versions || []).map(version =>
-   open(`查看版本 ${version.number}${version.adopted ? " · 已采用" : ""}`, version.job)).join("");
+  let review = "";
+  if (locate && result.review_board && Number.isInteger(result.cut_revision) && Array.isArray(result.review_versions)) {
+   const decision = (text, job, pressed, issue) =>
+    `<button type="button" data-remake-decision="${job ? "adopt" : "keep"}" data-review-job="${esc(job || "")}" aria-pressed="${!!pressed}"${issue ? ` disabled title="${esc(issue)}"` : ""}>${esc(text)}</button>`;
+   const rows = result.review_versions.map(version =>
+    `<div>${open(`查看版本 ${version.number}`, version.job)}${decision(`采用版本 ${version.number}`, version.job, version.adopted, version.review_issue)}</div>`).join("");
+   review = `<div class="ac-remake-review" data-review-board="${esc(result.review_board)}" data-review-node="${esc(node_id)}"
+    data-review-ref="${esc(source_ref)}" data-review-shot="${shot_number}" data-review-revision="${result.cut_revision}">
+    ${rows}<div>${decision("保留原片", "", result.shots?.[shot_number - 1]?.keep_original)}</div>
+    <span data-review-status role="status"></span></div>`;
+  } else if (result.review_versions?.length) {
+   review = `<div class="ac-results">${result.review_versions.map(version => open(`查看版本 ${version.number}`, version.job)).join("")}</div>`;
+  }
   const download = result.export_ref ? `<a href="/media?ref=${encodeURIComponent(result.export_ref)}" download="${esc(result.export_ref.split("/").at(-1))}">下载成片</a>` : "";
-  return `<div class="ac-results">${open(label, video_job)}${versions}${download}</div>`;
+  return `<div class="ac-results">${open(label, video_job)}${download}</div>${review}`;
  }
  const made=result.nodes||[];if(!made.length)return "";return `<div class="ac-results">${made.map(item=>{const n=vtResolve(item.id,item.ref)?.node,v=acResultVersion(item);if(item.type==="video"||n?.type==="video")return `<div class="ac-result ac-video"><video controls playsinline preload="metadata" src="/media?ref=${encodeURIComponent(v.ref)}" aria-label="生成的视频"></video><button type="button" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">定位视频</button></div>`;return `<button type="button" class="ac-result" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">${v?.ref?`<img loading="lazy" alt="生成结果" src="/media?ref=${encodeURIComponent(v.ref)}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;}).join("")}</div>`;}
+
+async function acReviewRemake(button) {
+ const card = button.closest("[data-review-board]");
+ if (!card || button.disabled || card.getAttribute("aria-busy") === "true") return;
+ const {reviewBoard, reviewNode, reviewRef, reviewShot, reviewRevision} = card.dataset;
+ const info = $("[data-review-status]", card);
+ const decisions = $$("[data-remake-decision]:not(:disabled)", card);
+ const adopting = button.dataset.remakeDecision === "adopt";
+ const shot = Number(reviewShot) - 1;
+ const job = button.dataset.reviewJob;
+ card.setAttribute("aria-busy", "true");
+ decisions.forEach(control => { control.disabled = true; });
+ info.textContent = "正在保存审核决定…";
+ try {
+  if (reviewBoard !== boardId) throw new Error("画布已切换，请重新打开对应对话");
+  await flushSave();
+  if (reviewBoard !== boardId) throw new Error("画布已切换，请重新打开对应对话");
+  const target = vtResolve(reviewNode, reviewRef);
+  if (!target || target.node.type !== "video" || target.node.versions[target.index]?.ref !== reviewRef) {
+   throw new Error("原片版本已不存在");
+  }
+  const url = "/api/video-remake/" + encodeURIComponent(reviewBoard) + "/" + encodeURIComponent(target.node.id) +
+   "?source=" + encodeURIComponent(reviewRef);
+  const session = await remakeRequest(url, {
+   action:adopting ? "approve_video" : "keep", shot, cut_revision:Number(reviewRevision), ...(adopting ? {job} : {}),
+  });
+  const selected = session.shots[shot];
+  for (const control of decisions) {
+   const pressed = selected.keep_original ? control.dataset.remakeDecision === "keep" : !!selected.adopted_video &&
+    selected.adopted_video === control.dataset.reviewJob;
+   control.setAttribute("aria-pressed", String(pressed));
+  }
+  info.textContent = adopting ? `镜头 ${reviewShot} 已采用所选版本。` : `镜头 ${reviewShot} 已设为保留原片。`;
+ } catch (error) {
+  info.textContent = error.message;
+ } finally {
+  decisions.forEach(control => { control.disabled = false; });
+  card.removeAttribute("aria-busy");
+ }
+}
 
 function acAddChoices(message, event) {
  const prose = Array.from(message.children).filter(el => !["OL","UL","PRE","BLOCKQUOTE"].includes(el.tagName));
@@ -183,6 +234,8 @@ function initAgentChat(){
  $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{try{await flushSave();await acApi(`/api/chat/runs/${AC.runs[0].id}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=e=>{
+  const decision=e.target.closest("[data-remake-decision]");
+  if(decision){acReviewRemake(decision);return;}
   const remake=e.target.closest("[data-remake-node]");
   if(remake){
    const target=vtResolve(remake.dataset.remakeNode,remake.dataset.remakeRef);

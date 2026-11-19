@@ -857,6 +857,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(blocked["remake"]["shot_number"], 1)
         self.assertIsNone(blocked["export_state"])
         review = await service.execute(run, self.user, "review_choices", "video_remake_status", {"node_id":"n3", "shot":1})
+        self.assertEqual(review["review_board"], "test")
         self.assertEqual([(v["number"], v["job"], v["mode"]) for v in review["review_versions"]],
                          [(1, video_job, "whole"), (2, local_job, "local")])
         review_args = {"node_id":"n3", "shot":1, "cut_revision":review["cut_revision"]}
