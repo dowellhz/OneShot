@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS memory_jobs (
 CREATE TABLE IF NOT EXISTS memory_outputs (
  ref TEXT NOT NULL, owner INTEGER NOT NULL, board TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL,
  PRIMARY KEY(ref, owner));
+CREATE TABLE IF NOT EXISTS video_remakes (
+ owner INTEGER NOT NULL, board TEXT NOT NULL, node TEXT NOT NULL, source TEXT NOT NULL, data TEXT NOT NULL,
+ PRIMARY KEY(owner, board, node, source));
 """
 
 _lock = threading.RLock()

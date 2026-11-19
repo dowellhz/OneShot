@@ -479,6 +479,51 @@ async function run(){
  chatRuns=[{id:'choice-result',state:'done'}];
  await evaluate('acLoadSession("s1")');
  equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),0,'old choices stay inactive after replay');
+ const previousFetch=w.fetch;
+ let remakeSession=null, remakeSelection, remakeOptions;
+ w.fetch=async(url,options={})=>{
+  if(!String(url).startsWith('/api/video-remake/'))return previousFetch(url,options);
+  const operation=options.body&&JSON.parse(options.body);
+  if(operation?.action==='analyze'){
+   const frame={ref:'input:h3studio/remake-frame.png',w:640,h:480,previews:[]};
+   remakeSession={shots:[{start:0,end:3,summary:{action:['缓慢转身']},frames:{first:frame,middle:structuredClone(frame)}}]};
+  }
+  const frame=remakeSession?.shots[0].frames.first;
+  if(operation?.action==='select'){
+   remakeSelection=operation.rect;
+   frame.selection={overlay:'input:h3studio/remake-overlay.png'};
+  }
+  if(operation?.action==='preview'){
+   remakeOptions=operation;
+   frame.previews.push({job:'remake-job',state:'done',ref:'output:h3studio/remake.png',asset:{name:'林森'}});
+  }
+  if(operation?.action==='approve')frame.approved=operation.job;
+  return {ok:true,json:async()=>structuredClone(remakeSession),text:async()=>JSON.stringify(remakeSession)};
+ };
+ evaluate('ctxMenu({target:els.get("pendingVideo"),clientX:140,clientY:120})');
+ evaluate(`document.querySelector('#ctxMenu [data-a="remake"]').click()`);
+ await ready('$("#videoRemake [data-analyze]")?.disabled===false','remake workspace opens from video menu');
+ evaluate('$("#videoRemake [data-analyze]").click()');
+ await ready('!!$("#videoRemake .rm-shots button")','analyzed shot visible');
+ evaluate(`$("#videoRemake [data-mode=box]").click();
+  const rmSurface=$(".rm-surface");
+  rmSurface.dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:60,clientY:15}));
+  rmSurface.dispatchEvent(new MouseEvent("pointerup",{button:0,clientX:180,clientY:37}));`);
+ await ready('$(".rm-mask").hidden===false','selected mask appears over source');
+ assert.equal(remakeSelection.length,4);
+ evaluate(`const rmRole=$("[data-role]",$("#videoRemake"));rmRole.value="char";rmRole.dispatchEvent(new Event("change"));$("#videoRemake [data-generate]").click()`);
+ await ready('!!$("#videoRemake .rm-output img")','role preview displays in workspace');
+ assert.equal(remakeOptions.asset,'char');
+ evaluate('$$(".rm-review button").find(b=>b.textContent==="采用此预览").click()');
+ await ready('$$(".rm-review button").some(b=>b.textContent==="用作视频首帧")','approve exposes first-frame action');
+ const beforeRemake=evaluate('B.nodes.length');
+ evaluate('$$(".rm-review button").find(b=>b.textContent==="用作视频首帧").click()');
+ equal(evaluate('B.nodes.length'),beforeRemake+2,'handoff creates one preview image and one linked video');
+ equal(evaluate('B.nodes.at(-1).data.prompt'),'缓慢转身','new video receives analyzed motion description');
+ equal(evaluate('B.edges.at(-1).from'),evaluate('B.nodes.at(-2).id'),'approved frame linked to new video');
+ equal(evaluate('!!$("#videoRemake")'),false,'handoff returns to canvas');
+ w.fetch=previousFetch;
+ console.log('Video remake DOM passed: analyze, select, preview, approve and first-frame handoff.');
  console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');
  console.log('Asset library DOM passed: entry, categories/search/source/scope, safe labels, preview/history, save/upload/delete, readonly shared assets, canvas import/place, @ citation, and fetch recovery.');
  console.log('Memory DOM passed: @ dropdown, alias/tag filtering, keyboard and mouse completion, no accidental send, duplicate identities and editor scope.');

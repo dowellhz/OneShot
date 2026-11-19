@@ -24,6 +24,7 @@ import image_editor
 import agent_chat
 import creative_memory
 import board_store
+import video_remake
 from board_store import BOARD_ID as _ID, board_meta, can_see
 import sys
 from aiohttp import web
@@ -1063,18 +1064,22 @@ async def image_edit_tool(req):
     if not isinstance(p, dict):
         raise bad("图像编辑参数须为对象")
     tool = req.path.rsplit("/", 1)[-1]
+    return web.json_response(await run_image_tool(req.app, tool, p))
+
+
+async def run_image_tool(app, tool, p):
     try:
         image = tools.ref_path(COMFY_DIR, p.get("ref", ""))
         await asyncio.to_thread(image_editor.load, COMFY_DIR, p.get("ref", ""))
         out, ref = tools._new(COMFY_DIR, "output", "selection" if tool == "segment" else "cutout", ".png")
-        async with req.app["http"].post(ENGINE + "/tools/" + tool,
+        async with app["http"].post(ENGINE + "/tools/" + tool,
                                        json={"image": str(image), "points": p.get("points"), "out": str(out)},
                                        timeout=aiohttp.ClientTimeout(total=180)) as r:
             result = await r.json()
             if r.status != 200:
                 raise ValueError(result.get("error") or "图像工具执行失败")
-        return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "w": result["width"], "h": result["height"],
-                                  "score": result.get("score")})
+        return {"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "w": result["width"], "h": result["height"],
+                "score": result.get("score")}
     except (ValueError, OSError, TypeError, aiohttp.ClientError, asyncio.TimeoutError) as e:
         raise bad(str(e) or "图像工具暂时不可用")
 
@@ -1364,6 +1369,12 @@ async def analyze(req):
     except Exception as e:
         raise bad(f"切分镜头失败：{e}")
     return await llm_call(req, tools.analyze_shots(req.app["llm"], COMFY_DIR, cut))
+
+
+@routes.get("/api/video-remake/{board}/{node}")
+@routes.post("/api/video-remake/{board}/{node}")
+async def remake(req):
+    return await video_remake.handle(req, sys.modules[__name__])
 
 
 @routes.post("/api/split")

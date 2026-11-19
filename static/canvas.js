@@ -723,6 +723,7 @@ function nodeAction(n, a) {
   else if (a === "edit") openImageEditor(n);
   else if (a === "describe") describeImage(n);
   else if (a === "analyze") analyzeVideo(n);
+  else if (a === "remake") openVideoRemake(n);
   else if (a === "film") n.data.film ? openFilm(n) : openFilm([n]);
   else if (a.startsWith("split")) { const [r, c] = a.slice(5).split("x").map(Number); splitGrid(n, r, c); }
   else if (a.startsWith("asset:")) saveAsset(n, a.slice(6));
@@ -834,6 +835,7 @@ function ctxMenu(e) {
     }
     if (n.type === "video" && n.data.film) add("film", "scissors", "编辑成片");
     else if (n.type === "video") { add("cont", "next", "续拍"); add("frame", "image", "截取末帧"); add("film", "scissors", "剪辑 / 加字幕配乐"); add("analyze", "script", "拉片（拆镜头复刻）"); }
+    if (n.type === "video") add("remake", "video", "视频重制 · 替换角色");
     add("full", "full", "全屏查看"); add("dl", "dl", "下载");
     it.push(`<div class="sep"></div>`);
   }
