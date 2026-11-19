@@ -972,9 +972,19 @@ function addFromMenu(type) {
   if (!at && ctx.from) { const s = size(ctx.from); at = freeSpot(ctx.from.x + s.w + 110, ctx.from.y, type); }
   if (!at && ctx.to) at = freeSpot(ctx.to.x - 420, ctx.to.y, type);
   if (!at) at = toW(innerWidth / 2 - 150, innerHeight / 2 - 180);
-  if (type === "upload") { pickFiles(f => { checkpoint(); const kind = x => x.type.startsWith("video/") ? "video" : "image";
-    // every uploaded image is wired into the node the menu was opened from, in the order the files were picked
-    f.forEach((x, i) => { const n = addNode(kind(x), at.x, at.y + i * 420); uploadInto(n, x); if (ctx.to && n.type === "image") link(n, ctx.to, true); }); }); return; }
+  if (type === "upload") {
+    pickFiles(files => {
+      const media = files.map(file => ({file, kind:canvasUploadKind(file)})).filter(item => item.kind);
+      if (!media.length) return toast("请选择支持的图片或视频文件");
+      checkpoint();
+      media.forEach(({file, kind}, i) => {
+        const n = addNode(kind, at.x, at.y + i * 420);
+        uploadInto(n, file);
+        if (ctx.to && kind === "image") link(n, ctx.to, true);
+      });
+    });
+    return;
+  }
   checkpoint();
   const n = addNode(type, at.x, at.y);
   if (ctx.from) link(ctx.from, n, true);

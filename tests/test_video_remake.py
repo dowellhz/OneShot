@@ -292,6 +292,23 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             output.mux(audio.encode())
         with av.open(str(path)) as written:
             self.assertEqual([round(frame.time * 1000) for frame in written.decode(video=0)], [500, 555, 605, 690])
+        raw = path.read_bytes()
+
+        async def read_part(decode=False):
+            return raw
+
+        async def next_part():
+            return SimpleNamespace(filename="variable-rate.MKV", read=read_part)
+
+        async def multipart():
+            return SimpleNamespace(next=next_part)
+
+        upload = Request("", self.user)
+        upload.multipart = multipart
+        imported = json.loads((await server.upload(upload)).body)
+        self.assertEqual(imported["type"], "video")
+        source = imported["ref"]
+        path = server.tools.ref_path(server.COMFY_DIR, source)
         duration = server.film.probe(path)[2]
         self.assertAlmostEqual(duration, .232, delta=.002)
         expected = [colors[index] for index in (0, 0, 1, 2, 2, 3)]
@@ -303,6 +320,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
             {"id":"n3", "type":"video", "versions":[{"ref":source}]},
         ]}))
+        listed = json.loads((await server.assets(Request("", self.user))).body)
+        self.assertEqual([(entry["ref"], entry["type"]) for entry in listed], [(source, "video")])
 
         async def act(action=None):
             request = Request(source, self.user, {"action":action} if action else None)

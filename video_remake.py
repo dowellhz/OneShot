@@ -15,13 +15,13 @@ import db
 import image_editor
 import video_matte
 from creative_memory import IMAGE_EXT, character_notes, fail
+from tools import VIDEO_EXT
 
 MAX_SECONDS = 60
 MAX_SHOTS = 12
 MAX_PREVIEWS = 20
 MAX_CORRECTIONS = 8
 CUT_ACTIONS = ("split_shot", "move_cut", "merge_shots", "undo_cut")
-VIDEO_EXT = {".mp4", ".webm", ".mov", ".mkv", ".m4v"}
 VIEWS = {"main", "face", "side", "back", "detail"}
 _writes = set()
 

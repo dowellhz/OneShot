@@ -62,7 +62,7 @@
   <button class="ib" id="toolSel" data-tip="框选 V：拖空白处框选节点"><svg class="i"><use href="#i-select"/></svg></button>
   <div class="sep"></div>
   <button class="ib" id="addBtn" data-tip="添加节点"><svg class="i"><use href="#i-plus"/></svg></button>
-  <button class="ib" id="upBtn" data-tip="上传图片"><svg class="i"><use href="#i-upload"/></svg></button>
+  <button class="ib" id="upBtn" data-tip="上传图片或视频" aria-label="上传图片或视频"><svg class="i"><use href="#i-upload"/></svg></button>
   <button class="ib" id="assetBtn" data-tip="资产库" aria-label="打开资产库"><svg class="i"><use href="#i-assets"/></svg></button>
   <div class="sep"></div>
   <button class="ib" id="undoBtn" data-tip="撤销 ⌘Z"><svg class="i"><use href="#i-undo"/></svg></button>
@@ -121,7 +121,7 @@
   <button data-add="video"><span class="sw" style="background:#242933;color:var(--c-video)"><svg class="i"><use href="#i-video"/></svg></span>视频</button>
   <button data-add="script"><span class="sw" style="background:#22263a;color:#8fb0ff"><svg class="i"><use href="#i-script"/></svg></span>分镜脚本</button>
   <div class="sep"></div>
-  <button data-add="upload"><span class="sw" style="background:#222;color:#ccc"><svg class="i"><use href="#i-upload"/></svg></span>上传图片</button>
+  <button data-add="upload"><span class="sw" style="background:#222;color:#ccc"><svg class="i"><use href="#i-upload"/></svg></span>上传图片或视频</button>
   <div class="sep" data-arrange-entry hidden></div>
   <button data-arrange-entry hidden><svg class="i"><use href="#i-assets"/></svg>整理对齐…</button>
 </div>
@@ -158,7 +158,7 @@
 <div id="light"></div>
 <div id="pv"><div class="box"><div class="hd">发给模型的完整提示词<small id="pvm"></small><span style="flex:1"></span><button class="pill" id="pvCopy">复制</button><button class="pill" id="pvClose">关闭</button></div><pre id="pvt"></pre></div></div>
 <div id="toast"></div>
-<input type="file" id="file" accept="image/*,video/*" multiple hidden>
+<input type="file" id="file" accept="image/*,video/*,.mp4,.mov,.webm,.m4v,.mkv" multiple hidden>
 
 <link rel="stylesheet" href="/static/image-editor.css?v=4">
 <script src="/static/image-editor.js?v=6"></script>
@@ -183,8 +183,8 @@
 <script src="/static/account.js?v=5t"></script>
 <link rel="stylesheet" href="/static/video-remake.css?v=7">
 <script src="/static/video-remake.js?v=26"></script>
-<script src="/static/canvas.js?v=3"></script>
-<script src="/static/canvas-generation.js?v=1"></script>
+<script src="/static/canvas.js?v=4"></script>
+<script src="/static/canvas-generation.js?v=2"></script>
 <script src="/static/canvas-projects.js?v=1"></script>
 </body>
 </html>

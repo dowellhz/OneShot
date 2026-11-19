@@ -763,14 +763,14 @@ async def assets(req):
             continue
         for f in d.iterdir():
             ext = f.suffix.lower()
-            if ext not in (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm") or f.name.startswith("shotmid_"):
+            if ext not in CANVAS_MEDIA_EXT or f.name.startswith("shotmid_"):
                 continue
             ref = f"{kind}:h3studio/{f.name}"
             if mine is not None and ref not in mine:
                 continue
             src = ("concat" if f.name.startswith("cut_") else "gen") if kind == "output" else (
                 "frame" if f.name.startswith(("last_", "shot_")) else "tile" if f.name.startswith("tile") else "upload")
-            out.append({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "type": "video" if ext in (".mp4", ".mov", ".webm") else "image",
+            out.append({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "type": "video" if ext in tools.VIDEO_EXT else "image",
                         "source": src,
                         "mtime": f.stat().st_mtime})
     out.sort(key=lambda a: -a["mtime"])
@@ -784,7 +784,7 @@ async def upload(req):
     raw = await part.read(decode=False)
     ext = os.path.splitext(part.filename or "x.png")[1].lower() or ".png"
     name = f"u_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
-    if ext in (".mp4", ".mov", ".webm", ".m4v", ".mkv"):
+    if ext in tools.VIDEO_EXT:
         dst = COMFY_DIR / "input" / "h3studio" / name
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(raw)
@@ -796,8 +796,8 @@ async def upload(req):
             raise web.HTTPBadRequest(text=json.dumps({"error": f"读不了这个视频：{e}"}, ensure_ascii=False), content_type="application/json")
         db.run("INSERT OR IGNORE INTO memory_uploads VALUES(?,?,?)", ref, req["user"]["id"], time.time())
         return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "type": "video", **info})
-    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
-        raise bad("只支持 PNG / JPG / WEBP 图片，或 MP4 / MOV / WEBM 视频")
+    if ext not in creative_memory.IMAGE_EXT:
+        raise bad("只支持 PNG / JPG / WEBP 图片，或 MP4 / MOV / WEBM / M4V / MKV 视频")
     dst = COMFY_DIR / "input" / "h3studio" / name
 
     def store():
@@ -827,7 +827,8 @@ async def media(req):
     return web.FileResponse(f, headers={"Cache-Control": "max-age=86400", "X-Content-Type-Options": "nosniff"})
 
 
-MEDIA_EXT = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm", ".m4v", ".mkv", ".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
+CANVAS_MEDIA_EXT = creative_memory.IMAGE_EXT | tools.VIDEO_EXT
+MEDIA_EXT = CANVAS_MEDIA_EXT | {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 
 
 def apply_fields(p: dict, for_llm: bool = False) -> dict:

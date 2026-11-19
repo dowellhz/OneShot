@@ -61,7 +61,13 @@ w.fetch=async(url,options={})=>{
   result={ids:[id],meta:{seed:111}};
  }
  else if(pathname==='/api/jobs')result=Object.fromEntries([...jobs]);
- else if(pathname==='/api/upload')result={ref:`input:h3studio/upload${++serial}.png`,url:`/media?ref=input:h3studio/upload${serial}.png`};
+ else if(pathname==='/api/upload'){
+  const filename=options.body?.get('image')?.name || '';
+  const video=/\.(mkv|m4v)$/i.test(filename);
+  const ext=video ? filename.split('.').at(-1).toLowerCase() : 'png';
+  result={ref:`input:h3studio/upload${++serial}.${ext}`,url:`/media?ref=input:h3studio/upload${serial}.${ext}`,
+   ...(video ? {type:'video',w:640,h:480,seconds:2} : {})};
+ }
  return {ok:true,status:200,json:async()=>result,text:async()=>JSON.stringify(result)};
 };
 function evaluate(code){return vm.runInContext(code,dom.getInternalVMContext());}
@@ -815,6 +821,19 @@ async function run(){
   'an updated asset reference re-enables batch generation and marks the older preview');
  evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
+ evaluate(`$("#upBtn").click();
+ const uploadEntry=$("#file");
+ Object.defineProperty(uploadEntry,"files",{value:[new File(["video"],"source.MKV",{type:""})]});
+ uploadEntry.dispatchEvent(new Event("change"));`);
+ await ready('B.nodes.some(n=>n.name==="source" && n.type==="video" && curV(n)?.ref.endsWith(".mkv"))',
+  'the file picker uploads an MKV without a MIME type onto a video node');
+ evaluate(`const uploadDrop=new MouseEvent("drop",{clientX:550,clientY:400,bubbles:true,cancelable:true});
+ Object.defineProperty(uploadDrop,"dataTransfer",{value:{getData:()=>"",files:[new File(["video"],"dropped.m4v",{type:"application/octet-stream"})]}});
+ vp.dispatchEvent(uploadDrop);`);
+ await ready('B.nodes.some(n=>n.name==="dropped" && n.type==="video" && curV(n)?.ref.endsWith(".m4v"))',
+  'dropping a generic binary M4V uploads it as a video');
+ evaluate('ctxMenu({target:els.get(B.nodes.find(n=>n.name==="dropped").id),clientX:140,clientY:120})');
+ equal(evaluate('!!$("#ctxMenu [data-a=remake]")'),true,'uploaded video exposes the remake entry point');
  console.log('Video remake DOM passed: analyze, select, preview, review remade shots, correct tracking, localize, export, and first-frame handoff.');
  console.log('Chat choices passed: numbered options, submission, draft preservation and conversation replay.');
  console.log('Asset library DOM passed: entry, categories/search/source/scope, safe labels, preview/history, save/upload/delete, readonly shared assets, canvas import/place, @ citation, and fetch recovery.');

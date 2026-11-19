@@ -14,6 +14,7 @@ from rewriter import LLM, image_part, strip_fences
 
 FPS = 24
 SR = 44100
+VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v", ".mkv"}
 
 
 def ref_path(comfy_dir: Path, ref: str) -> Path:

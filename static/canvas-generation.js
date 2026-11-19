@@ -142,6 +142,12 @@ async function poll() {
 let pickCb = null;
 function pickFiles(cb) { pickCb = cb; $("#file").click(); }
 $("#file").onchange = e => { const f = [...e.target.files]; e.target.value = ""; if (f.length && pickCb) pickCb(f); pickCb = null; };
+function canvasUploadKind(file) {
+  if (/\.(mp4|mov|webm|m4v|mkv)$/i.test(file.name)) return "video";
+  if (/\.(png|jpe?g|webp)$/i.test(file.name)) return "image";
+  if (file.type.startsWith("video/")) return "video";
+  return file.type.startsWith("image/") ? "image" : "";
+}
 const imgSize = url => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.onerror = () => r([0, 0]); i.src = url; });
 function addVersion(n, v) {
   checkpoint(); n.versions.push(v); n.cur = n.versions.length - 1; save(); render(n); refreshDownstream(n); drawEdges(); if (sel.has(n.id)) showPanel();
@@ -163,9 +169,9 @@ vp.addEventListener("drop", e => {
   e.preventDefault(); const at = toW(e.clientX, e.clientY);
   const a = e.dataTransfer.getData("application/x-h3-asset");
   if (a) { placeAsset(JSON.parse(a), at); return; }
-  const files = [...e.dataTransfer.files].filter(f => f.type.startsWith("image/") || f.type.startsWith("video/"));
+  const files = Array.from(e.dataTransfer.files, file => ({file, kind:canvasUploadKind(file)})).filter(item => item.kind);
   if (files.length) checkpoint();
-  files.forEach((f, i) => uploadInto(addNode(f.type.startsWith("video/") ? "video" : "image", at.x + i * 340, at.y), f));
+  files.forEach(({file, kind}, i) => uploadInto(addNode(kind, at.x + i * 340, at.y), file));
 });
 addEventListener("paste", e => {
   if (e.target.closest("input, textarea, [contenteditable=true]")) return;
