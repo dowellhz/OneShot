@@ -544,10 +544,12 @@ async function run(){
    assert.equal(operation.person,'人物 A');
    const target=frame.person_absent ? 'entry' : 'first';
    const view=target==='first' ? 'face' : 'main', note=target==='first' ? '保留茶杯' : '尚未提交的修改要求';
-   assert.deepEqual(operation.shots,[{shot:0,frame:target,view,note}]);
+   const asset=w.__memories.find(a=>a.id==='char');
+   const reference=asset.character_views[view] || asset.ref;
+   assert.deepEqual(operation.shots,[{shot:0,frame:target,view,reference,note}]);
    remakeOptions={asset:operation.asset,view};
    const selected=remakeSession.shots[0].frames[target];
-   selected.previews.push({job:'remake-'+target,state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森',view},
+   selected.previews.push({job:'remake-'+target,state:'done',ref:'output:h3studio/remake.png',asset:{id:'char',name:'林森',view,ref:reference},
     source_person:'人物 A',mask:selected.selection.mask,protection:selected.protection?.mask,note});
    remakeSession.batch_previews={submitted:[0],skipped:[],failed:[]};
   }
@@ -777,6 +779,13 @@ async function run(){
  evaluate('$("[data-batch-previews]").click()');
  await ready('$("#videoRemake [data-frame]").value==="entry" && $$(".rm-review button").some(b=>b.textContent==="用作动作关键帧")',
   'batching an off-screen shot opens its first visible frame for review');
+ equal(evaluate('$("[data-batch-previews]").disabled'),true,'an unchanged reference is excluded from the batch');
+ evaluate('$("#videoRemake [data-close]").click()');
+ w.__memories.find(a=>a.id==='char').character_views.main='input:h3studio/new-main.png';
+ await evaluate('openVideoRemake(mergePeer)');
+ evaluate('const entrySelect=$("[data-frame]");entrySelect.value="entry";entrySelect.dispatchEvent(new Event("change"))');
+ equal(evaluate('$("[aria-label=预览版本]").selectedOptions[0].textContent.includes("旧参考图") && !$("[data-batch-previews]").disabled'),true,
+  'an updated asset reference re-enables batch generation and marks the older preview');
  evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
  console.log('Video remake DOM passed: analyze, select, preview, review remade shots, correct tracking, localize, export, and first-frame handoff.');

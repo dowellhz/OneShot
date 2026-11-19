@@ -572,6 +572,26 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertIn("挥手", video_requests[1]["prompt"])
         self.assertEqual(video_requests[1]["images"][1]["time"], .25)
 
+        db.task_start(id="batch-4", user_id=7, state="done", outputs=[self.source["ref"]])
+        replacement = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "blue"), "asset", "input")
+        board = json.loads(server.board_path("test").read_text())
+        board["nodes"][0]["versions"].append(replacement)
+        server.board_path("test").write_text(json.dumps(board))
+        server.creative_memory.Store(server).put(self.user, {
+            "id":asset["id"], "ref":replacement["ref"], "default_ref":replacement["ref"], "source_board":"test",
+        })
+        with patch.object(server, "_generate_request", side_effect=submit):
+            stale = await act("batch_previews", person="人物甲", asset=asset["id"],
+                              shots=[{"shot":0, "view":"main", "reference":self.source["ref"]}])
+            self.assertIn("角色参考图已更新", stale["batch_previews"]["failed"][0]["error"])
+            self.assertEqual(len(requests), 4)
+            refreshed = await batch((0, "main"), (1, "main"))
+        self.assertEqual(refreshed["submitted"], [0,1])
+        self.assertEqual([payload["images"][2]["ref"] for payload in requests[-2:]], [replacement["ref"]] * 2)
+        first = (await act())["shots"][0]["frames"]["first"]
+        self.assertEqual(first["approved"], "batch-1")
+        self.assertEqual(first["previews"][-1]["asset"]["ref"], replacement["ref"])
+
     async def test_reviewed_shot_export_keeps_source_cut_and_continuous_audio(self):
         source = self.make_clip("original", seconds=4, color=lambda tick: (210 if tick < 24 else 160, 30, 30),
                                 frequency=440, audio_delay=.5)

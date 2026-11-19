@@ -606,12 +606,14 @@ def role_reference(req, board, data):
     if asset["kind"] != "character":
         fail("请选择角色资产")
     ref = asset.get("character_views", {}).get(view) or (asset["ref"] if view == "main" else "")
+    if data.get("reference") is not None and data["reference"] != ref:
+        fail("资产库角色参考图已更新，请重新打开视频重制后再生成", 409)
     if not ref or Path(ref).suffix.lower() not in IMAGE_EXT:
         fail("该角色没有可用的参考图")
     return asset, view, ref
 
 
-async def generate_preview(req, host, key, frame, data, mapping=None):
+async def generate_preview(req, host, key, frame, data, mapping=None, *, role=None):
     selection = person_selection(frame, mapping)
     if not selection:
         fail("请先在原片画面中选中待替换的人物")
@@ -619,7 +621,7 @@ async def generate_preview(req, host, key, frame, data, mapping=None):
         fail("此画面已有生成任务，请等待完成", 409)
     if len(frame["previews"]) >= MAX_PREVIEWS:
         fail("此画面已达到预览版本上限")
-    asset, view, reference = role_reference(req, key[1], data)
+    asset, view, reference = role or role_reference(req, key[1], data)
     if mapping and asset["id"] != mapping["asset"]:
         fail("替换角色已更新，请刷新并确认人物映射", 409)
     if not host.tools.ref_path(host.COMFY_DIR, reference).is_file():
@@ -683,7 +685,11 @@ async def queue_shots(req, host, key, session, data):
             frame_key = item.get("frame", "first")
             if not isinstance(frame_key, str):
                 fail("预览画面格式不正确")
-            inputs[index] = {"asset":mapping["asset"], "view":view, "note":note[:800], "frame":frame_key}
+            reference = item.get("reference")
+            if reference is not None and not isinstance(reference, str):
+                fail("角色参考图格式不正确")
+            inputs[index] = {"asset":mapping["asset"], "view":view, "note":note[:800], "frame":frame_key,
+                             "reference":reference}
         else:
             motion, first_job = item.get("motion", ""), item.get("first_job")
             if not isinstance(motion, str) or not isinstance(first_job, str) or not first_job:
@@ -721,15 +727,20 @@ async def queue_one_shot(req, host, key, shot, params, mapping, preview):
             fail("镜头的首帧或入画帧已变更，请核对后重试", 409)
         frame = shot["frames"][frame_key]
         selection = person_selection(frame, mapping)
+        if not selection or pending(frame["previews"]):
+            return False
+        role = role_reference(req, key[1], params)
+        _, view, reference = role
         protection = frame.get("protection", {}).get("mask")
-        if not selection or pending(frame["previews"]) or any(
+        if any(
             p.get("ref") and matches_mapping(p, mapping) and
             p.get("mask") == selection["mask"] and p.get("protection") == protection and
-            p.get("asset", {}).get("view", "main") == params["view"] and p.get("note", "") == params["note"]
+            p.get("asset", {}).get("view", "main") == view and p.get("asset", {}).get("ref") == reference and
+            p.get("note", "") == params["note"]
             for p in frame["previews"]
         ):
             return False
-        await generate_preview(req, host, key, frame, params, mapping)
+        await generate_preview(req, host, key, frame, params, mapping, role=role)
     else:
         ref, approved, entry_tick = shot_start(shot, mapping, host.film.FPS)
         if params["first_job"] != approved["job"]:

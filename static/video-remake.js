@@ -271,6 +271,10 @@ async function openVideoRemake(video) {
     return choice === "main" || asset?.character_views?.[choice] ? choice : suggestedView(asset, shot);
   }
 
+  function roleReference(asset, view) {
+    return asset?.character_views?.[view] || (view === "main" ? asset?.ref : "") || "";
+  }
+
   function fillViews() {
     const asset = assets.find(item => item.id === el("[data-role]").value);
     const views = el("[data-view]");
@@ -309,10 +313,13 @@ async function openVideoRemake(video) {
       const selection = personSelection(frame);
       if (!selection || shot.keep_original || frame.previews.some(active)) continue;
       const view = chosenView(asset, shot);
+      const reference = roleReference(asset, view);
+      if (!reference) continue;
       const note = (readDraft("note", shot) ?? "").slice(0, 800);
       const hasPreview = frame.previews.some(p => p.ref && matchesPerson(p) && p.mask === selection.mask &&
-        (p.protection || null) === (frame.protection?.mask || null) && (p.asset?.view || "main") === view && (p.note || "") === note);
-      if (!hasPreview) queue.push({shot:index, frame:key, view, note});
+        (p.protection || null) === (frame.protection?.mask || null) && (p.asset?.view || "main") === view &&
+        p.asset?.ref === reference && (p.note || "") === note);
+      if (!hasPreview) queue.push({shot:index, frame:key, view, reference, note});
     }
     return queue;
   }
@@ -618,9 +625,13 @@ async function openVideoRemake(video) {
     if (previews.length) {
       const select = document.createElement("select");
       select.setAttribute("aria-label", "预览版本");
-      previews.forEach((item, i) => select.append(new Option(`版本 ${i + 1} · ${!matchesPerson(item) ? "旧映射" :
-        item.ref && !previewMatchesRegions(frame, item) ? "选区已更新" : item.job === frame.approved ? "已采用" :
-          item.ref ? "待审核" : item.state === "error" ? "失败" : "处理中"}`, item.job)));
+      previews.forEach((item, i) => {
+        const asset = assets.find(asset => asset.id === item.asset?.id);
+        const oldReference = asset && item.asset?.ref && item.asset.ref !== roleReference(asset, item.asset.view || "main");
+        const state = !matchesPerson(item) ? "旧映射" : item.ref && !previewMatchesRegions(frame, item) ? "选区已更新" :
+          item.job === frame.approved ? "已采用" : item.ref ? "待审核" : item.state === "error" ? "失败" : "处理中";
+        select.append(new Option(`版本 ${i + 1} · ${state}${oldReference ? " · 旧参考图" : ""}`, item.job));
+      });
       select.value = version.job;
       select.onchange = () => { versionId = select.value; renderPanel(); };
       review.append(select);
@@ -1090,9 +1101,12 @@ async function openVideoRemake(video) {
     writeDraft("note", event.target.value);
     renderBatchButtons();
   };
-  el("[data-generate]").onclick = () => change("preview", {
-    asset:el("[data-role]").value, view:el("[data-view]").value, note:el(".rm-note input").value,
-  });
+  el("[data-generate]").onclick = () => {
+    const asset = assets.find(item => item.id === el("[data-role]").value);
+    const view = el("[data-view]").value;
+    const reference = roleReference(asset, view);
+    if (reference) change("preview", {asset:asset.id, view, reference, note:el(".rm-note input").value});
+  };
   el("[data-motion]").oninput = event => {
     writeDraft("motion", event.target.value);
     renderBatchButtons();
