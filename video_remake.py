@@ -6,6 +6,7 @@ import json
 import math
 import re
 from contextlib import closing
+from copy import deepcopy
 from pathlib import Path
 
 from aiohttp import web
@@ -444,16 +445,41 @@ async def edit_cuts(req, host, source, session, data):
         if (start, end) not in new_ranges:
             archive[f"{start}:{end}"] = shot
 
+    split = action in ("split_shot", "split_long_shot")
+    parent = old_shots[index]["frames"] if split else {}
+
     def capture():
         shots = [existing.get((start, end)) or archive.get(f"{start}:{end}") for start, end in new_ranges]
         fresh = [i for i, shot in enumerate(shots) if shot is None]
-        spans = [new_ranges[i] for i in fresh]
-        frames = original_frames(host, source, {tick for start, end in spans for tick in (start, (start + end) // 2)},
-                                 display=session.get("display_oriented", False))
-        for i, (start, end) in zip(fresh, spans):
-            first, middle = frames[start], frames[(start + end) // 2]
-            shots[i] = {"start": start / fps, "end": end / fps, "summary": {},
-                        "frames": {"first": {**first, "previews": []}, "middle": {**middle, "previews": []}}}
+        inherited = {}
+        needed = set()
+        for i in fresh:
+            start, end = new_ranges[i]
+            frames = {}
+            if split and start == old[index]:
+                frames["first"] = deepcopy(parent["first"])
+            for name, frame in parent.items():
+                tick = frame.get("correction_tick")
+                if tick is None or not start <= tick < end:
+                    continue
+                saved = deepcopy(frame)
+                if tick == start:
+                    saved.pop("correction_tick")
+                    frames["first"] = saved
+                else:
+                    frames[name] = saved
+            inherited[i] = frames
+            needed.add((start + end) // 2)
+            if "first" not in frames:
+                needed.add(start)
+        captured = original_frames(host, source, needed, display=session.get("display_oriented", False))
+        for i in fresh:
+            start, end = new_ranges[i]
+            frames = inherited[i]
+            if "first" not in frames:
+                frames["first"] = captured[start]
+            frames["middle"] = captured[(start + end) // 2]
+            shots[i] = {"start": start / fps, "end": end / fps, "summary": {}, "frames": frames}
         return shots, fresh
 
     try:

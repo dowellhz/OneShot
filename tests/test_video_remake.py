@@ -104,10 +104,16 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             {"id":"n3", "type":"video", "versions":[{"ref":source}]},
         ]}))
         key = (7, "test", "n3", source)
-        first, tail = (video_remake.frame_record(self.source["ref"], (64,64)) for _ in range(2))
+        split_frames = video_remake.original_frames(server, source, {0, 232, 400, 696})
+        first, tail = split_frames[0], split_frames[696]
         first["previews"] = [{"job":"long-preview", "state":"queued"}]
+        first["approved"] = "long-preview"
+        at_cut = {**split_frames[232], "correction_tick":232, "selection":{"mask":self.source["ref"]}}
+        in_segment = {**split_frames[400], "correction_tick":400, "person_absent":{"source":"人物甲"}}
         original = {"shots":[
-            {"start":0, "end":29, "summary":{}, "frames":{"first":first}},
+            {"start":0, "end":29, "summary":{}, "frames":{
+                "first":first, "correction-232":at_cut, "correction-400":in_segment,
+            }},
             {"start":29, "end":30, "summary":{}, "frames":{"first":tail}},
         ], "mapping":{"source":"人物甲", "asset":"role", "shots":[0]}}
         video_remake.save(key, original)
@@ -125,6 +131,15 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(pairs, [(0,232), (232,464), (464,696), (696,720)])
         self.assertEqual(split["mapping"]["shots"], [0,1,2])
         self.assertEqual(split["selected_shot"], 0)
+        self.assertEqual(split["shots"][0]["frames"]["first"]["approved"], "long-preview")
+        self.assertEqual(split["shots"][0]["frames"]["first"]["ref"], split_frames[0]["ref"])
+        second = split["shots"][1]["frames"]
+        self.assertEqual(second["first"]["ref"], at_cut["ref"])
+        self.assertEqual(second["first"]["selection"], at_cut["selection"])
+        self.assertNotIn("correction_tick", second["first"])
+        self.assertNotIn("correction-232", second)
+        self.assertEqual(second["correction-400"], in_segment)
+        self.assertNotIn("correction-400", split["shots"][0]["frames"])
         for index in range(3):
             image = image_editor.load(server.COMFY_DIR, split["shots"][index]["frames"]["first"]["ref"])
             self.assertAlmostEqual(image.getpixel((32,32))[0], 20 + index * 50, delta=5)
@@ -134,6 +149,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual([(shot["start"], shot["end"]) for shot in undone["shots"]], [(0,29), (29,30)])
         self.assertEqual(undone["mapping"]["shots"], [0])
         self.assertEqual(undone["shots"][0]["frames"]["first"]["previews"][0]["ref"], self.source["ref"])
+        self.assertEqual(undone["shots"][0]["frames"]["correction-232"], at_cut)
+        self.assertEqual(undone["shots"][0]["frames"]["correction-400"], in_segment)
 
     async def test_cancelling_while_engine_is_accepting_a_job_stops_that_job(self):
         pending_id = "p-remake"
