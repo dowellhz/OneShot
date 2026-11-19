@@ -847,6 +847,16 @@ async function run(){
  await ready('$("#videoRemake .rm-shot")?.textContent==="镜头 2" && !$(".rm-person-point").hidden && mergePeer.cur===pinnedIndex',
   'the assistant opens the located shot on the pinned source version even after its tab moved');
  evaluate('$("#videoRemake [data-close]").click()');
+ const previewTime=Math.round((locatedShot.start+.5)*24);
+ locatedShot.frames['correction-'+previewTime]={ref:locatedShot.frames.first.ref,w:640,h:480,at:previewTime/24,correction_tick:previewTime,
+  previews:[{job:'chat-preview',state:'done',ref:'output:h3studio/chat-preview.png',asset:{id:'char'},source_person:'人物 A'}]};
+ evaluate(`$("#acMessages [data-remake-node]").remove();
+ $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({preview:{submitted:[2]},remake:{node_id:"pendingVideo",
+  source_ref:originalRef,shot_number:2,shot_start:${locatedShot.start},frame:"correction-${previewTime}"}}));
+ $("#acMessages [data-remake-node]").click();`);
+ await ready('$(".rm-output img")?.src.includes("chat-preview.png") && $(".rm-shot").textContent==="镜头 2"',
+  'a preview submitted from chat opens the corresponding correction frame for review');
+ evaluate('$("#videoRemake [data-close]").click()');
  w.fetch=previousFetch;
  evaluate(`$("#upBtn").click();
  const uploadEntry=$("#file");

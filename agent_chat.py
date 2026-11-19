@@ -110,6 +110,7 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 用户明确要为角色替换拆镜或分析原片时调用video_remake_analyze，分析结果会保存到对应视频版本。模型识别的人物与镜头是供用户核对的建议。
 用户要求保存角色替换映射时调用video_remake_map，使用素材库的真实角色ID与最新cut_revision。镜头范围按用户指定；用户授权你按分析选择时可依据suggested_people，遇到人物或范围不明确时给出选择。保存映射只完成替换准备，不能说已经生成或替换完成。
 用户要求定位已映射的人物时调用video_remake_locate，使用当前映射和最新cut_revision。其结果是首帧候选点，须在工作区核对；人物晚入画时可在工作区查找入画帧。
+用户要求生成换角预览时调用video_remake_preview，只为工作区已有选区的镜头提交。返回的是提交状态，可通过video_remake_status查看后续进度，预览需要在工作区审核。
 本轮选择和图片版本已固定。修改、图层调整、沿用参数重试和视频重生成都在原节点追加版本，通过Tab切换，不能为了普通修改另建节点；仅明确新建素材用image_generate/video_generate，独立提取用image_extract。历史版本保留，结果工具返回真实节点ID和版本索引。同轮连续修改同一节点时，工具自动沿用上一次修改结果。
 生成工具等待真实任务完成；拿到结果后继续完成排列等剩余步骤。定位操作仅向当前页面发出请求，不能声称用户已经看到。
 每轮最多生成4张图片、1段视频、调用16次工具。达到限制后说明已完成和剩余内容。失败时根据错误修正，不能重复提交状态不明的任务。
@@ -546,6 +547,17 @@ class AgentService:
             raise ToolError("不支持这个工具")
         return self.add_results(run, user, cid, [{**result, "source": "edit", "prompt": "", "agent_source": v["ref"]}], n.get("name", "图片") + " · " + ("抠图" if name == "image_cutout" else "调整"), target_id=n["id"])
 
+    def begin_generation(self, run, cid, kind, count):
+        if run["data"].get("uncertain"):
+            raise ToolError("本轮存在提交状态待核实的任务，已停止追加生成，请先查看任务中心")
+        counter, limit = ("generated_video", 1) if kind == "video" else ("generated", 4)
+        if run["data"].get(counter, 0) + count > limit:
+            raise ToolError("本轮最多生成1段视频和4张图片，请下一轮继续")
+        run["data"][counter] = run["data"].get(counter, 0) + count
+        self.update(run)
+        # A crash during submission requires explicit review, never a blind resubmit.
+        db.run("UPDATE chat_calls SET state='submitting',updated=? WHERE id=?", time.time(), cid)
+
     async def submit_generation(self, run, user, cid, payload, name, fn, target_id=None, target_data=None):
         if run["data"].get("uncertain"):
             raise ToolError("本轮存在提交状态待核实的任务，已停止追加生成，请先查看任务中心")
@@ -557,13 +569,7 @@ class AgentService:
                 raise ToolError("原节点已不存在或媒体类型不匹配，请重新读取画布")
             if target.get("job"):
                 raise ToolError("原节点仍有任务，请等待完成或取消后再修改")
-        counter, limit = ("generated_video", 1) if kind == "video" else ("generated", 4)
-        if run["data"].get(counter, 0) + count > limit:
-            raise ToolError("本轮最多生成1段视频和4张图片，请下一轮继续")
-        run["data"][counter] = run["data"].get(counter, 0) + count
-        self.update(run)
-        # Record before submission. A crash during submission requires explicit review, never a blind resubmit.
-        db.run("UPDATE chat_calls SET state='submitting',updated=? WHERE id=?", time.time(), cid)
+        self.begin_generation(run, cid, kind, count)
         payload.update(board=run["board_id"], label=name)
         if fn in (self.host.generate_request, self.host.image_edit_generate):
             payload["memory_ids"] = run["data"].get("memory_ids", [])

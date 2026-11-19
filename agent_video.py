@@ -11,7 +11,8 @@ from aiohttp import web
 
 import video_remake
 
-NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze", "video_remake_map", "video_remake_locate"}
+NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze",
+         "video_remake_map", "video_remake_locate", "video_remake_preview"}
 
 
 def result_id(cid):
@@ -131,6 +132,14 @@ def register(tool, prop, node, prompt):
                       minItems=1, maxItems=video_remake.MAX_SHOTS),
         "cut_revision": prop("integer", minimum=0),
     }, ["node_id", "person", "asset_id", "cut_revision"])
+    tool("video_remake_preview", "为有选区的镜头提交起始帧换角预览，最多4个。镜头从1编号；预览保存在重制工作区。", {
+        "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
+        "cut_revision": prop("integer", minimum=0),
+        "shots": prop("array", minItems=1, maxItems=4, items=prop("object", properties={
+            "number": prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS),
+            "view": prop("string", enum=sorted(video_remake.VIEWS)), "note": prop("string", maxLength=800),
+        }, required=["number"], additionalProperties=False)),
+    }, ["node_id", "person", "asset_id", "cut_revision", "shots"])
 
 
 def video_node(s, run, user, nid, *, allow_film=False):
@@ -197,6 +206,8 @@ async def execute(s, run, user, cid, name, args):
         return await map_remake(s, run, user, args)
     if name == "video_remake_locate":
         return await locate_remake(s, run, user, args)
+    if name == "video_remake_preview":
+        return await preview_remake(s, run, user, cid, args)
     frames, data, original = args.get("frames", []), {}, None
     prompt = args.get("prompt", "")
     if name == "video_regenerate":
@@ -310,6 +321,66 @@ async def locate_remake(s, run, user, args):
         result["remake"].update(shot_number=suggested["number"], shot_start=suggested["start"])
     result["text"] = (f"{len(located)} 个镜头已标出候选位置，请在工作区核对。" if located else
                       "本次未新增候选位置，可在工作区查看已有标记或手动选择。")
+    return result
+
+
+async def preview_remake(s, run, user, cid, args):
+    nid = args["node_id"]
+    key = remake_source(s, run, user, nid)
+    session = video_remake.load(key)
+    mapping = (session or {}).get("mapping")
+    if not mapping or mapping["source"] != args["person"] or mapping["asset"] != args["asset_id"]:
+        raise ValueError("请先读取或保存当前视频版本的人物映射")
+    if session.get("cut_revision", 0) != args["cut_revision"]:
+        raise ValueError("剪辑点已更新，请重新读取视频重制状态")
+    indices = [item["number"] - 1 for item in args["shots"]]
+    if len(set(indices)) != len(indices) or any(index not in mapping["shots"] for index in indices):
+        raise ValueError("请选择人物映射内的镜头，且每个镜头只提交一次")
+
+    requests, needs_selection, kept = [], [], []
+    for index, item in zip(indices, args["shots"]):
+        shot = session["shots"][index]
+        frame_key = video_remake.start_preview_key(shot, mapping)
+        if shot.get("keep_original"):
+            kept.append(index)
+        elif not frame_key or not video_remake.person_selection(shot["frames"][frame_key], mapping):
+            needs_selection.append(index)
+        else:
+            requests.append({"shot": index, "frame": frame_key, "view": item.get("view", "main"),
+                             "note": item.get("note", "")})
+
+    outcome = {"submitted": [], "skipped": [], "failed": []}
+    if requests:
+        s.begin_generation(run, cid, "image", len(requests))
+        session = await apply_remake_action(s, user, nid, key, {
+            "action": "batch_previews", "person": args["person"], "asset": args["asset_id"],
+            "shots": requests, "cut_revision": args["cut_revision"],
+        })
+        outcome = session["batch_previews"]
+        if outcome["skipped"]:
+            run["data"]["generated"] -= len(outcome["skipped"])
+            s.update(run)
+
+    result = remake_status(s.host, nid, key, session)
+    submitted = outcome["submitted"]
+    result["preview"] = {
+        "submitted": [index + 1 for index in submitted],
+        "skipped": [index + 1 for index in sorted(kept + outcome["skipped"])],
+        "needs_selection": [index + 1 for index in needs_selection],
+        "failed": [{"shot": item["shot"] + 1, "error": item["error"]} for item in outcome["failed"]],
+    }
+    targets = submitted or needs_selection or outcome["skipped"]
+    if targets:
+        index = targets[0]
+        result["remake"].update(shot_number=index + 1, shot_start=session["shots"][index]["start"])
+        frame = video_remake.start_preview_key(session["shots"][index], mapping)
+        if frame:
+            result["remake"]["frame"] = frame
+    result["text"] = f"已提交 {len(submitted)} 个镜头的换角预览。"
+    if needs_selection:
+        result["text"] += f"另有 {len(needs_selection)} 个镜头需要先确认选区。"
+    if outcome["failed"]:
+        result["text"] += f"{len(outcome['failed'])} 个镜头提交失败。"
     return result
 
 

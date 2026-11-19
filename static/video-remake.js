@@ -16,7 +16,7 @@ async function remakeRequest(url, data) {
   return result;
 }
 
-async function openVideoRemake(video, {shotStart: initialShotStart} = {}) {
+async function openVideoRemake(video, {shotStart: initialShotStart, frame: initialFrame} = {}) {
   const source = curV(video);
   if (!source?.ref) return toast("请先上传或生成视频");
   await flushSave();
@@ -1268,7 +1268,8 @@ async function openVideoRemake(video, {shotStart: initialShotStart} = {}) {
       const index = session?.shots.findIndex(shot => shot.start === initialShotStart);
       if (index >= 0) {
         shotIndex = index;
-        player.currentTime = initialShotStart;
+        if (initialFrame && Object.hasOwn(currentShot().frames, initialFrame)) frameKey = initialFrame;
+        player.currentTime = currentFrame().at ?? initialShotStart;
       } else {
         status("剪辑点已变更，请在镜头列表中重新选择。");
       }
