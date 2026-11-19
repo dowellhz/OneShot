@@ -682,24 +682,29 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         protected = await act("select", layer="protection", rect=[.58,.55,.72,.72])
         protection_mask = protected["shots"][0]["frames"]["first"]["protection"]["mask"]
         await act("clear_protection", frame=correction)
+        original_only = (await act("capture_correction", at=1.125))["captured_frame"]
+        selected = await act("select", frame=original_only, rect=[.375,.25,.875,.75])
+        original_only_mask = selected["shots"][0]["frames"][original_only]["selection"]["mask"]
         advance = video_matte.MaskTrack.advance
         failed_forward = []
 
         def lose_forward_track(track, image, index):
-            if index == 18 and image.ndim == 3 and image[0, 0, 0] > image[0, 0, 1] and track.initial_area >= 512:
-                failed_forward.append(index)
+            if index == 18 and image.ndim == 3 and track.initial_area >= 512:
+                failed_forward.append("original" if image[0, 0, 0] > image[0, 0, 1] else "replacement")
                 raise ValueError("forward tracking lost the subject")
             advance(track, image, index)
 
         with patch.object(video_matte.MaskTrack, "advance", lose_forward_track):
             local = await act("localize", job="shot-gen-2")
             localized = local["shots"][0]["videos"][-1]
-            self.assertEqual(localized["corrections"], {"24":corrected_mask, "30":None, "36":return_mask})
+            self.assertEqual(localized["corrections"], {"24":corrected_mask, "27":original_only_mask, "30":None, "36":return_mask})
+            self.assertEqual(localized["replacement_corrections"], {"24":corrected_mask, "30":None, "36":return_mask})
             self.assertEqual(localized["protections"], {"0":protection_mask, "24":None})
             local_job = localized["job"]
             await act("remove_correction", frame=correction)
+            await act("remove_correction", frame=original_only)
             await self.wait_for_render(local_job)
-        self.assertEqual(failed_forward, [18])
+        self.assertEqual(failed_forward, ["original", "replacement"])
         approved = await act("approve_video", job=local_job)
         self.assertEqual(approved["export_review"], {"adopted":1, "remaining":[]})
         reassigned = await act("map_person", person="另一人", asset=asset["id"], shots=[0])

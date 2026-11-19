@@ -882,22 +882,25 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
 
     start_tick = round(start * host.film.FPS)
     corrections = {0: None} if starts_absent else {}
+    replacement_corrections = dict(corrections)
     guides = {guide["tick"]: guide["ref"] for guide in generated.get("guides", [])}
     absent = starts_absent
     for frame in correction_frames(shot):
         tick = frame["correction_tick"] - start_tick
         if person_absent(frame, mapping):
             corrections[tick] = None
+            replacement_corrections[tick] = None
             absent = True
             continue
         selection = person_selection(frame, mapping)
         if not selection:
             continue
-        if absent:
-            guide_ref = guides.get(tick)
-            if not guide_ref or not any(p.get("ref") == guide_ref and p.get("mask") == selection["mask"]
-                                       for p in frame["previews"]):
-                fail(f"原片 {frame['correction_tick'] / host.film.FPS:.2f} 秒人物重新入画，请采用此帧为动作关键帧并重新生成镜头视频")
+        guide_ref = guides.get(tick)
+        if guide_ref and any(p.get("ref") == guide_ref and p.get("mask") == selection["mask"]
+                             for p in frame["previews"]):
+            replacement_corrections[tick] = selection["mask"]
+        elif absent:
+            fail(f"原片 {frame['correction_tick'] / host.film.FPS:.2f} 秒人物重新入画，请采用此帧为动作关键帧并重新生成镜头视频")
         corrections[tick] = selection["mask"]
         absent = False
     if entry_tick and next((tick for tick, ref in corrections.items() if ref), None) != entry_tick:
@@ -911,7 +914,7 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
     def composite(progress, cancelled):
         return video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], mask,
                                           start, end, progress, cancelled, corrections=corrections,
-                                          protections=protections, display=display)
+                                          replacement_corrections=replacement_corrections, protections=protections, display=display)
 
     response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
     version = submitted_job(response)
@@ -920,7 +923,7 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
                    asset=generated["asset"], source_person=generated.get("source_person"),
                    motion=generated.get("motion", ""), guides=generated.get("guides", []),
                    prompt=generated.get("prompt", ""), generation=generated.get("generation", {}),
-                   corrections=corrections, protections=protections)
+                   corrections=corrections, replacement_corrections=replacement_corrections, protections=protections)
     videos.append(version)
 
 

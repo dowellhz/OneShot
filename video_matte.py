@@ -107,6 +107,23 @@ def reconcile_masks(forward, reverse, weight, cv):
     return np.where(blend > 0, 255, 0).astype("uint8")
 
 
+def follow_mask(track, image, index, fallback, cv):
+    if track is not None:
+        try:
+            track.advance(image, index)
+        except ValueError:
+            if fallback is None:
+                raise
+            track = None
+    if fallback is None and track is None:
+        raise ValueError("无法从任一校正帧跟踪人物")
+    height, width = image.shape[:2]
+    if fallback is None:
+        return track, track.at_size(width, height)
+    merged = reconcile_masks(track.mask if track is not None else None, *fallback, cv)
+    return track, cv.resize(merged, (width, height), interpolation=cv.INTER_NEAREST)
+
+
 def mask_center(mask):
     xs = np.flatnonzero(np.any(mask, axis=0))
     ys = np.flatnonzero(np.any(mask, axis=1))
@@ -135,7 +152,7 @@ def composite_frame(original, replacement, original_mask, replacement_mask, cv, 
 
 
 def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled, *,
-                   corrections=None, protections=None, display=True):
+                   corrections=None, replacement_corrections=None, protections=None, display=True):
     import av
     try:
         import cv2 as cv
@@ -159,18 +176,31 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
 
     mask = load_mask(mask_ref)
     corrections = corrections or {}
+    replacement_corrections = replacement_corrections or {}
     protections = protections or {}
-    anchors = sorted({0, *corrections})
-    intervals = [(left, right) for left, right in zip(anchors, anchors[1:])
-                 if right - left > 1 and corrections.get(left, mask_ref) and corrections[right]]
-    preparation = 2 * intervals[-1][1] + 1 if intervals else 0
-    work = preparation + total
-    backward = {}
-    if intervals:
-        backward = backward_masks(original, start, end, tracking_shape(width, height), fit,
-                                  intervals, corrections, load_mask, cv, lambda done: progress(done, work), cancelled,
-                                  display=display)
-        progress(preparation, work)
+
+    passes = []
+    for path, begin, finish, marks in (
+        (original, start, end, corrections), (replacement, 0, total / render.FPS, replacement_corrections)
+    ):
+        anchors = sorted({0, *marks})
+        intervals = [(left, right) for left, right in zip(anchors, anchors[1:])
+                     if right - left > 1 and marks.get(left, mask_ref) and marks[right]]
+        budget = 2 * intervals[-1][1] + 1 if intervals else 0
+        passes.append((path, begin, finish, marks, intervals, budget))
+    work = total + sum(item[-1] for item in passes)
+    preparation = 0
+    reverse_tracks = []
+    for path, begin, finish, marks, intervals, budget in passes:
+        backward = {}
+        if intervals:
+            backward = backward_masks(path, begin, finish, tracking_shape(width, height), fit,
+                                      intervals, marks, load_mask, cv,
+                                      lambda done: progress(preparation + done, work), cancelled, display=display)
+            preparation += budget
+            progress(preparation, work)
+        reverse_tracks.append(backward)
+    original_backward, replacement_backward = reverse_tracks
     foreground_track = None
     original_track = replacement_track = None
     absent = False
@@ -186,6 +216,7 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
             for index, (a, b) in enumerate(zip(originals, replacements, strict=True)):
                 if cancelled():
                     raise render.Cancelled()
+                entering = absent
                 if index in corrections:
                     absent = corrections[index] is None
                     if absent:
@@ -195,29 +226,22 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
                         original_mask = mask if index == 0 else load_mask(corrections[index])
                         original_track = MaskTrack(a, original_mask, cv)
                     else:
-                        tail = backward.get(index)
-                        if original_track is not None:
-                            try:
-                                original_track.advance(a, index)
-                            except ValueError as error:
-                                if tail is None:
-                                    at = start + index / render.FPS
-                                    raise ValueError(f"原片 {at:.2f} 秒的人物选区失稳，请在附近添加校正帧") from error
-                                original_track = None
-                        if tail is not None:
-                            forward = original_track.mask if original_track is not None else None
-                            merged = reconcile_masks(forward, *tail, cv)
-                            original_mask = cv.resize(merged, (width, height), interpolation=cv.INTER_NEAREST)
-                        elif original_track is not None:
-                            original_mask = original_track.at_size(width, height)
-                        else:
-                            raise ValueError(f"第 {index / render.FPS:.1f} 秒的遮罩无法跟踪，请添加附近的校正帧")
-                    if replacement_track is None:
-                        replacement_mask = original_mask
+                        try:
+                            original_track, original_mask = follow_mask(original_track, a, index, original_backward.get(index), cv)
+                        except ValueError as error:
+                            at = start + index / render.FPS
+                            raise ValueError(f"原片 {at:.2f} 秒的人物选区失稳，请在附近添加校正帧") from error
+                    ref_at_guide = replacement_corrections.get(index)
+                    if index == 0 or entering or ref_at_guide:
+                        replacement_mask = load_mask(ref_at_guide) if ref_at_guide else original_mask
                         replacement_track = MaskTrack(b, replacement_mask, cv)
                     else:
-                        replacement_track.advance(b, index)
-                        replacement_mask = replacement_track.at_size(width, height)
+                        try:
+                            replacement_track, replacement_mask = follow_mask(
+                                replacement_track, b, index, replacement_backward.get(index), cv)
+                        except ValueError as error:
+                            at = start + index / render.FPS
+                            raise ValueError(f"原片 {at:.2f} 秒对应的生成角色跟踪失稳，请在附近添加动作关键帧后重新生成") from error
                 try:
                     if index in protections:
                         ref_at_frame = protections[index]
