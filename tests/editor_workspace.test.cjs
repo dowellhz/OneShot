@@ -487,7 +487,7 @@ async function run(){
   const operation=options.body&&JSON.parse(options.body);
   if(operation?.action==='analyze'){
    const frame={ref:'input:h3studio/remake-frame.png',w:640,h:480,previews:[]};
-   remakeSession={shots:[{start:0,end:3,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
+   remakeSession={shots:[{start:.5,end:3.5,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
   }
   const frame=remakeSession?.shots[0].frames.first;
   if(operation?.action==='map_person'){
@@ -556,6 +556,19 @@ async function run(){
  evaluate(`const motionField=$("#videoRemake [data-motion]");motionField.value="第一秒回头";motionField.dispatchEvent(new Event("input"));$("#videoRemake [data-generate-video]").click()`);
  await ready('!!$("#videoRemake [data-result]").getAttribute("src")','remade video can be reviewed in workspace');
  assert.equal(remakeMotion,'第一秒回头');
+ evaluate(`const comparedSource=$("#videoRemake .rm-source video"), comparedResult=$("#videoRemake [data-result]");
+  for(const media of [comparedSource, comparedResult]) {
+   let paused=true;
+   Object.defineProperty(media,"paused",{get:()=>paused});
+   media.play=()=>{paused=false;return Promise.resolve()};
+   media.pause=()=>{paused=true};
+  }
+  $("#videoRemake [data-compare]").click();`);
+ equal(evaluate('[comparedSource.currentTime, comparedSource.muted, comparedResult.muted]'),[.5,false,true],'compare begins at shot start and uses only the original soundtrack');
+ evaluate('comparedResult.currentTime=1.25;comparedResult.dispatchEvent(new Event("seeking"));comparedResult.dispatchEvent(new Event("seeked"))');
+ equal(evaluate('[comparedSource.currentTime, comparedSource.paused]'),[1.75,false],'seeking the remake seeks the corresponding original timestamp');
+ evaluate('comparedResult.currentTime=3;comparedResult.dispatchEvent(new Event("timeupdate"))');
+ equal(evaluate('[comparedSource.paused,comparedResult.paused]'),[true,true],'comparison stops at the original cut');
  evaluate('$("#videoRemake video").currentTime=1;$("#videoRemake [data-capture-correction]").click()');
  await ready('$("#videoRemake [data-frame]").value==="correction-24" && !$("#videoRemake .rm-role").hidden','correction frame offers role preview generation');
  evaluate('$("#videoRemake [data-clear-protection]").click()');

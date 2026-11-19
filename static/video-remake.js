@@ -81,10 +81,12 @@ async function openVideoRemake(video) {
   panel.showModal ? panel.showModal() : panel.setAttribute("open", "");
   const el = selector => panel.querySelector(selector);
   const player = el("video");
+  const result = el("[data-result]");
   player.src = remakeMedia(source.ref);
   let session = null, assets = [], shotIndex = 0, frameKey = "first", mode = "point", versionId = null;
   let busy = true, dragStart = null, timer = null, revision = 0;
   let videoId = null, originalEnd = null;
+  let comparison = null;
   const motionDrafts = new Map();
   const viewChoices = new Map();
   const inScope = index => !session?.mapping || session.mapping.shots.includes(index);
@@ -99,7 +101,9 @@ async function openVideoRemake(video) {
   const currentFrame = () => currentShot()?.frames[frameKey];
   function close() {
     clearTimeout(timer);
+    stopComparison();
     if (!player.paused) player.pause();
+    if (!result.paused) result.pause();
     panel.remove();
   }
   el("[data-close]").onclick = close;
@@ -113,6 +117,83 @@ async function openVideoRemake(video) {
       originalEnd = null;
     }
   };
+  function stopComparison() {
+    if (!comparison) return;
+    const {sourceMuted, resultMuted, sourceRate, frameCallback} = comparison;
+    comparison = null;
+    if (frameCallback != null) result.cancelVideoFrameCallback(frameCallback);
+    player.pause();
+    result.pause();
+    player.controls = true;
+    player.muted = sourceMuted;
+    player.playbackRate = sourceRate;
+    result.muted = resultMuted;
+    const control = el("[data-compare]");
+    if (control) control.textContent = "原声对照播放";
+  }
+
+  function syncComparison(force = false) {
+    if (!comparison) return;
+    const {start, end} = comparison;
+    if (result.currentTime >= end - start) {
+      stopComparison();
+      return;
+    }
+    const at = start + result.currentTime;
+    if (force || (!player.seeking && Math.abs(player.currentTime - at) > .12)) player.currentTime = at;
+  }
+
+  function playComparison(media, playback) {
+    media.play().catch(error => {
+      if (comparison !== playback || error.name === "AbortError") return;
+      stopComparison();
+      status(error.message || "无法播放原声对照");
+    });
+  }
+
+  function toggleComparison(shot, sourceUrl) {
+    if (comparison) {
+      stopComparison();
+      return;
+    }
+    const playback = comparison = {
+      start: shot.start, end: shot.end, sourceUrl,
+      sourceMuted: player.muted, resultMuted: result.muted, sourceRate: player.playbackRate,
+    };
+    originalEnd = null;
+    player.controls = false;
+    player.muted = false;
+    result.muted = true;
+    player.playbackRate = result.playbackRate;
+    result.currentTime = 0;
+    syncComparison(true);
+    el("[data-compare]").textContent = "停止原声对照";
+    playComparison(result, playback);
+    playComparison(player, playback);
+    if (result.requestVideoFrameCallback) {
+      const onFrame = () => {
+        syncComparison();
+        if (comparison === playback) playback.frameCallback = result.requestVideoFrameCallback(onFrame);
+      };
+      playback.frameCallback = result.requestVideoFrameCallback(onFrame);
+    }
+  }
+
+  result.ontimeupdate = () => syncComparison();
+  result.onseeking = () => {
+    if (!comparison) return;
+    player.pause();
+    syncComparison(true);
+  };
+  result.onplaying = result.onseeked = () => {
+    const playback = comparison;
+    if (!playback || result.paused || result.seeking) return;
+    syncComparison();
+    if (comparison && player.paused) playComparison(player, playback);
+  };
+  result.onpause = result.onwaiting = () => { if (comparison) player.pause(); };
+  result.onended = result.onerror = player.onerror = stopComparison;
+  result.onratechange = () => { if (comparison) player.playbackRate = result.playbackRate; };
 
   function suggestedView(asset, shot) {
     const summary = shot?.summary || {};
@@ -222,6 +303,7 @@ async function openVideoRemake(video) {
           chosen && matchesPerson(chosen) ? " · 已采用视频" : Object.values(item.frames).some(f => f.approved) ? " · 已采用预览" : "");
       card.onclick = () => {
         if (busy) return;
+        stopComparison();
         shotIndex = i;
         frameKey = "first";
         versionId = null;
@@ -335,11 +417,11 @@ async function openVideoRemake(video) {
     el("[data-generate-video]").disabled = busy || !inScope(shotIndex) || !firstApproved || videos.some(active);
     el("[data-generate-video]").textContent = latest ? "重试镜头视频" : "生成镜头视频";
     el(".rm-video-result").hidden = !selected;
-    const output = el("[data-result]");
     const source = selected?.ref ? remakeMedia(selected.ref) : "";
-    output.hidden = !source;
-    if (source && output.getAttribute("src") !== source) output.src = source;
-    else if (!source) output.removeAttribute("src");
+    if (comparison && comparison.sourceUrl !== source) stopComparison();
+    result.hidden = !source;
+    if (source && result.getAttribute("src") !== source) result.src = source;
+    else if (!source) result.removeAttribute("src");
     el(".rm-video-status").textContent = selected?.error || (selected && active(selected)
       ? selected.mode === "local" ? "正在跟踪人物并合成…" : "正在处理镜头视频…" : "");
     const review = el(".rm-video-review");
@@ -354,10 +436,17 @@ async function openVideoRemake(video) {
       select.value = selected.job;
       select.onchange = () => { videoId = select.value; renderVideo(); };
       review.append(select, button("播放原镜头", () => {
+        stopComparison();
+        if (!result.paused) result.pause();
         originalEnd = shot.end;
         player.currentTime = shot.start;
         player.play().catch(error => status(error.message));
       }, busy));
+      if (source) {
+        const compare = button(comparison ? "停止原声对照" : "原声对照播放", () => toggleComparison(shot, source), busy);
+        compare.dataset.compare = "";
+        review.append(compare);
+      }
       if (source && (shot.adopted_video !== selected.job || shot.keep_original)) {
         review.append(button("采用此视频", () => change("approve_video", {job:selected.job}),
           busy || !inScope(shotIndex) || !matchesPerson(selected)));
@@ -473,12 +562,14 @@ async function openVideoRemake(video) {
   };
   el("[data-clear-mapping]").onclick = () => change("remove_mapping");
   el("[data-frame]").onchange = event => {
+    stopComparison();
     frameKey = event.target.value;
     versionId = null;
     if (Number.isFinite(currentFrame().at)) player.currentTime = currentFrame().at;
     renderPanel();
   };
   el("[data-capture-correction]").onclick = () => {
+    stopComparison();
     if (!player.paused) player.pause();
     change("capture_correction", {at:player.currentTime});
   };

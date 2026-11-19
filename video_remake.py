@@ -342,12 +342,14 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
     prompt = (
         f"从输入首帧开始。角色的身份、服装、光线和周围场景与首帧一致。"
         f"用原镜头的机位与节奏，在前 {length:g} 秒完成镜头动作。"
+        "原片人物说话时，保留发言时的口部动作和停顿，供后续与原声合成。"
         + (motion.replace("@", "＠") if motion else "沿用首帧构图，保持动作自然。")
     )[:3000]
     raw = {
         "kind": "video", "board": key[1], "label": "镜头重制 · " + approved["asset"]["name"],
         "prompt": prompt, "duration": max(2, length), "ar": first["w"] / first["h"], "quality": "std",
-        "count": 1, "mode": "fl2v", "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
+        "count": 1, "mode": "fl2v", "_preserve_speech_motion": True,
+        "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
     }
     start_tick = round(shot["start"] * host.film.FPS)
     guides = []

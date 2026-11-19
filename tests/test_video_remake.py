@@ -115,7 +115,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertTrue(kept["shots"][0]["keep_original"])
 
     async def test_reviewed_shot_export_keeps_source_cut_and_continuous_audio(self):
-        source = self.make_clip("original", seconds=4, color=(210, 30, 30), frequency=440)
+        source = self.make_clip("original", seconds=4, color=(210, 30, 30), frequency=440, audio_delay=.5)
         remake = self.make_clip("replacement", seconds=3, color=(30, 210, 30), frequency=880)
         too_short = self.make_clip("short", seconds=1, color=(30, 30, 210), frequency=880)
         board = {"owner": 7, "nodes": [{"id":"n3", "type":"video", "versions":[{"ref":source}]}]}
@@ -165,6 +165,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             await act("generate_video", motion="第一秒回头")
             self.assertEqual(requests[0]["images"][0]["ref"], self.source["ref"])
             self.assertIn("第一秒回头", requests[0]["prompt"])
+            self.assertIn("口部动作和停顿", requests[0]["prompt"])
+            _, normal = server.graph_video({**requests[0], "_preserve_speech_motion": False})
+            _, remake_prompt = server.graph_video(requests[0])
+            self.assertIn(server.NO_SPEECH, normal["full_prompt"])
+            self.assertNotIn(server.NO_SPEECH, remake_prompt["full_prompt"])
             with self.assertRaises(web.HTTPBadRequest):
                 await act("approve_video", job="shot-gen-1")
             with self.assertRaises(web.HTTPBadRequest):
@@ -233,6 +238,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertGreater(frames[24][40,41,1], frames[24][40,41,0])
         self.assertGreater(frames[48][32,32,0], frames[48][32,32,1])
         audio = server.film.read_audio(path)[0]
+        self.assertLess(np.max(np.abs(audio[:int(server.film.SR * .4)])), .01)
+        self.assertGreater(np.max(np.abs(audio[int(server.film.SR * .6):server.film.SR])), .1)
         for t in (1, 3):
             chunk = audio[t * server.film.SR:(t + 1) * server.film.SR]
             frequency = np.argmax(np.abs(np.fft.rfft(chunk)))
@@ -279,7 +286,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertGreater(result[32,39,1], 170)
 
     @staticmethod
-    def make_clip(name, seconds, color, frequency):
+    def make_clip(name, seconds, color, frequency, audio_delay=0):
         path, ref = server.tools._new(server.COMFY_DIR, "input", name, ".mp4")
         rate = server.film.SR
         with av.open(str(path), "w") as clip:
@@ -300,7 +307,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                 frame = av.AudioFrame.from_ndarray(np.stack([samples, samples]), format="fltp", layout="stereo")
                 frame.sample_rate = rate
                 frame.time_base = Fraction(1, rate)
-                frame.pts = i
+                frame.pts = i + round(audio_delay * rate)
                 for packet in audio.encode(frame):
                     clip.mux(packet)
             for packet in audio.encode():

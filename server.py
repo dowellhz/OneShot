@@ -338,7 +338,9 @@ def no_speech_guard(full: str) -> str:
 
 def graph_video(p: dict):
     g, meta = _graph_video(p)
-    full = no_speech_guard(meta["full_prompt"])
+    full = meta["full_prompt"]
+    if p.get("_preserve_speech_motion") is not True:
+        full = no_speech_guard(full)
     if "5" in g and "prompt" in g["5"].get("inputs", {}):
         g["5"]["inputs"]["prompt"] = full
     meta["full_prompt"] = full
@@ -972,6 +974,7 @@ async def generate(req):
     # Only the validated editor endpoint may provide a compositing specification.
     raw.pop("_image_edit", None)
     raw.pop("_native_inpaint", None)
+    raw.pop("_preserve_speech_motion", None)
     return await generate_request(req, raw)
 
 
