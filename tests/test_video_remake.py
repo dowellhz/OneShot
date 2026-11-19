@@ -289,13 +289,24 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         protected = await act("select", layer="protection", rect=[.58,.55,.72,.72])
         protection_mask = protected["shots"][0]["frames"]["first"]["protection"]["mask"]
         await act("clear_protection", frame=correction)
-        local = await act("localize", job="shot-gen-2")
-        localized = local["shots"][0]["videos"][-1]
-        self.assertEqual(localized["corrections"], {"24":corrected_mask})
-        self.assertEqual(localized["protections"], {"0":protection_mask, "24":None})
-        local_job = localized["job"]
-        await act("remove_correction", frame=correction)
-        await self.wait_for_render(local_job)
+        advance = video_matte.MaskTrack.advance
+        failed_forward = []
+
+        def lose_forward_track(track, image, index):
+            if index == 18 and image.ndim == 3 and image[0, 0, 0] > image[0, 0, 1] and track.initial_area >= 512:
+                failed_forward.append(index)
+                raise ValueError("forward tracking lost the subject")
+            advance(track, image, index)
+
+        with patch.object(video_matte.MaskTrack, "advance", lose_forward_track):
+            local = await act("localize", job="shot-gen-2")
+            localized = local["shots"][0]["videos"][-1]
+            self.assertEqual(localized["corrections"], {"24":corrected_mask})
+            self.assertEqual(localized["protections"], {"0":protection_mask, "24":None})
+            local_job = localized["job"]
+            await act("remove_correction", frame=correction)
+            await self.wait_for_render(local_job)
+        self.assertEqual(failed_forward, [18])
         await act("approve_video", job=local_job)
         await act("map_person", person="另一人", asset=asset["id"], shots=[0])
         with self.assertRaises(web.HTTPBadRequest):
@@ -318,7 +329,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(len(frames), 4 * server.film.FPS)
         self.assertGreater(frames[47][32,32,1], frames[47][32,32,0])
         self.assertGreater(frames[47][0,0,0], frames[47][0,0,1])
-        self.assertGreater(frames[23][32,19,1], frames[23][32,19,0])
+        self.assertGreater(frames[6][32,19,1], frames[6][32,19,0])
+        self.assertGreater(frames[17][32,19,0], frames[17][32,19,1])
+        self.assertGreater(frames[23][32,19,0], frames[23][32,19,1])
         self.assertGreater(frames[24][32,19,0], frames[24][32,19,1])
         self.assertGreater(frames[23][40,41,0], frames[23][40,41,1])
         self.assertGreater(frames[24][40,41,1], frames[24][40,41,0])
