@@ -30,6 +30,8 @@ async function openVideoRemake(video) {
     <details class="rm-tasks" hidden><summary data-task-summary></summary><ul data-task-list></ul></details></div>
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
+        <div class="rm-actions" data-playback hidden><span class="rm-analysis" data-playback-status role="status"></span>
+          <button type="button" data-prepare-playback>生成播放预览</button></div>
         <div class="rm-actions"><button type="button" data-analyze>分析原片</button><span class="rm-analysis"></span>
           <button type="button" data-batch-locate hidden title="在已映射的镜头首帧标出人物位置，供逐镜确认">批量定位人物</button>
           <button type="button" data-batch-previews hidden title="为已确认映射且已圈出人物的镜头生成首帧或首次入画帧">批量生成起始帧</button>
@@ -117,6 +119,7 @@ async function openVideoRemake(video) {
   let busy = true, dragStart = null, timer = null, revision = 0;
   let videoId = null, originalEnd = null;
   let comparison = null;
+  let playbackError = false, restorePlaybackTime = 0;
   let liveJobs = {};
   const cancelling = new Set();
   const drafts = new Map();
@@ -251,7 +254,20 @@ async function openVideoRemake(video) {
     if (comparison && player.paused) playComparison(player, playback);
   };
   result.onpause = result.onwaiting = () => { if (comparison) player.pause(); };
-  result.onended = result.onerror = player.onerror = stopComparison;
+  result.onended = result.onerror = stopComparison;
+  player.onerror = () => {
+    stopComparison();
+    playbackError = true;
+    renderPanel();
+  };
+  player.onloadedmetadata = () => {
+    playbackError = false;
+    if (restorePlaybackTime > 0 && Number.isFinite(player.duration)) {
+      player.currentTime = Math.min(restorePlaybackTime, player.duration);
+    }
+    restorePlaybackTime = 0;
+    renderPanel();
+  };
   result.onratechange = () => { if (comparison) player.playbackRate = result.playbackRate; };
 
   function suggestedView(asset, shot) {
@@ -517,6 +533,7 @@ async function openVideoRemake(video) {
 
   function renderPanel() {
     if (!panel.isConnected) return;
+    renderPlayback();
     const shots = session?.shots || [];
     el("[data-analyze]").hidden = !!shots.length;
     el("[data-analyze]").disabled = busy;
@@ -573,7 +590,7 @@ async function openVideoRemake(video) {
     options.value = frameKey;
     const isCorrection = Number.isInteger(frame.correction_tick);
     const absent = personAbsent(frame);
-    el("[data-capture-correction]").disabled = busy;
+    el("[data-capture-correction]").disabled = busy || playbackError;
     el("[data-remove-correction]").hidden = !isCorrection;
     el("[data-remove-correction]").disabled = busy;
     const absence = el("[data-absence]");
@@ -653,6 +670,25 @@ async function openVideoRemake(video) {
     renderVideo();
   }
 
+  function renderPlayback() {
+    const playback = session?.playback;
+    const playingUrl = playback?.ref ? remakeMedia(playback.ref) : "";
+    if (playingUrl && player.getAttribute("src") !== playingUrl) {
+      stopComparison();
+      restorePlaybackTime = player.currentTime;
+      player.src = playingUrl;
+    }
+    const converting = !!playback && active(playback);
+    const controls = el("[data-playback]");
+    controls.hidden = !playbackError && !converting;
+    el("[data-playback-status]").textContent = converting ? "正在生成浏览器可播放的预览…" :
+      playback?.error || (playingUrl ? "播放预览暂不可用，可继续从已提取的画面操作。" : "浏览器无法播放原片，可生成兼容的播放预览。");
+    const convert = el("[data-prepare-playback]");
+    convert.hidden = !playbackError || converting;
+    convert.disabled = busy;
+    convert.textContent = playback?.error || playingUrl ? "重试播放预览" : "生成播放预览";
+  }
+
   function renderCutControls() {
     const shot = currentShot();
     el(".rm-cuts").hidden = !shot;
@@ -662,7 +698,7 @@ async function openVideoRemake(video) {
     const end = Math.round(shot.end * RM_FPS);
     const previous = Math.round((session.shots[shotIndex - 1]?.start || 0) * RM_FPS);
     el("[data-cut-time]").textContent = `${(at / RM_FPS).toFixed(2)} 秒`;
-    const locked = busy || !!session.export && active(session.export);
+    const locked = busy || playbackError || !!session.export && active(session.export);
     el('[data-cut="split_shot"]').disabled = locked || at <= start || at >= end;
     el('[data-cut="move_cut"]').disabled = locked || !shotIndex || at <= previous || at >= end || at === start;
     el('[data-cut="merge_shots"]').disabled = locked || !shotIndex;
@@ -727,9 +763,9 @@ async function openVideoRemake(video) {
         originalEnd = shot.end;
         player.currentTime = shot.start;
         player.play().catch(error => status(error.message));
-      }, busy));
+      }, busy || playbackError));
       if (source) {
-        const compare = button(comparison ? "停止原声对照" : "原声对照播放", () => toggleComparison(shot, source), busy);
+        const compare = button(comparison ? "停止原声对照" : "原声对照播放", () => toggleComparison(shot, source), busy || playbackError);
         compare.dataset.compare = "";
         review.append(compare);
       }
@@ -897,6 +933,7 @@ async function openVideoRemake(video) {
 
   function pendingTasks() {
     const tasks = [];
+    if (session?.playback && active(session.playback)) tasks.push({job:session.playback.job, label:"原片播放预览"});
     if (session?.export && active(session.export)) tasks.push({job:session.export.job, label:"成片合成"});
     for (const [index, shot] of (session?.shots || []).entries()) {
       const label = `镜头 ${index + 1}`;
@@ -990,6 +1027,9 @@ async function openVideoRemake(video) {
     status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",select:"正在处理选区…",locate_person:"正在识别原片人物…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
+      if (action === "prepare_playback" && session.playback?.ref && player.getAttribute("src") === remakeMedia(session.playback.ref)) {
+        player.load();
+      }
       if (["analyze", "map_person", "remove_mapping"].includes(action)) fillViews();
       if (action === "capture_correction" && session.captured_frame) {
         frameKey = session.captured_frame;
@@ -1030,6 +1070,7 @@ async function openVideoRemake(video) {
   }
 
   el("[data-analyze]").onclick = () => change("analyze");
+  el("[data-prepare-playback]").onclick = () => change("prepare_playback");
   el("[data-batch-locate]").onclick = () => {
     const shots = batchLocateShots();
     if (!shots.length) return;

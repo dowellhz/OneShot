@@ -103,6 +103,8 @@ def update_jobs(host, owner, session):
             sync_job(host, owner, video, VIDEO_EXT)
     if session.get("export"):
         sync_job(host, owner, session["export"], VIDEO_EXT)
+    if session.get("playback"):
+        sync_job(host, owner, session["playback"], VIDEO_EXT)
 
 
 def completed(versions, job):
@@ -1046,6 +1048,31 @@ async def export_video(req, host, key, session):
     session["export"].update(w=output_w, h=output_h, duration=seconds, clips=spec["clips"])
 
 
+async def prepare_playback(req, host, key, session):
+    playback = session.get("playback")
+    if playback and (pending([playback]) or (
+        playback.get("ref") and host.tools.ref_path(host.COMFY_DIR, playback["ref"]).is_file()
+    )):
+        return
+    path = host.tools.ref_path(host.COMFY_DIR, key[3])
+    display = session.get("display_oriented", True)
+    try:
+        _, _, duration, _ = await asyncio.to_thread(host.film.probe, path, display=False)
+    except Exception:
+        fail("无法解码原片，请重新上传视频")
+    frames = round(duration * host.film.FPS)
+    if frames <= 0 or duration > MAX_SECONDS:
+        fail(f"播放预览支持 {MAX_SECONDS} 秒以内、至少包含一帧的原片")
+    spec = {"clips": [{"ref": key[3], "in": 0, "out": duration, "frames": frames}], "subtitles": False}
+
+    def encode(progress, cancelled):
+        return host.film.render(host.COMFY_DIR, spec, progress, cancelled, source_audio=path,
+                                display=display, max_side=1280)
+
+    session["playback"] = submitted_job(host.enqueue_render(req, encode, seconds=duration,
+                                                           label="视频重制 · 播放预览", board=key[1]))
+
+
 def refresh_export_status(session, source, fps):
     export = session.get("export")
     if not export or not export.get("clips"):
@@ -1088,24 +1115,30 @@ async def handle(req, host):
         if session and data.get("cut_revision", 0) != session.get("cut_revision", 0):
             fail("剪辑点已更新，请重新打开视频重制界面", 409)
         if action == "analyze":
-            if session is None:
-                session = await analyze(req, host, source)
-        elif session and action == "export":
+            if not session or not session["shots"]:
+                session = {**(session or {}), **await analyze(req, host, source)}
+        elif action == "prepare_playback":
+            session = session or {"shots": []}
+            update_jobs(host, key[0], session)
+            await prepare_playback(req, host, key, session)
+        elif not session or not session["shots"]:
+            fail("请先分析原片")
+        elif action == "export":
             update_jobs(host, key[0], session)
             await export_video(req, host, key, session)
-        elif session and action == "map_person":
+        elif action == "map_person":
             set_mapping(req, board, session, data)
-        elif session and action == "remove_mapping":
+        elif action == "remove_mapping":
             session.pop("mapping", None)
-        elif session and action == "batch_locate_people":
+        elif action == "batch_locate_people":
             response[action] = await batch_locate_people(req, host, session, data)
-        elif session and action in ("batch_previews", "batch_videos"):
+        elif action in ("batch_previews", "batch_videos"):
             update_jobs(host, key[0], session)
             response[action] = await queue_shots(req, host, key, session, data)
-        elif session and action in CUT_ACTIONS:
+        elif action in CUT_ACTIONS:
             update_jobs(host, key[0], session)
             response["selected_shot"] = await edit_cuts(req, host, source, session, data)
-        elif session:
+        else:
             update_jobs(host, key[0], session)
             shot, frame = selected_frame(session, data)
             mapping = session.get("mapping")
@@ -1174,8 +1207,6 @@ async def handle(req, host):
                 shot["keep_original"] = True
             else:
                 fail("未知的视频重制操作")
-        else:
-            fail("请先分析原片")
         update_jobs(host, key[0], session)
         refresh_export_status(session, source, host.film.FPS)
         save(key, session)

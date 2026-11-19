@@ -300,10 +300,30 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             preview = image_editor.load(server.COMFY_DIR, previews[tick]["ref"])
             self.assertTrue(np.allclose(preview.getpixel((32, 32))[:3], color, atol=5))
 
-        spec = {"clips":[{"ref":source, "in":0, "out":duration, "frames":6}], "subtitles":False}
-        exported = await asyncio.to_thread(server.film.render, server.COMFY_DIR, spec, source_audio=path)
-        final = server.tools.ref_path(server.COMFY_DIR, exported["ref"])
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+
+        async def act(action=None):
+            request = Request(source, self.user, {"action":action} if action else None)
+            return json.loads((await server.remake(request)).body)
+
+        converting = await act("prepare_playback")
+        self.assertEqual(converting["shots"], [])
+        job = converting["playback"]["job"]
+        self.assertEqual((await act("prepare_playback"))["playback"]["job"], job)
+        task = await self.wait_for_render(job)
+        server.JOBS.pop(job)
+        ref = json.loads(task["outputs"])[0]
+        self.assertEqual((await act())["playback"]["ref"], ref)
+        with patch.object(server, "llm_call", side_effect=self.no_vision):
+            analyzed = await act("analyze")
+        self.assertEqual(analyzed["playback"]["ref"], ref)
+        self.assertEqual(analyzed["shots"][0]["end"], duration)
+        final = server.tools.ref_path(server.COMFY_DIR, ref)
         with av.open(str(final)) as result:
+            self.assertEqual(result.streams.video[0].codec_context.name, "h264")
+            self.assertEqual(result.streams.audio[0].codec_context.name, "aac")
             pixels = [frame.to_ndarray(format="rgb24")[32,32] for frame in result.decode(video=0)]
         self.assertEqual(len(pixels), 6)
         self.assertTrue(np.allclose(pixels, expected, atol=8))

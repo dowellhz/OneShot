@@ -484,6 +484,10 @@ async function run(){
  let remakeSession=null, remakeSelection, remakeOptions, remakeMotion, beforeSplit, remakeBatches=0;
  const reviewedMotion='第一秒回头\n固定机位\n镜头内 1.00 秒，抬起右手';
  w.fetch=async(url,options={})=>{
+  if(String(url).startsWith('/api/jobs?') && String(url).includes('playback-job')){
+   Object.assign(remakeSession.playback,{state:'done',ref:'output:h3studio/browser-playback.mp4'});
+   return {ok:true,json:async()=>({'playback-job':{state:'done'}})};
+  }
   if(String(url).startsWith('/api/jobs?') && String(url).includes('tracked-shot')){
    return {ok:true,json:async()=>({'tracked-shot':{state:'running',phase:'sampling',value:2,max:4}})};
   }
@@ -495,11 +499,14 @@ async function run(){
   }
   if(!String(url).startsWith('/api/video-remake/'))return previousFetch(url,options);
   const operation=options.body&&JSON.parse(options.body);
+  if(operation?.action==='prepare_playback'){
+   remakeSession={shots:[],playback:{job:'playback-job',state:'queued'}};
+  }
   if(operation?.action==='analyze'){
    const frame={ref:'input:h3studio/remake-frame.png',w:640,h:480,previews:[]};
-   remakeSession={session_node:'pendingVideo',shots:[{start:.5,end:3.5,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
+   remakeSession={...remakeSession,session_node:'pendingVideo',shots:[{start:.5,end:3.5,summary:{action:['缓慢转身'],characters:['人物 A'],shot_size:'面部特写'},frames:{first:frame,middle:structuredClone(frame)}}]};
   }
-  const frame=remakeSession?.shots[0].frames.first;
+  const frame=remakeSession?.shots[0]?.frames.first;
   if(operation?.action==='map_person'){
    remakeSession.mapping={source:operation.person,asset:operation.asset,asset_name:'林森新版',shots:operation.shots};
   }
@@ -606,6 +613,14 @@ async function run(){
  evaluate('ctxMenu({target:els.get("pendingVideo"),clientX:140,clientY:120})');
  evaluate(`document.querySelector('#ctxMenu [data-a="remake"]').click()`);
  await ready('$("#videoRemake [data-analyze]")?.disabled===false','remake workspace opens from video menu');
+ evaluate('$(".rm-source video").dispatchEvent(new Event("error"))');
+ equal(evaluate('!$("[data-playback]").hidden && !$("[data-prepare-playback]").disabled'),true,
+  'a browser decode error exposes the compatible playback action before analysis');
+ evaluate('$("[data-prepare-playback]").click()');
+ await ready('$("[data-task-summary]").textContent.includes("原片播放预览")','playback preview uses the task queue');
+ await ready('$(".rm-source video").src.includes("browser-playback.mp4")','finished playback preview replaces the player source',350);
+ evaluate('$(".rm-source video").dispatchEvent(new Event("loadedmetadata"))');
+ equal(evaluate('$("[data-playback]").hidden'),true,'loading the compatible video clears the playback error');
  evaluate('$("#videoRemake [data-analyze]").click()');
  await ready('!!$("#videoRemake .rm-shots button")','analyzed shot visible');
  evaluate(`const sourcePersonCheck=$("#videoRemake [data-person]");sourcePersonCheck.value="人物 A";sourcePersonCheck.dispatchEvent(new Event("change"));

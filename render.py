@@ -286,7 +286,7 @@ def original_pcm(path: Path, length: int):
 
 
 def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cancelled=lambda: False,
-           *, source_audio: Path | None = None, display=True) -> dict:
+           *, source_audio: Path | None = None, display=True, max_side=None) -> dict:
     import av
     import numpy as np
     from PIL import Image
@@ -306,6 +306,9 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
                      "trans": c.get("trans") or "cut", "vol": float(c.get("volume", 1.0)), "subs": c.get("subs") or [], "w": w, "h": h})
     w, h = probe(source_audio, display=display)[:2] if source_audio is not None else (info[0]["w"], info[0]["h"])
     W, H = target_size(w, h, spec.get("aspect") or "source")
+    if max_side and max(W, H) > max_side:
+        scale = max_side / max(W, H)
+        W, H = (max(2, round(side * scale / 2) * 2) for side in (W, H))
     fit = _fitter(W, H, spec.get("fit") or "pad")
     nt = max(1, int(round(TRANS * FPS)))
     # timeline layout: a fade overlaps the next clip by nt frames; a dip to black does not
