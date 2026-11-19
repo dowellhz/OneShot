@@ -160,7 +160,7 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
     mask = load_mask(mask_ref)
     corrections = corrections or {}
     protections = protections or {}
-    anchors = [0, *sorted(corrections)]
+    anchors = sorted({0, *corrections})
     intervals = [(left, right) for left, right in zip(anchors, anchors[1:])
                  if right - left > 1 and corrections.get(left, mask_ref) and corrections[right]]
     preparation = 2 * intervals[-1][1] + 1 if intervals else 0

@@ -578,6 +578,10 @@ async function run(){
    $("#videoRemake [data-map-asset]").value="char";$("#videoRemake [data-map-shots] input").checked=true;
    $("#videoRemake [data-save-mapping]").click()`);
  await ready('$("#videoRemake [data-role]").disabled && $(".rm-mapping-status").textContent.includes("人物 A → 林森")','confirmed cross-shot mapping binds role');
+ evaluate('$("[data-absence]").click()');
+ await ready('$(".rm-motion-hint").textContent.includes("首次入画的位置") && !$("[data-absence]").disabled','absent first frame prompts for an entry keyframe');
+ evaluate('$("[data-absence]").click()');
+ await ready('!$("[data-absence]").disabled && !$("[data-locate-person]").hidden','cancelling first-frame absence restores regular selection');
  evaluate('$("[data-locate-person]").click()');
  await ready('!$(".rm-person-point").hidden && $("[data-locate-person]").textContent==="按此位置选中"','model hint is visible before selection');
  assert.equal(evaluate('$(".rm-mask").hidden'),true);

@@ -601,13 +601,14 @@ async def queue_one_shot(req, host, key, shot, params, mapping, preview):
             return False
         await generate_preview(req, host, key, frame, params, mapping)
     else:
-        approved = completed(frame["previews"], frame.get("approved"))
-        if not approved or params["first_job"] != approved["job"] or not matches_mapping(approved, mapping):
-            fail("已采用的首帧有变更，请核对后重试", 409)
+        ref, approved, entry_tick = shot_start(shot, mapping, host.film.FPS)
+        if params["first_job"] != approved["job"]:
+            fail("已采用的起始帧有变更，请核对后重试", 409)
         videos = shot.get("videos", [])
-        guides = shot_guides(shot, approved, host.film.FPS, mapping)
+        guides = shot_guides(shot, approved, host.film.FPS, mapping, entry_tick)
         if pending(videos) or any(
-            v.get("ref") and matches_mapping(v, mapping) and v.get("first_frame") == approved["ref"] and
+            v.get("ref") and matches_mapping(v, mapping) and v.get("first_frame") == ref and
+            v.get("entry_tick", 0) == entry_tick and
             v.get("guides", []) == guides and v.get("motion", "") == params["motion"] for v in videos
         ):
             return False
@@ -622,26 +623,44 @@ def submitted_job(response):
     return {"job": ids[0], "state": "queued"}
 
 
-def shot_guides(shot, approved, fps, mapping=None):
-    start_tick = round(shot["start"] * fps)
-    guides = []
-    for frame in shot["frames"].values():
-        if "correction_tick" not in frame or person_absent(frame, mapping):
-            continue
-        preview = completed(frame["previews"], frame.get("approved"))
-        if (preview and preview["asset"]["id"] == approved["asset"]["id"] and
-                preview.get("source_person") == approved.get("source_person")):
-            guides.append({"tick": frame["correction_tick"] - start_tick, "ref": preview["ref"]})
-    return sorted(guides, key=lambda guide: guide["tick"])
+def correction_frames(shot):
+    return sorted((f for f in shot["frames"].values() if "correction_tick" in f), key=lambda f: f["correction_tick"])
 
 
-async def generate_shot(req, host, key, shot, data, mapping=None):
+def shot_start(shot, mapping, fps):
     first = shot["frames"]["first"]
+    if person_absent(first, mapping):
+        entry = next((frame for frame in correction_frames(shot) if person_selection(frame, mapping)), None)
+        if entry:
+            approved = completed(entry["previews"], entry.get("approved"))
+            if approved and matches_mapping(approved, mapping) and approved.get("mask") == person_selection(entry, mapping)["mask"]:
+                return first["ref"], approved, entry["correction_tick"] - round(shot["start"] * fps)
+        fail("请在人物首次入画的校正帧中选中人物，生成预览并用作动作关键帧")
     approved = completed(first["previews"], first.get("approved"))
     if not approved:
         fail("请先采用这个镜头的首帧预览")
     if not matches_mapping(approved, mapping):
         fail("首帧属于之前的人物映射，请重新生成并采用首帧")
+    return approved["ref"], approved, 0
+
+
+def shot_guides(shot, approved, fps, mapping=None, entry_tick=0):
+    start_tick = round(shot["start"] * fps)
+    guides = []
+    for frame in correction_frames(shot):
+        tick = frame["correction_tick"] - start_tick
+        if tick < entry_tick or person_absent(frame, mapping):
+            continue
+        preview = completed(frame["previews"], frame.get("approved"))
+        if (preview and preview["asset"]["id"] == approved["asset"]["id"] and
+                preview.get("source_person") == approved.get("source_person")):
+            guides.append({"tick": tick, "ref": preview["ref"]})
+    return guides
+
+
+async def generate_shot(req, host, key, shot, data, mapping=None):
+    first = shot["frames"]["first"]
+    start_ref, approved, entry_tick = shot_start(shot, mapping, host.film.FPS)
     videos = shot.setdefault("videos", [])
     if pending(videos):
         fail("此镜头正在生成，请等待完成", 409)
@@ -659,9 +678,11 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         action = []
     segments = [summary.get("camera"), *action, instructions[:1600]]
     motion = "。".join(part for part in segments if isinstance(part, str) and part.strip())
+    beginning = (f"从原片首帧开始，在 {entry_tick / host.film.FPS:.3f} 秒按对应关键帧让替换角色入画。"
+                 if entry_tick else "从输入首帧开始。角色的身份、服装、光线和周围场景与首帧一致。")
     prompt = (
-        f"从输入首帧开始。角色的身份、服装、光线和周围场景与首帧一致。"
-        f"用原镜头的机位与节奏，在前 {length:g} 秒完成镜头动作。"
+        beginning
+        + f"用原镜头的机位与节奏，在前 {length:g} 秒完成镜头动作。"
         "原片人物说话时，保留发言时的口部动作和停顿，供后续与原声合成。"
         + (motion.replace("@", "＠") if motion else "沿用首帧构图，保持动作自然。")
     )[:3000]
@@ -669,9 +690,9 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         "kind": "video", "board": key[1], "label": "镜头重制 · " + approved["asset"]["name"],
         "prompt": prompt, "duration": max(2, length), "ar": first["w"] / first["h"], "quality": "std",
         "count": 1, "mode": "fl2v", "_preserve_speech_motion": True,
-        "images": [{"ref": approved["ref"], "role": "frame", "time": 0}],
+        "images": [{"ref": start_ref, "role": "frame", "time": 0}],
     }
-    guides = shot_guides(shot, approved, host.film.FPS, mapping)
+    guides = shot_guides(shot, approved, host.film.FPS, mapping, entry_tick)
     if guides:
         provider = host.providers.get("local_h3")
         if not provider or not provider["enabled"]:
@@ -689,7 +710,7 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
             image["index"] = index
         raw.update(planned=True, provider=provider["id"])
     version = submitted_job(await host.generate_request(req, raw))
-    version.update(first_frame=approved["ref"], mask=approved.get("mask"), asset=approved["asset"],
+    version.update(first_frame=start_ref, entry_tick=entry_tick, mask=approved.get("mask"), asset=approved["asset"],
                    source_person=approved.get("source_person"),
                    motion=instructions[:1600], guides=guides, prompt=prompt,
                    generation={key: raw[key] for key in ("duration", "quality", "provider") if key in raw})
@@ -708,6 +729,10 @@ def localize_shot(req, host, key, shot, job, mapping=None):
     if len(videos) >= MAX_PREVIEWS:
         fail("此镜头已达到视频版本上限")
     first = shot["frames"]["first"]
+    starts_absent = person_absent(first, mapping)
+    entry_tick = generated.get("entry_tick", 0)
+    if starts_absent != bool(entry_tick):
+        fail("首帧出画标记已变更，请重新生成镜头视频")
     seed = next((p for p in first["previews"] if p.get("ref") == generated.get("first_frame")), None)
     mask = generated.get("mask") or (seed or {}).get("mask")
     if not mask:
@@ -717,11 +742,10 @@ def localize_shot(req, host, key, shot, job, mapping=None):
         fail("局部合成支持 14 秒以内的镜头")
 
     start_tick = round(start * host.film.FPS)
-    corrections = {}
+    corrections = {0: None} if starts_absent else {}
     guides = {guide["tick"]: guide["ref"] for guide in generated.get("guides", [])}
-    absent = False
-    frames = sorted((f for f in shot["frames"].values() if "correction_tick" in f), key=lambda f: f["correction_tick"])
-    for frame in frames:
+    absent = starts_absent
+    for frame in correction_frames(shot):
         tick = frame["correction_tick"] - start_tick
         if person_absent(frame, mapping):
             corrections[tick] = None
@@ -737,6 +761,8 @@ def localize_shot(req, host, key, shot, job, mapping=None):
                 fail(f"原片 {frame['correction_tick'] / host.film.FPS:.2f} 秒人物重新入画，请采用此帧为动作关键帧并重新生成镜头视频")
         corrections[tick] = selection["mask"]
         absent = False
+    if entry_tick and next((tick for tick, ref in corrections.items() if ref), None) != entry_tick:
+        fail("首次入画的校正帧已变更，请重新生成镜头视频")
     protections = {
         frame.get("correction_tick", start_tick) - start_tick: frame["protection"]["mask"]
         for frame_key, frame in shot["frames"].items()
@@ -751,6 +777,7 @@ def localize_shot(req, host, key, shot, job, mapping=None):
     response = host.enqueue_render(req, composite, seconds=end - start, label="角色替换 · 局部合成", board=key[1])
     version = submitted_job(response)
     version.update(mode="local", derived_from=job, first_frame=generated["first_frame"], mask=mask,
+                   entry_tick=entry_tick,
                    asset=generated["asset"], source_person=generated.get("source_person"),
                    motion=generated.get("motion", ""), guides=generated.get("guides", []),
                    prompt=generated.get("prompt", ""), generation=generated.get("generation", {}),
@@ -764,6 +791,7 @@ async def approve_video(host, shot, job, mapping=None):
         fail("请选择已完成的视频版本")
     if not matches_mapping(version, mapping):
         fail("视频属于之前的人物映射，请重新生成当前角色的视频")
+    check_video_start(shot, version, mapping)
     try:
         w, h, duration, _ = await asyncio.to_thread(host.film.probe, host.tools.ref_path(host.COMFY_DIR, version["ref"]))
     except Exception:
@@ -774,6 +802,14 @@ async def approve_video(host, shot, job, mapping=None):
     version.update(w=w, h=h, duration=duration)
     shot["adopted_video"] = version["job"]
     shot["keep_original"] = False
+
+
+def check_video_start(shot, version, mapping):
+    starts_absent = person_absent(shot["frames"]["first"], mapping)
+    if starts_absent != bool(version.get("entry_tick")):
+        fail("首帧出画标记已变更，请重新生成并审核镜头视频")
+    if starts_absent and version.get("mode") != "local":
+        fail("请先做局部合成以保留开头原片，再采用此镜头")
 
 
 def export_plan(session, source, fps, duration):
@@ -793,6 +829,8 @@ def export_plan(session, source, fps, duration):
             version = completed(shot.get("videos", []), shot.get("adopted_video"))
             if version and not matches_mapping(version, session.get("mapping")):
                 fail(f"镜头 {index + 1} 的视频属于之前的人物映射，请重新审核")
+            if version:
+                check_video_start(shot, version, session.get("mapping"))
             if not version and (scoped is not None or shot.get("videos") or any(f.get("approved") for f in shot["frames"].values())):
                 fail(f"镜头 {index + 1} 待审核，请采用视频或选择保留原镜头")
         if version:
@@ -890,8 +928,8 @@ async def handle(req, host):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
             if action == "set_absence":
                 absent = data.get("absent")
-                if "correction_tick" not in frame or type(absent) is not bool:
-                    fail("请在校正帧标记人物出画")
+                if (frame is not shot["frames"]["first"] and "correction_tick" not in frame) or type(absent) is not bool:
+                    fail("请在首帧或校正帧标记人物出画")
                 if absent:
                     frame["person_absent"] = {"source": mapping["source"] if mapping else None}
                 elif person_absent(frame, mapping):

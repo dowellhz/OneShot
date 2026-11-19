@@ -281,7 +281,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         asset = server.creative_memory.Store(server).put(self.user, {
             "name":"新角色", "kind":"character", "board":"test", "ref":self.source["ref"], "source_board":"test",
         })
-        shot_frame = video_remake.frame_record(self.source["ref"], (64, 64))
+        shot_frame = video_remake.original_frames(server, source, {0})[0]
         selected = Image.new("L", (64, 64))
         selected.paste(255, (16,16,48,48))
         mask = image_editor.save(server.COMFY_DIR, selected, "mask", "input")["ref"]
@@ -317,7 +317,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with self.assertRaises(web.HTTPBadRequest):
             await act("generate_video", shot=1)
 
-        results = iter([too_short, remake])
+        results = iter([too_short, remake, remake])
         requests = []
         async def generate(req, raw):
             requests.append(raw)
@@ -463,6 +463,28 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         restored = await act("undo_cut", shot=1)
         self.assertEqual(restored["shots"][0]["adopted_video"], local_job)
         self.assertEqual(restored["mapping"]["shots"], [0])
+
+        await act("set_absence", frame="first", absent=True)
+        with patch.object(server, "generate_request", side_effect=generate):
+            entry = await act("generate_video")
+        self.assertEqual(entry["shots"][0]["videos"][-1]["entry_tick"], 36)
+        self.assertEqual([p["ref"] for p in requests[2]["images"]], [shot_frame["ref"], return_ref])
+        self.assertEqual([p["time"] for p in requests[2]["images"]], [0, 1.5])
+        with self.assertRaises(web.HTTPBadRequest) as raw:
+            await act("approve_video", job="shot-gen-3")
+        self.assertIn("保留开头原片", raw.exception.text)
+        prefix = await act("localize", job="shot-gen-3")
+        prefix_version = prefix["shots"][0]["videos"][-1]
+        self.assertIsNone(prefix_version["corrections"]["0"])
+        self.assertEqual(prefix_version["entry_tick"], 36)
+        prefix_task = await self.wait_for_render(prefix_version["job"])
+        prefix_path = server.tools.ref_path(server.COMFY_DIR, json.loads(prefix_task["outputs"])[0])
+        with av.open(str(prefix_path)) as container:
+            composed = [f.to_ndarray(format="rgb24")[32,32] for f in container.decode(video=0)]
+        self.assertTrue(all(pixel[0] > pixel[1] for pixel in composed[:36]))
+        self.assertGreater(composed[36][1], composed[36][0])
+        await act("approve_video", job=prefix_version["job"])
+        await act("set_absence", frame="first", absent=False)
 
         with patch.object(server, "llm_call", side_effect=self.no_vision):
             moved = await act("move_cut", shot=1, at=2.5)
