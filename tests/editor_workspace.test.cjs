@@ -44,6 +44,7 @@ w.fetch=async(url,options={})=>{
    w.__memories=(w.__memories||[]).filter(a=>a.id!==result.id).concat(result);
   }else result=w.__memories||[];
  }
+ else if(pathname==='/api/memory/char/impact')result={canvas:[{node:'n1',name:'Image',ref:'input:h3studio/base.png',version:1}],remake:[]};
  else if(pathname.startsWith('/api/memory/')){
   const id=decodeURIComponent(pathname.split('/').pop());
   if(method==='DELETE'){w.__memories=(w.__memories||[]).filter(a=>a.id!==id);result={ok:true};}
@@ -361,6 +362,10 @@ async function run(){
  equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'personal scope excludes another owner');
  evaluate('document.getElementById("alReset").click();document.querySelector("#alGrid [data-id=char] .al-card-main").click()');
  await ready('document.querySelector("#alDetail [name=name]")?.value==="林森" && document.querySelector("#alDetail .cm-history img")','integrated detail and history');
+ await ready('!!$("#alDetail .al-impact")','asset impact disclosure is available');
+ evaluate('$("#alDetail .al-impact").open=true;$("#alDetail .al-impact").ontoggle()');
+ await ready('$("#alDetail .al-impact li")?.textContent.includes("Image · 版本 1")','asset detail lists a version pinned to the old reference');
+ evaluate('$("#alDetail .al-impact").open=false');
  equal(evaluate('B.nodes.length'),nodesBeforeLibrary,'viewing assets never creates canvas nodes');
  equal(evaluate('document.querySelector("#alDetail .cm-hero img").getAttribute("src")'),'/media?ref=input%3Ah3studio%2Flin.png','large asset preview');
  evaluate('document.querySelector("#alDetail [name=name]").value="林森新版";document.querySelector("#alDetail form").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
@@ -534,6 +539,11 @@ async function run(){
   const frame=remakeSession?.shots[0]?.frames.first;
   if(operation?.action==='map_person'){
    remakeSession.mapping={source:operation.person,asset:operation.asset,asset_name:'林森新版',shots:operation.shots};
+  }
+  if(operation?.action==='apply_plan'){
+   assert.deepEqual(operation.shots,[0]);
+   assert.equal(operation.reference,'input:h3studio/headshot.png');
+   remakeSession.apply_plan={submitted:[],failed:[],skipped:[],needs_selection:[0],jobs:[]};
   }
   if(operation?.action==='batch_locate_people'){
    assert.deepEqual({person:operation.person,asset:operation.asset,look:operation.look,shots:operation.shots},
@@ -789,6 +799,26 @@ async function run(){
  equal(evaluate('$(".rm-shot").textContent'),'镜头 1','the review shortcut takes the user to the next unresolved shot');
  evaluate('$("[data-cut=undo_cut]").click()');
  await ready('$$(".rm-shots button").length===1 && $(".rm-shot").textContent==="镜头 1"','undo restores the earlier shot');
+ evaluate('$("#videoRemake [data-send-film]").click()');
+ equal(evaluate('FILM.spec.clips.map(c=>[c.name,c.ref,c.in,c.out,c.audio_start])'),
+  [['镜头 1','output:h3studio/shot-local.mp4',0,3,.5]],'editable handoff pins the approved clip and its original audio location');
+ evaluate('$("#fmV").pause=$("#fmOriginal").pause=()=>{}; closeFilm(); selectOnly("pendingVideo"); $("#shotListBtn").click()');
+ await ready('$("#shotList li")?.textContent.includes("已采用")','shot list shows the reviewed version');
+ equal(evaluate(`filmTotal({clips:[
+  {in:0,out:.125,remake_shot:{},trans:"fade"},
+  {in:0,out:.125,remake_shot:{},trans:"cut"}
+ ]})`),5/24,'short clips cap the fade to half the shorter clip in frames');
+ evaluate('$("#shotList li button").click()');
+ await ready('$("#videoRemake .rm-shot")?.textContent==="镜头 1"','shot list locates the original remake shot');
+ evaluate('$("#shotList [data-close]").click()');
+ evaluate(`const planHost=document.createElement("div");$("#acMessages").append(planHost);
+  planHost.innerHTML=acResultCards({remake:{node_id:"pendingVideo",source_ref:curV(node("pendingVideo")).ref},
+   remake_plan:{board:boardId,cut_revision:2,asset:"char",asset_name:"林森",person:"人物 A",
+   reference:"input:h3studio/headshot.png",look:"",shots:[{shot:1,selection_ready:false},{shot:2,selection_ready:true}]}});
+  const planChecks=$$("input",planHost);planChecks[1].checked=false;
+  $("[data-apply-plan]",planHost).click()`);
+ await ready('$("output",planHost).textContent.includes("请确认镜头 1")','plan submits only the checked shot and flags manual selection');
+ evaluate('planHost.remove()');
  evaluate(`const rmFrameSelect=$("#videoRemake [data-frame]");rmFrameSelect.value="first";rmFrameSelect.dispatchEvent(new Event("change"))`);
  const beforeRemake=evaluate('B.nodes.length');
  evaluate('$$(".rm-review button").find(b=>b.textContent==="用作视频首帧").click()');

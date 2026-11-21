@@ -1121,6 +1121,193 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual([call["kind"] for call in calls], ["image", "video", "image", "video"])
         self.assertEqual({path.name for path in output_dir.iterdir()}, {"preview.png", "localized.mp4", "export.mp4", "report.json"})
 
+    async def test_remake_plan_asset_impact_and_two_role_layers_keep_independent_selections(self):
+        db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test')")
+        source = self.make_clip("roles-source", seconds=2, color=(40, 70, 90), frequency=440)
+        first_take = self.make_clip("roles-first", seconds=2, color=(240, 32, 32), frequency=880)
+        second_take = self.make_clip("roles-second", seconds=2, color=(32, 220, 32), frequency=880)
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "name":"原片", "cur":0, "versions":[{"ref":source}]},
+            {"id":"n1", "type":"image", "name":"参考", "versions":[self.source]},
+        ]}))
+        memory = server.creative_memory.Store(server)
+        assets = [memory.put(self.user, {"name":name,"kind":"character","board":"test","ref":self.source["ref"]})
+                  for name in ("林森", "裴简")]
+        key = (7, "test", "n3", source)
+
+        async def act(action=None, **fields):
+            payload = {"action":action, "shot":0, **fields} if action else None
+            with patch.object(server, "llm_call", side_effect=self.no_vision):
+                return json.loads((await server.remake(Request(source, self.user, payload))).body)
+
+        await act("analyze")
+        service = server.agent_chat.AgentService({"creative_memory":memory}, server)
+        planned = await service.execute({"board_id":"test","data":{"bindings":{"n3":source}}},
+            self.user, "plan", "video_remake_plan",
+            {"node_id":"n3", "asset_id":assets[0]["id"], "person":"甲", "shots":[1]})
+        self.assertFalse(planned["remake_plan"]["shots"][0]["selection_ready"])
+        self.assertNotIn("mapping", video_remake.load(key))
+        applied = await act("apply_plan", person="甲", asset=assets[0]["id"], reference=assets[0]["ref"], shots=[0])
+        self.assertEqual(applied["apply_plan"]["needs_selection"], [0])
+        self.assertFalse(applied["apply_plan"]["jobs"])
+
+        original_masks = []
+        for i, (name, asset, ref, rect) in enumerate(zip(("甲","乙"), assets, (first_take,second_take),
+                ([.08,.20,.44,.8],[.56,.20,.92,.8]))):
+            await act("map_person", person=name, asset=asset["id"], shots=[0])
+            selected = await act("select", rect=rect)
+            mask = selected["shots"][0]["frames"]["first"]["selection"]["mask"]
+            original_masks.append(mask)
+            state = video_remake.load(key)
+            shot = state["shots"][0]
+            role = {"id":asset["id"], "name":asset["name"], "ref":asset["ref"], "view":"main"}
+            generated = {"job":f"raw-{i}", "state":"done", "ref":ref, "asset":role, "source_person":name,
+                         "first_frame":shot["frames"]["first"]["ref"], "mask":mask}
+            shot.setdefault("videos", []).append(generated)
+            video_remake.save(key, state)
+            localized = await act("localize", job=generated["job"])
+            job = localized["shots"][0]["videos"][-1]["job"]
+            await self.wait_for_render(job)
+            await act("add_role_layer", job=job)
+
+        restored = await act("map_person", person="甲", asset=assets[0]["id"], shots=[0])
+        self.assertEqual(restored["shots"][0]["frames"]["first"]["selection"]["mask"], original_masks[0])
+        self.assertEqual(len(restored["export_review"]["remaining"]), 1)
+        submitted = await act("combine_roles")
+        job = submitted["shots"][0]["videos"][-1]["job"]
+        await self.wait_for_render(job)
+        adopted = await act("approve_video", job=job)
+        self.assertEqual(adopted["reviewed_jobs"], [job])
+        combined = adopted["shots"][0]["videos"][-1]
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR, combined["ref"]))) as clip:
+            frame = next(clip.decode(video=0)).to_ndarray(format="rgb24")
+        self.assertGreater(frame[32,16,0], 160)
+        self.assertGreater(frame[32,48,1], 160)
+        self.assertTrue(np.allclose(frame[2,2], [40,70,90], atol=12))
+
+        new_ref = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "blue"), "new-role", "input")["ref"]
+        db.run("INSERT INTO memory_uploads VALUES(?,?,?)", new_ref, self.user["id"], time.time())
+        memory.put(self.user, {"id":assets[0]["id"],"ref":new_ref,"default_ref":new_ref})
+        req = Request(source, self.user)
+        req.match_info = {"mid":assets[0]["id"]}
+        req.query = {"board":"test"}
+        impact = json.loads((await server.creative_memory.asset_impact(req)).body)
+        self.assertEqual([(item["shot"],item["previous"],item["reference"]) for item in impact["remake"]],
+                         [(0,assets[0]["ref"],new_ref)])
+        with self.assertRaises(web.HTTPConflict):
+            await act("apply_plan", person="甲", asset=assets[0]["id"], reference=assets[0]["ref"], shots=[0])
+        self.assertEqual((await act())["reviewed_jobs"], [job])
+
+        changed = await act("move_role_layer", job=combined["roles"][1]["job"])
+        self.assertEqual(changed["reviewed_jobs"], [None])
+        self.assertIn("重新合成", changed["export_review"]["remaining"][0]["error"])
+
+    def test_editable_remake_timeline_uses_the_original_audio_for_reordered_and_trimmed_clips(self):
+        source = self.make_clip("audio-original", seconds=3, color=(40, 70, 90), frequency=440, audio_delay=1)
+        take = self.make_clip("audio-take", seconds=2, color=(100, 190, 10), frequency=880)
+        result = server.film.render(server.COMFY_DIR, {"remake_audio":source, "subtitles":False, "clips":[
+            {"ref":take,"in":.25,"out":1.25,"audio_start":1},
+            {"ref":source,"in":0,"out":.5,"audio_start":0},
+        ]})
+        path = server.tools.ref_path(server.COMFY_DIR, result["ref"])
+        pcm = server.film.read_audio(path)[0]
+        rate = server.film.SR
+        self.assertAlmostEqual(result["seconds"], 1.5, places=2)
+        self.assertEqual(np.argmax(np.abs(np.fft.rfft(pcm[:rate]))), 440)
+        self.assertLess(np.max(np.abs(pcm[round(1.1*rate):])), .025)
+
+    def test_editable_remake_timeline_uses_original_dimensions(self):
+        _, source = server.tools._new(server.COMFY_DIR, "input", "landscape-original", ".mp4")
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR, source)), "w") as output:
+            stream = output.add_stream("libx264", rate=24)
+            stream.width, stream.height, stream.pix_fmt = 96, 64, "yuv420p"
+            for _ in range(24):
+                for packet in stream.encode(av.VideoFrame.from_image(Image.new("RGB", (96, 64), "gray"))):
+                    output.mux(packet)
+            for packet in stream.encode():
+                output.mux(packet)
+        take = self.make_clip("square-take", seconds=1, color=(100,190,10), frequency=880)
+        result = server.film.render(server.COMFY_DIR, {"remake_audio":source, "subtitles":False, "clips":[
+            {"ref":take, "in":0, "out":1, "audio_start":0},
+        ]})
+        self.assertEqual((result["w"], result["h"]), (96,64))
+
+    async def test_role_changes_keep_other_approved_shots_and_restore_only_the_corresponding_masks(self):
+        source = self.make_clip("role-change", seconds=2, color=(40,70,90), frequency=440)
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+            {"id":"n1", "type":"image", "versions":[self.source]},
+        ]}))
+        memory = server.creative_memory.Store(server)
+        asset = memory.put(self.user, {"name":"角色", "kind":"character", "board":"test", "ref":self.source["ref"]})
+        key = (7, "test", "n3", source)
+        first = video_remake.frame_record(self.source["ref"], (64,64))
+        second = video_remake.frame_record(self.source["ref"], (64,64))
+        video_remake.save(key, {"shots":[{"start":0,"end":1,"frames":{"first":first}},
+                                        {"start":1,"end":2,"frames":{"first":second}}]})
+
+        async def act(action, **fields):
+            req = Request(source, self.user, {"shot":0, "action":action, **fields})
+            return json.loads((await server.remake(req)).body)
+
+        await act("map_person", person="甲", asset=asset["id"], shots=[0])
+        await act("select", rect=[.1,.1,.8,.8])
+        protected = await act("select", layer="protection", rect=[.2,.2,.4,.4])
+        original = protected["shots"][0]["frames"]["first"]
+        prepared = video_remake.load(key)
+        prepared["shots"][0]["videos"] = [{"job":"first", "state":"done", "ref":source,
+                                            "source_person":"甲", "asset":{"id":asset["id"]}}]
+        video_remake.save(key, prepared)
+        await act("approve_video", job="first")
+        other = await act("map_person", person="乙", asset=asset["id"], shots=[1])
+        self.assertEqual(other["reviewed_jobs"], ["first", None])
+        self.assertEqual([i["shot"] for i in other["export_review"]["remaining"]], [1])
+        await act("keep", shot=1)
+        adopted = video_remake.load(key)
+        self.assertEqual(video_remake.export_plan(adopted, source, 24, 2)["clips"][0]["in"], 0)
+        await act("map_person", person="甲", asset=asset["id"], shots=[0])
+        await act("remove_mapping")
+        different = await act("map_person", person="乙", asset=asset["id"], shots=[0])
+        self.assertNotIn("protection", different["shots"][0]["frames"]["first"])
+        self.assertNotIn("selection", different["shots"][0]["frames"]["first"])
+        restored = await act("map_person", person="甲", asset=asset["id"], shots=[0])
+        frame = restored["shots"][0]["frames"]["first"]
+        self.assertEqual(frame["protection"], original["protection"])
+        self.assertEqual(frame["selection"], original["selection"])
+
+    async def test_private_media_checks_file_and_new_board_references(self):
+        owner, teammate = self.user, {"id":8, "role":"member"}
+        ref = self.source["ref"]
+        server.grant_media(owner, ref)
+        request = Request(ref, owner)
+        request.query = {"ref":ref}
+        response = await server.media(request)
+        self.assertIn("private", response.headers["Cache-Control"])
+        request["user"] = teammate
+        with self.assertRaises(web.HTTPNotFound):
+            await server.media(request)
+        server.board_path("note").write_text(json.dumps({"owner":8,"nodes":[{"name":ref,"data":{"text":ref}}]}))
+        with self.assertRaises(web.HTTPNotFound):
+            await server.media(request)
+        board = {"name":"私有项目", "nodes":[{"id":"n1","versions":[self.source]}]}
+        save = Request(ref, teammate, board)
+        save.match_info = {"bid":"team-test"}
+        with self.assertRaises(web.HTTPForbidden):
+            await server.put_board(save)
+        save.path = "/api/render"
+        with self.assertRaises(web.HTTPForbidden):
+            await server.media_input_guard(save, server.render_film)
+        server.board_path("source-board").write_text(json.dumps({**board, "owner":owner["id"], "shared":True}))
+        self.assertEqual((await server.media(request)).status, 200)
+        self.assertEqual((await server.put_board(save)).status, 200)
+        generated = image_editor.save(server.COMFY_DIR, Image.new("RGB", (8, 8), "blue"))["ref"]
+        db.task_start(id="asset-test-job", user_id=8, state="done", outputs=[generated])
+        request.query = {"ref":generated}
+        self.assertEqual((await server.media(request)).status, 200)
+        request["user"] = owner
+        with self.assertRaises(web.HTTPNotFound):
+            await server.media(request)
+
     async def test_batch_first_previews_saves_accepted_jobs_and_retries_only_missing_shots(self):
         source = self.make_clip("batch", seconds=3, color=(210, 30, 30), frequency=440)
         server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[

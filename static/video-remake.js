@@ -27,7 +27,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
   const panel = document.createElement("dialog");
   panel.id = "videoRemake";
   panel.setAttribute("aria-labelledby", "rmTitle");
-  panel.innerHTML = `<div class="rm-top"><header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-review-next hidden></button><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
+  panel.innerHTML = `<div class="rm-top"><header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)}</span></div><div class="rm-actions"><button type="button" data-review-next hidden></button><button type="button" data-send-film disabled>送入剪辑</button><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
     <details class="rm-tasks" hidden><summary data-task-summary></summary><ul data-task-list></ul></details></div>
     <div class="rm-body">
       <section class="rm-source"><video controls preload="metadata" playsinline></video>
@@ -129,9 +129,8 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
   const draftScope = () => ME_USER?.id == null ? "" : "oneshot.remake.draft:" +
     JSON.stringify([ME_USER.id, board, session?.session_node || video.id, source.ref]) + ":";
   const inScope = index => !session?.mapping || session.mapping.shots.includes(index);
-  const matchesPerson = version => !session?.mapping || (
-    version?.asset?.id === session.mapping.asset && version.source_person === session.mapping.source
-  );
+  const matchesPerson = version => !session?.mapping || (version?.roles || [version]).some(role =>
+    role?.asset?.id === session.mapping.asset && role.source_person === session.mapping.source);
   const adoptedPreview = frame => frame.previews.find(item => item.job === frame.approved && item.ref);
   const matchesFirst = (guide, first) => !!guide && !!first && matchesPerson(first) &&
     guide.asset?.id === first.asset?.id && guide.source_person === first.source_person;
@@ -559,10 +558,11 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
       card.setAttribute("aria-pressed", String(i === shotIndex));
       const chosen = item.videos?.find(v => v.job === item.adopted_video);
       const reviewIssue = session.export_review?.remaining.find(entry => entry.shot === i);
+      const reviewed = session.reviewed_jobs ? !!session.reviewed_jobs[i] : chosen && !reviewIssue && matchesPerson(chosen);
       card.textContent = `镜头 ${i + 1} · ${item.start.toFixed(2)}–${item.end.toFixed(2)} 秒` +
-        (!inScope(i) ? " · 不在替换范围" : item.keep_original ? " · 保留原片" :
-          item.videos?.some(active) ? " · 视频生成中" : chosen && !reviewIssue && matchesPerson(chosen) ? " · 已采用视频" :
-            chosen && reviewIssue ? " · 需要重新审核" : previewStatus(item));
+        (item.keep_original ? " · 保留原片" : item.videos?.some(active) ? " · 视频生成中" :
+          reviewed ? " · 已采用视频" : chosen && reviewIssue ? " · 需要重新审核" :
+            !inScope(i) ? " · 不在替换范围" : previewStatus(item));
       card.onclick = () => {
         if (busy) return;
         stopComparison();
@@ -764,11 +764,13 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     review.replaceChildren();
     if (selected) {
       const startMatches = !!selected.entry_tick === startsAbsent;
-      const canAdopt = startMatches && (!startsAbsent || selected.mode === "local");
+      const combined = selected.mode === "combined";
+      const sameLayers = combined && JSON.stringify((selected.roles || []).map(r => r.job)) === JSON.stringify((shot.role_layers || []).map(r => r.job));
+      const canAdopt = combined ? sameLayers : startMatches && (!startsAbsent || selected.mode === "local");
       const select = document.createElement("select");
       select.setAttribute("aria-label", "镜头视频版本");
       videos.forEach((v, i) => {
-        const label = v.mode === "local" ? "局部合成" : v.guides?.length ? `按 ${v.guides.length} 张动作关键帧重制` : "整镜重制";
+        const label = v.mode === "combined" ? "多角色合成" : v.mode === "local" ? "局部合成" : v.guides?.length ? `按 ${v.guides.length} 张动作关键帧重制` : "整镜重制";
         select.append(new Option(`${i + 1}. ${label} · ${!matchesPerson(v) ? "旧映射" : shot.adopted_video === v.job && !shot.keep_original ? "已采用" : v.ref ? "待审核" : v.state === "error" ? "失败" : "处理中"}`, v.job));
       });
       select.value = selected.job;
@@ -787,18 +789,35 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
       }
       if (source && (shot.adopted_video !== selected.job || shot.keep_original)) {
         review.append(button("采用此视频", () => change("approve_video", {job:selected.job}),
-          busy || !canAdopt || !inScope(shotIndex) || !matchesPerson(selected)));
+          busy || !canAdopt || !combined && (!inScope(shotIndex) || !matchesPerson(selected))));
       }
-      if (source && canAdopt && shot.adopted_video === selected.job && !shot.keep_original && inScope(shotIndex) && matchesPerson(selected)) {
+      if (source && canAdopt && shot.adopted_video === selected.job && !shot.keep_original && (combined || inScope(shotIndex) && matchesPerson(selected))) {
         review.append(button("镜头放入画布", () => insertRemadeVideo(selected, shot), busy));
       }
-      if (source && selected.mode !== "local") {
+      if (source && !combined && selected.mode !== "local") {
         const count = Object.values(shot.frames).filter(f => Number.isInteger(f.correction_tick) &&
           (personSelection(f) || personAbsent(f) || f.protection)).length;
         const caption = count ? `跟踪人物并局部合成（${count} 张校正帧）` : "跟踪人物并局部合成";
         review.append(button(caption, () => change("localize", {job:selected.job}),
           busy || !startMatches || !inScope(shotIndex) || !matchesPerson(selected) || videos.some(active)));
       }
+      if (source && selected.mode === "local" && selected.source_person && matchesPerson(selected)) {
+        review.append(button("加入角色图层", () => change("add_role_layer", {job:selected.job}), busy));
+      }
+    }
+    const layers = shot.role_layers || [];
+    if (layers.length) {
+      const group = document.createElement("div");
+      group.className = "rm-role-layers";
+      for (const [i, layer] of layers.entries()) {
+        const item = document.createElement("div");
+        item.textContent = `${layer.source_person} → ${layer.asset.name}`;
+        item.append(button("向底层移", () => change("move_role_layer", {job:layer.job}), busy || i === 0),
+          button("移除", () => change("remove_role_layer", {job:layer.job}), busy));
+        group.append(item);
+      }
+      group.append(button("合成所选角色", () => change("combine_roles"), busy || layers.length < 2 || videos.some(active)));
+      review.append(group);
     }
     const exp = session.export;
     const {adopted, remaining} = session.export_review;
@@ -820,6 +839,8 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     exportButton.hidden = !adopted && !remaining.length;
     exportButton.disabled = busy || !adopted || !!remaining.length || !!exp && active(exp);
     exportButton.textContent = exp && active(exp) ? "合成中…" : exp?.state === "error" ? "重新合成" : "合成并保留原声";
+    const toFilm = el("[data-send-film]");
+    toFilm.disabled = busy || !!remaining.length || !session.shots.length;
     const download = el("[data-download]");
     const watch = el("[data-watch]");
     const insert = el("[data-insert-export]");
@@ -1065,7 +1086,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
         versionId = null;
       }
       if (action === "preview" || action === "batch_previews") versionId = null;
-      if (["generate_video", "batch_videos", "localize"].includes(action)) videoId = null;
+      if (["generate_video", "batch_videos", "localize", "combine_roles"].includes(action)) videoId = null;
       if (action === "batch_locate_people") {
         const {located, skipped, failed} = session[action];
         const items = [`${located.length} 个镜头已标出位置，请逐镜确认`];
@@ -1098,6 +1119,11 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
   }
 
   el("[data-analyze]").onclick = () => change(session?.shots.length ? "retry_analysis" : "analyze");
+  el("[data-send-film]").onclick = () => {
+    if (!session?.shots.length || session.export_review.remaining.length) return;
+    close();
+    sendRemakeToFilm(video, source, session);
+  };
   el("[data-prepare-playback]").onclick = () => change("prepare_playback");
   el("[data-batch-locate]").onclick = () => {
     const shots = batchLocateShots();

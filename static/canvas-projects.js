@@ -18,6 +18,7 @@ async function openBoard(id) {
   if (typeof acRememberBoard === "function") acRememberBoard(id, B);
   if (typeof acBoardChanged === "function") acBoardChanged();
   if (typeof alBoardChanged === "function") alBoardChanged();
+  $("#shotList [data-close]")?.click();
 }
 $("#bname").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
 $("#bname").addEventListener("blur", e => { const t = e.target.textContent.trim() || "未命名画布"; e.target.textContent = t; B.name = t; save(); });
@@ -58,6 +59,7 @@ initImageEditor();
 initCanvasTools();
 initAgentChat();
 initFilm();
+if (typeof initShotList === "function") initShotList();
 initWizard();
 initSettings();
 initAccount();

@@ -22,6 +22,10 @@
 .ac-remake-review > div { display: flex; flex-wrap: wrap; gap: 6px; }
 #agentChat .ac-remake-review [aria-pressed="true"] { border-color: var(--c-video); }
 .ac-remake-review [data-review-status]:empty { display: none; }
+.ac-remake-plan { margin:8px 0; border:1px solid var(--line2); border-radius:9px; padding:8px; display:grid; gap:7px; }
+.ac-remake-plan > div { display:flex; align-items:center; gap:8px; }
+.ac-remake-plan img { width:46px; height:54px; object-fit:contain; border-radius:5px; background:var(--card); }
+.ac-remake-plan label { display:flex; gap:6px; align-items:center; }
 
 .ac-choices {
   display: grid;

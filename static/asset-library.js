@@ -78,6 +78,75 @@ function alClose() {
 async function alSelect(a) {
   if (CM.editor?.dataset.busy === 'true') return toast('正在保存或上传，请稍等');
   AL.selected=a.id; alRender(); await cmEdit(a, a.kind, {host:$('#alDetail'), readonly:!alEditable(a)});
+  if (AL.open && AL.selected === a.id && a.kind === 'character') alImpact(a);
+}
+function alImpact(asset) {
+  const host = $("#alDetail");
+  $(".al-impact", host)?.remove();
+  const section = document.createElement("details");
+  section.className = "al-impact";
+  section.innerHTML = `<summary>参考图更新影响</summary><div><output aria-live="polite"></output><ul></ul><button type="button" hidden>用当前参考图重做所选预览</button></div>`;
+  host.append(section);
+  const status = $("output", section), list = $("ul", section), redo = $("button", section);
+  section.ontoggle = async () => {
+    if (!section.open || !section.isConnected) return;
+    const bid = boardId;
+    list.replaceChildren(); redo.hidden = true; status.textContent = "正在检查当前画布…";
+    try {
+      await flushSave();
+      const response = await fetch(`/api/memory/${encodeURIComponent(asset.id)}/impact?board=${encodeURIComponent(bid)}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "无法读取参考图影响");
+      if (boardId !== bid || !section.isConnected) return;
+      status.textContent = result.canvas.length || result.remake.length ? "这些版本采用了旧参考图。" : "当前画布没有使用旧参考图的结果。";
+      const chosen = [];
+      const show = (entry, label, remake) => {
+        const li = document.createElement("li"), button = document.createElement("button");
+        button.type = "button"; button.textContent = label;
+        button.onclick = () => {
+          const target = vtResolve(entry.node, entry.ref);
+          if (!target) return toast("原版本已不存在");
+          if (target.node.cur !== target.index && !switchVersion(target.node, target.index)) return;
+          alClose(); selectOnly(target.node.id); fit([target.node]);
+          if (remake) openVideoRemake(target.node, {shotStart:entry.start});
+        };
+        if (entry.person) {
+          const check = document.createElement("input");
+          check.type = "checkbox"; check.setAttribute("aria-label", `重做${label}`);
+          chosen.push([entry, check]); li.append(check);
+        }
+        li.append(button); list.append(li);
+      };
+      result.remake.forEach(entry => show(entry, `${entry.name} · 镜头 ${entry.shot + 1}`, true));
+      result.canvas.forEach(entry => show(entry, `${entry.name} · 版本 ${entry.version}`, false));
+      redo.hidden = !chosen.length;
+      redo.onclick = async () => {
+        const selected = chosen.filter(([, check]) => check.checked).map(([entry]) => entry);
+        if (!selected.length) { status.textContent = "请先勾选要重做的镜头"; return; }
+        const groups = new Map(), messages = [];
+        for (const entry of selected) {
+          const key = JSON.stringify([entry.node, entry.ref, entry.revision, entry.person]);
+          const group = groups.get(key) || [];
+          group.push(entry); groups.set(key, group);
+        }
+        redo.disabled = true;
+        try {
+          for (const entries of groups.values()) {
+            if (boardId !== bid) throw new Error("画布已切换");
+            const {node,ref,revision,person} = entries[0];
+            const state = await remakeRequest(`/api/video-remake/${encodeURIComponent(bid)}/${encodeURIComponent(node)}?source=${encodeURIComponent(ref)}`, {
+              action:"batch_previews", cut_revision:revision, asset:asset.id, person,
+              shots:entries.map(e => ({shot:e.shot, frame:e.frame, view:e.view, reference:e.reference})),
+            });
+            const result = state.batch_previews;
+            messages.push(`已提交 ${result.submitted.length} 镜 · 跳过 ${result.skipped.length} 镜`, ...result.failed.map(f => `镜头 ${f.shot + 1} ${f.error}`));
+          }
+          status.textContent = messages.join("。") + "。旧版仍可继续使用。";
+        } catch (error) { status.textContent = [...messages,error.message].join("。"); }
+        finally { redo.disabled = false; }
+      };
+    } catch (error) { status.textContent = error.message; }
+  };
 }
 async function alNew(options={}) {
   if (CM.editor?.dataset.busy === 'true') return toast('正在保存或上传，请稍等');

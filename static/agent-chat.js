@@ -1,6 +1,6 @@
 "use strict";
 const AC={session:null,board:null,events:[],runs:[],cursor:0,open:false,polling:false,sending:false,refs:null,base:new Map(),pending:new Map(),calls:new Map(),epoch:0};
-const AC_LABELS={video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",video_remake_preview:"提交换角预览",video_remake_generate:"提交重制镜头视频",video_remake_export:"合成并保留原声",video_remake_review:"保存镜头审核决定",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
+const AC_LABELS={video_remake_plan:"确认换角计划",video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",video_remake_preview:"提交换角预览",video_remake_generate:"提交重制镜头视频",video_remake_export:"合成并保留原声",video_remake_review:"保存镜头审核决定",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
 const AC_STATES={thinking:"正在理解与规划…",running:"正在执行…",stopping:"正在停止，保留已完成结果…",stopped:"本轮已停止",done:"本轮已结束",error:"本轮执行中断"};
 const AC_PHASES={queued:"排队",loading:"加载模型",encoding:"处理提示词与图片",sampling:"生成",decoding:"解码",compositing:"合成",done:"完成",error:"失败"};
 const acClone=v=>JSON.parse(JSON.stringify(v));
@@ -72,9 +72,88 @@ function acResultCards(result){
    review = `<div class="ac-results">${result.review_versions.map(version => open(`查看版本 ${version.number}`, version.job)).join("")}</div>`;
   }
   const download = result.export_ref ? `<a href="/media?ref=${encodeURIComponent(result.export_ref)}" download="${esc(result.export_ref.split("/").at(-1))}">下载成片</a>` : "";
-  return `<div class="ac-results">${open(label, video_job)}${download}</div>${review}`;
+  const plan = result.remake_plan;
+  const planCard = plan ? `<fieldset class="ac-remake-plan" data-plan="${esc(JSON.stringify({...plan, node_id, source_ref}))}">
+    <legend>确认换角计划</legend><div><img src="${remakeMedia(plan.reference)}" alt="角色参考图"><strong>${esc(plan.person)} → ${esc(plan.asset_name)}</strong></div>
+    ${plan.shots.map(s => `<label><input type="checkbox" value="${s.shot}" ${s.keep ? "disabled" : "checked"}>镜头 ${s.shot} · ${s.keep ? "保留原片" : s.selection_ready ? "可生成预览" : "需要确认人物选区"}</label>`).join("")}
+    <button type="button" data-apply-plan>确认所选镜头</button><output aria-live="polite"></output></fieldset>` : "";
+  return `<div class="ac-results">${open(label, video_job)}${download}</div>${review}${planCard}`;
  }
  const made=result.nodes||[];if(!made.length)return "";return `<div class="ac-results">${made.map(item=>{const n=vtResolve(item.id,item.ref)?.node,v=acResultVersion(item);if(item.type==="video"||n?.type==="video")return `<div class="ac-result ac-video"><video controls playsinline preload="metadata" src="/media?ref=${encodeURIComponent(v.ref)}" aria-label="生成的视频"></video><button type="button" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">定位视频</button></div>`;return `<button type="button" class="ac-result" data-focus="${esc(item.id)}" data-version-ref="${esc(v?.ref||"")}">${v?.ref?`<img loading="lazy" alt="生成结果" src="/media?ref=${encodeURIComponent(v.ref)}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;}).join("")}</div>`;}
+
+async function acApplyRemakePlan(button) {
+ const card = button.closest("[data-plan]");
+ const plan = JSON.parse(card.dataset.plan);
+ const shots = $$("input:checked:not(:disabled)", card).map(control => Number(control.value) - 1);
+ const status = $("output", card);
+ if (!shots.length) { status.textContent = "请至少勾选一个镜头"; return; }
+ card.disabled = true;
+ try {
+  await flushSave();
+  if (boardId !== plan.board) throw new Error("请回到对应画布");
+  const target = vtResolve(plan.node_id, plan.source_ref);
+  if (!target || target.node.versions[target.index]?.ref !== plan.source_ref) throw new Error("原片版本已不存在");
+  const url = `/api/video-remake/${encodeURIComponent(plan.board)}/${encodeURIComponent(target.node.id)}?source=${encodeURIComponent(plan.source_ref)}`;
+  const state = await remakeRequest(url, {"action":"apply_plan", shots, cut_revision:plan.cut_revision,
+    person:plan.person, asset:plan.asset, reference:plan.reference, look:plan.look});
+  const outcome = state.apply_plan;
+  const summary = [`已提交 ${outcome.submitted.length} 个预览`, ...outcome.failed.map(s => `镜头 ${s.shot + 1} ${s.error}`)];
+  if (outcome.needs_selection.length) summary.push(`请确认镜头 ${outcome.needs_selection.map(i => i + 1).join("、")} 的人物选区`);
+  status.textContent = summary.join(" · ");
+  const first = (outcome.needs_selection.length ? outcome.needs_selection : outcome.submitted)[0];
+  if (first != null) {
+   const link = document.createElement("button"); link.type = "button"; link.textContent = `打开镜头 ${first + 1}`;
+   Object.assign(link.dataset, {remakeNode:target.node.id, remakeRef:plan.source_ref, remakeStart:state.shots[first].start});
+   card.after(link);
+  }
+  if (outcome.submitted.length) {
+   const results = document.createElement("div"); results.className = "ac-remake-plan";
+   card.after(results);
+   watchRemakePlan(results, url, plan, outcome.jobs || []);
+  }
+ } catch (e) {
+  status.textContent = e.message;
+  card.disabled = false;
+ }
+}
+
+async function watchRemakePlan(results, url, plan, targets) {
+ if (!targets.length) return;
+ let allDone = false;
+ const deadline = Date.now() + 30 * 60 * 1000;
+ while (!allDone && results.isConnected && boardId === plan.board && Date.now() < deadline) {
+  try {
+   const jobs = await acApi("/api/jobs?ids=" + encodeURIComponent(targets.map(t => t.job).join(",")));
+   const latest = await remakeRequest(url);
+   if (!results.isConnected || boardId !== plan.board) return;
+   allDone = targets.every(t => ["done","error"].includes(jobs[t.job]?.state));
+   results.replaceChildren();
+   for (const {index, frame, job} of targets) {
+    const shot = latest.shots[index], preview = shot?.frames[frame]?.previews.find(p => p.job === job);
+    const line = document.createElement("div");
+    line.textContent = `镜头 ${index + 1} · ${preview?.ref ? "预览完成" : preview?.error || "生成中"}`;
+    if (preview?.ref) {
+     const view = document.createElement("img");
+     view.src = remakeMedia(preview.ref); view.alt = `镜头 ${index + 1} 换角预览`;
+     const accept = document.createElement("button"); accept.type = "button"; accept.textContent = "采用预览";
+     accept.onclick = async () => {
+      accept.disabled = true;
+      try {
+       await remakeRequest(url, {action:"approve", shot:index, frame, job, cut_revision:plan.cut_revision});
+       accept.textContent = "已采用";
+      } catch (e) { accept.disabled = false; toast(e.message); }
+     };
+     line.append(view, accept);
+    }
+    results.append(line);
+   }
+  } catch (e) {
+   results.textContent = "进度暂不可用 · " + e.message;
+  }
+  if (!allDone) await new Promise(resolve => setTimeout(resolve, 1700));
+ }
+ if (!allDone && results.isConnected && boardId === plan.board) results.textContent = "等待超时，可在重制工作区继续查看任务";
+}
 
 async function acReviewRemake(button) {
  const card = button.closest("[data-review-board]");
@@ -164,7 +243,7 @@ function acAppendEvent(e,replay=false){
   if(e.kind==="assistant")acAddChoices(el,e);
  }
  if(e.kind==="tool_start"){el=document.createElement("details");el.className="ac-call";el.dataset.call=d.call_id;el.dataset.tool=d.name;el.innerHTML=`<summary>${esc(AC_LABELS[d.name]||d.name)} · 执行中</summary><div class="ac-progress"></div><div class="ac-output"></div>`;AC.calls.set(d.call_id,el);}
- if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){if(d.result.review_versions?.length || d.result.preview?.completed?.length || d.result.video?.completed || d.name==="video_remake_export"&&d.result.export_ref)el.open=true;el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":d.result.adopted?"已采用："+d.result.adopted.map(a=>a.name).join("、"):d.result.memories?`找到 ${d.result.memories.length} 条创作记忆。`:d.result.memory?"已保存记忆："+d.result.memory.name:"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
+ if(e.kind==="tool_end"){el=AC.calls.get(d.call_id);if(el){if(d.result.remake_plan || d.result.review_versions?.length || d.result.preview?.completed?.length || d.result.video?.completed || d.name==="video_remake_export"&&d.result.export_ref)el.open=true;el.classList.add(d.result.error?"error":"done");$("summary",el).textContent=(AC_LABELS[d.name]||d.name)+" · "+(d.result.error?"未完成":"完成");$(".ac-progress",el).textContent="";const detail=document.createElement("pre");detail.textContent=d.result.error||d.result.text||(d.result.nodes?`已保存 ${d.result.nodes.length} 个结果，点击缩略图定位。`:d.result.total_nodes!=null?`已读取画布，共 ${d.result.total_nodes} 个节点。`:d.name==="image_segment"?"选区已准备好，可继续局部编辑。":d.name==="canvas_focus"?"已向页面发送定位请求。":d.result.adopted?"已采用："+d.result.adopted.map(a=>a.name).join("、"):d.result.memories?`找到 ${d.result.memories.length} 条创作记忆。`:d.result.memory?"已保存记忆："+d.result.memory.name:"画布操作已保存。");$(".ac-output",el).replaceChildren(detail);$(".ac-output",el).insertAdjacentHTML("beforeend",acResultCards(d.result));if(typeof aeResultExtras==="function")aeResultExtras($(".ac-output",el),d.result,d.name);}return;}
  if(e.kind==="progress"){
   el=AC.calls.get(d.call_id);
   if(el){
@@ -234,6 +313,8 @@ function initAgentChat(){
  $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{try{await flushSave();await acApi(`/api/chat/runs/${AC.runs[0].id}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=e=>{
+  const plan=e.target.closest("[data-apply-plan]");
+  if(plan){acApplyRemakePlan(plan);return;}
   const decision=e.target.closest("[data-remake-decision]");
   if(decision){acReviewRemake(decision);return;}
   const remake=e.target.closest("[data-remake-node]");

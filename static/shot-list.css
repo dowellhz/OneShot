@@ -1,0 +1,12 @@
+#shotList { position:fixed; z-index:35; right:14px; top:64px; width:min(390px,calc(100vw - 28px)); max-height:calc(100dvh - 132px); overflow:auto; padding:12px; background:var(--card); color:var(--text); border:1px solid var(--line2); border-radius:14px; box-shadow:0 12px 34px #0006; }
+#shotList[hidden] { display:none; }
+#shotList header,#shotList .sl-controls,#shotList li { display:flex; gap:8px; align-items:center; }
+#shotList header h2 { flex:1; font-size:var(--fs-heading); margin:0; }
+#shotList .sl-controls { margin:12px 0; flex-wrap:wrap; }
+#shotList select { color:inherit; max-width:100%; min-width:0; background:var(--card); border:1px solid var(--line2); border-radius:7px; padding:5px; }
+#shotList [data-source] { flex:1 1 140px; }
+#shotList ol { list-style:none; margin:0; padding:0; }
+#shotList li { padding:7px 0; border-top:1px solid var(--line); }
+#shotList li > div { flex:1; min-width:0; }
+#shotList li span,#shotList output { color:var(--dim); font-size:var(--fs-small); }
+#shotList li span { display:block; margin-top:4px; overflow-wrap:anywhere; }

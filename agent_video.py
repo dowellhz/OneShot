@@ -12,7 +12,7 @@ from aiohttp import web
 
 import video_remake
 
-NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze",
+NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze", "video_remake_plan",
          "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate",
          "video_remake_review", "video_remake_export"}
 
@@ -127,6 +127,10 @@ def register(tool, prop, node, prompt):
     tool("video_remake_analyze", "分析重制原片的镜头和人物。已有分析时读取结果；用户要求重试时设retry=true，补充缺失分析并保留剪辑点和审核决定。", {
         "node_id": node, "retry": prop("boolean"),
     }, ["node_id"])
+    tool("video_remake_plan", "列出换角执行计划的镜头、角色参考和待确认选区，等待用户勾选提交。", {
+        "node_id": node, "asset_id": node, "person": prop("string", minLength=1, maxLength=60),
+        "look": prop("string", maxLength=240), "shots": prop("array", items=shot_number, minItems=1, maxItems=4),
+    }, ["node_id", "asset_id", "person", "shots"])
     tool("video_remake_map", "保存角色映射，用资产库角色替换指定原片人物。镜头编号从1开始，使用最近一次重制状态的cut_revision。", {
         "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
         "shots": prop("array", items=prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS),
@@ -216,12 +220,17 @@ def plan_payload(s, run, user, frames, duration, data, prompt):
 
 
 async def execute(s, run, user, cid, name, args):
+    if run["data"].get("remake_plan_pending") and name in ("video_remake_map", "video_remake_locate",
+            "video_remake_preview", "video_remake_generate", "video_remake_review", "video_remake_export"):
+        raise ValueError("本轮有待确认的换角计划，请先使用计划卡选择镜头")
     if name == "video_remake_status":
         nid = args["node_id"]
         key = remake_source(s, run, user, nid)
         return remake_status(s.host, nid, key, video_remake.load(key), review_shot=args.get("shot"))
     if name == "video_remake_analyze":
         return await analyze_remake(s, run, user, args["node_id"], retry=args.get("retry", False))
+    if name == "video_remake_plan":
+        return plan_remake(s, run, user, args)
     if name == "video_remake_map":
         return await map_remake(s, run, user, args)
     if name == "video_remake_locate":
@@ -317,6 +326,38 @@ async def analyze_remake(s, run, user, nid, *, retry=False):
     if recovered:
         result["text"] = f"已补充 {recovered} 个镜头的视觉分析。" + result["text"]
     return result
+
+
+def plan_remake(s, run, user, args):
+    nid = args["node_id"]
+    key = remake_source(s, run, user, nid)
+    session = video_remake.load(key)
+    if not session or not session["shots"]:
+        raise ValueError("请先分析原片")
+    asset = s.app["creative_memory"].get(user, args["asset_id"], key[1])
+    reference = asset.get("character_views", {}).get("main") or asset.get("ref")
+    if asset["kind"] != "character" or not reference:
+        raise ValueError("请选择已有参考图的角色资产")
+    person = args["person"].strip()
+    if not person or len(set(args["shots"])) != len(args["shots"]):
+        raise ValueError("请指定原片人物和不重复的镜头")
+    mapping = {"source":person, "asset":asset["id"]}
+    planned = []
+    for number in args["shots"]:
+        if not 1 <= number <= len(session["shots"]):
+            raise ValueError("请选择存在的镜头")
+        shot = session["shots"][number - 1]
+        frame_key = video_remake.start_preview_key(shot, mapping)
+        selection = video_remake.person_selection(shot["frames"][frame_key], mapping) if frame_key else None
+        ready = not shot.get("keep_original") and selection and selection.get("source_person") == person
+        planned.append({"shot":number, "start":shot["start"], "selection_ready":bool(ready), "keep":bool(shot.get("keep_original"))})
+    if run.get("id"):
+        run["data"]["remake_plan_pending"] = True
+        s.update(run)
+    return {"text":"勾选要处理的镜头，再确认提交换角计划。", "remake":{"node_id":nid,"source_ref":key[3]},
+            "remake_plan":{"board":key[1], "cut_revision":session.get("cut_revision", 0), "asset":asset["id"],
+                           "asset_name":asset["name"], "reference":reference, "person":person, "look":args.get("look", ""),
+                           "shots":planned}}
 
 
 async def map_remake(s, run, user, args):
@@ -615,12 +656,15 @@ def remake_status(host, nid, key, session, *, review_shot=None):
         result["review_versions"] = [
             {"number": index + 1, "job": version["job"], "mode": version.get("mode", "whole"),
              "adopted": not shot.get("keep_original") and shot.get("adopted_video") == version["job"],
-             "review_issue": video_remake.video_start_issue(shot, version, mapping) if in_scope else "该镜头不在替换范围"}
+             "review_issue": video_remake.video_start_issue(shot, version, mapping)
+                             if in_scope or version.get("mode") == "combined" else "该镜头不在替换范围"}
             for index, version in enumerate(shot.get("videos", []))
-            if version["state"] == "done" and version.get("ref") and video_remake.matches_mapping(version, mapping)
+            if version["state"] == "done" and version.get("ref")
+            and (version.get("mode") == "combined" or video_remake.matches_mapping(version, mapping))
         ]
     issues = {item["shot"]: item["error"] for item in review["remaining"]}
     for index, shot in enumerate(session["shots"]):
+        reviewed, issue = video_remake.export_choice(shot, mapping, index)
         frame_key = video_remake.start_preview_key(shot, mapping)
         frame = shot["frames"].get(frame_key, {})
         videos = shot.get("videos", [])
@@ -634,7 +678,8 @@ def remake_status(host, nid, key, session, *, review_shot=None):
         result["shots"].append({
             "number": index + 1, "start": shot["start"], "end": shot["end"],
             "suggested_people": [name[:60] for name in people[:24] if isinstance(name, str)] if isinstance(people, list) else [],
-            "keep_original": bool(shot.get("keep_original") or mapping and index not in mapping["shots"]),
+            "keep_original": bool(shot.get("keep_original") or
+                                  mapping and index not in mapping["shots"] and not reviewed and not issue),
             "start_frame_selected": selected,
             "position_suggested": bool(mapping and not selected and not video_remake.person_absent(frame, mapping) and
                                        hint.get("point") and hint.get("source") == mapping["source"] and

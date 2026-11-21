@@ -81,3 +81,6 @@
 #videoRemake .rm-mapping input[type="checkbox"] { min-height: 0; margin: 2px; }
 .rm-mapping [data-map-shots] img { width: 40px; height: 29px; object-fit: contain; background: #111; border-radius: 4px; }
 .rm-mapping [data-map-shots] small { color: #a0a0ac; }
+.rm-role-layers { flex:1 0 100%; display:grid; gap:6px; padding-top:8px; border-top:1px solid var(--line); }
+.rm-role-layers > div { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.rm-role-layers > button { justify-self:start; }

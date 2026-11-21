@@ -448,6 +448,54 @@ async def saving(req):
     return web.json_response(store(req).put(req["user"], await req.json()))
 
 
+@routes.get("/api/memory/{mid}/impact")
+async def asset_impact(req):
+    import video_remake
+
+    s = store(req)
+    user, bid = req["user"], req.query.get("board")
+    if not bid:
+        fail("请选择画布")
+    asset = s.get(user, req.match_info["mid"], bid)
+    board = s.board(user, bid)
+    views = {"main": asset.get("ref"), **asset.get("character_views", {})}
+    nodes = board.get("nodes", [])
+    affected = []
+    for node in nodes:
+        for i, version in enumerate(node.get("versions", [])):
+            used = next((m for m in version.get("memory_used", []) if m.get("id") == asset["id"]), None)
+            if views["main"] and used and used.get("ref") and used["ref"] != views["main"]:
+                affected.append({"node":node["id"], "name":node["name"], "ref":version["ref"], "version":i + 1})
+    remakes = []
+    for row in db.q("SELECT node,source FROM video_remakes WHERE board=? AND owner=?", bid, user["id"]):
+        target = next((n for n in nodes if n.get("type") == "video" and any(
+            v.get("ref") == row["source"] and (n["id"] == row["node"] or row["node"] in (v.get("tab_nodes") or []))
+            for v in n.get("versions", [])
+        )), None)
+        if not target:
+            continue
+        session = video_remake.load((user["id"], bid, row["node"], row["source"]))
+        mapping = session.get("mapping")
+        for i, shot in enumerate(session.get("shots", [])):
+            adopted = video_remake.completed(shot.get("videos", []), shot.get("adopted_video"))
+            current = list(adopted.get("roles") or [adopted]) if adopted else []
+            current.extend(shot.get("role_layers", []))
+            current.extend(preview for frame in shot["frames"].values()
+                           if (preview := video_remake.completed(frame["previews"], frame.get("approved"))))
+            previous = next((v["asset"] for v in current if v.get("asset", {}).get("id") == asset["id"]
+                             and (ref := views.get(v["asset"].get("view", "main"))) and ref != v["asset"].get("ref")), None)
+            if not previous:
+                continue
+            view = previous.get("view", "main")
+            frame = video_remake.start_preview_key(shot, mapping)
+            ready = bool(mapping and mapping["asset"] == asset["id"] and i in mapping["shots"] and not shot.get("keep_original")
+                         and frame and video_remake.person_selection(shot["frames"][frame], mapping))
+            remakes.append({"node":target["id"],"name":target["name"],"ref":row["source"], "shot":i, "start":shot["start"],
+                            "revision":session.get("cut_revision", 0), "person":mapping["source"] if ready else None,
+                            "frame":frame, "view":view, "reference":views[view], "previous":previous["ref"]})
+    return web.json_response({"canvas":affected, "remake":remakes})
+
+
 @routes.delete("/api/memory/{mid}")
 async def deleting(req):
     store(req).delete(req["user"], req.match_info["mid"])

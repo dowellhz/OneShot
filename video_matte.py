@@ -152,7 +152,8 @@ def composite_frame(original, replacement, original_mask, replacement_mask, cv, 
 
 
 def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, cancelled, *,
-                   corrections=None, replacement_mask_ref=None, replacement_corrections=None, protections=None, display=True):
+                   corrections=None, replacement_mask_ref=None, replacement_corrections=None, protections=None,
+                   display=True, base_ref=None):
     import av
     try:
         import cv2 as cv
@@ -207,6 +208,7 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
     absent = False
     originals = render.clip_frames(original, start, end, fit, total, display=display)
     replacements = render.clip_frames(replacement, 0, total / render.FPS, fit, total, display=display)
+    base = render.clip_frames(render._ref_path(root, base_ref), 0, total / render.FPS, fit, total) if base_ref else None
     path, ref = render._new(root, "output", "remake-local", ".mp4")
     frames = 0
     try:
@@ -255,7 +257,8 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
                     at = (round(start * render.FPS) + index) / render.FPS
                     raise ValueError(f"原片 {at:.2f} 秒的前景保护区无法跟踪，请在附近添加校正帧") from error
                 protect_mask = foreground_track.at_size(width, height) if foreground_track is not None else None
-                rgb = a if absent else composite_frame(a, b, original_mask, replacement_mask, cv, protect_mask)
+                background = next(base) if base is not None else a
+                rgb = background if absent else composite_frame(background, b, original_mask, replacement_mask, cv, protect_mask)
                 frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
                 frame.pts, frame.time_base = index, Fraction(1, render.FPS)
                 for packet in stream.encode(frame):
@@ -273,5 +276,7 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
     finally:
         originals.close()
         replacements.close()
+        if base is not None:
+            base.close()
     progress(work, work)
     return {"ref": ref, "w": width, "h": height, "seconds": frames / render.FPS}

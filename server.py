@@ -8,7 +8,7 @@ import asyncio, io, json, math, os, random, re, time, uuid, hashlib, zipfile
 from pathlib import Path
 
 import aiohttp
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import rewriter
 import fields as pfields
@@ -718,6 +718,7 @@ async def put_board(req):
     old = board_meta(f) if f.exists() else {}
     if old and not (u["role"] == "admin" or old.get("owner") in (None, u["id"]) or old.get("shared")):
         raise bad("没有权限修改这个项目")
+    require_media(u, media_references(data) - media_references(old))
     data["owner"] = old.get("owner") or u["id"]          # the owner never changes through a save
     data["shared"] = bool(data.get("shared")) if (data["owner"] == u["id"] or u["role"] == "admin") else bool(old.get("shared"))
     # optimistic concurrency: a page may only overwrite the revision it loaded (another tab, an unload save of a stale
@@ -750,6 +751,91 @@ def refs_of_user(u: dict) -> set:
                 for v in n.get("versions", []):
                     seen.add(v.get("ref"))
     return seen
+
+
+def media_references(value, field=""):
+    if isinstance(value, str):
+        if not (field in {"ref", "refs", "url", "cover", "source", "base", "mask", "overlay", "mid",
+                          "remake_audio", "first_frame", "corrections", "replacement_corrections", "protections"}
+                or field.endswith(("_ref", "_url", "_mask"))):
+            return set()
+        if value.startswith("/media?ref="):
+            value = unquote(value.removeprefix("/media?ref=").split("#", 1)[0].split("&", 1)[0])
+        return {value} if value.startswith(("input:h3studio/", "output:h3studio/")) else set()
+    if isinstance(value, (dict, list)):
+        refs = set()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                refs.update(media_references(item, field if key.isdecimal() else key))
+        else:
+            for item in value:
+                refs.update(media_references(item, field))
+        return refs
+    return set()
+
+
+def grant_media(user, *refs):
+    for ref in refs:
+        if ref:
+            db.run("INSERT OR IGNORE INTO memory_uploads VALUES(?,?,?)", ref, user["id"], time.time())
+
+
+def can_read_media(user, ref):
+    if user["role"] == "admin":
+        return True
+    uid = user["id"]
+    if (db.one("SELECT 1 FROM memory_uploads WHERE ref=? AND owner=?", ref, uid)
+            or db.one("SELECT 1 FROM memory_outputs WHERE ref=? AND owner=?", ref, uid)
+            or db.one("""SELECT 1 FROM tasks, json_each(CASE WHEN json_valid(tasks.outputs) THEN tasks.outputs END)
+                         WHERE user_id=? AND json_each.value=? LIMIT 1""", uid, ref)):
+        return True
+    for row in db.q("SELECT board,data FROM video_remakes WHERE owner=? AND instr(data,?)>0", uid, ref):
+        board = board_meta(board_path(row["board"]))
+        if board and can_see(user, board) and ref in media_references(json.loads(row["data"])):
+            return True
+    if db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_selections'") and db.one(
+        """SELECT 1 FROM chat_selections s JOIN chat_sessions c ON c.id=s.session_id
+           WHERE c.user_id=? AND (s.mask_ref=? OR s.preview_ref=?) LIMIT 1""", uid, ref, ref
+    ):
+        return True
+    for path in BOARDS.glob("*.json"):
+        board = board_meta(path)
+        if board and can_see(user, board) and ref in media_references(board):
+            return True
+    for asset in creative_memory.Store(sys.modules[__name__]).all():
+        if asset["board"]:
+            board = board_meta(board_path(asset["board"]))
+            if not board or not can_see(user, board):
+                continue
+        if (asset["board"] or creative_memory.Store.visible(asset, user)) and ref in media_references(asset.get("media", [])):
+            return True
+    for path in (SAMPLES / "samples.json", *(SAMPLES / "boards").glob("*.json")):
+        try:
+            if ref in media_references(json.loads(path.read_text())):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def require_media(user, refs):
+    if user["role"] != "admin" and any(not can_read_media(user, ref) for ref in refs):
+        raise web.HTTPForbidden(text=json.dumps({"error": "没有权限访问所选素材"}, ensure_ascii=False),
+                                content_type="application/json")
+
+
+@web.middleware
+async def media_input_guard(req, handler):
+    if req.method == "POST" and (req.path in {
+        "/api/preview", "/api/generate", "/api/lastframe", "/api/rewrite", "/api/storyboard",
+        "/api/describe", "/api/analyze", "/api/split", "/api/concat", "/api/render", "/api/cover",
+    } or req.path.startswith("/api/image-edit/")):
+        try:
+            payload = await req.json()
+        except (ValueError, UnicodeError):
+            raise bad("请求格式不正确") from None
+        require_media(req["user"], media_references(payload))
+    return await handler(req)
 
 
 @routes.get("/api/assets")
@@ -818,13 +904,16 @@ async def upload(req):
 
 @routes.get("/media")
 async def media(req):
+    ref = req.query.get("ref", "")
     try:
-        f = tools.ref_path(COMFY_DIR, req.query.get("ref", ""))
+        f = tools.ref_path(COMFY_DIR, ref)
     except ValueError:
         raise web.HTTPBadRequest()
     if f.suffix.lower() not in MEDIA_EXT or not f.is_file():
         raise web.HTTPNotFound()
-    return web.FileResponse(f, headers={"Cache-Control": "max-age=86400", "X-Content-Type-Options": "nosniff"})
+    if not can_read_media(req["user"], ref):
+        raise web.HTTPNotFound()
+    return web.FileResponse(f, headers={"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff"})
 
 
 CANVAS_MEDIA_EXT = creative_memory.IMAGE_EXT | tools.VIDEO_EXT
@@ -989,6 +1078,7 @@ async def image_transform(req):
         r = await asyncio.to_thread(image_editor.transform, COMFY_DIR, p)
     except (ValueError, OSError, TypeError) as e:
         raise bad(str(e))
+    grant_media(req["user"], r.get("ref"))
     return web.json_response(r)
 
 
@@ -1003,6 +1093,7 @@ async def image_layers(req):
         result = await asyncio.to_thread(fn, COMFY_DIR, p)
     except (ValueError, OSError, TypeError) as e:
         raise bad(str(e))
+    grant_media(req["user"], result.get("ref"))
     return web.json_response(result)
 
 
@@ -1069,7 +1160,9 @@ async def image_edit_tool(req):
     if not isinstance(p, dict):
         raise bad("图像编辑参数须为对象")
     tool = req.path.rsplit("/", 1)[-1]
-    return web.json_response(await run_image_tool(req.app, tool, p))
+    result = await run_image_tool(req.app, tool, p)
+    grant_media(req["user"], result.get("ref"))
+    return web.json_response(result)
 
 
 async def run_image_tool(app, tool, p):
@@ -1325,6 +1418,7 @@ async def lastframe(req):
         return f"input:h3studio/{name}", img.size
 
     new_ref, size = await asyncio.get_running_loop().run_in_executor(None, grab)
+    grant_media(req["user"], new_ref)
     return web.json_response({"ref": new_ref, "url": "/media?ref=" + quote(new_ref, safe=""), "w": size[0], "h": size[1]})
 
 
@@ -1390,6 +1484,7 @@ async def analyze(req):
         cut = await asyncio.get_running_loop().run_in_executor(None, tools.find_shots, COMFY_DIR, p["ref"], int(p.get("max_shots") or 12))
     except Exception as e:
         raise bad(f"切分镜头失败：{e}")
+    grant_media(req["user"], *media_references(cut))
     return await llm_call(req, tools.analyze_shots(req.app["llm"], COMFY_DIR, cut))
 
 
@@ -1411,6 +1506,7 @@ async def split(req):
         raise bad(f"拆分失败：{e}")
     for t in tiles:
         t["url"] = "/media?ref=" + quote(t["ref"], safe="")
+    grant_media(req["user"], *(tile["ref"] for tile in tiles))
     return web.json_response({"tiles": tiles})
 
 
@@ -1422,6 +1518,7 @@ async def concat(req):
     except Exception as e:
         raise bad(f"拼接失败：{e}")
     r["url"] = "/media?ref=" + quote(r["ref"], safe="")
+    grant_media(req["user"], r["ref"])
     return web.json_response(r)
 
 
@@ -1513,6 +1610,7 @@ def enqueue_render(req, render_clip, *, seconds, label=None, board=None):
                 return
             if j.get("cancel"):
                 return
+            grant_media(req["user"], r.get("cover"))
             extra = {"cover": r.get("cover"), "cover_url": "/media?ref=" + quote(r["cover"], safe="") if r.get("cover") else None}
             j["outputs"] = [{"ref": r["ref"], "url": "/media?ref=" + quote(r["ref"], safe=""),
                              "meta": {"width": r["w"], "height": r["h"], "duration": r["seconds"]}, "extra": extra}]
@@ -1534,6 +1632,7 @@ async def cover(req):
     except Exception as e:
         raise bad(f"取封面失败：{e}")
     r["url"] = "/media?ref=" + quote(r["ref"], safe="")
+    grant_media(req["user"], r["ref"])
     return web.json_response(r)
 
 
@@ -1562,6 +1661,7 @@ async def upload_audio(req):
         dst.unlink(missing_ok=True)
         raise bad(f"读不了这个音频：{e}")
     ref = f"input:h3studio/{name}"
+    grant_media(req["user"], ref)
     return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "seconds": secs, "name": part.filename or name})
 
 
@@ -1593,6 +1693,7 @@ async def tts_say(req):
         raise bad(f"配音失败：{e}")
     r["url"] = "/media?ref=" + quote(r["ref"], safe="")
     r["took"] = round(time.time() - t0, 1)
+    grant_media(req["user"], r["ref"])
     return web.json_response(r)
 
 
@@ -2320,7 +2421,7 @@ async def on_stop(app):
 
 
 def main():
-    app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[auth.middleware])
+    app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[auth.middleware, media_input_guard])
     agent_chat.install(app, sys.modules[__name__])
     app.add_routes(routes)
     app.add_routes(auth.routes)

@@ -301,10 +301,14 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
         t1 = float(c.get("out") or dur)
         exact = c.get("frames") if source_audio is not None else None
         if exact is None:
-            t1 = min(max(t1, t0 + 0.5), dur if dur > 0 else t1)
+            minimum = 1 / FPS if spec.get("remake_audio") and c.get("audio_start") is not None else .5
+            t1 = min(max(t1, t0 + minimum), dur if dur > 0 else t1)
         info.append({"path": p, "t0": t0, "t1": t1, "n": exact if exact is not None else max(1, int(round((t1 - t0) * FPS))),
-                     "trans": c.get("trans") or "cut", "vol": float(c.get("volume", 1.0)), "subs": c.get("subs") or [], "w": w, "h": h})
-    w, h = probe(source_audio, display=display)[:2] if source_audio is not None else (info[0]["w"], info[0]["h"])
+                     "trans": c.get("trans") or "cut", "vol": float(c.get("volume", 1.0)), "subs": c.get("subs") or [],
+                     "audio_start": c.get("audio_start"), "w": w, "h": h})
+    remake_source = _ref_path(comfy_dir, spec["remake_audio"]) if source_audio is None and spec.get("remake_audio") else None
+    reference = source_audio if source_audio is not None else remake_source
+    w, h = probe(reference, display=display)[:2] if reference is not None else (info[0]["w"], info[0]["h"])
     W, H = target_size(w, h, spec.get("aspect") or "source")
     if max_side and max(W, H) > max_side:
         scale = max_side / max(W, H)
@@ -324,10 +328,25 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
     # ---- audio: clips, then narration, then music under everything
     pcm = np.zeros((2, int(round(total / FPS * SR)) + SR), np.float32)
     speech = np.zeros(pcm.shape[1], np.float32)        # 1 where dialogue / narration is heard (for ducking)
+    original = None
+    if remake_source is not None:
+        duration = probe(remake_source, display=False)[2]
+        if not 0 < duration <= 60:
+            raise ValueError("重制原声音轨须来自 60 秒以内的原片")
+        original = original_pcm(remake_source, round(duration * SR))
     for i, c in enumerate(info):
         if source_audio is not None:
             break
-        a = read_audio(c["path"], c["t0"], c["t1"]) * c["vol"]
+        if original is not None and c["audio_start"] is not None:
+            start = round((float(c["audio_start"]) + c["t0"]) * SR)
+            if not 0 <= start <= original.shape[1]:
+                raise ValueError("原声入点超出原片范围")
+            length = round(c["n"] / FPS * SR)
+            a = np.zeros((2, length), dtype=np.float32)
+            end = min(start + length, original.shape[1])
+            a[:, :end - start] = original[:, start:end] * c["vol"]
+        else:
+            a = read_audio(c["path"], c["t0"], c["t1"]) * c["vol"]
         L = a.shape[1]
         g = np.ones(L, np.float32)
         r = int(round(c["ov"] / FPS * SR)) if c["ov"] else 0
@@ -430,7 +449,7 @@ def render(comfy_dir: Path, spec: dict, progress=lambda done, total: None, cance
         for i, c in enumerate(info):
             blend_in = list(held); held.clear()
             nb = int(TRANS / 2 * FPS)
-            frames = c["n"] if source_audio is not None else None
+            frames = c["n"] if source_audio is not None or original is not None and c["audio_start"] is not None else None
             for j, arr in enumerate(clip_frames(c["path"], c["t0"], c["t1"], fit, frames, display=display)):
                 if j < len(blend_in):                       # crossfade
                     a = (j + 1) / (len(blend_in) + 1)

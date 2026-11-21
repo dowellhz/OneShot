@@ -133,8 +133,11 @@ def mapped_shots(session):
 
 
 def matches_mapping(version, mapping):
-    return (not mapping or (version.get("asset", {}).get("id") == mapping["asset"] and
-                            version.get("source_person") == mapping["source"]))
+    if not mapping:
+        return True
+    roles = version.get("roles") or [version]
+    return any(role.get("asset", {}).get("id") == mapping["asset"] and role.get("source_person") == mapping["source"]
+               for role in roles)
 
 
 def set_mapping(req, board, session, data):
@@ -149,8 +152,31 @@ def set_mapping(req, board, session, data):
     if not isinstance(look, str) or len(look.strip()) > 240:
         fail("原片外貌提示限 240 字以内")
     asset, _, _ = role_reference(req, board, {**data, "view": "main"})
-    session["mapping"] = {"source": source.strip(), "asset": asset["id"],
+    source = source.strip()
+    activate_role_frames(session, source)
+    session["mapping"] = {"source": source, "asset": asset["id"],
                           "asset_name": asset["name"], "shots": sorted(set(shots)), "look": look.strip()}
+
+
+def activate_role_frames(session, source):
+    previous = session.get("mapping", {}).get("source")
+    if previous != source:
+        fields = ("selection", "protection", "person_absent", "person_hint", "approved")
+        for shot in session["shots"]:
+            for frame in shot["frames"].values():
+                stored = frame.get("role_states", {})
+                frame_owner = (previous or (frame.get("selection") or {}).get("source_person")
+                               or (frame.get("person_absent") or {}).get("source")
+                               or (frame.get("person_hint") or {}).get("source"))
+                if frame_owner and frame_owner == source:
+                    continue
+                if frame_owner:
+                    stored[frame_owner] = {key:frame.pop(key) for key in fields if key in frame}
+                    frame["role_states"] = stored
+                elif stored:
+                    for key in fields:
+                        frame.pop(key, None)
+                frame.update(stored.pop(source, {}))
 
 
 async def analyze(req, host, source):
@@ -842,6 +868,41 @@ async def queue_shots(req, host, key, session, data):
     return outcome
 
 
+async def apply_remake_plan(req, host, key, session, data):
+    indices = data.get("shots")
+    if (not isinstance(indices, list) or not 1 <= len(indices) <= 4
+            or any(type(i) is not int or not 0 <= i < len(session["shots"]) for i in indices)
+            or len(set(indices)) != len(indices)):
+        fail("请选择 1 至 4 个不同的镜头")
+    role_reference(req, key[1], data)
+    previous = session.get("mapping")
+    scope = indices
+    if previous and previous["source"] == data.get("person") and previous["asset"] == data.get("asset"):
+        scope = list(dict.fromkeys([*previous["shots"], *indices]))
+    set_mapping(req, key[1], session, {**data, "shots":scope})
+    mapping = session["mapping"]
+    outcome = {"submitted":[], "skipped":[], "failed":[], "needs_selection":[], "jobs":[]}
+    requests = []
+    for index in indices:
+        shot = session["shots"][index]
+        frame_key = start_preview_key(shot, mapping)
+        if shot.get("keep_original"):
+            outcome["skipped"].append(index)
+        elif not frame_key or (person_selection(shot["frames"][frame_key], mapping) or {}).get("source_person") != mapping["source"]:
+            outcome["needs_selection"].append(index)
+        else:
+            requests.append({"shot":index, "frame":frame_key, "view":"main", "reference":data.get("reference")})
+    if requests:
+        queued = await queue_shots(req, host, key, session, {**data, "action":"batch_previews", "shots":requests})
+        for field in queued:
+            outcome[field].extend(queued[field])
+        for item in requests:
+            if item["shot"] in queued["submitted"]:
+                frame = session["shots"][item["shot"]]["frames"][item["frame"]]
+                outcome["jobs"].append({"index":item["shot"], "frame":item["frame"], "job":frame["previews"][-1]["job"]})
+    return outcome
+
+
 async def queue_one_shot(req, host, key, shot, params, mapping, preview):
     if preview:
         frame_key = start_preview_key(shot, mapping)
@@ -1084,7 +1145,7 @@ async def approve_video(host, shot, job, mapping=None):
     version = completed(shot.get("videos", []), job)
     if not version:
         fail("请选择已完成的视频版本")
-    if not matches_mapping(version, mapping):
+    if version.get("mode") != "combined" and not matches_mapping(version, mapping):
         fail("视频属于之前的人物映射，请重新生成当前角色的视频")
     if error := video_start_issue(shot, version, mapping):
         fail(error)
@@ -1100,8 +1161,79 @@ async def approve_video(host, shot, job, mapping=None):
     shot["keep_original"] = False
 
 
+def edit_role_layers(shot, data, mapping):
+    action = data["action"]
+    layers = shot.setdefault("role_layers", [])
+    job = data.get("job")
+    if action == "add_role_layer":
+        video = completed(shot.get("videos", []), job)
+        if not video or video.get("mode") != "local" or not video.get("source_person") or not matches_mapping(video, mapping):
+            fail("请先完成当前人物的局部合成")
+        previous = next((i for i, layer in enumerate(layers) if layer["source_person"] == video["source_person"]), None)
+        layer = {"job":video["job"], "source_person":video["source_person"], "asset":video["asset"]}
+        if previous is None:
+            if len(layers) >= 4:
+                fail("每个镜头最多可合成四个角色")
+            layers.append(layer)
+        else:
+            layers[previous] = layer
+        return
+    index = next((i for i, layer in enumerate(layers) if layer["job"] == job), None)
+    if index is None:
+        fail("角色图层已不存在")
+    if action == "remove_role_layer":
+        layers.pop(index)
+    elif index > 0:
+        layers[index - 1], layers[index] = layers[index], layers[index - 1]
+
+
+def queue_combined_roles(req, host, key, shot, *, display):
+    layers = shot.get("role_layers", [])
+    if len(layers) < 2:
+        fail("请加入至少两个人物的局部合成")
+    videos = shot.setdefault("videos", [])
+    if pending(videos) or len(videos) >= MAX_PREVIEWS:
+        fail("请等待当前任务完成或检查镜头版本上限")
+    inputs = []
+    for layer in layers:
+        local = completed(videos, layer["job"])
+        generated = completed(videos, local.get("derived_from")) if local else None
+        if not generated:
+            fail("有角色图层缺少已完成的生成视频")
+        inputs.append((local, generated))
+    start, end = shot["start"], shot["end"]
+
+    def composite(progress, cancelled):
+        result = None
+        temporary = []
+        try:
+            for i, (local, generated) in enumerate(inputs):
+                if result:
+                    temporary.append(result["ref"])
+                result = video_matte.localized_clip(host.COMFY_DIR, key[3], generated["ref"], local["source_mask"],
+                    start, end, lambda done, total: progress(i * 100 + round(100 * done / total), len(inputs) * 100),
+                    cancelled, replacement_mask_ref=local.get("mask"),
+                    corrections={int(k):v for k,v in local.get("corrections", {}).items()},
+                    replacement_corrections={int(k):v for k,v in local.get("replacement_corrections", {}).items()},
+                    protections={int(k):v for k,v in local.get("protections", {}).items()}, display=display,
+                    base_ref=result["ref"] if result else None)
+            return result
+        finally:
+            for ref in temporary:
+                host.tools.ref_path(host.COMFY_DIR, ref).unlink(missing_ok=True)
+
+    version = submitted_job(host.enqueue_render(req, composite, seconds=end-start, label="多角色合成", board=key[1]))
+    version.update(mode="combined", roles=deepcopy(layers))
+    videos.append(version)
+
+
 def video_start_issue(shot, version, mapping):
-    starts_absent = person_absent(shot["frames"]["first"], mapping)
+    if version.get("mode") == "combined":
+        return None if shot.get("role_layers") == version.get("roles") else "角色情况已更新，请重新合成并审核"
+    first = shot["frames"]["first"]
+    person = version.get("source_person")
+    role_frame = first.get("role_states", {}).get(person, first)
+    starts_absent = person_absent(role_frame, {"source":person} if person else mapping)
     if starts_absent != bool(version.get("entry_tick")):
         return "首帧出画标记已变更，请重新生成并审核镜头视频"
     if starts_absent and version.get("mode") != "local":
@@ -1110,12 +1242,19 @@ def video_start_issue(shot, version, mapping):
 
 
 def export_choice(shot, mapping, index):
-    if shot.get("keep_original") or (mapping and index not in mapping["shots"]):
+    if shot.get("keep_original"):
         return None, None
     version = completed(shot.get("videos", []), shot.get("adopted_video"))
+    if version and version.get("mode") == "combined":
+        return version, video_start_issue(shot, version, mapping)
+    if len(shot.get("role_layers", [])) > 1:
+        return None, "已加入多个角色，请完成多角色合成并审核"
+    scoped = mapping and index in mapping["shots"]
     if version:
-        error = video_start_issue(shot, version, mapping) if matches_mapping(version, mapping) else "视频属于之前的人物映射，请重新审核"
+        error = video_start_issue(shot, version, mapping) if not scoped or matches_mapping(version, mapping) else "视频属于之前的人物映射，请重新审核"
         return version, error
+    if mapping and not scoped:
+        return None, None
     if mapping or shot.get("videos") or any(f.get("approved") for f in shot["frames"].values()):
         return None, "待审核，请采用视频或选择保留原镜头"
     return None, None
@@ -1230,6 +1369,11 @@ def public_session(host, session, **extra):
     if session is None:
         return None
     result = {key: value for key, value in session.items() if key not in ("cut_archive", "cut_undo")}
+    jobs = []
+    for i, shot in enumerate(session["shots"]):
+        version, issue = export_choice(shot, session.get("mapping"), i)
+        jobs.append(version["job"] if version and not issue else None)
+    result["reviewed_jobs"] = jobs
     if "export" in result:
         result["export"] = available_export(host, result["export"])
     return {**result, "can_undo_cut": bool(session.get("cut_undo")), "export_review": export_review(session), **extra}
@@ -1277,7 +1421,11 @@ async def handle(req, host):
             await export_video(req, host, key, session)
         elif action == "map_person":
             set_mapping(req, board, session, data)
+        elif action == "apply_plan":
+            update_jobs(host, key[0], session)
+            response[action] = await apply_remake_plan(req, host, key, session, data)
         elif action == "remove_mapping":
+            activate_role_frames(session, None)
             session.pop("mapping", None)
         elif action == "batch_locate_people":
             response[action] = await batch_locate_people(req, host, session, data)
@@ -1292,7 +1440,11 @@ async def handle(req, host):
             shot, frame = selected_frame(session, data)
             mapping = session.get("mapping")
             scoped = mapped_shots(session)
+            adopting_combined = action == "approve_video" and any(
+                v["job"] == data.get("job") and v.get("mode") == "combined" for v in shot.get("videos", [])
+            )
             if (scoped is not None and data["shot"] not in scoped and
+                    not adopting_combined and
                     action in ("preview", "approve", "generate_video", "localize", "approve_video",
                                "locate_person", "apply_person_hint", "set_absence", "analyze_motion", "suggest_entry")):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
@@ -1352,6 +1504,10 @@ async def handle(req, host):
                 await generate_shot(req, host, key, shot, data, mapping)
             elif action == "localize":
                 localize_shot(req, host, key, shot, data.get("job"), mapping, display=session.get("display_oriented", False))
+            elif action in ("add_role_layer", "remove_role_layer", "move_role_layer"):
+                edit_role_layers(shot, data, mapping)
+            elif action == "combine_roles":
+                queue_combined_roles(req, host, key, shot, display=session.get("display_oriented", False))
             elif action == "approve_video":
                 await approve_video(host, shot, data.get("job"), mapping)
             elif action == "keep":

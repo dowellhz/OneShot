@@ -19,10 +19,20 @@ function subsOf(n) {
   }).filter(Boolean);
 }
 const vlen = n => curV(n)?.seconds || n?.data?.duration || 5;
-function clipLen(c) { const n = node(c.node); const L = c.src_len || vlen(n); return Math.max(0.5, (c.out ?? L) - (c.in || 0)); }
+function filmVersion(c) {
+  return c.ref ? {ref:c.ref, url:remakeMedia(c.ref), seconds:c.media_seconds} : curV(node(c.node));
+}
+function filmMediaLength(c) { return c.src_len || filmVersion(c)?.seconds || vlen(node(c.node)); }
+function clipLen(c) { return Math.max(c.remake_shot ? 0 : .5, (c.out ?? filmMediaLength(c)) - (c.in || 0)); }
+function clipOverlap(c, next) {
+  if (c.trans !== "fade" || !next) return 0;
+  const fps = 24;
+  return Math.min(fps / 2, Math.floor(Math.round(clipLen(c) * fps) / 2),
+    Math.floor(Math.round(clipLen(next) * fps) / 2)) / fps;
+}
 function filmTotal(spec) {
   let t = 0;
-  spec.clips.forEach((c, i) => { t += clipLen(c); if (c.trans === "fade" && i + 1 < spec.clips.length) t -= 0.5; });
+  spec.clips.forEach((c, i) => { t += clipLen(c) - clipOverlap(c, spec.clips[i + 1]); });
   return Math.max(0, t);
 }
 function newSpec(vids) {
@@ -41,11 +51,14 @@ function openFilm(arg) {
     if (!vids.length) return toast("先选中至少一段已生成的视频");
     spec = newSpec(vids);
   }
+  showFilm(spec, n);
+}
+function showFilm(spec, n = null) {
   FILM = { n, spec, sel: 0 };
   $("#film").classList.add("on");
   renderFilm(); selectClip(0);
 }
-function closeFilm() { $("#film").classList.remove("on"); const v = $("#fmV"); v.pause(); FILM = null; }
+function closeFilm() { $("#film").classList.remove("on"); $("#fmV").pause(); $("#fmOriginal").pause(); FILM = null; }
 
 function renderFilm() {
   const F = FILM, s = F.spec, total = filmTotal(s);
@@ -53,10 +66,10 @@ function renderFilm() {
   // timeline strip
   const tl = $("#fmTl");
   tl.innerHTML = s.clips.map((c, i) => {
-    const m = node(c.node), v = curV(m), L = clipLen(c);
+    const m = node(c.node), v = filmVersion(c), L = clipLen(c);
     return `<div class="fc ${i === F.sel ? "on" : ""}" draggable="true" data-i="${i}" style="width:${Math.round(90 + L * 22)}px">
         <video src="${v ? v.url + "#t=" + ((c.in || 0) + 0.05) : ""}" preload="metadata" muted></video>
-        <div class="fl"><b>${i + 1}</b> ${esc(m?.name || "已删除")}<span>${L.toFixed(1)}s</span></div>
+        <div class="fl"><b>${i + 1}</b> ${esc(c.name || m?.name || "已删除")}<span>${L.toFixed(1)}s</span></div>
         ${c.subs.length && s.subtitles ? `<div class="fs">${esc(c.subs[0])}${c.subs.length > 1 ? " …" : ""}</div>` : ""}
         <button class="x" title="从成片中移除">×</button></div>` +
       (i + 1 < s.clips.length ? `<button class="ft" data-i="${i}" title="点击切换转场">${TRANS_CN[c.trans] || "硬切"}</button>` : "");
@@ -157,7 +170,7 @@ function renderNarr() {
 
 // ---- preview: one clip (trimmed) or the whole film in sequence, with the subtitles on top
 let playAll = false;
-function clipStart(i) { const s = FILM.spec; let t = 0; for (let k = 0; k < i; k++) { t += clipLen(s.clips[k]); if (s.clips[k].trans === "fade") t -= 0.5; } return t; }
+function clipStart(i) { const s = FILM.spec; let t = 0; for (let k = 0; k < i; k++) t += clipLen(s.clips[k]) - clipOverlap(s.clips[k], s.clips[k + 1]); return t; }
 function timelinePos() { const v = $("#fmV"), c = FILM.spec.clips[FILM.sel]; return c ? clipStart(FILM.sel) + Math.max(0, v.currentTime - (c.in || 0)) : 0; }
 function seekTimeline(t) {
   const s = FILM.spec; let i = 0;
@@ -167,36 +180,98 @@ function seekTimeline(t) {
 function selectClip(i, offset = 0) {
   const F = FILM; if (!F) return; F.sel = i;
   $$("#fmTl .fc").forEach(el => el.classList.toggle("on", +el.dataset.i === i));
-  const c = F.spec.clips[i], m = node(c.node), v = curV(m), vid = $("#fmV");
+  const c = F.spec.clips[i], v = filmVersion(c), vid = $("#fmV");
   if (!v) return;
   if (!vid.src.endsWith(v.url)) vid.src = v.url;
-  const go = () => { c.src_len = vid.duration || c.src_len; vid.currentTime = (c.in || 0) + offset; renderClipBox(); };
+  const go = () => { c.src_len = vid.duration || c.src_len; vid.currentTime = (c.in || 0) + offset; renderClipBox(); syncFilmOriginal(); };
   if (vid.readyState >= 1) go(); else vid.onloadedmetadata = () => { vid.onloadedmetadata = null; go(); };
 }
 function renderClipBox() {
-  const F = FILM, c = F.spec.clips[F.sel], box = $("#fmClip"), L = c.src_len || vlen(node(c.node)), out = c.out ?? L;
-  box.innerHTML = `<div class="row"><b>第 ${F.sel + 1} 段 · ${esc(node(c.node)?.name || "")}</b>
-      <span class="grow"></span><button class="pill" data-a="in" title="把当前画面设为开始">从这里开始</button><button class="pill" data-a="out" title="把当前画面设为结束">到这里结束</button><button class="pill" data-a="reset">恢复完整</button></div>
-    <div class="trim"><span>入点 <b>${(c.in || 0).toFixed(1)}s</b></span><input type="range" min="0" max="${L.toFixed(2)}" step="0.1" value="${c.in || 0}" data-t="in">
-      <input type="range" min="0" max="${L.toFixed(2)}" step="0.1" value="${out}" data-t="out"><span>出点 <b>${out.toFixed(1)}s</b></span><span class="dim">保留 ${(out - (c.in || 0)).toFixed(1)}s / 原长 ${L.toFixed(1)}s</span></div>
+  const F = FILM, c = F.spec.clips[F.sel], box = $("#fmClip"), L = filmMediaLength(c), out = c.out ?? L;
+  const baseIn = c.remake_shot ? c.remake_shot.start - c.audio_start : 0;
+  const baseOut = c.remake_shot ? Math.min(L, c.remake_shot.end - c.audio_start) : L;
+  const minLength = Math.min(c.remake_shot ? 1 / RM_FPS : .5, Math.max(0, baseOut - baseIn));
+  const seekStep = c.remake_shot ? 1 / RM_FPS : .1;
+  box.innerHTML = `<div class="row"><b>第 ${F.sel + 1} 段 · ${esc(c.name || node(c.node)?.name || "")}</b>
+      <span class="grow"></span>${c.ref ? '<button class="pill" data-update-version>更新这一镜</button>' : ''}<button class="pill" data-a="in" title="把当前画面设为开始">从这里开始</button><button class="pill" data-a="out" title="把当前画面设为结束">到这里结束</button><button class="pill" data-a="reset">恢复完整</button></div>
+    <div class="trim"><span>入点 <b>${(c.in || 0).toFixed(1)}s</b></span><input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${c.in || 0}" data-t="in">
+      <input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${out}" data-t="out"><span>出点 <b>${out.toFixed(1)}s</b></span><span class="dim">保留 ${(out - (c.in || 0)).toFixed(1)}s / 原长 ${(baseOut - baseIn).toFixed(1)}s</span></div>
     <div class="row2"><label>字幕（一行一句，按顺序出现）<textarea rows="2" placeholder="这段没有字幕">${esc(c.subs.join("\n"))}</textarea></label>
       <label class="vol">原声音量<input type="range" min="0" max="1.5" step="0.05" value="${c.volume}"><span>${Math.round(c.volume * 100)}%</span></label></div>`;
   const vid = $("#fmV");
+  const update = $("[data-update-version]", box);
+  if (update) update.onclick = async () => {
+    update.disabled = true;
+    try { await updateFilmVersion(F, c); }
+    catch (error) { toast(error.message); }
+    finally { update.disabled = false; }
+  };
+  const trim = (k, value) => {
+    const time = c.remake_shot ? Math.round(value * RM_FPS) / RM_FPS : +value.toFixed(2);
+    if (k === "in") c.in = Math.max(baseIn, Math.min(time, (c.out ?? baseOut) - minLength));
+    else {
+      c.out = Math.min(baseOut, Math.max(time, (c.in || 0) + minLength));
+      if (!c.remake_shot && c.out >= L - .05) c.out = null;
+    }
+  };
   $$("input[data-t]", box).forEach(r => r.oninput = () => {
-    const k = r.dataset.t; let x = +r.value;
-    if (k === "in") x = Math.min(x, (c.out ?? L) - 0.5); else x = Math.max(x, (c.in || 0) + 0.5);
-    c[k] = +x.toFixed(2); if (k === "out" && c.out >= L - 0.05) c.out = null;
-    vid.currentTime = k === "in" ? c.in : x; renderClipBox(); refreshTimelineLabels();
+    const k = r.dataset.t;
+    trim(k, +r.value);
+    vid.currentTime = c[k] ?? baseOut; renderClipBox(); refreshTimelineLabels();
   });
   $$("button[data-a]", box).forEach(b => b.onclick = () => {
-    const a = b.dataset.a, t = +vid.currentTime.toFixed(2);
-    if (a === "in") c.in = Math.min(t, (c.out ?? L) - 0.5); else if (a === "out") c.out = Math.max(t, (c.in || 0) + 0.5); else { c.in = 0; c.out = null; }
+    const a = b.dataset.a;
+    if (a === "reset") { c.in = baseIn; c.out = c.remake_shot ? baseOut : null; }
+    else trim(a, vid.currentTime);
     renderClipBox(); refreshTimelineLabels();
   });
   $("textarea", box).oninput = e => { c.subs = e.target.value.split("\n").map(x => x.trim()).filter(Boolean); };
   $("textarea", box).onblur = () => renderFilm();
   const vr = $(".vol input", box); vr.oninput = () => { c.volume = +vr.value; vr.nextElementSibling.textContent = Math.round(c.volume * 100) + "%"; vid.volume = Math.min(1, c.volume); };
   vid.volume = Math.min(1, c.volume);
+  syncFilmOriginal();
+}
+function syncFilmOriginal() {
+  const track = $("#fmOriginal"), video = $("#fmV"), clip = FILM?.spec.clips[FILM.sel];
+  const ref = FILM?.spec.remake_audio;
+  video.muted = !!ref && clip?.audio_start != null;
+  if (!video.muted) { track.pause(); return; }
+  const url = remakeMedia(ref);
+  if (track.getAttribute("src") !== url) track.src = url;
+  const time = clip.audio_start + video.currentTime;
+  if (Math.abs(track.currentTime - time) > .08) track.currentTime = time;
+  track.volume = video.volume;
+  track.playbackRate = video.playbackRate;
+  if (video.paused) track.pause();
+  else if (track.paused) track.play()?.catch(() => {});
+}
+async function updateFilmVersion(F, clip) {
+  const provenance = clip.remake_shot;
+  const bid = boardId;
+  if (provenance) {
+    await flushSave();
+    const target = vtResolve(clip.node, provenance.source);
+    if (!target || target.node.versions[target.index]?.ref !== provenance.source) throw new Error("原片版本已不存在");
+    const version = target.node.versions[target.index];
+    const session = await remakeRequest(`/api/video-remake/${encodeURIComponent(bid)}/${encodeURIComponent(target.node.id)}?source=${encodeURIComponent(provenance.source)}`);
+    const index = session?.shots.findIndex(shot => shot.start === provenance.start && shot.end === provenance.end);
+    if (!(index >= 0)) throw new Error("原片剪辑点已变更，请从镜头清单重新送入剪辑");
+    if (session.export_review.remaining.some(issue => issue.shot === index)) throw new Error("请先在重制工作区采用镜头版本");
+    if (FILM !== F || boardId !== bid || !F.spec.clips.includes(clip)) return;
+    const next = remakeTimelineSpec(target.node, version, session).clips[index];
+    const start = (clip.in || 0) + clip.audio_start - provenance.start;
+    const end = (clip.out ?? filmMediaLength(clip)) + clip.audio_start - provenance.start;
+    Object.assign(clip, {ref:next.ref, media_seconds:next.media_seconds, audio_start:next.audio_start, src_len:undefined,
+      in:Math.max(next.in, next.in + start), out:Math.min(next.out, next.in + end)});
+  } else {
+    const version = curV(node(clip.node));
+    if (!version) throw new Error("画布上没有可用的镜头版本");
+    const limit = version.seconds || filmMediaLength(clip);
+    if ((clip.in || 0) >= limit) throw new Error("新版本短于当前入点");
+    clip.ref = version.ref; clip.media_seconds = limit; delete clip.src_len;
+    if (clip.out != null) clip.out = Math.min(clip.out, limit);
+  }
+  renderFilm(); selectClip(F.sel);
 }
 function refreshTimelineLabels() {
   const s = FILM.spec;
@@ -220,6 +295,7 @@ function previewTick() {
     lines.forEach((x, k) => { const d = (b - a) * w[k] / tot; if (t >= st && t < st + d) txt = x; st += d; });
   }
   sub.textContent = txt; sub.style.fontSize = (F.spec.sub_size || 1) * 100 + "%"; sub.style.display = txt ? "" : "none";
+  syncFilmOriginal();
 }
 function addClipMenu(e) {
   const have = new Set(FILM.spec.clips.map(c => c.node));
@@ -238,7 +314,7 @@ function addClipMenu(e) {
 // ---- export: create / update the film node and render it as a job
 async function exportFilm() {
   const F = FILM, s = F.spec;
-  const clips = s.clips.map(c => ({ c, v: curV(node(c.node)) }));
+  const clips = s.clips.map(c => ({ c, v: filmVersion(c) }));
   if (clips.some(x => !x.v)) return toast("有片段的视频已被删除或还没生成，先移除它");
   const pending = s.narration.filter(x => x.text.trim() && !x.ref);
   for (const x of pending) {
@@ -247,7 +323,8 @@ async function exportFilm() {
     catch (e) { return toast("旁白配音失败：" + e.message, 5000); }
   }
   const spec = {
-    clips: clips.map(({ c, v }) => ({ ref: v.ref, in: c.in || 0, out: c.out, trans: c.trans, volume: c.volume, subs: c.subs })),
+    clips: clips.map(({ c, v }) => ({ ref: v.ref, in: c.in || 0, out: c.out, trans: c.trans, volume: c.volume, subs: c.subs, audio_start:c.audio_start })),
+    remake_audio:s.remake_audio,
     aspect: s.aspect, fit: s.fit, subtitles: s.subtitles, sub_size: s.sub_size, cover: s.cover || 0,
     bgm: s.bgm ? { ref: s.bgm.ref, volume: s.bgm.volume, duck: s.bgm.duck !== false } : null,
     narration: s.narration.filter(x => x.ref).map(x => ({ ref: x.ref, start: x.start, volume: x.volume || 1 })),
@@ -255,8 +332,9 @@ async function exportFilm() {
   checkpoint();
   let n = F.n && node(F.n.id);
   if (!n) {
-    const src = clips.map(x => node(x.c.node)), right = src.reduce((a, b) => (b.x + size(b).w > a.x + size(a).w ? b : a));
-    const at = freeSpot(right.x + size(right).w + 110, right.y, "video");
+    const src = clips.map(x => node(x.c.node)).filter(Boolean);
+    const right = src.reduce((a, b) => !a || b.x + size(b).w > a.x + size(a).w ? b : a, null);
+    const at = right ? freeSpot(right.x + size(right).w + 110, right.y, "video") : freeSpot(0, 0, "video");
     n = addNode("video", at.x, at.y, { aspect: s.aspect === "source" ? "auto" : s.aspect }, { name: "成片" });
     F.n = n;
   }
@@ -346,7 +424,7 @@ function initFilm() {
 .nar .pill { height: 26px; }
 #fmTl { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 10px 18px 16px; border-top: 1px solid var(--line); min-height: 128px; }
 #fmTl .fc { position: relative; flex: none; height: 104px; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid transparent; cursor: pointer; }
-#fmTl .fc.on { border-color: #ffb36b; } #fmTl .fc.over { border-color: var(--blue); } #fmTl .fc.drag { opacity: .4; }
+#fmTl .fc.on { border-color: var(--c-video); } #fmTl .fc.over { border-color: var(--blue); } #fmTl .fc.drag { opacity: .4; }
 #fmTl .fc video { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 #fmTl .fl { position: absolute; left: 0; right: 0; top: 0; padding: 4px 7px; font-size: var(--fs-caption); background: linear-gradient(#000c, #0000); display: flex; gap: 4px; white-space: nowrap; overflow: hidden; }
 #fmTl .fl span { margin-left: auto; color: #ddd; }
@@ -373,7 +451,7 @@ function initFilm() {
     <button class="pill" id="fmAll" title="从头连续播放（含转场以外的效果）">▶ 预览全片</button>
     <button class="pill" id="fmClose">关闭</button><button class="pill" id="fmGo">导出成片</button></div>
   <div class="main">
-    <div class="pv"><div class="scr"><video id="fmV" controls playsinline></video><div id="fmSub"></div></div><div id="fmClip"></div></div>
+    <div class="pv"><div class="scr"><video id="fmV" controls playsinline></video><audio id="fmOriginal" preload="metadata" hidden></audio><div id="fmSub"></div></div><div id="fmClip"></div></div>
     <div id="fmSet"></div>
   </div>
   <div id="fmTl"></div>
@@ -385,7 +463,8 @@ function initFilm() {
   $("#fmGo").onclick = exportFilm;
   $("#fmAll").onclick = () => { playAll = true; selectClip(0); setTimeout(() => $("#fmV").play(), 100); };
   setInterval(previewTick, 50);
-  $("#tr").addEventListener("click", e => { e.stopPropagation(); toggleQueue(); });
+  $("#tr").addEventListener("click", e => { if (!e.target.closest("button")) { e.stopPropagation(); toggleQueue(); } });
+  for (const event of ["play","pause","seeked","ratechange"]) $("#fmV").addEventListener(event, syncFilmOriginal);
   document.addEventListener("pointerdown", e => {
     if (qOpen && !e.target.closest("#qp, #tr")) toggleQueue(false);
     if (!e.target.closest("#fmAdd, .fadd")) $("#fmAdd").classList.remove("on");
