@@ -1,0 +1,31 @@
+#canvasComments { position: fixed; top: 64px; right: 14px; z-index: 41; width: min(350px,calc(100vw - 28px)); max-height: calc(100dvh - 126px); display: flex; flex-direction: column; border: 1px solid var(--line2); border-radius: 13px; background: var(--panel); color: var(--text); box-shadow: 0 12px 34px #0007; }
+#canvasComments[hidden] { display: none; }
+#canvasComments > header, #canvasComments article header, #canvasComments article footer, .cc-compose-label { display: flex; align-items: center; gap: 8px; }
+#canvasComments > header { padding: 9px 11px; border-bottom: 1px solid var(--line); }
+#canvasComments > header strong, #canvasComments article header :nth-child(2), .cc-compose-label span { margin-right: auto; }
+#canvasComments button, #canvasComments select { border: 1px solid var(--line2); border-radius: 7px; padding: 4px 7px; background: var(--card-hi); color: var(--text); font-size: var(--fs-caption); }
+#canvasComments button:hover { background: var(--line2); }
+#ccBatch:not([hidden]) { display:flex; gap:8px; align-items:center; padding:7px 11px; border-bottom:1px solid var(--line); }
+#ccBatch [data-cc-batch-send] { background:var(--text); color:var(--bg); }
+#ccList article header input { margin:0; accent-color:var(--blue); }
+#ccList { overflow: auto; min-height: 0; padding: 8px 11px; }
+#ccList article { padding: 8px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+#ccList article header { color: var(--dim); font-size: var(--fs-caption); }
+#ccList article footer { justify-content: end; }
+.cc-message { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; margin: 7px 0; font-size: var(--fs-small); }
+.cc-message time, .cc-empty { color: var(--dim); font-size: var(--fs-caption); }
+.cc-message p { flex-basis: 100%; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cc-quote { margin:7px 0 0; padding:5px 9px; border-left:2px solid var(--line2); color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; max-height:110px; overflow:auto; font-size:var(--fs-caption); }
+.cc-stale { color:var(--dim); font-size:var(--fs-caption); }
+.cc-reply { padding-left: 8px; margin-left: 8px; border-left: 1px solid var(--line2); }
+#canvasComments form { display: grid; gap: 6px; padding: 10px 11px; border-top: 1px solid var(--line); }
+.cc-compose-label { color: var(--dim); font-size: var(--fs-caption); }
+#ccBody { width: 100%; min-height: 65px; max-height: 160px; resize: vertical; padding: 7px; border: 1px solid var(--line2); border-radius: 7px; background: var(--card); color: var(--text); }
+#ccSend { justify-self: end; }
+#ccError { color: var(--red); font-size: var(--fs-caption); overflow-wrap: anywhere; }
+#commentPins { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+#commentPins button { position: absolute; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line2); border-radius: 50% 50% 50% 2px; background: var(--card-hi); color: var(--text); pointer-events: auto; transform-origin: left bottom; transform: translateY(-100%) scale(var(--cc-inverse,1)); }
+#commentPins button:hover, #commentPins button:focus-visible { background: var(--line2); }
+#commentPins svg { width: 15px; height: 15px; }
+#commentBtn { display: inline-flex; gap: 5px; align-items: center; min-height: 28px; padding: 4px 8px; border: 0; border-radius: 7px; background: var(--card-hi); color: var(--text); font: inherit; white-space: nowrap; }
+#commentBtn:hover, #commentBtn[aria-expanded=true] { background: var(--line2); }

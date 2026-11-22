@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>成片展映 · OneShot</title>
+  <link rel="stylesheet" href="/static/showcase.css?v=2">
+  <script defer src="/static/showcase.js?v=2"></script>
+</head>
+<body>
+  <header class="showcase-top">
+    <a href="/showcase">OneShot · 成片展映</a>
+    <nav aria-label="展映导航">
+      <a href="/events">创作活动</a>
+      <a id="myShowcaseLink" href="/showcase?mine=1" hidden>我的作品</a>
+      <a id="reviewLink" href="/showcase?review=1" hidden>审核作品</a>
+      <a href="/">返回工作台</a>
+    </nav>
+  </header>
+  <main>
+    <h1 id="showcaseTitle">成片展映</h1>
+    <a id="creatorProfile" hidden>查看我的公开主页</a>
+    <form id="showcaseSearch">
+      <input type="search" name="q" aria-label="搜索作品" placeholder="搜索作品或创作者" maxlength="80">
+      <button>搜索</button>
+    </form>
+    <p id="showcaseStatus" role="status">正在读取作品…</p>
+    <div id="showcaseContent"></div>
+    <button type="button" id="showcaseMore" hidden>加载更多</button>
+  </main>
+</body>
+</html>

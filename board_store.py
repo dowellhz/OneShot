@@ -5,10 +5,12 @@ import json
 import math
 import re
 import uuid
+from copy import deepcopy
 from pathlib import Path
 
 from aiohttp import web
 
+import db
 import tools
 
 
@@ -70,8 +72,93 @@ def clean_board(v, media_root: Path):
     return v
 
 
+def access_role(u: dict, b: dict) -> str | None:
+    if u["role"] == "admin" or b.get("owner") in (None, u["id"]):
+        return "owner"
+    members = b.get("collaborators")
+    role = members.get(str(u["id"])) if isinstance(members, dict) else None
+    if role in ("reviewer", "editor"):
+        return role
+    team = b.get("team")
+    if isinstance(team,str) and team:
+        return "editor" if db.one("""SELECT 1 FROM canvas_team_members WHERE team_id=? AND user_id=?""",team,u["id"]) else None
+    return "editor" if b.get("shared") else None
+
+
 def can_see(u: dict, b: dict) -> bool:
-    return u["role"] == "admin" or b.get("owner") in (None, u["id"]) or bool(b.get("shared"))
+    return access_role(u, b) is not None
+
+
+def can_edit(u: dict, b: dict) -> bool:
+    return access_role(u, b) in ("owner", "editor")
+
+
+def workflow_template(board, selected=None):
+    """Copy the editable workflow while dropping permissions and running tasks."""
+    snapshot = deepcopy({key:board[key] for key in ("nodes","edges","groups","seq","view","wiz") if key in board})
+    nodes = {n["id"]:n for n in board["nodes"]}
+    ids = set(nodes) if selected is None else set(selected)
+
+    def keep_edges(edges):
+        return [e for e in edges if e.get("from") in ids and e.get("to") in ids]
+
+    def clean_data(data):
+        if not isinstance(data,dict):
+            return
+        if isinstance(data.get("made"),list):
+            data["made"] = [{k:v for k,v in item.items() if k not in ("img","vid") or v in ids}
+                            for item in data["made"] if item.get("img") in ids or item.get("vid") in ids]
+        clean_timeline(data.get("film"))
+
+    def clean_timeline(timeline):
+        if not isinstance(timeline,dict):
+            return
+        for item in timeline.get("cutaways") or []:
+            if isinstance(item,dict):
+                nid = item.get("node")
+                if not isinstance(nid,str) or nid not in ids:
+                    item.pop("node",None)
+        for clip in timeline.get("clips") or []:
+            if not isinstance(clip,dict):
+                continue
+            source = nodes.get(clip.get("node"))
+            if source and not clip.get("ref"):
+                versions, index = source.get("versions") or [], source.get("cur",-1)
+                if type(index) is int and 0 <= index < len(versions):
+                    version = versions[index]
+                    clip.update(ref=version.get("ref"), media_seconds=version.get("seconds") or source.get("data",{}).get("duration",5))
+            clip.pop("remake_shot",None)
+
+    snapshot["nodes"] = [n for n in snapshot["nodes"] if n["id"] in ids]
+    snapshot["edges"] = keep_edges(snapshot.get("edges",[]))
+    groups = [{**g,"nodes":[nid for nid in g["nodes"] if nid in ids]} for g in snapshot.get("groups",[])]
+    snapshot["groups"] = [g for g in groups if len(g["nodes"])>1]
+    if selected is not None:
+        snapshot.pop("wiz",None)
+    for node in snapshot.get("nodes", []):
+        node["job"] = None
+        for key in ("agent_call","agent_error","agent_pending"):
+            node.pop(key,None)
+        clean_data(node.get("data"))
+        for version in node.get("versions",[]):
+            if isinstance(version.get("input_edges"),list):
+                version["input_edges"] = keep_edges(version["input_edges"])
+            origin = version.get("copied_from")
+            if isinstance(origin,dict) and (not isinstance(origin.get("node"),str) or origin["node"] not in ids):
+                origin.pop("node",None)
+            for record, field, key in (("generation_record","inputs","node_id"), ("film_recipe","clips","node"),
+                                       ("film_recipe","cutaways","node")):
+                recipe = version.get(record)
+                if isinstance(recipe, dict) and isinstance(recipe.get(field), list):
+                    for entry in recipe[field]:
+                        if isinstance(entry, dict):
+                            nid = entry.get(key)
+                            if not isinstance(nid, str) or nid not in ids:
+                                entry.pop(key, None)
+            clean_data(version.get("node_data"))
+            if isinstance(version.get("film_recipe"), dict):
+                clean_timeline(version["film_recipe"].get("timeline"))
+    return snapshot
 
 
 def write_board(path: Path, data: dict):

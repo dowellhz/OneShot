@@ -1,0 +1,36 @@
+#textDocument {
+  width: min(1080px, calc(100vw - 24px)); max-width: none;
+  height: min(760px, calc(100dvh - 32px)); max-height: none;
+  padding: 0; border: 1px solid var(--line2); border-radius: 14px;
+  background: var(--panel); color: var(--text); overflow: hidden; box-shadow: 0 18px 60px #0009;
+}
+#textDocument[open] { display: flex; flex-direction: column; }
+#textDocument::backdrop { background: #0009; }
+#textDocument header, #textDocument footer, .document-tools, #documentFormatting:not([hidden]) {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+#textDocument header, #textDocument footer, .document-tools { padding: 10px 14px; }
+#textDocument header { justify-content: space-between; border-bottom: 1px solid var(--line); }
+#textDocumentTitle { overflow-wrap: anywhere; }
+#textDocument footer { border-top: 1px solid var(--line); justify-content: flex-end; }
+#textDocument footer span { margin-right: auto; color: var(--dim); }
+#textDocument button, #textDocument select {
+  border: 1px solid var(--line2); border-radius: 7px; background: var(--card-hi); color: var(--text);
+  padding: 6px 9px; font: inherit;
+}
+#textDocument button:disabled { opacity: .45; }
+#textDocument [data-document-save]:not(:disabled) { background: var(--text); color: var(--bg); }
+.document-panes { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); }
+.document-panes textarea, #textDocumentPreview {
+  min-height: 0; padding: 16px; overflow: auto; font-size: var(--fs-body); line-height: 1.65; overflow-wrap: anywhere;
+}
+.document-panes textarea {
+  resize: none; width: 100%; border: 0; border-right: 1px solid var(--line);
+  background: var(--card); color: var(--text); font-family: inherit;
+}
+#textDocumentPreview.document-plain { white-space: pre-wrap; }
+.node-document { position: absolute; inset: 0; overflow: auto; padding: 16px; overflow-wrap: anywhere; line-height: 1.6; }
+@media (max-width: 650px) {
+  .document-panes { grid-template-columns: 1fr; grid-template-rows: minmax(0,1fr) minmax(0,1fr); }
+  .document-panes textarea { border-right: 0; border-bottom: 1px solid var(--line); }
+}

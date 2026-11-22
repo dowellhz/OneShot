@@ -21,5 +21,7 @@ editor-venv/
 *.pth
 # generated media
 *.mp4
+!static/creative-examples/broll.mp4
+!static/creative-examples/previs.mp4
 *.part
 .DS_Store

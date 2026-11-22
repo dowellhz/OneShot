@@ -32,7 +32,7 @@ function initShotList() {
   panel.setAttribute("aria-labelledby","shotListTitle");
   panel.innerHTML = `<header><h2 id="shotListTitle">镜头清单</h2><button class="pill" data-close>收起</button></header>
     <div class="sl-controls"><select data-source aria-label="镜头来源"></select><button class="pill" data-reload>刷新</button>
-    <button class="pill" data-film disabled>送入剪辑</button></div><output aria-live="polite"></output><ol></ol>`;
+    <button class="pill" data-film disabled>送入剪辑</button><button class="pill" data-draft>恢复剪辑</button></div><output aria-live="polite"></output><ol></ol>`;
   document.body.append(panel);
   let epoch = 0;
   const sourceSelect = $("[data-source]", panel);
@@ -125,6 +125,7 @@ function initShotList() {
   button.onclick = () => toggle(panel.hidden);
   $("[data-close]", panel).onclick = () => toggle(false);
   $("[data-reload]", panel).onclick = () => toggle(true);
+  $("[data-draft]", panel).onclick = resumeFilmDraft;
   sourceSelect.onchange = refresh;
   panel.addEventListener("keydown", event => {
     event.stopPropagation();

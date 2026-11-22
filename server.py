@@ -4,8 +4,9 @@
 Builds ComfyUI API graphs for H3 text-to-image, text/first/last-frame-to-video (FL2VA) and keyframe/reference video
 (Ref2VA), tracks the jobs over ComfyUI's websocket, and keeps the board in data/board.json.
 """
-import asyncio, io, json, math, os, random, re, time, uuid, hashlib, zipfile
+import asyncio, copy, io, json, math, os, random, re, secrets, tempfile, time, uuid, hashlib, zipfile
 from pathlib import Path
+from contextlib import ExitStack
 
 import aiohttp
 from urllib.parse import quote, unquote
@@ -14,18 +15,37 @@ import rewriter
 import fields as pfields
 import tools
 import render as film
+import broll
 import tts
+import audio_separation
+import audio_waveform
 import db
 import auth
 import providers
 import remote
 import local_admin
 import image_editor
+import motion_reference
+import camera_plan
+import object_edit
+import previs
 import agent_chat
 import creative_memory
+import canvas_live
 import board_store
+import document_review
+import public_canvas
+import shared_canvas_items
+import showcase
+import creative_events
+import generation_watermark
+import asset_transfers
+import mcp_bridge
+import connector_oauth
 import video_remake
-from board_store import BOARD_ID as _ID, board_meta, can_see
+import workflow_presets
+import workflow_review
+from board_store import BOARD_ID as _ID, access_role, board_meta, can_edit, can_see
 import sys
 from aiohttp import web
 
@@ -445,7 +465,8 @@ def attach_image_edit(j, p):
     spec = p.get("_image_edit")
     if spec:
         j["meta"]["image_edit"] = spec
-        j["meta"]["mode_name"] = {"region": "局部重绘", "whole": "整图编辑", "outpaint": "智能扩图"}[spec["mode"]]
+        j["meta"]["mode_name"] = "图片换机位" if (spec.get("recipe") or {}).get("camera_view") else {
+            "region": "局部重绘", "whole": "整图编辑", "outpaint": "智能扩图"}[spec["mode"]]
         if spec.get("recipe", {}).get("backend") == "native":
             j["meta"]["mode_name"] += " · 原生遮罩"
         EDIT_JOBS.mkdir(parents=True, exist_ok=True)
@@ -465,6 +486,7 @@ async def complete_outputs(j, outputs):
     async with j.setdefault("_output_lock", asyncio.Lock()):
         if j["state"] in ("done", "error"):
             return
+        error_label = "图像编辑合成失败"
         try:
             spec = j.get("meta", {}).get("image_edit")
             if spec:
@@ -472,13 +494,23 @@ async def complete_outputs(j, outputs):
                 if spec.get("recipe") is not None:
                     spec["recipe"]["seed"] = j["meta"].get("seed", spec["recipe"].get("seed", -1))
                 outputs = await asyncio.to_thread(image_editor.composite, COMFY_DIR, spec, outputs)
+            if outputs and not j.get("cancel") and db.one("SELECT 1 FROM task_watermarks WHERE job_id=?",j["id"]):
+                j["phase"] = "watermark"
+                error_label = "写入 AI 生成水印失败"
+                labelled = await asyncio.to_thread(generation_watermark.label_outputs,
+                    COMFY_DIR,j["id"],j["kind"],outputs,lambda:bool(j.get("cancel")))
+                for original, marked in zip(outputs,labelled):
+                    if original.get("extra",{}).get("draft_expires"):
+                        db.run("""INSERT OR IGNORE INTO video_drafts
+                            SELECT ?,job_id,provider_task,expires FROM video_drafts WHERE ref=?""",marked["ref"],original["ref"])
+                outputs = labelled
             if j.get("cancel"):
                 return
             j.update(outputs=outputs, state="done", phase="done", finished=time.time())
             record(j)
         except Exception as e:
             if not j.get("cancel"):
-                j.update(state="error", error=f"图像编辑合成失败：{e}")
+                j.update(state="error", error=f"{error_label}：{e}")
         log_end(j)
 
 
@@ -622,7 +654,8 @@ def log_end(j: dict):
             creative_memory.Store(sys.modules[__name__]).observe({"id": j["meta"]["uid"]}, {j["id"]: j})
         db.task_update(j["id"], state=j["state"], started=j.get("started"), finished=j.get("finished") or time.time(),
                        seconds=round((j.get("finished") or time.time()) - (j.get("started") or j["created"]), 1),
-                       error=j.get("error"), outputs=[o.get("ref") for o in j.get("outputs") or []])
+                       error=j.get("error"), outputs=[o.get("ref") for o in j.get("outputs") or []],
+                       **generation_history_metadata(j))
     except Exception:
         pass
 
@@ -659,30 +692,150 @@ def clean_board(v):
 
 
 def write_board(path: Path, data: dict):
+    if not path.is_file():
+        data["created"] = time.time()
     creative_memory.remove_deleted_bindings(data)
     board_store.write_board(path, data)
+
+
+def owned_project(user, project_id):
+    if not isinstance(project_id, str) or not _ID.fullmatch(project_id):
+        raise bad("项目编号无效")
+    project = db.one("SELECT id,name FROM canvas_projects WHERE id=? AND owner=?", project_id, user["id"])
+    if not project:
+        raise bad("项目已不存在或无权管理")
+    return project
+
+
+def validate_canvas_destination(user, project_id, team_id):
+    if project_id is not None and team_id is not None:
+        raise bad("请在个人项目和团队空间中选择一个")
+    if project_id is not None:
+        owned_project(user,project_id)
+    if team_id is not None:
+        team_membership(team_id,user)
+
+
+def project_name(payload):
+    name = payload.get("name") if isinstance(payload, dict) else None
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60 or "\n" in name or "\r" in name:
+        raise bad("请输入 1–60 字的项目名称")
+    return name.strip()
+
+
+def assign_canvas_project(board_id, project_id):
+    if project_id is None:
+        db.run("DELETE FROM canvas_project_boards WHERE board_id=?", board_id)
+    else:
+        db.run("""INSERT INTO canvas_project_boards(board_id,project_id) VALUES(?,?)
+                  ON CONFLICT(board_id) DO UPDATE SET project_id=excluded.project_id""", board_id, project_id)
+
+
+@routes.get("/api/canvas-projects")
+async def list_canvas_projects(req):
+    return web.json_response(db.q("SELECT id,name FROM canvas_projects WHERE owner=? ORDER BY created,id", req["user"]["id"]))
+
+
+@routes.post("/api/boards/batch-project")
+async def move_boards_to_project(req):
+    payload = await req.json()
+    boards = payload.get("boards") if isinstance(payload,dict) else None
+    if (not isinstance(boards,list) or not 1<=len(boards)<=100 or
+            any(not isinstance(bid,str) or not _ID.fullmatch(bid) for bid in boards)):
+        raise bad("请选择 1–100 张画布")
+    if ("project" in payload)==("name" in payload):
+        raise bad("请选择现有项目，或填写新建项目的名称")
+    user,ids = req["user"],list(dict.fromkeys(boards))
+    for bid in ids:
+        board = board_meta(board_path(bid))
+        if not board or board.get("owner")!=user["id"] or board.get("team"):
+            raise web.HTTPForbidden(text='{"error":"只能移动自己拥有的个人画布"}',content_type="application/json")
+    with db.transaction():
+        if "name" in payload:
+            name = project_name(payload)
+            project = {"id":"p"+uuid.uuid4().hex[:20],"name":name}
+            db.run("INSERT INTO canvas_projects VALUES(?,?,?,?)",project["id"],user["id"],name,time.time())
+        else:
+            project = owned_project(user,payload["project"]) if payload["project"] is not None else None
+        for bid in ids:
+            assign_canvas_project(bid,project["id"] if project else None)
+    return web.json_response({"project":project,"count":len(ids)})
+
+
+@routes.post("/api/canvas-projects")
+async def create_canvas_project(req):
+    payload = await req.json()
+    user = req["user"]
+    name = project_name(payload)
+    bid = payload.get("board")
+    if bid is not None and board_meta(board_path(bid)).get("owner") != user["id"]:
+        raise bad("只有画布所有者可以将画布移入项目")
+    project_id = "p" + uuid.uuid4().hex[:20]
+    db.run("INSERT INTO canvas_projects VALUES(?,?,?,?)", project_id, user["id"], name, time.time())
+    if bid is not None:
+        assign_canvas_project(bid, project_id)
+    return web.json_response({"id":project_id, "name":name}, status=201)
+
+
+@routes.patch("/api/canvas-projects/{pid}")
+async def rename_canvas_project(req):
+    payload = await req.json()
+    project = owned_project(req["user"], req.match_info["pid"])
+    name = project_name(payload)
+    db.run("UPDATE canvas_projects SET name=? WHERE id=?", name, project["id"])
+    return web.json_response({"id":project["id"], "name":name})
+
+
+@routes.delete("/api/canvas-projects/{pid}")
+async def dissolve_canvas_project(req):
+    project = owned_project(req["user"], req.match_info["pid"])
+    db.run("DELETE FROM canvas_projects WHERE id=?", project["id"])
+    return web.json_response({"ok":True})
+
+
+@routes.post("/api/board/{bid}/project")
+async def move_canvas_project(req):
+    payload = await req.json()
+    if not isinstance(payload, dict) or "project" not in payload:
+        raise bad("请选择目标项目")
+    bid, user = req.match_info["bid"], req["user"]
+    if board_meta(board_path(bid)).get("owner") != user["id"]:
+        raise bad("只有画布所有者可以移动画布")
+    project = payload["project"]
+    if project is not None:
+        owned_project(user, project)
+    assign_canvas_project(bid, project)
+    return web.json_response({"ok":True, "project":project})
 
 
 @routes.get("/api/boards")
 async def list_boards(req):
     u = req["user"]
     BOARDS.mkdir(parents=True, exist_ok=True)
+    groups = {row["board_id"]:row["project_id"] for row in db.q(
+        """SELECT b.board_id,b.project_id FROM canvas_project_boards b
+           JOIN canvas_projects p ON p.id=b.project_id WHERE p.owner=?""", u["id"])}
     out = []
     for f in sorted(BOARDS.glob("*.json"), key=lambda f: -f.stat().st_mtime):
         b = board_meta(f)
         if not b or not can_see(u, b):
             continue
-        if u["role"] == "admin" and req.query.get("all") != "1" and b.get("owner") not in (None, u["id"]) and not b.get("shared"):
+        team = b.get("team")
+        if u["role"] == "admin" and req.query.get("all") != "1" and b.get("owner") not in (None, u["id"]) and not b.get("shared") and not (
+                team and db.one("SELECT 1 FROM canvas_team_members WHERE team_id=? AND user_id=?",team,u["id"])):
             continue                       # admins see others' private boards only on request (console)
-        v = next((n["versions"][n["cur"]] for n in reversed(b.get("nodes", [])) if n.get("type") == "video" and n.get("versions") and n.get("cur", -1) >= 0), None)
+        v = next((n["versions"][n["cur"]] for n in reversed(b.get("nodes", [])) if n.get("type") == "video" and
+                  n.get("versions") and type(n.get("cur")) is int and 0<=n["cur"]<len(n["versions"])), None)
         out.append({"id": f.stem, "name": b.get("name") or "未命名画布", "nodes": len(b.get("nodes", [])), "mtime": f.stat().st_mtime,
+                    "created":b.get("created"),
                     "owner": b.get("owner"), "shared": bool(b.get("shared")), "wiz": (b.get("wiz") or {}).get("step"),
+                    "project":groups.get(f.stem) if b.get("owner") == u["id"] else None, "access":access_role(u,b),"team":team,
                     "cover": (v or {}).get("cover_url") or (v or {}).get("url")})
     return web.json_response(out)
 
 
 @routes.get("/api/boards_legacy")
-async def list_boards_legacy(_):
+async def list_boards_legacy(req):
     BOARDS.mkdir(parents=True, exist_ok=True)
     old = DATA / "board.json"
     if old.exists() and not any(BOARDS.iterdir()):
@@ -692,6 +845,8 @@ async def list_boards_legacy(_):
         try:
             b = json.loads(f.read_text())
         except ValueError:
+            continue
+        if not isinstance(b, dict) or not can_see(req["user"], b):
             continue
         out.append({"id": f.stem, "name": b.get("name") or "未命名画布", "nodes": len(b.get("nodes", [])), "mtime": f.stat().st_mtime})
     return web.json_response(out)
@@ -704,6 +859,9 @@ async def get_board(req):
     if b and not can_see(req["user"], b):
         raise bad("没有权限打开这个项目")
     creative_memory.remove_deleted_bindings(b)
+    if b:
+        b["access"] = access_role(req["user"], b)
+        b.pop("collaborators", None)
     return web.json_response(b)
 
 
@@ -716,11 +874,28 @@ async def put_board(req):
     data = clean_board(raw)
     u = req["user"]
     old = board_meta(f) if f.exists() else {}
-    if old and not (u["role"] == "admin" or old.get("owner") in (None, u["id"]) or old.get("shared")):
-        raise bad("没有权限修改这个项目")
+    project_id,team_id = req.query.get("project"),req.query.get("team")
+    if project_id is not None or team_id is not None:
+        if old:
+            raise bad("已有画布请使用移动操作")
+        validate_canvas_destination(u,project_id,team_id)
+    if old and not can_edit(u, old):
+        raise web.HTTPForbidden(text='{"error":"当前账号没有编辑权限"}', content_type="application/json")
+    data.pop("access", None)
+    data.pop("created",None)
+    data.pop("collaborators", None)
+    data.pop("team",None)
+    if old.get("team") or team_id:
+        data["team"] = old.get("team") or team_id
+    if old.get("collaborators"):
+        data["collaborators"] = old["collaborators"]
+    if old.get("created"):
+        data["created"] = old["created"]
     require_media(u, media_references(data) - media_references(old))
     data["owner"] = old.get("owner") or u["id"]          # the owner never changes through a save
     data["shared"] = bool(data.get("shared")) if (data["owner"] == u["id"] or u["role"] == "admin") else bool(old.get("shared"))
+    if data.get("team"):
+        data["shared"] = False
     # optimistic concurrency: a page may only overwrite the revision it loaded (another tab, an unload save of a stale
     # page, or a server-side edit would otherwise be silently lost)
     cur = old.get("rev")
@@ -728,7 +903,25 @@ async def put_board(req):
         return web.json_response({"error": "画布已在别处更新", "stale": True, "rev": cur}, status=409)
     data["rev"] = int(cur or 0) + 1
     write_board(f, data)
+    if project_id is not None:
+        assign_canvas_project(f.stem, project_id)
     return web.json_response({"ok": True, "rev": data["rev"]})
+
+
+@routes.get("/api/board/{bid}/workflow-review")
+async def get_workflow_review(req):
+    board = board_meta(board_path(req.match_info["bid"]))
+    if not board or not can_see(req["user"], board):
+        return auth.err(404, "画布不存在或没有访问权限")
+    node_id = req.query.get("node")
+    version = req.query.get("version")
+    if version is not None and (not node_id or not re.fullmatch(r"[1-9][0-9]{0,4}", version)):
+        raise bad("版本编号格式不正确")
+    try:
+        report = workflow_review.build(board, node_id, int(version) if version is not None else None)
+    except ValueError as e:
+        return auth.err(404, str(e))
+    return web.json_response({**report, "markdown":workflow_review.markdown(report)})
 
 
 @routes.delete("/api/board/{bid}")
@@ -739,14 +932,865 @@ async def delete_board(req):
         raise bad("只有项目的主人可以删除")
     if f.exists():
         f.rename(f.with_suffix(".deleted"))
+        db.run("DELETE FROM canvas_comments WHERE board_id=?", f.stem)
+        db.run("DELETE FROM canvas_snapshots WHERE board_id=?", f.stem)
+        db.run("DELETE FROM shared_canvas_items WHERE board_id=?",f.stem)
+        delete_showcase_entries(f.stem)
+    assign_canvas_project(f.stem, None)
     return web.json_response({"ok": True})
+
+
+def share_details(board):
+    members = board.get("collaborators") or {}
+    accounts = []
+    if members:
+        keys = list(members)
+        for row in db.q(f"SELECT id,username,name,disabled FROM users WHERE id IN ({','.join('?' for _ in keys)}) ORDER BY username", *keys):
+            accounts.append({**row, "role":members[str(row["id"])]})
+    return {"shared":bool(board.get("shared")), "collaborators":accounts, "rev":board.get("rev"),"team":board.get("team")}
+
+
+def team_membership(team_id, user):
+    if not isinstance(team_id,str) or not _ID.fullmatch(team_id):
+        raise bad("团队编号无效")
+    team = db.one("""SELECT t.* FROM canvas_teams t JOIN canvas_team_members m ON m.team_id=t.id
+                     WHERE t.id=? AND m.user_id=?""", team_id,user["id"])
+    if not team:
+        raise web.HTTPNotFound()
+    return team
+
+
+@routes.get("/api/canvas-teams")
+async def canvas_teams(req):
+    user = req["user"]
+    return web.json_response(db.q("""SELECT t.id,t.name,t.owner=? AS managed FROM canvas_teams t
+                                    JOIN canvas_team_members m ON m.team_id=t.id
+                                    WHERE m.user_id=? ORDER BY t.created,t.id""",user["id"],user["id"]))
+
+
+@routes.post("/api/canvas-teams")
+async def create_canvas_team(req):
+    name = project_name(await req.json())
+    owner = req["user"]["id"]
+    team_id = "team"+uuid.uuid4().hex[:20]
+    with db.transaction():
+        db.run("INSERT INTO canvas_teams VALUES(?,?,?,?)",team_id,owner,name,time.time())
+        db.run("INSERT INTO canvas_team_members VALUES(?,?)",team_id,owner)
+    return web.json_response({"id":team_id,"name":name,"managed":True},status=201)
+
+
+@routes.get("/api/canvas-teams/{tid}/members")
+async def canvas_team_members(req):
+    team = team_membership(req.match_info["tid"],req["user"])
+    members = db.q("""SELECT u.username,u.name,u.id=t.owner AS manager,u.disabled FROM canvas_team_members m
+                      JOIN users u ON u.id=m.user_id JOIN canvas_teams t ON t.id=m.team_id
+                      WHERE t.id=? ORDER BY manager DESC,u.username""",team["id"])
+    return web.json_response(members)
+
+
+@routes.patch("/api/canvas-teams/{tid}/members")
+async def update_canvas_team_members(req):
+    team = team_membership(req.match_info["tid"],req["user"])
+    if team["owner"] != req["user"]["id"]:
+        raise web.HTTPForbidden()
+    payload = await req.json()
+    username = payload.get("username") if isinstance(payload,dict) else None
+    action = payload.get("action") if isinstance(payload,dict) else None
+    if not isinstance(username,str) or not username.strip() or action not in ("add","remove"):
+        raise bad("请输入账号并选择成员操作")
+    account = db.one("SELECT id,disabled FROM users WHERE username=?",username.strip())
+    if not account or account["id"] == team["owner"] or (action=="add" and account["disabled"]):
+        raise bad("账号不可用或属于团队创建者")
+    if action == "add":
+        db.run("INSERT OR IGNORE INTO canvas_team_members VALUES(?,?)",team["id"],account["id"])
+    else:
+        db.run("DELETE FROM canvas_team_members WHERE team_id=? AND user_id=?",team["id"],account["id"])
+    return web.json_response({"ok":True})
+
+
+def board_to_share(req):
+    path = board_path(req.match_info["bid"])
+    board = board_meta(path)
+    user = req["user"]
+    if not board or not can_see(user, board):
+        raise web.HTTPNotFound()
+    if access_role(user, board) != "owner":
+        raise web.HTTPForbidden()
+    return path, board
+
+
+@routes.get("/api/board/{bid}/access")
+async def get_board_access(req):
+    _, board = board_to_share(req)
+    return web.json_response(share_details(board))
+
+
+@routes.patch("/api/board/{bid}/access")
+async def update_board_access(req):
+    payload = await req.json()
+    path, board = board_to_share(req)
+    if not isinstance(payload, dict):
+        raise bad("分享权限格式无效")
+    if "team" in payload:
+        if board.get("owner") != req["user"]["id"]:
+            raise web.HTTPForbidden()
+        if payload["team"] is None:
+            board.pop("team",None)
+        else:
+            board["team"] = team_membership(payload["team"],req["user"])["id"]
+        board["shared"] = False
+    elif "shared" in payload:
+        if type(payload["shared"]) is not bool:
+            raise bad("团队共享状态无效")
+        if board.get("team") and payload["shared"]:
+            raise bad("请先将画布移回个人空间")
+        board["shared"] = payload["shared"]
+    elif "username" in payload:
+        username, role = payload["username"], payload.get("role")
+        if not isinstance(username, str) or not username.strip() or role not in (None, "reviewer", "editor"):
+            raise bad("请输入账号并选择协作权限")
+        account = db.one("SELECT id,role,disabled FROM users WHERE username=?", username.strip())
+        if not account:
+            raise bad("账号不存在")
+        key = str(account["id"])
+        members = board.setdefault("collaborators", {})
+        if role is None:
+            members.pop(key, None)
+        else:
+            if account["role"] == "admin" or account["id"] == board.get("owner") or account["disabled"]:
+                raise bad("此账号无需邀请或已停用")
+            if key not in members and len(members) >= 100:
+                raise bad("单张画布最多邀请 100 个账号")
+            members[key] = role
+    else:
+        raise bad("请选择要修改的分享权限")
+    board["rev"] = int(board.get("rev") or 0) + 1
+    write_board(path, board)
+    return web.json_response(share_details(board))
+
+
+@routes.get("/api/board/{bid}/snapshot")
+async def board_snapshot_status(req):
+    path, _ = board_to_share(req)
+    row = db.one("SELECT token,created FROM canvas_snapshots WHERE board_id=?", path.stem)
+    return web.json_response(row, headers=public_canvas.HEADERS)
+
+
+@routes.put("/api/board/{bid}/snapshot")
+async def publish_board_snapshot(req):
+    path, board = board_to_share(req)
+    current = db.one("SELECT token,created FROM canvas_snapshots WHERE board_id=?", path.stem)
+    if current:
+        return web.json_response(current, headers=public_canvas.HEADERS)
+    snapshot = public_canvas.capture(board, COMFY_DIR)
+    token, created = secrets.token_urlsafe(32), time.time()
+    db.run("INSERT INTO canvas_snapshots VALUES(?,?,?,?)", path.stem, token, json.dumps(snapshot, ensure_ascii=False), created)
+    return web.json_response({"token":token,"created":created}, status=201, headers=public_canvas.HEADERS)
+
+
+@routes.delete("/api/board/{bid}/snapshot")
+async def revoke_board_snapshot(req):
+    path, _ = board_to_share(req)
+    db.run("DELETE FROM canvas_snapshots WHERE board_id=?", path.stem)
+    return web.json_response({"ok":True}, headers=public_canvas.HEADERS)
+
+
+def require_snapshot_board(row):
+    if not row or not board_path(row["board_id"]).is_file():
+        raise web.HTTPNotFound(headers=public_canvas.HEADERS)
+
+
+def read_public_snapshot(token):
+    row = public_snapshot_row(token)
+    require_snapshot_board(row)
+    return json.loads(row["data"]), row["created"]
+
+
+def public_snapshot_row(token):
+    return db.one("""SELECT board_id,data,created FROM canvas_snapshots WHERE token=?
+                     UNION ALL SELECT board_id,snapshot,published FROM showcase_entries
+                     WHERE token=? AND state='approved' AND snapshot IS NOT NULL""", token, token)
+
+
+def snapshot_page_file():
+    headers = {**public_canvas.HEADERS,
+               "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"}
+    return web.FileResponse(ROOT / "static" / "public-canvas.html", headers=headers)
+
+
+@routes.get(r"/share/{token:[A-Za-z0-9_-]{43}}")
+async def public_snapshot_page(req):
+    require_snapshot_board(public_snapshot_row(req.match_info["token"]))
+    return snapshot_page_file()
+
+
+@routes.get(r"/api/share/{token:[A-Za-z0-9_-]{43}}")
+async def public_snapshot_data(req):
+    snapshot, created = read_public_snapshot(req.match_info["token"])
+    snapshot.pop("media")
+    return web.json_response({**snapshot,"created":created}, headers=public_canvas.HEADERS)
+
+
+@routes.get(r"/api/share/{token:[A-Za-z0-9_-]{43}}/media/{index:\d{1,6}}")
+async def public_snapshot_media(req):
+    snapshot, _ = read_public_snapshot(req.match_info["token"])
+    return snapshot_media_file(snapshot,int(req.match_info["index"]))
+
+
+def snapshot_media_file(snapshot,index):
+    refs = snapshot["media"]
+    path = public_canvas.media_path(COMFY_DIR, refs[index]) if index < len(refs) else None
+    if not path:
+        raise web.HTTPNotFound(headers=public_canvas.HEADERS)
+    return web.FileResponse(path, headers=public_canvas.HEADERS)
+
+
+def ensure_snapshot_copy(token,snapshot,user):
+    existing = db.one("SELECT board_id FROM canvas_snapshot_copies WHERE token=? AND user_id=?", token, user["id"])
+    if existing:
+        prior = board_meta(board_path(existing["board_id"]))
+        if prior.get("owner") == user["id"]:
+            return existing["board_id"], False
+    bid = "b" + uuid.uuid4().hex[:20]
+    grant_media(user,*snapshot["media"])
+    write_board(board_path(bid), public_canvas.copy_board(snapshot,user["id"]))
+    db.run("INSERT OR REPLACE INTO canvas_snapshot_copies VALUES(?,?,?)", token, user["id"], bid)
+    return bid, True
+
+
+@routes.post(r"/api/share/{token:[A-Za-z0-9_-]{43}}/copy")
+@routes.post(r"/api/share/{token:[A-Za-z0-9_-]{43}}/explain")
+async def copy_public_snapshot(req):
+    if req.content_type != "application/json":
+        raise bad("请求格式无效")
+    token, user = req.match_info["token"], req["user"]
+    snapshot, _ = read_public_snapshot(token)
+    bid, created = ensure_snapshot_copy(token,snapshot,user)
+    response = {"id":bid}
+    if req.path.endswith("/explain"):
+        try:
+            response["session"] = req.app["agent_chat"].explain_snapshot(user,bid,public_canvas.explanation_context(snapshot))
+        except agent_chat.ToolError as error:
+            return auth.err(409,str(error))
+    return web.json_response(response,status=201 if created else 200,headers=public_canvas.HEADERS)
+
+
+SHOWCASE_FIELDS = """s.token,s.title,s.description,s.published,s.snapshot IS NOT NULL AS has_canvas,
+                     COALESCE(NULLIF(u.name,''),'OneShot 创作者') AS author"""
+SHOWCASE_PAGE_SIZE = 24
+
+
+@routes.get("/showcase")
+@routes.get(r"/showcase/{token:[A-Za-z0-9_-]{43}}")
+@routes.get(r"/showcase/creator/{slug:[a-f0-9]{32}}")
+async def showcase_page(req):
+    headers = {**public_canvas.HEADERS,
+               "Content-Security-Policy":"default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"}
+    return web.FileResponse(ROOT / "static" / "showcase.html", headers=headers)
+
+
+def showcase_offset(req):
+    page = req.query.get("page","1")
+    if not re.fullmatch(r"[1-9][0-9]{0,3}",page):
+        raise bad("页码无效")
+    return (int(page)-1)*SHOWCASE_PAGE_SIZE
+
+
+def showcase_public_items(req, creator=None):
+    search = req.query.get("q","").strip()[:80]
+    filter_creator = "AND c.slug=?" if creator else ""
+    args = [search,creator] if creator else [search]
+    rows = db.q(f"""SELECT {SHOWCASE_FIELDS},c.slug AS creator FROM showcase_entries s
+                    JOIN users u ON u.id=s.owner JOIN showcase_creators c ON c.owner=s.owner
+                    WHERE s.state='approved' AND instr(lower(s.title||' '||s.description||' '||
+                      COALESCE(u.name,'')),lower(?)) > 0 {filter_creator}
+                    ORDER BY s.published DESC,s.token LIMIT ? OFFSET ?""",
+                *args,SHOWCASE_PAGE_SIZE+1,showcase_offset(req))
+    return {"items":rows[:SHOWCASE_PAGE_SIZE],"more":len(rows)>SHOWCASE_PAGE_SIZE}
+
+
+@routes.get("/api/showcase")
+async def showcase_feed(req):
+    return web.json_response(showcase_public_items(req), headers=public_canvas.HEADERS)
+
+
+@routes.get(r"/api/showcase/creator/{slug:[a-f0-9]{32}}")
+async def showcase_creator(req):
+    slug = req.match_info["slug"]
+    profile = db.one("""SELECT COALESCE(NULLIF(u.name,''),'OneShot 创作者') AS name
+                       FROM showcase_creators c JOIN users u ON u.id=c.owner WHERE c.slug=?
+                       AND EXISTS (SELECT 1 FROM showcase_entries s WHERE s.owner=c.owner AND s.state='approved')""",slug)
+    if not profile:
+        return auth.err(404,"创作者主页尚未公开")
+    return web.json_response({**showcase_public_items(req,slug),"name":profile["name"]}, headers=public_canvas.HEADERS)
+
+
+@routes.get("/api/showcase/me")
+async def showcase_my_entries(req):
+    uid = req["user"]["id"]
+    rows = db.q("""SELECT token,board_id,title,description,state,reason FROM showcase_entries
+                   WHERE owner=? ORDER BY submitted DESC,token LIMIT ? OFFSET ?""",
+                uid,SHOWCASE_PAGE_SIZE+1,showcase_offset(req))
+    creator = db.one("""SELECT slug FROM showcase_creators c WHERE owner=?
+                       AND EXISTS (SELECT 1 FROM showcase_entries s WHERE s.owner=c.owner AND s.state='approved')""",uid)
+    return web.json_response({"items":rows[:SHOWCASE_PAGE_SIZE],"more":len(rows)>SHOWCASE_PAGE_SIZE,
+                              "creator":creator["slug"] if creator else None}, headers=public_canvas.HEADERS)
+
+
+@routes.get(r"/api/showcase/{token:[A-Za-z0-9_-]{43}}")
+async def showcase_detail(req):
+    row = db.one(f"""SELECT {SHOWCASE_FIELDS},c.slug AS creator FROM showcase_entries s
+                     JOIN users u ON u.id=s.owner JOIN showcase_creators c ON c.owner=s.owner
+                     WHERE s.token=? AND s.state='approved'""", req.match_info["token"])
+    if not row:
+        raise web.HTTPNotFound(headers=public_canvas.HEADERS)
+    return web.json_response(row, headers=public_canvas.HEADERS)
+
+
+def showcase_media(req, state):
+    cover = req.match_info["asset"] == "cover"
+    column = "cover" if cover else "video_ref"
+    row = db.one(f"SELECT {column} FROM showcase_entries WHERE token=? AND state=?",
+                 req.match_info["token"], state)
+    if row:
+        if cover:
+            return web.Response(body=row["cover"], content_type="image/jpeg", headers=public_canvas.HEADERS)
+        path = showcase.video_path(COMFY_DIR,row["video_ref"])
+        if path:
+            return web.FileResponse(path, headers=public_canvas.HEADERS)
+    raise web.HTTPNotFound(headers=public_canvas.HEADERS)
+
+
+@routes.get(r"/api/showcase/{token:[A-Za-z0-9_-]{43}}/{asset:cover|video}")
+async def showcase_public_media(req):
+    return showcase_media(req,"approved")
+
+
+@routes.get("/api/board/{bid}/showcase")
+async def board_showcase(req):
+    path, _ = board_to_share(req)
+    rows = db.q("""SELECT token,title,state,reason FROM showcase_entries
+                   WHERE board_id=? ORDER BY submitted DESC,token""", path.stem)
+    return web.json_response(rows, headers=public_canvas.HEADERS)
+
+
+@routes.post("/api/board/{bid}/showcase")
+async def submit_showcase(req):
+    path, board = board_to_share(req)
+    if req.content_type != "multipart/form-data":
+        return await store_showcase(req,path,board,await req.json(),{})
+    folder = COMFY_DIR / "showcase"
+    folder.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".upload-",dir=folder) as temporary:
+        try:
+            payload, files = await showcase.read_upload(req,Path(temporary),path.stem)
+        except (ValueError,UnicodeError) as error:
+            raise bad(str(error) if not isinstance(error,json.JSONDecodeError) else "作品信息格式不正确") from None
+        except web.HTTPRequestEntityTooLarge:
+            return auth.err(413,"成片最多 300 MB，封面最多 20 MB")
+        return await store_showcase(req,path,board,payload,files)
+
+
+async def store_showcase(req, path, board, payload, files):
+    if not isinstance(payload,dict):
+        raise bad("请填写作品信息")
+    title, description = payload.get("title"), payload.get("description","")
+    attach = payload.get("attach_canvas",False)
+    source, cover = payload.get("video"), payload.get("cover")
+    video_file, cover_file = files.get("video"), files.get("cover")
+    if (video_file and source is not None) or (cover_file and cover is not None) or (not video_file and source is None):
+        raise bad("请选择一个视频来源和一个封面来源")
+    if (not isinstance(title,str) or not 1 <= len(title.strip()) <= 80
+            or not isinstance(description,str) or len(description.strip()) > 500
+            or type(attach) is not bool or payload.get("confirmed") is not True
+            or not all(isinstance(asset,dict) and isinstance(asset.get("node"),str)
+                       and isinstance(asset.get("ref"),str) for asset in (source,cover) if asset is not None)):
+        raise bad("请确认发布，并填写有效的作品标题、简介与素材")
+    if payload.get("revision") != board.get("rev"):
+        return auth.err(409,"画布已更新，请重新选择要发布的版本")
+    uid = req["user"]["id"]
+    event = None
+    if "event" in payload:
+        event = creative_events.find_event(creative_events.field(payload,"event",21,required=True))
+        track = creative_events.field(payload,"track",60)
+        creative_events.validate_submission(event,uid,track)
+    try:
+        index = showcase.find_version(board,"video",source["node"],source["ref"]) if source else None
+        if cover is not None:
+            showcase.find_version(board,"image",cover["node"],cover["ref"])
+    except ValueError as error:
+        raise bad(str(error)) from None
+    video_ref, node_id = (video_file[1],"") if video_file else (source["ref"],source["node"])
+    video_path = video_file[0] if video_file else public_canvas.media_path(COMFY_DIR,video_ref,"video")
+    cover_path = cover_file[0] if cover_file else public_canvas.media_path(COMFY_DIR,cover["ref"],"image") if cover else None
+    if not video_path or video_path.stat().st_size > showcase.VIDEO_LIMIT or cover and not cover_path:
+        raise bad("请使用可读取的视频（最多 300 MB）和封面")
+    snapshot = showcase.capture(board,COMFY_DIR,node_id,index) if attach else None
+    refs = set(snapshot["media"]) if snapshot else set()
+    if not video_file:
+        refs.add(video_ref)
+    if cover:
+        refs.add(cover["ref"])
+    require_media(req["user"],refs)
+    if event:
+        await creative_events.validate_video(event,video_path)
+    try:
+        jpg = await asyncio.to_thread(showcase.cover_jpeg,video_path,cover_path,check_video=bool(video_file))
+    except (OSError,ValueError,IndexError) as error:
+        raise bad("无法读取封面，请检查视频或改用一张图片") from error
+    _, current = board_to_share(req)
+    if current.get("rev") != board.get("rev"):
+        return auth.err(409,"画布已更新，请重新选择要发布的版本")
+    destination = showcase.upload_path(COMFY_DIR,video_ref) if video_file else None
+    if destination and not destination.exists():
+        os.replace(video_path,destination)
+    try:
+        with db.transaction():
+            row = insert_showcase(path.stem,uid,node_id,video_ref,title.strip(),description.strip(),jpg,snapshot)
+            if event:
+                row["event_entry"], _ = creative_events.store_entry(event,uid,row["token"],track)
+    except Exception:
+        discard_showcase_video(video_ref)
+        raise
+    return web.json_response(row, status=201, headers=public_canvas.HEADERS)
+
+
+def insert_showcase(bid,uid,node_id,video_ref,title,description,jpg,snapshot):
+    token = secrets.token_urlsafe(32)
+    db.run("""INSERT INTO showcase_entries
+              (token,board_id,owner,node_id,video_ref,cover,title,description,state,submitted,snapshot)
+              VALUES(?,?,?,?,?,?,?,?,'pending',?,?)
+              ON CONFLICT(board_id,node_id,video_ref) DO UPDATE SET cover=excluded.cover,title=excluded.title,
+                description=excluded.description,state='pending',reason='',submitted=excluded.submitted,
+                snapshot=excluded.snapshot WHERE showcase_entries.state='rejected'""",
+           token,bid,uid,node_id,video_ref,jpg,title,description,time.time(),
+           json.dumps(snapshot,ensure_ascii=False) if snapshot else None)
+    return db.one("SELECT token,title,state,reason FROM showcase_entries WHERE board_id=? AND node_id=? AND video_ref=?",
+                  bid,node_id,video_ref)
+
+
+def discard_showcase_video(ref):
+    if (path := showcase.upload_path(COMFY_DIR,ref)) and not db.one("SELECT 1 FROM showcase_entries WHERE video_ref=?",ref):
+        path.unlink(missing_ok=True)
+
+
+def delete_showcase_entries(bid, token=None):
+    clause, args = ("board_id=? AND token=?", (bid,token)) if token else ("board_id=?", (bid,))
+    rows = db.q(f"SELECT video_ref FROM showcase_entries WHERE {clause}",*args)
+    db.run(f"DELETE FROM showcase_entries WHERE {clause}",*args)
+    for row in rows:
+        discard_showcase_video(row["video_ref"])
+
+
+@routes.delete(r"/api/board/{bid}/showcase/{token:[A-Za-z0-9_-]{43}}")
+async def withdraw_showcase(req):
+    path, _ = board_to_share(req)
+    delete_showcase_entries(path.stem,req.match_info["token"])
+    return web.json_response({"ok":True}, headers=public_canvas.HEADERS)
+
+
+def require_showcase_admin(req):
+    if req["user"]["role"] != "admin":
+        raise web.HTTPForbidden()
+
+
+@routes.get("/api/admin/showcase")
+async def showcase_pending(req):
+    require_showcase_admin(req)
+    rows = db.q(f"""SELECT {SHOWCASE_FIELDS} FROM showcase_entries s JOIN users u ON u.id=s.owner
+                    WHERE s.state='pending' ORDER BY s.submitted,s.token LIMIT 50""")
+    return web.json_response(rows, headers=public_canvas.HEADERS)
+
+
+@routes.get(r"/api/admin/showcase/{token:[A-Za-z0-9_-]{43}}/{asset:cover|video}")
+async def showcase_pending_media(req):
+    require_showcase_admin(req)
+    return showcase_media(req,"pending")
+
+
+def pending_showcase_snapshot(req):
+    require_showcase_admin(req)
+    row = db.one("""SELECT board_id,snapshot,submitted FROM showcase_entries
+                 WHERE token=? AND state='pending' AND snapshot IS NOT NULL""", req.match_info["token"])
+    require_snapshot_board(row)
+    return json.loads(row["snapshot"]), row["submitted"]
+
+
+@routes.get(r"/showcase-review/{token:[A-Za-z0-9_-]{43}}")
+async def showcase_review_page(req):
+    pending_showcase_snapshot(req)
+    return snapshot_page_file()
+
+
+@routes.get(r"/api/admin/showcase/{token:[A-Za-z0-9_-]{43}}/canvas")
+async def showcase_review_snapshot(req):
+    snapshot, created = pending_showcase_snapshot(req)
+    snapshot.pop("media")
+    return web.json_response({**snapshot,"created":created}, headers=public_canvas.HEADERS)
+
+
+@routes.get(r"/api/admin/showcase/{token:[A-Za-z0-9_-]{43}}/canvas/media/{index:\d{1,6}}")
+async def showcase_review_snapshot_media(req):
+    snapshot, _ = pending_showcase_snapshot(req)
+    return snapshot_media_file(snapshot,int(req.match_info["index"]))
+
+
+@routes.patch(r"/api/admin/showcase/{token:[A-Za-z0-9_-]{43}}")
+async def review_showcase(req):
+    require_showcase_admin(req)
+    payload = await req.json()
+    state = payload.get("state") if isinstance(payload,dict) else None
+    reason = payload.get("reason","") if isinstance(payload,dict) else ""
+    if state not in ("approved","rejected") or not isinstance(reason,str) or len(reason.strip()) > 500 or (
+            state == "rejected" and not reason.strip()):
+        raise bad("请选择审核结果，退回时请填写原因")
+    with db.transaction():
+        token = req.match_info["token"]
+        entry = db.one("SELECT owner FROM showcase_entries WHERE token=? AND state='pending'",token)
+        if not entry:
+            return auth.err(409,"作品已处理或已撤回")
+        if state == "approved":
+            db.run("INSERT OR IGNORE INTO showcase_creators VALUES(?,?)",entry["owner"],uuid.uuid4().hex)
+        db.run("UPDATE showcase_entries SET state=?,reason=?,published=? WHERE token=?",
+               state,reason.strip() if state=="rejected" else "",time.time() if state=="approved" else None,token)
+        if state == "rejected":
+            db.run("UPDATE event_entries SET state='rejected',reason=? WHERE token=? AND state='pending'",reason.strip(),token)
+    return web.json_response({"ok":True}, headers=public_canvas.HEADERS)
+
+
+def comment_board(req):
+    bid = req.match_info["bid"]
+    board = board_meta(board_path(bid))
+    if not board or not can_see(req["user"], board):
+        raise web.HTTPNotFound()
+    return bid, board
+
+
+def owned_template(req):
+    row = db.one("SELECT * FROM canvas_templates WHERE id=? AND owner=?", req.match_info["tid"], req["user"]["id"])
+    if not row:
+        raise web.HTTPNotFound()
+    return row
+
+
+def readable_template(req):
+    if preset := workflow_presets.PRESETS.get(req.match_info["tid"]):
+        return preset
+    row = db.one("""SELECT t.* FROM canvas_templates t
+                    LEFT JOIN canvas_template_publications p ON p.template_id=t.id
+                    WHERE t.id=? AND (t.owner=? OR p.template_id IS NOT NULL)""",
+                 req.match_info["tid"], req["user"]["id"])
+    if row is None:
+        raise web.HTTPNotFound()
+    board = json.loads(row["data"])
+    row.update(data=board,description=board.pop("template_description",""))
+    return row
+
+
+@routes.get("/api/canvas-templates")
+async def list_templates(req):
+    rows = db.q("""SELECT t.id,t.name,t.updated,p.published,json_array_length(t.data,'$.nodes') AS nodes,
+                          json_extract(t.data,'$.template_description') AS description
+                   FROM canvas_templates t LEFT JOIN canvas_template_publications p ON p.template_id=t.id
+                   WHERE t.owner=? ORDER BY t.updated DESC,t.id""", req["user"]["id"])
+    return web.json_response(rows)
+
+
+@routes.get("/api/canvas-templates/catalog")
+async def list_template_catalog(req):
+    rows = db.q("""SELECT t.id,t.name,p.published,json_array_length(t.data,'$.nodes') AS nodes,
+                          t.owner=? AS owned, COALESCE(NULLIF(u.name,''),u.username) AS author,
+                          json_extract(t.data,'$.template_description') AS description
+                   FROM canvas_template_publications p JOIN canvas_templates t ON t.id=p.template_id
+                   JOIN users u ON u.id=t.owner ORDER BY p.published DESC,t.id""", req["user"]["id"])
+    return web.json_response(rows)
+
+
+@routes.get("/api/canvas-templates/presets")
+async def list_template_presets(req):
+    return web.json_response([{k:v for k,v in row.items() if k!="data"} for row in workflow_presets.PRESETS.values()])
+
+
+def template_description(payload):
+    description = payload.get("description","")
+    if not isinstance(description,str) or len(description.strip()) > 300:
+        raise bad("模板说明最多 300 字")
+    return description.strip()
+
+
+@routes.post("/api/canvas-templates")
+async def save_template(req):
+    payload = await req.json()
+    user, name = req["user"], project_name(payload)
+    board = board_meta(board_path(payload.get("board")))
+    if not board or not can_see(user,board):
+        raise web.HTTPNotFound()
+    if access_role(user,board) != "owner":
+        raise web.HTTPForbidden()
+    if not board.get("nodes"):
+        raise bad("画布上至少需要一个节点")
+    if "revision" in payload and payload["revision"] != board.get("rev"):
+        raise web.HTTPConflict(text='{"error":"画布已更新，请打开最新版本后再保存模板"}',content_type="application/json")
+    selected = payload.get("selected")
+    if selected is not None:
+        ids = {n["id"] for n in board["nodes"]}
+        if not isinstance(selected,list) or not selected or any(not isinstance(nid,str) or nid not in ids for nid in selected):
+            raise bad("选中的模板节点不存在")
+    template = board_store.workflow_template(board, selected)
+    template["template_description"] = template_description(payload)
+    refs = media_references(template)
+    require_media(user,refs)
+    tid, now = "t"+uuid.uuid4().hex[:20], time.time()
+    with db.transaction():
+        grant_media(user,*refs)
+        db.run("INSERT INTO canvas_templates VALUES(?,?,?,?,?)",tid,user["id"],name,json.dumps(template,ensure_ascii=False),now)
+    return web.json_response({"id":tid,"name":name,"nodes":len(template["nodes"]),"updated":now,
+                              "description":template["template_description"]},status=201)
+
+
+@routes.patch("/api/canvas-templates/{tid}")
+async def rename_template(req):
+    payload = await req.json()
+    name = project_name(payload)
+    row = owned_template(req)
+    data = row["data"]
+    if "description" in payload:
+        data = json.dumps({**json.loads(data),"template_description":template_description(payload)},ensure_ascii=False)
+    db.run("UPDATE canvas_templates SET name=?,data=?,updated=? WHERE id=?",name,data,time.time(),row["id"])
+    return web.json_response({"ok":True})
+
+
+@routes.delete("/api/canvas-templates/{tid}")
+async def delete_template(req):
+    row = owned_template(req)
+    db.run("DELETE FROM canvas_templates WHERE id=?",row["id"])
+    return web.json_response({"ok":True})
+
+
+@routes.put("/api/canvas-templates/{tid}/publication")
+async def publish_template(req):
+    payload = await req.json()
+    if not isinstance(payload,dict) or payload.get("confirmed") is not True:
+        raise bad("请确认向所有登录用户共享模板")
+    row = owned_template(req)
+    require_media(req["user"], media_references(json.loads(row["data"])))
+    db.run("INSERT OR IGNORE INTO canvas_template_publications VALUES(?,?)", row["id"], time.time())
+    return web.json_response({"ok":True})
+
+
+@routes.delete("/api/canvas-templates/{tid}/publication")
+async def unpublish_template(req):
+    row = owned_template(req)
+    db.run("DELETE FROM canvas_template_publications WHERE template_id=?", row["id"])
+    return web.json_response({"ok":True})
+
+
+@routes.get("/api/canvas-templates/{tid}/preview")
+async def preview_template(req):
+    row = readable_template(req)
+    template = row["data"]
+    preview = public_canvas.capture({**template, "name":row["name"]}, COMFY_DIR)
+    preview.pop("media")
+    preview["description"] = row["description"]
+    node_ids = {node["id"] for node in preview["nodes"]}
+    preview["edges"] = [{key:public_canvas.string(edge[key],80) for key in ("from","to","role","relation") if key in edge}
+                        for edge in template.get("edges",[]) if edge["from"] in node_ids and edge["to"] in node_ids]
+    data_by_node = {item["id"]:item.get("data") for item in template["nodes"]}
+    for node in preview["nodes"]:
+        data = data_by_node[node["id"]]
+        if isinstance(data,dict) and isinstance(data.get("prompt"),str):
+            node["prompt"] = data["prompt"][:20_000]
+    return web.json_response(preview, headers=public_canvas.HEADERS)
+
+
+@routes.get(r"/api/canvas-templates/{tid}/preview/media/{index:\d{1,6}}")
+async def preview_template_media(req):
+    row = readable_template(req)
+    preview = public_canvas.capture(row["data"], COMFY_DIR)
+    index = int(req.match_info["index"])
+    if index >= len(preview["media"]):
+        raise web.HTTPNotFound()
+    path = public_canvas.media_path(COMFY_DIR, preview["media"][index])
+    if not path:
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers=public_canvas.HEADERS)
+
+
+@routes.post("/api/canvas-templates/{tid}/fragment")
+async def template_fragment(req):
+    row = readable_template(req)
+    board = row["data"]
+    grant_media(req["user"],*media_references(board))
+    groups = board["groups"]
+    if not groups and len(board["nodes"]) > 1:
+        groups = [{"id":"template","name":row["name"],"nodes":[node["id"] for node in board["nodes"]]}]
+    return web.json_response({"nodes":board["nodes"],"edges":board["edges"],"groups":groups})
+
+
+@routes.post("/api/canvas-templates/{tid}/open")
+async def open_template(req):
+    payload = await req.json()
+    row = readable_template(req)
+    key = payload.get("request_key") if isinstance(payload,dict) else None
+    if not isinstance(key,str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}",key):
+        raise bad("模板请求编号无效")
+    user, project = req["user"], payload.get("project")
+    if project is not None:
+        owned_project(user,project)
+    bid = "b"+uuid.uuid5(uuid.NAMESPACE_URL, f"oneshot:template:{row['id']}:{user['id']}:{key}").hex[:24]
+    path = board_path(bid)
+    current = board_meta(path)
+    if current:
+        if current.get("owner") != user["id"]:
+            raise web.HTTPConflict()
+        return web.json_response({"id":bid})
+    board = {**row["data"],"name":row["name"],"owner":user["id"],"shared":False,"rev":1}
+    grant_media(user,*media_references(board))
+    write_board(path,board)
+    if project:
+        assign_canvas_project(bid,project)
+    return web.json_response({"id":bid},status=201)
+
+
+def comment_thread(bid, thread_id):
+    row = db.one("SELECT * FROM canvas_comments WHERE board_id=? AND id=? AND thread_id IS NULL", bid, thread_id)
+    if row is None:
+        raise web.HTTPNotFound()
+    return row
+
+
+def comment_anchor(board, anchor):
+    if anchor is None:
+        return None
+    if not isinstance(anchor, dict):
+        raise bad("评论位置无效")
+    if "node" in anchor:
+        target = next((n for n in board.get("nodes", []) if n["id"] == anchor["node"]), None)
+        if target is None:
+            raise bad("评论对应的节点已不存在")
+        ref = anchor.get("ref")
+        version = next((v for v in target.get("versions", []) if ref and v.get("ref") == ref), None)
+        if ref is not None and version is None:
+            raise bad("评论对应的素材版本已不存在")
+        result = {"node":target["id"], "name":target.get("name"), "ref":ref}
+        if "passage" in anchor:
+            text = (target.get("data") or {}).get("text")
+            if target.get("type") != "text" or not isinstance(text,str) or ref is not None:
+                raise bad("段落批注只能标注文本节点的正文")
+            try:
+                result["passage"] = document_review.capture(text,anchor["passage"])
+            except ValueError as error:
+                raise bad(str(error)) from error
+        if "box" in anchor:
+            box = anchor["box"]
+            if not version or target.get("type") != "image" or not isinstance(box,list) or len(box) != 4 or any(
+                    type(point) not in (int,float) or not 0 <= point <= 1 for point in box):
+                raise bad("批注区域必须是对应图片版本上的有效矩形")
+            box = [round(point,6) for point in box]
+            if box[0] >= box[2] or box[1] >= box[3]:
+                raise bad("批注区域不能为空")
+            result["box"] = box
+        if "at" in anchor or "end" in anchor:
+            points = [anchor.get("at")] + ([anchor["end"]] if "end" in anchor else [])
+            if not version or target.get("type") not in ("video","audio") or any(
+                    type(point) not in (int,float) or not 0 <= point <= 86_400 for point in points):
+                raise bad("评论时间点无效")
+            duration = version.get("seconds")
+            if type(duration) in (int,float) and duration > 0:
+                if any(point > duration + 0.05 for point in points):
+                    raise bad("评论时间点超出素材时长")
+                points = [min(point,duration) for point in points]
+            points = [round(point,3) for point in points]
+            result["at"] = points[0]
+            if len(points) == 2:
+                if points[1] <= points[0]:
+                    raise bad("批注结束时间必须晚于开始时间")
+                result["end"] = points[1]
+        return result
+    if "box" in anchor or "passage" in anchor:
+        raise bad("区域或段落批注需要指定素材节点")
+    x, y = anchor.get("x"), anchor.get("y")
+    if not all(type(n) in (int, float) and abs(n) <= 1_000_000 for n in (x, y)):
+        raise bad("评论位置超出画布范围")
+    return {"x":round(x, 2), "y":round(y, 2)}
+
+
+def can_resolve_comment(user, board, author):
+    return user["id"] in (board.get("owner"), author) or user["role"] == "admin"
+
+
+@routes.get("/api/board/{bid}/comments")
+async def list_comments(req):
+    bid, board = comment_board(req)
+    rows = db.q("""SELECT c.*, COALESCE(NULLIF(u.name,''),u.username,'已注销用户') AS author
+                   FROM canvas_comments c LEFT JOIN users u ON c.author_id=u.id
+                   WHERE c.board_id=? ORDER BY created,id""", bid)
+    threads = {}
+    nodes = {n["id"]:n for n in board.get("nodes",[])}
+    for row in rows:
+        item = {k:row[k] for k in ("id", "body", "author", "created")}
+        if row["thread_id"] is None:
+            anchor = json.loads(row["anchor"] or "null")
+            threads[row["id"]] = {**item, "anchor":document_review.visible_anchor(anchor), "resolved":bool(row["resolved"]),
+                                  "can_resolve":can_resolve_comment(req["user"], board, row["author_id"]), "replies":[]}
+            if anchor and (passage := anchor.get("passage")):
+                node = nodes.get(anchor.get("node"))
+                text = (node.get("data") or {}).get("text") if node and node.get("type") == "text" else None
+                threads[row["id"]]["passage_location"] = document_review.locate(text,passage) if isinstance(text,str) else None
+        elif row["thread_id"] in threads:
+            threads[row["thread_id"]]["replies"].append(item)
+    return web.json_response(list(threads.values())[::-1])
+
+
+@routes.post("/api/board/{bid}/comments")
+async def post_comment(req):
+    payload = await req.json()
+    bid, board = comment_board(req)
+    text = payload.get("body") if isinstance(payload, dict) else None
+    if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
+        raise bad("评论须为 1–2000 字")
+    key = payload.get("request_key")
+    if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", key):
+        raise bad("评论请求编号无效")
+    uid = req["user"]["id"]
+    prior = db.one("SELECT id,thread_id FROM canvas_comments WHERE board_id=? AND author_id=? AND request_key=?", bid, uid, key)
+    if prior:
+        return web.json_response(prior)
+    thread_id = payload.get("thread_id")
+    if thread_id is not None:
+        if not isinstance(thread_id, str):
+            raise bad("评论编号无效")
+        if comment_thread(bid, thread_id)["resolved"]:
+            raise bad("此讨论已解决，请先重新打开")
+    anchor = None if thread_id else comment_anchor(board, payload.get("anchor"))
+    cid = "c" + uuid.uuid4().hex[:20]
+    db.run("""INSERT INTO canvas_comments(id,board_id,thread_id,anchor,author_id,body,created,request_key)
+              VALUES(?,?,?,?,?,?,?,?)""", cid, bid, thread_id, json.dumps(anchor, ensure_ascii=False), uid, text.strip(), time.time(), key)
+    req.app["canvas_live"].comments_changed(bid)
+    return web.json_response({"id":cid, "thread_id":thread_id}, status=201)
+
+
+@routes.patch("/api/board/{bid}/comments/{cid}")
+async def resolve_comment(req):
+    payload = await req.json()
+    bid, board = comment_board(req)
+    row = comment_thread(bid, req.match_info["cid"])
+    if not can_resolve_comment(req["user"], board, row["author_id"]):
+        raise web.HTTPForbidden()
+    resolved = payload.get("resolved") if isinstance(payload, dict) else None
+    if type(resolved) is not bool:
+        raise bad("评论状态无效")
+    if bool(row["resolved"]) != resolved:
+        db.run("UPDATE canvas_comments SET resolved=? WHERE id=?", int(resolved), row["id"])
+        req.app["canvas_live"].comments_changed(bid)
+    return web.json_response({"ok":True})
 
 
 def refs_of_user(u: dict) -> set:
     seen = set()
     for f in BOARDS.glob("*.json"):
         b = board_meta(f)
-        if b and (b.get("owner") in (None, u["id"]) or b.get("shared")):
+        if b and can_see(u, b):
             for n in b.get("nodes", []):
                 for v in n.get("versions", []):
                     seen.add(v.get("ref"))
@@ -777,7 +1821,7 @@ def media_references(value, field=""):
 def grant_media(user, *refs):
     for ref in refs:
         if ref:
-            db.run("INSERT OR IGNORE INTO memory_uploads VALUES(?,?,?)", ref, user["id"], time.time())
+            db.run("INSERT OR IGNORE INTO media_grants VALUES(?,?)", ref, user["id"])
 
 
 def can_read_media(user, ref):
@@ -785,6 +1829,7 @@ def can_read_media(user, ref):
         return True
     uid = user["id"]
     if (db.one("SELECT 1 FROM memory_uploads WHERE ref=? AND owner=?", ref, uid)
+            or db.one("SELECT 1 FROM media_grants WHERE ref=? AND user_id=?", ref, uid)
             or db.one("SELECT 1 FROM memory_outputs WHERE ref=? AND owner=?", ref, uid)
             or db.one("""SELECT 1 FROM tasks, json_each(CASE WHEN json_valid(tasks.outputs) THEN tasks.outputs END)
                          WHERE user_id=? AND json_each.value=? LIMIT 1""", uid, ref)):
@@ -802,12 +1847,16 @@ def can_read_media(user, ref):
         board = board_meta(path)
         if board and can_see(user, board) and ref in media_references(board):
             return True
-    for asset in creative_memory.Store(sys.modules[__name__]).all():
+    store = creative_memory.Store(sys.modules[__name__])
+    teams = store.teams(user)
+    for asset in store.all():
+        if ref not in media_references(asset.get("media", [])):
+            continue
         if asset["board"]:
             board = board_meta(board_path(asset["board"]))
             if not board or not can_see(user, board):
                 continue
-        if (asset["board"] or creative_memory.Store.visible(asset, user)) and ref in media_references(asset.get("media", [])):
+        if asset["board"] or store.visible(asset,user,teams=teams):
             return True
     for path in (SAMPLES / "samples.json", *(SAMPLES / "boards").glob("*.json")):
         try:
@@ -828,7 +1877,8 @@ def require_media(user, refs):
 async def media_input_guard(req, handler):
     if req.method == "POST" and (req.path in {
         "/api/preview", "/api/generate", "/api/lastframe", "/api/rewrite", "/api/storyboard",
-        "/api/describe", "/api/analyze", "/api/split", "/api/concat", "/api/render", "/api/cover",
+        "/api/describe", "/api/analyze", "/api/split", "/api/concat", "/api/render", "/api/render/check", "/api/cover",
+        "/api/video/trim", "/api/video/captions",
     } or req.path.startswith("/api/image-edit/")):
         try:
             payload = await req.json()
@@ -855,8 +1905,10 @@ async def assets(req):
             if mine is not None and ref not in mine:
                 continue
             src = ("concat" if f.name.startswith("cut_") else "gen") if kind == "output" else (
-                "frame" if f.name.startswith(("last_", "shot_")) else "tile" if f.name.startswith("tile") else "upload")
-            out.append({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "type": "video" if ext in tools.VIDEO_EXT else "image",
+                "frame" if f.name.startswith(("last_", "shot_")) else "tile" if f.name.startswith("tile")
+                else "gen" if ext in AUDIO_MEDIA_EXT and f.name.startswith("narr_") else "upload")
+            typ = "video" if ext in tools.VIDEO_EXT else "audio" if ext in AUDIO_MEDIA_EXT else "image"
+            out.append({"ref": ref, "url": "/media?ref=" + quote(ref, safe=""), "type": typ,
                         "source": src,
                         "mtime": f.stat().st_mtime})
     out.sort(key=lambda a: -a["mtime"])
@@ -916,8 +1968,189 @@ async def media(req):
     return web.FileResponse(f, headers={"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff"})
 
 
-CANVAS_MEDIA_EXT = creative_memory.IMAGE_EXT | tools.VIDEO_EXT
-MEDIA_EXT = CANVAS_MEDIA_EXT | {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
+routes.get(motion_reference.LEASE_PREFIX + "{token}")(motion_reference.serve)
+
+
+AUDIO_MEDIA_EXT = tools.AUDIO_EXT
+CANVAS_MEDIA_EXT = MEDIA_EXT = creative_memory.IMAGE_EXT | tools.VIDEO_EXT | AUDIO_MEDIA_EXT
+
+
+HISTORY_CAPABILITIES = {"image": ("image",), "video": ("video","render"), "audio": ("tts", "music")}
+HISTORY_EXTENSIONS = {"image": creative_memory.IMAGE_EXT, "video": tools.VIDEO_EXT, "audio": AUDIO_MEDIA_EXT}
+
+
+def task_settings(serialized):
+    try:
+        value = json.loads(serialized or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def generation_history_metadata(job):
+    if job["state"] != "done" or job.get("kind") not in ("image", "video"):
+        return {}
+    meta = job.get("meta") or {}
+    settings = {key: meta[key] for key in ("seed", "width", "height") if type(meta.get(key)) is int}
+    if meta.get("prompt"):
+        settings["prompt"] = clean(meta["prompt"])[:2000]
+    if not settings:
+        return {}
+    task = db.one("SELECT request FROM tasks WHERE id=?", job["id"])
+    if not task:
+        return {}
+    request = task_settings(task["request"])
+    request["history"] = settings
+    return {"request": json.dumps(request, ensure_ascii=False)}
+
+
+@routes.get("/api/generation-history")
+async def generation_history(req):
+    user = req["user"]
+    kind = req.query.get("kind", "all")
+    if kind != "all" and kind not in HISTORY_CAPABILITIES:
+        raise bad("不支持的历史类型")
+    capabilities = sum(HISTORY_CAPABILITIES.values(), ()) if kind == "all" else HISTORY_CAPABILITIES[kind]
+    conditions = ["user_id=?", "state='done'", "outputs IS NOT NULL",
+                  "capability IN (" + ",".join("?" for _ in capabilities) + ")"]
+    if "render" in capabilities:
+        conditions.append("(capability!='render' OR json_type(CASE WHEN json_valid(request) THEN request END,'$.broll')='object')")
+    params = [user["id"], *capabilities]
+    if bid := req.query.get("board"):
+        board = board_meta(board_path(bid))
+        if not board or not can_see(user, board):
+            return auth.err(404, "画布不存在或无权访问")
+        conditions.append("board_id=?")
+        params.append(bid)
+    query = req.query.get("q", "").strip()[:120]
+    if query:
+        conditions.append("instr(lower(coalesce(label,'') || ' ' || coalesce(model,'') || ' ' || coalesce(request,'') || ' ' || outputs),lower(?))>0")
+        params.append(query)
+    if cursor := req.query.get("before"):
+        if not cursor.isascii() or not cursor.isdecimal() or len(cursor) > 18 or int(cursor) < 1:
+            raise bad("历史页码不正确")
+        conditions.append("rowid<?")
+        params.append(int(cursor))
+    page_size = 24
+    rows = db.q("SELECT rowid AS cursor,id,label,model,capability,finished,created,outputs,request FROM tasks WHERE " +
+                " AND ".join(conditions) + " ORDER BY rowid DESC LIMIT ?", *params, page_size+1)
+    items = []
+    for task in rows[:page_size]:
+        try:
+            refs = json.loads(task["outputs"])
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(refs,list):
+            continue
+        request = task_settings(task["request"])
+        history, recipe = (request.get(key) for key in ("history", "recipe"))
+        history = history if isinstance(history, dict) else {}
+        recipe = recipe if isinstance(recipe, dict) else {}
+        graphics = request.get("broll") if task["capability"]=="render" else None
+        graphics_prompt = (graphics.get("title") or "\n".join(graphics.get("lines",[]))) if graphics else ""
+        prompt = clean(graphics_prompt or history.get("prompt") or recipe.get("prompt") or request.get("prompt") or request.get("text"))[:2000]
+        item_kind = next(kind for kind,caps in HISTORY_CAPABILITIES.items() if task["capability"] in caps)
+        audio = {key: recipe[key] for key in ("voice", "speed", "lyrics", "provider") if key in recipe}
+        if item_kind == "audio":
+            audio.update(mode=task["capability"], prompt=prompt)
+        ext = HISTORY_EXTENSIONS[item_kind]
+        for index, ref in enumerate(refs):
+            if not isinstance(ref, str):
+                continue
+            try:
+                file = tools.ref_path(COMFY_DIR, ref)
+            except (ValueError, OSError):
+                continue
+            if file.suffix.lower() not in ext:
+                continue
+            available = file.is_file()
+            items.append({"id": f"{task['id']}:{index}", "type": item_kind, "ref": ref, "available": available,
+                          "url": "/media?ref=" + quote(ref, safe="") if available else None,
+                          "label": task["label"] or file.stem, "model": "B-roll" if graphics else task["model"], "prompt": prompt,
+                          "created": task["finished"] or task["created"],
+                          **({"source":"broll","broll_recipe":graphics} if graphics else {}),
+                          **({"audio_recipe": audio} if item_kind == "audio" else {}),
+                          **{key: history[key] for key in ("seed", "width", "height") if type(history.get(key)) is int}})
+    if items:
+        saved = {row["ref"] for row in db.q("SELECT ref FROM media_favorites WHERE user_id=? AND ref IN (SELECT value FROM json_each(?))",
+                                             user["id"], json.dumps([item["ref"] for item in items]))}
+        for item in items:
+            item["favorite"] = item["ref"] in saved
+    return web.json_response({"items": items, "next": rows[page_size-1]["cursor"] if len(rows)>page_size else None},
+                             headers={"Cache-Control": "private, no-store"})
+
+
+@routes.get("/api/media-favorites")
+async def list_media_favorites(req):
+    user = req["user"]
+    headers = {"Cache-Control": "private, no-store"}
+    if "ref" in req.query:
+        saved = db.one("SELECT 1 FROM media_favorites WHERE user_id=? AND ref=?", user["id"], req.query["ref"])
+        return web.json_response({"favorite": bool(saved)}, headers=headers)
+    kind = req.query.get("kind", "all")
+    if kind != "all" and kind not in HISTORY_EXTENSIONS:
+        raise bad("不支持的收藏类型")
+    filters, params = ["user_id=?"], [user["id"]]
+    if kind != "all":
+        filters.append("kind=?")
+        params.append(kind)
+    if query := req.query.get("q", "").strip()[:120]:
+        filters.append("instr(lower(label || ' ' || data),lower(?))>0")
+        params.append(query)
+    if cursor := req.query.get("before"):
+        if not cursor.isascii() or not cursor.isdecimal() or len(cursor)>18 or int(cursor)<1:
+            raise bad("收藏页码不正确")
+        filters.append("rowid<?")
+        params.append(int(cursor))
+    page_size = 24
+    rows = db.q("SELECT rowid AS cursor,ref,kind,label,data,created FROM media_favorites WHERE " +
+                " AND ".join(filters) + " ORDER BY rowid DESC LIMIT ?", *params, page_size+1)
+    items = []
+    for row in rows[:page_size]:
+        ref = row["ref"]
+        try:
+            available = tools.ref_path(COMFY_DIR,ref).is_file() and can_read_media(user,ref)
+        except (ValueError,OSError):
+            available = False
+        items.append({**task_settings(row["data"]), "id":ref, "ref":ref, "label":row["label"], "type":row["kind"],
+                      "created":row["created"], "favorite":True, "available":available,
+                      "url":"/media?ref=" + quote(ref,safe="") if available else None})
+    return web.json_response({"items":items,"next":rows[page_size-1]["cursor"] if len(rows)>page_size else None}, headers=headers)
+
+
+@routes.post("/api/media-favorites")
+async def update_media_favorite(req):
+    user = req["user"]
+    payload = await req.json()
+    if not isinstance(payload,dict) or type(payload.get("favorite")) is not bool or not isinstance(payload.get("ref"),str):
+        raise bad("收藏请求不正确")
+    ref, favorite = payload["ref"], payload["favorite"]
+    if not favorite:
+        db.run("DELETE FROM media_favorites WHERE user_id=? AND ref=?",user["id"],ref)
+        return web.json_response({"favorite":False})
+    try:
+        path = tools.ref_path(COMFY_DIR,ref)
+    except (ValueError,OSError):
+        raise bad("素材引用不正确") from None
+    kind = next((kind for kind,extensions in HISTORY_EXTENSIONS.items() if path.suffix.lower() in extensions),None)
+    if not kind or not path.is_file() or not can_read_media(user,ref):
+        return auth.err(404,"素材不存在或无权访问")
+    data = {key: clean(payload.get(key))[:limit] for key,limit in (("prompt",2000),("model",160),("source",40))}
+    data.update({key:payload[key] for key in ("width","height") if type(payload.get(key)) is int and 0<payload[key]<=32768})
+    if type(payload.get("seed")) is int and abs(payload["seed"]) < 2**53:
+        data["seed"] = payload["seed"]
+    recipe = payload.get("audio_recipe")
+    if kind == "audio" and isinstance(recipe,dict):
+        data["audio_recipe"] = {key:clean(recipe.get(key))[:120] for key in ("voice","provider")}
+        if isinstance(recipe.get("lyrics"),str):
+            data["audio_recipe"]["lyrics"] = recipe["lyrics"][:3000]
+        data["audio_recipe"].update(mode="music" if recipe.get("mode")=="music" else "tts",prompt=data["prompt"])
+        if type(recipe.get("speed")) in (int,float) and .5 <= recipe["speed"] <= 2:
+            data["audio_recipe"]["speed"] = recipe["speed"]
+    label = clean(payload.get("label"))[:120] or path.stem
+    db.run("INSERT OR IGNORE INTO media_favorites(user_id,ref,kind,label,data,created) VALUES(?,?,?,?,?,?)",
+           user["id"],ref,kind,label,json.dumps(data,ensure_ascii=False),time.time())
+    return web.json_response({"favorite":True})
 
 
 def apply_fields(p: dict, for_llm: bool = False) -> dict:
@@ -1050,7 +2283,14 @@ async def to_english(app, p: dict) -> dict:
 @routes.post("/api/preview")
 async def preview(req):
     """The exact prompt the model would get for this request (no generation)."""
-    p = apply_fields(await req.json())
+    raw = await req.json()
+    retake = resolve_camera_plan(raw)
+    object_plan = resolve_object_edit(raw)
+    if raw.get("previs_guide") is not None or raw.get("audio_refs") or raw.get("video_refs"):
+        payload = req.app["creative_memory"].prepare(req["user"], raw)
+        return web.json_response({"prompt": reference_prompt(payload), "mode": "镜头重拍" if retake else
+                                  object_edit.ACTIONS[object_plan["action"]] if object_plan else "全模态参考"})
+    p = apply_fields(raw)
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
     p = await to_english(req.app, p)
@@ -1182,34 +2422,86 @@ async def run_image_tool(app, tool, p):
         raise bad(str(e) or "图像工具暂时不可用")
 
 
-@routes.post("/api/assets/export")
-async def export_assets(req):
-    p = await req.json()
-    refs = p.get("refs") if isinstance(p, dict) else None
+def resolve_asset_exports(user, refs):
     if not isinstance(refs, list) or not 1 <= len(refs) <= 100 or not all(isinstance(ref, str) for ref in refs):
         raise bad("请选择 1–100 个素材")
-    allowed = None if req["user"]["role"] == "admin" else refs_of_user(req["user"])
+    allowed = None if user["role"] == "admin" else refs_of_user(user)
     paths = []
     for ref in dict.fromkeys(refs):
         try:
             path = tools.ref_path(COMFY_DIR, ref)
         except ValueError:
             raise bad("素材引用不正确")
-        if (allowed is not None and ref not in allowed) or not path.is_file() or path.suffix.lower() not in MEDIA_EXT:
+        if (allowed is not None and ref not in allowed and not can_read_media(user,ref)) or not path.is_file() or path.suffix.lower() not in MEDIA_EXT:
             raise bad("素材不存在或没有访问权限")
         paths.append(path)
+    return paths
+
+
+@routes.post("/api/assets/export")
+async def export_assets(req):
+    p = await req.json()
+    paths = resolve_asset_exports(req["user"],p.get("refs") if isinstance(p,dict) else None)
+    return await serve_asset_archive([(f"{i:02d}_{path.name}",path) for i,path in enumerate(paths,1)],"OneShot-assets.zip")
+
+
+@routes.post("/api/assets/transfers")
+async def start_asset_transfer(req):
+    p = await req.json()
+    refs = p.get("refs") if isinstance(p,dict) else None
+    paths = resolve_asset_exports(req["user"],refs)
+    name = p.get("name","OneShot-素材.zip")
+    if not isinstance(name,str):
+        raise bad("下载文件名无效")
+    name = re.sub(r'[\x00-\x1f/\\]',"_",name.strip().removesuffix(".zip"))[:100] or "OneShot-素材"
+    try:
+        item = asset_transfers.start(req["user"]["id"],list(dict.fromkeys(refs)),paths,name+".zip",DATA/"transfers")
+    except OSError:
+        raise bad("源文件已失效，请重新选择素材") from None
+    return web.json_response(asset_transfers.describe(item),status=202)
+
+
+@routes.get("/api/assets/transfers/{key}")
+async def asset_transfer_status(req):
+    item = asset_transfers.lookup(req["user"]["id"],req.match_info["key"])
+    return web.json_response(asset_transfers.describe(item),headers={"Cache-Control":"no-store"})
+
+
+@routes.get("/api/assets/transfers/{key}/file",allow_head=False)
+async def download_asset_transfer(req):
+    item = asset_transfers.lookup(req["user"]["id"],req.match_info["key"])
+    try:
+        resolve_asset_exports(req["user"],item["refs"])
+    except web.HTTPException:
+        if item["state"] in ("ready","sent"):
+            asset_transfers.update(item,"error",error="下载权限或源文件已变化，请重新选择素材")
+        raise
+    return await asset_transfers.send(req,item)
+
+
+async def serve_asset_archive(entries, filename):
     directory = DATA / "exports"; directory.mkdir(parents=True, exist_ok=True)
     dst = directory / (uuid.uuid4().hex + ".zip")
     def archive():
-        with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
-            for i, path in enumerate(paths):
-                z.write(path, f"{i + 1:02d}_{path.name}")
+        try:
+            with zipfile.ZipFile(dst, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as z:
+                for name, content in entries:
+                    if isinstance(content,bytes):
+                        z.writestr(name,content)
+                    else:
+                        z.write(content,name)
+        except Exception:
+            dst.unlink(missing_ok=True)
+            raise
         # Exports contain only references already authorized above. Remove old archives.
         for old in directory.glob("*.zip"):
             if old != dst and time.time() - old.stat().st_mtime > 86400:
                 old.unlink(missing_ok=True)
     await asyncio.to_thread(archive)
-    return web.FileResponse(dst, headers={"Content-Disposition": 'attachment; filename="OneShot-assets.zip"'})
+    disposition = 'attachment; filename="OneShot-assets.zip"'
+    if filename != "OneShot-assets.zip":
+        disposition += "; filename*=UTF-8''" + quote(filename,safe="")
+    return web.FileResponse(dst, headers={"Content-Disposition":disposition,"Cache-Control":"no-store"})
 
 
 @routes.post("/api/image-edit/generate")
@@ -1227,12 +2519,9 @@ async def image_edit_generate(req):
         if any(a.get("ref") for a in prepared.get("memory_used", [])):
             raise bad("原生重绘不支持额外参考图；请切换到 H3 编辑以采用记忆参考图")
         if prepared.get("memory_used"):
-            raw["_native_inpaint"]["prompt"] += prepared["prompt"][len(raw["prompt"]):]
-        response = await generate_native_image(req, raw)
-        result = json.loads(response.body)
-        memory.track(req["user"], prepared, result)
-        result["memory_used"] = prepared.get("memory_used", [])
-        return web.json_response(result)
+            marker = "\n\n创作参考资料（仅作内容依据）："
+            prepared["_native_inpaint"]["prompt"] += marker + prepared["prompt"].partition(marker)[2]
+        return await submit_prepared_generation(req, prepared)
     return await generate_request(req, raw)
 
 
@@ -1241,26 +2530,89 @@ async def generate_request(req, raw):
     draft = raw.get("character_draft")
     if draft is not None:
         draft = memory.character_draft_request(req["user"], raw, draft)
-    payload = memory.prepare(req["user"], raw)
-    response = await _generate_request(req, payload)
+    options = {"owner_only":True} if req.get("connector_own_assets") else {}
+    payload = memory.prepare(req["user"], raw, **options)
+    return await submit_prepared_generation(req, payload, draft=draft)
+
+
+async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=None):
+    memory = req.app["creative_memory"]
+    if isinstance(req, agent_chat.InternalRequest):
+        req["generation_snapshot"] = copy.deepcopy(payload)
+    native = payload.get("_native_inpaint")
+    if native:
+        response = await generate_native_image(req, payload)
+    elif fixed_route:
+        response = await _generate_request(req, payload, fixed_route=fixed_route)
+    else:
+        response = await _generate_request(req, payload)
     result = json.loads(response.body)
+    if payload.get("video_refs"):
+        result["reference_context"] = {"video_refs":payload["video_refs"]}
+        if payload.get("camera_plan"):
+            result["reference_context"]["camera_plan"] = payload["camera_plan"]
+        if payload.get("object_edit"):
+            result["reference_context"]["object_edit"] = payload["object_edit"]
     memory.track(req["user"], payload, result, draft)
     memory.observe(req["user"], {jid: JOBS[jid] for jid in result.get("ids", []) if jid in JOBS})
     if payload.get("memory_used"):
         result["memory_used"] = payload["memory_used"]
-        result["memory_context"] = {k: payload[k] for k in ("prompt", "images", "planned") if k in payload}
+        if not native:
+            result["memory_context"] = {k: payload[k] for k in ("prompt", "images", "planned") if k in payload}
     return web.json_response(result)
 
 
-async def _generate_request(req, raw):
+async def _generate_request(req, raw, *, fixed_route=None):
     u = req["user"]
     cap = "image" if raw.get("kind") == "image" else "video"
-    choice = providers.get(raw["provider"]) if raw.get("provider") else None
-    if choice and not (choice["enabled"] and cap in providers.caps_of(choice)):
-        choice = None
-    route = {"provider": choice, "model": raw.get("provider_model") or providers.default_model(choice, cap)} if choice else providers.primary(cap)
+    extension = raw.get("extension")
+    if extension is not None and (extension not in ("before","after") or not raw.get("video_refs")):
+        raise bad("请选择续拍方向和原视频")
+    edit = raw.get("segment_edit")
+    if edit is not None and (edit is not True or extension or not raw.get("video_refs")):
+        raise bad("请选择要修改的原视频片段")
+    retake = resolve_camera_plan(raw)
+    if retake:
+        raw["camera_plan"] = retake
+    object_plan = resolve_object_edit(raw)
+    if object_plan:
+        raw["object_edit"] = object_plan
+    if raw.get("previs_guide") is not None or raw.get("audio_refs") or raw.get("video_refs"):
+        if raw.get("kind") != "video":
+            raise bad("音视频参考仅用于视频生成")
+        has_motion = raw.get("previs_guide") is not None or bool(raw.get("video_refs"))
+        routes = {r["provider"]["id"]: r for r in reference_routes(require_motion=has_motion, segment_edit=bool(edit))}
+        route = routes.get(raw.get("provider")) if isinstance(raw.get("provider"), str) else None
+        if fixed_route and (not route or route["provider"]["id"] != fixed_route["provider"] or route["model"] != fixed_route["model"]):
+            raise bad("原参考视频服务或模型已变更，请重新配置后再重试")
+        if not route:
+            if edit:
+                raise bad("请选择已配置参考视频公网地址的 Seedance 2.5 服务")
+            raise bad("请选择支持全模态参考的 Seedance 2.x 服务" + ("，并配置参考视频公网地址" if has_motion else ""))
+        motion = await resolve_previs_guide(u, raw) if raw.get("previs_guide") is not None else None
+        clips = await resolve_video_refs(u, raw, route["model"], motion) if raw.get("video_refs") else []
+        audio = await resolve_audio_refs(u, raw, route["model"]) if raw.get("audio_refs") else []
+        if isinstance(req, agent_chat.InternalRequest):
+            req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]}
+        return await generate_remote(req, raw, route, cap, motion=motion, audio_refs=audio, video_refs=clips)
+    if fixed_route:
+        route = None
+        if provider_id := fixed_route["provider"]:
+            choice = providers.get(provider_id)
+            if not choice or not choice["enabled"] or cap not in providers.caps_of(choice):
+                raise bad("原生成服务已不可用，请重新配置后再重试")
+            route = {"provider":choice,"model":fixed_route["model"]}
+    else:
+        choice = providers.get(raw["provider"]) if raw.get("provider") else None
+        if choice and not (choice["enabled"] and cap in providers.caps_of(choice)):
+            choice = None
+        route = {"provider":choice,"model":raw.get("provider_model") or providers.default_model(choice,cap)} if choice else providers.primary(cap)
+    if isinstance(req, agent_chat.InternalRequest):
+        req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]} if route else {"provider":None,"model":None}
     if route and route["provider"]["kind"] != "local_h3":
         return await generate_remote(req, raw, route, cap)
+    if raw.get("draft"):
+        raise bad("请选择支持原生样片的 Seedance 2.5 服务")
     p = apply_fields(raw)
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词不能为空"}), content_type="application/json")
@@ -1308,7 +2660,8 @@ async def jobs(req):
     ids = [i for i in req.query.get("ids", "").split(",") if i and (u["role"] == "admin" or i not in JOBS
                                                                     or (JOBS[i].get("meta") or {}).get("uid") in (None, u["id"]))][:200]
     queue_order = []
-    comfy_ids = [i for i in ids if not (JOBS.get(i, {}).get("out_ref") or i[:1] in "xrtp" and len(i) == 13)]
+    comfy_ids = [i for i in ids if not (JOBS.get(i, {}).get("out_ref") or i[:1] in "xrtp" and len(i) == 13
+                                        or i.startswith("r") and len(i) == 25)]
     if any(JOBS.get(i, {}).get("state") == "queued" for i in comfy_ids):
         try:
             async with req.app["http"].get(f"{COMFY}/queue", timeout=aiohttp.ClientTimeout(total=3)) as r:
@@ -1397,29 +2750,32 @@ async def cancel(req):
 
 @routes.post("/api/lastframe")
 async def lastframe(req):
-    import av
-    ref = (await req.json())["ref"]
+    data = await req.json()
+    if not isinstance(data, dict) or not isinstance(data.get("ref"), str):
+        raise bad("请选择要截帧的视频")
+    ref, at = data["ref"], data.get("at")
+    position = data.get("position", "last" if at is None else "time")
+    if position not in ("first", "last", "time") or (position == "time") != (at is not None):
+        raise bad("请选择首帧、末帧，或指定截帧时间")
+    if at is not None and (type(at) not in (int, float) or not math.isfinite(at) or at < 0):
+        raise bad("截帧时间无效")
     try:
         src = tools.ref_path(COMFY_DIR, ref)
     except ValueError:
         raise web.HTTPBadRequest()
-    path = ref.split(":", 1)[1]
-
     def grab():
-        last = None
-        with av.open(str(src)) as c:
-            for f in c.decode(video=0):
-                last = f
-        img = last.to_image()
-        name = f"last_{Path(path).stem}_{uuid.uuid4().hex[:4]}.png"
-        dst = COMFY_DIR / "input" / "h3studio" / name
-        dst.parent.mkdir(parents=True, exist_ok=True)
+        img, time = film.capture_frame(src, position, at)
+        dst, new_ref = tools._new(COMFY_DIR, "input", "last" if position == "last" else "frame", ".png")
         img.save(dst)
-        return f"input:h3studio/{name}", img.size
+        return new_ref, img.size, time
 
-    new_ref, size = await asyncio.get_running_loop().run_in_executor(None, grab)
+    try:
+        new_ref, size, time = await asyncio.to_thread(grab)
+    except (OSError, ValueError, IndexError) as e:
+        raise bad(str(e)) from None
     grant_media(req["user"], new_ref)
-    return web.json_response({"ref": new_ref, "url": "/media?ref=" + quote(new_ref, safe=""), "w": size[0], "h": size[1]})
+    return web.json_response({"ref": new_ref, "url": "/media?ref=" + quote(new_ref, safe=""), "w": size[0], "h": size[1],
+                              "at":time, "position":position})
 
 
 @routes.post("/api/rewrite")
@@ -1486,6 +2842,50 @@ async def analyze(req):
         raise bad(f"切分镜头失败：{e}")
     grant_media(req["user"], *media_references(cut))
     return await llm_call(req, tools.analyze_shots(req.app["llm"], COMFY_DIR, cut))
+
+
+@routes.post("/api/video/trim")
+async def trim_video(req):
+    data = await req.json()
+    if not isinstance(data, dict) or data.get("action") not in ("detect", "render"):
+        raise bad("视频裁剪请求无效")
+    points = data.get("points")
+    if not isinstance(points, list) or not 2 <= len(points) <= 13 or any(type(point) is not int for point in points):
+        raise bad("请选择有效的入点和出点，最多可切成 12 段")
+    if any(a >= b for a, b in zip(points, points[1:])) or points[0] < 0:
+        raise bad("剪辑点必须按时间顺序排列")
+
+    def work():
+        ref = data["ref"]
+        path = tools.ref_path(COMFY_DIR, ref)
+        duration = film.probe(path, display=False)[2]
+        if points[-1] > round(duration * film.FPS):
+            raise ValueError("剪辑点超出原视频范围")
+        if data["action"] == "detect":
+            return {"cuts":tools.video_split_points(path, points[0], points[-1], film.FPS, 12)}
+        results = []
+        try:
+            for start, end in zip(points, points[1:]):
+                clip = {"ref":ref, "in":start / film.FPS, "out":end / film.FPS, "tight":True,
+                        "audio_ref":ref, "audio_start":0}
+                result = film.render(COMFY_DIR, {"clips":[clip], "subtitles":False})
+                result.update(start=start / film.FPS, end=end / film.FPS)
+                results.append(result)
+        except Exception:
+            for result in results:
+                tools.ref_path(COMFY_DIR, result["ref"]).unlink(missing_ok=True)
+            raise
+        return {"clips":results}
+
+    try:
+        async with RENDER_LOCK:
+            result = await asyncio.to_thread(work)
+    except (KeyError, TypeError, ValueError, OSError, IndexError) as error:
+        raise bad(f"无法处理视频：{error}") from None
+    for clip in result.get("clips", []):
+        clip["url"] = "/media?ref=" + quote(clip["ref"], safe="")
+    grant_media(req["user"], *(clip["ref"] for clip in result.get("clips", [])))
+    return web.json_response(result)
 
 
 @routes.get("/api/video-remake/{board}/{node}")
@@ -1559,35 +2959,269 @@ async def library_del(req):
 
 
 RENDER_LOCK = asyncio.Lock()
+DEPTH_LOCK = asyncio.Lock()
+STEM_LOCK = asyncio.Lock()
+
+
+def film_preflight(spec, user=None, board=None):
+    if not isinstance(spec, dict) or not isinstance(spec.get("clips"), list) or not spec["clips"]:
+        raise ValueError("时间线上没有图片或视频")
+    if spec.get("aspect", "source") not in {"source","16:9","9:16","1:1","4:3","3:4","21:9"}:
+        raise ValueError("请选择支持的成片画幅")
+    film.title_items(spec.get("titles", []))
+    film.cutaway_items(COMFY_DIR,spec.get("cutaways", []))
+    audio_clips = spec.get("audio_clips", [])
+    if not isinstance(audio_clips, list):
+        raise ValueError("音频片段格式无效")
+    problems = []
+    first_size = None
+    sessions, audio_sources = {}, {}
+    for i, clip in enumerate(spec["clips"]):
+        try:
+            _, w, h, duration, start, end = film.clip_info(COMFY_DIR, clip)
+            if not 0 <= start < end <= duration + 1 / film.FPS:
+                raise ValueError()
+            first_size = first_size or (w, h)
+        except Exception:
+            problems.append({"clip":i, "error":f"第 {i + 1} 段素材无法读取，或时长超出范围"})
+            continue
+        try:
+            film.clip_speed(clip)
+            if "captions" in clip:
+                film.subtitle_captions(clip["captions"])
+        except ValueError as error:
+            problems.append({"clip":i, "error":f"第 {i + 1} 段：{error}"})
+        try:
+            film.clip_source_audio(COMFY_DIR, clip, start, end, audio_sources)
+        except (TypeError, ValueError, IndexError, KeyError, OSError):
+            problems.append({"clip":i, "error":f"第 {i + 1} 段原片音轨无法读取，或剪辑点超出范围"})
+        if provenance := clip.get("remake_shot"):
+            try:
+                source = provenance["source"]
+                k = (provenance["node"], source)
+                if k not in sessions:
+                    key = video_remake.remake_key(sys.modules[__name__], user, board, *k)
+                    session = video_remake.load(key)
+                    video_remake.update_jobs(sys.modules[__name__], user["id"], session)
+                    sessions[k] = session
+                session = sessions[k]
+                index, shot = next((j, s) for j, s in enumerate(session["shots"])
+                                   if s["start"] == provenance["start"] and s["end"] == provenance["end"])
+                review, issue = video_remake.export_choice(shot, session.get("mapping"), index)
+                if issue or (review["ref"] if review else source) != clip["ref"]:
+                    raise ValueError()
+            except (KeyError, TypeError, ValueError, StopIteration, web.HTTPException):
+                problems.append({"clip":i, "error":f"第 {i + 1} 段审核版本或剪辑点已变更，请更新这一镜"})
+    for ref, label, video in [(spec.get("remake_audio"), "原声", True),
+                              ((spec.get("bgm") or {}).get("ref"), "配乐", False),
+                              *((a.get("ref"), f"第 {i + 1} 段旁白", False) for i, a in enumerate(spec.get("narration") or []))]:
+        if not ref:
+            continue
+        try:
+            path = tools.ref_path(COMFY_DIR, ref)
+            if video:
+                w, h, duration, _ = film.probe(path)
+                if not 0 < duration <= 60:
+                    raise ValueError()
+                first_size = (w, h)
+            else:
+                import av
+                with av.open(str(path)) as media:
+                    if not media.streams.audio:
+                        raise ValueError()
+        except Exception:
+            problems.append({"error":f"{label}文件无法读取"})
+    for i, clip in enumerate(audio_clips):
+        try:
+            film.audio_clip_info(COMFY_DIR, clip)
+        except (TypeError, ValueError, IndexError, KeyError, OSError):
+            problems.append({"audio":i, "error":f"第 {i + 1} 段音频无法读取，或入点、出点和音量超出范围"})
+            continue
+        if "captions" in clip:
+            try:
+                film.subtitle_captions(clip["captions"])
+            except ValueError as error:
+                problems.append({"audio":i, "error":f"第 {i + 1} 段音频的旁白字幕无效：{error}"})
+    dimensions = film.target_size(*first_size, spec.get("aspect") or "source") if first_size else None
+    return {"ok":not problems, "issues":problems, "dimensions":dimensions}
+
+
+@routes.post("/api/render/check")
+async def render_check(req):
+    data = await req.json()
+    try:
+        result = await asyncio.to_thread(film_preflight, data.get("spec"), req["user"], data.get("board"))
+    except (AttributeError, TypeError, ValueError) as e:
+        raise bad(str(e))
+    return web.json_response(result)
 
 
 @routes.post("/api/render")
 async def render_film(req):
     """成片: render a timeline in the background; it is tracked like a generation job (poll /api/jobs)."""
     p = await req.json()
-    return enqueue_film(req, p.get("spec") or {}, label=p.get("label"))
+    spec = p.get("spec") or {}
+    attempt = p.get("request_key")
+    target = p.get("target")
+    if target is not None:
+        if not isinstance(target,dict) or not isinstance(target.get("node"),str):
+            raise bad("请选择要保存新版本的视频")
+        if not attempt:
+            raise bad("保存为新版本需要导出请求编号")
+        field = "playlist_revision" if "playlist_revision" in target else "ref"
+        if not isinstance(target.get(field),str) or field == "playlist_revision" and not re.fullmatch(r"[a-f0-9]{64}",target[field]):
+            raise bad("请选择要保存新版本的视频")
+        target = {k:target[k] for k in ("node",field)}
+    if not attempt:
+        return enqueue_film(req, spec, label=p.get("label"))
+    if not isinstance(attempt, str) or not re.fullmatch(r"[A-Za-z0-9-]{16,80}", attempt):
+        raise bad("导出请求编号无效")
+    uid = req["user"]["id"]
+    jid = "r" + hashlib.sha256(f"{uid}:{attempt}".encode()).hexdigest()[:24]
+    fingerprint = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+    try:
+        check = await asyncio.to_thread(film_preflight, spec, req["user"], p.get("board"))
+    except (AttributeError, TypeError, ValueError) as e:
+        raise bad(str(e))
+    prior = db.one("SELECT state,request FROM tasks WHERE id=? AND user_id=?", jid, uid)
+    if prior:
+        saved = json.loads(prior["request"])
+        if saved["fingerprint"] != fingerprint or ("target" in saved and saved["target"] != target):
+            raise bad("导出内容已变更，请重新检查后提交")
+        return web.json_response({"ids":[jid],"meta":JOBS.get(jid, {}).get("meta") or {"est":0}})
+    if not check["ok"]:
+        raise bad(check["issues"][0]["error"])
+    request_data = {"fingerprint":fingerprint}
+    if target is not None:
+        board = board_meta(board_path(p.get("board")))
+        if not board or not can_edit(req["user"],board):
+            raise web.HTTPForbidden()
+        node = next((n for n in board.get("nodes",[]) if n.get("id")==target["node"] and n.get("type")=="video"),None)
+        if "playlist_revision" in target:
+            data = node.get("data",{}) if node else {}
+            if not data.get("playlist") or film.playlist_revision(data.get("film")) != target["playlist_revision"]:
+                return auth.err(409,"播放列表已变化，请重新打开后导出")
+        elif not node or not any(v.get("ref")==target["ref"] for v in node.get("versions",[])):
+            return auth.err(409,"剪辑所用的视频版本已移除")
+        if node.get("job"):
+            return auth.err(409,"节点正在处理另一个任务，请稍候")
+        request_data["target"] = target
+    return enqueue_film(req, spec, label=p.get("label"), board=p.get("board"), jid=jid, request_data=request_data)
 
 
-def enqueue_film(req, spec, *, label=None, source_audio=None, board=None, display=True):
+def enqueue_film(req, spec, *, label=None, source_audio=None, board=None, display=True, jid=None, request_data=None):
     clips = [c for c in spec.get("clips") or [] if c.get("ref")]
     if not clips:
-        raise bad("时间线上没有视频")
-    secs = sum(max(0.5, float(c.get("out") or 8) - float(c.get("in") or 0)) for c in clips)
+        raise bad("时间线上没有图片或视频")
+    try:
+        secs = sum(image_editor.number(c.get("duration"), .5, 60, "图片停留时长", 3) if c.get("kind") == "image"
+                   else max(.5, float(c.get("out") or 8) - float(c.get("in") or 0)) / film.clip_speed(c) for c in clips)
+    except (TypeError, ValueError) as error:
+        raise bad(str(error)) from None
     def render_timeline(progress, cancelled):
         return film.render(COMFY_DIR, spec, progress, cancelled, source_audio=source_audio, display=display)
-    return enqueue_render(req, render_timeline, seconds=secs, label=label, board=board)
+    return enqueue_render(req, render_timeline, seconds=secs, label=label, board=board, jid=jid, request_data=request_data)
 
 
-def enqueue_render(req, render_clip, *, seconds, label=None, board=None):
-    jid = "r" + uuid.uuid4().hex[:12]
+async def broll_source(user, payload):
+    if not isinstance(payload,dict) or not isinstance(payload.get("board"),str):
+        raise ValueError("请选择来源画布和素材")
+    board_id = payload["board"]
+    board = board_meta(board_path(board_id))
+    if not board or not can_edit(user,board):
+        raise web.HTTPForbidden()
+    node = next((node for node in board.get("nodes",[]) if node.get("id")==payload.get("node")),None)
+    if not node or node.get("type") not in ("image","video"):
+        raise ValueError("请选择一张图片或一段视频")
+    ref = payload.get("ref")
+    if not isinstance(ref,str) or not any(version.get("ref")==ref for version in node.get("versions",[])):
+        raise ValueError("所选素材版本已移除")
+    require_media(user,{ref})
+    path = tools.ref_path(COMFY_DIR,ref)
+    kind = node["type"]
+    extensions = creative_memory.IMAGE_EXT if kind == "image" else tools.VIDEO_EXT
+    if not path.is_file() or path.suffix.lower() not in extensions:
+        raise ValueError("所选素材文件不可用")
+    try:
+        duration = (await asyncio.to_thread(film.probe,path))[2] if kind == "video" else None
+    except Exception as error:
+        raise ValueError("无法读取来源视频") from error
+    return board_id,node,ref,duration
+
+
+@routes.post("/api/broll/draft")
+async def draft_broll(req):
+    payload = await req.json()
+    try:
+        _, node, _, duration = await broll_source(req["user"],payload)
+        mode = payload.get("mode")
+        if not isinstance(mode,str) or mode not in broll.MODES or mode == "motion" and node["type"] != "image":
+            raise ValueError("请选择可用的 B-roll 类型")
+        brief = broll.text(payload.get("brief"),1000,"画面说明")
+        options = {key:payload[key] for key in ("start","end","duration","style") if key in payload}
+    except (TypeError,ValueError) as error:
+        raise bad(str(error)) from None
+    guide = {"title":"{\"title\":\"短标题\"}","captions":"{\"lines\":[\"第一行\",\"第二行\"]}",
+             "chart":"{\"title\":\"标题\",\"bars\":[{\"label\":\"名称\",\"value\":1}]}","motion":"{\"direction\":\"in 或 out\"}"}[mode]
+    system = "你为视频制定动态图形草稿。只输出 JSON，保留用户明确给出的文字和数字。字幕卡为1–6行。条形图需2–6项，只采用用户已给出的非负数值，材料不足时返回空 bars。不要虚构统计数据。输出格式 " + guide
+    try:
+        reply = await req.app["llm"].chat(system, brief, max_tokens=650, temperature=.2)
+        draft = tools.parse_json(reply)
+    except Exception:
+        return auth.err(503,"无法使用当前文本模型起草，可在控制台检查配置，或手动填写")
+    try:
+        if not isinstance(draft,dict):
+            raise ValueError("文本模型未返回可用草稿")
+        result = broll.recipe({**draft,**options,"mode":mode},node["type"],duration)
+    except (TypeError,ValueError) as error:
+        raise bad(str(error)) from None
+    return web.json_response(result)
+
+
+@routes.post("/api/broll/render")
+async def render_broll(req):
+    payload = await req.json()
+    try:
+        board_id,node,ref,duration = await broll_source(req["user"],payload)
+        graphics = broll.recipe(payload.get("recipe"),node["type"],duration)
+        attempt = payload.get("request_key")
+        if not isinstance(attempt,str) or not re.fullmatch(r"[A-Za-z0-9-]{16,80}",attempt):
+            raise ValueError("B-roll 请求编号无效")
+    except (TypeError,ValueError) as error:
+        raise bad(str(error)) from None
+    kind = node["type"]
+    duration = duration if kind == "video" else graphics["duration"]
+    clip = {"ref":ref,"kind":kind,"tight":True,"out":duration} if kind == "video" else {"ref":ref,"kind":kind,"duration":duration}
+    spec = {"clips":[clip],"aspect":"source","fit":"crop","subtitles":False,"broll":graphics,"cover":0}
+    fingerprint = hashlib.sha256(json.dumps([board_id,node["id"],spec],sort_keys=True).encode()).hexdigest()
+    uid = req["user"]["id"]
+    jid = "broll" + hashlib.sha256(f"{uid}:{attempt}".encode()).hexdigest()[:20]
+    prior = db.one("SELECT request FROM tasks WHERE id=? AND user_id=?",jid,uid)
+    if prior:
+        if task_settings(prior["request"]).get("fingerprint") != fingerprint:
+            return auth.err(409,"B-roll 内容已变更，请重新提交")
+        return web.json_response({"ids":[jid],"meta":JOBS.get(jid,{}).get("meta",{}),"recipe":graphics})
+
+    def render_graphics(progress,cancelled):
+        return film.render(COMFY_DIR,spec,progress,cancelled,max_side=1920 if kind == "image" else None)
+
+    response = enqueue_render(req,render_graphics,seconds=duration,label=node.get("name"),board=board_id,jid=jid,
+                              request_data={"fingerprint":fingerprint,"broll":graphics,"source":ref},mode="B-roll")
+    return web.json_response({**json.loads(response.body),"recipe":graphics})
+
+
+def enqueue_render(req, render_clip, *, seconds, label=None, board=None, jid=None, request_data=None, depth=False, mode=None):
+    jid = jid or "r" + uuid.uuid4().hex[:12]
+    mode = mode or ("深度参考" if depth else "成片")
     j = JOBS[jid] = {"id": jid, "kind": "render", "state": "queued", "created": time.time(),
-                     "meta": {"label": clean(label)[:60] or "成片", "est": round(3 + seconds * FPS_EST, 1), "cls": "render", "units": seconds,
-                              "uid": req["user"]["id"], "board": board, "mode_name": "成片"}}
+                     "meta": {"label": clean(label)[:60] or mode, "est": round(3 + seconds * (20 if depth else FPS_EST), 1),
+                              "cls": "depth" if depth else "render", "units": seconds,
+                              "uid": req["user"]["id"], "board": board, "mode_name": mode}}
     db.task_start(id=jid, user_id=req["user"]["id"], board_id=board, capability="render",
-                  label=j["meta"]["label"])
+                  label=j["meta"]["label"], request=request_data)
 
     async def run():
-        async with RENDER_LOCK:
+        async with (DEPTH_LOCK if depth else RENDER_LOCK):
             if j.get("cancel"):
                 j.update(state="error", error="已取消")
                 log_end(j)
@@ -1605,7 +3239,8 @@ def enqueue_render(req, render_clip, *, seconds, label=None, board=None):
                 return
             except Exception as e:
                 if not j.get("cancel"):
-                    j.update(state="error", error=f"合成失败：{e}"[:500])
+                    action = "合成" if mode == "成片" else mode
+                    j.update(state="error", error=f"{action}失败：{e}"[:500])
                 log_end(j)
                 return
             if j.get("cancel"):
@@ -1619,6 +3254,46 @@ def enqueue_render(req, render_clip, *, seconds, label=None, board=None):
             record(j)
     asyncio.create_task(run())
     return web.json_response({"ids": [jid], "meta": j["meta"]})
+
+
+@routes.post("/api/previs/render")
+async def render_previs(req):
+    payload = await req.json()
+    if not isinstance(payload, dict):
+        raise bad("白模请求格式不正确")
+    bid, nid, attempt = (payload.get(key) for key in ("board","node","request_key"))
+    if not isinstance(nid, str) or not _ID.fullmatch(nid) or not isinstance(attempt, str) or not re.fullmatch(r"[A-Za-z0-9-]{16,80}", attempt):
+        raise bad("节点或请求编号无效")
+    board = board_meta(board_path(bid))
+    user = req["user"]
+    if not board or not can_edit(user, board):
+        return auth.err(404, "画布不存在或没有编辑权限")
+    node = next((n for n in board.get("nodes", []) if n.get("id") == nid and n.get("type") == "video"), None)
+    if not node or not isinstance(node.get("data", {}).get("previs"), dict):
+        return auth.err(404, "白模节点已不存在")
+    try:
+        scene = previs.validate(node["data"]["previs"])
+    except ValueError as exc:
+        raise bad(str(exc))
+    fingerprint = hashlib.sha256(json.dumps(scene, sort_keys=True).encode()).hexdigest()
+    jid = "r" + hashlib.sha256(f"previs:{user['id']}:{bid}:{nid}:{attempt}".encode()).hexdigest()[:12]
+    if prior := db.one("SELECT request FROM tasks WHERE id=? AND user_id=?", jid, user["id"]):
+        if json.loads(prior["request"] or "{}").get("fingerprint") != fingerprint:
+            return auth.err(409, "白模已变更，请重新提交")
+        return web.json_response({"ids":[jid]})
+    if payload.get("revision") != board.get("rev"):
+        return auth.err(409, "画布已变更，请保存后重试")
+    if any(j["state"] in ("queued","running") and (m := j.get("meta", {})).get("board") == bid and
+           m.get("previs_node") == nid for j in JOBS.values()):
+        return auth.err(409, "这个白模正在渲染")
+
+    def encode(progress, cancelled):
+        return previs.export(COMFY_DIR, scene, progress, cancelled)
+
+    response = enqueue_render(req, encode, seconds=scene["duration"], label="白模预演 · " + clean(node.get("name")),
+                              board=bid, jid=jid, request_data={"fingerprint":fingerprint}, mode="白模预演渲染")
+    JOBS[jid]["meta"]["previs_node"] = nid
+    return response
 
 
 FPS_EST = 0.45   # render seconds per second of film (768p, measured); refined by the stats
@@ -1636,10 +3311,300 @@ async def cover(req):
     return web.json_response(r)
 
 
+ASR_AUDIO_LIMIT = 8 * 1024 * 1024
+ASR_AUDIO_TYPES = {
+    ".wav": "audio/wav", ".webm": "audio/webm", ".ogg": "audio/ogg", ".mp4": "audio/mp4",
+    ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".flac": "audio/flac",
+}
+
+
+def is_transcription_audio(header, extension):
+    if extension == ".wav":
+        return header[:4] == b"RIFF" and header[8:12] == b"WAVE"
+    if extension in (".m4a", ".mp4"):
+        return header[4:8] == b"ftyp"
+    if extension == ".mp3":
+        return header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 255 and header[1] & 224 == 224)
+    return header.startswith({".webm": b"\x1aE\xdf\xa3", ".ogg": b"OggS", ".flac": b"fLaC"}[extension])
+
+
+@routes.get("/api/transcription")
+async def transcription_status(_):
+    return web.json_response({"available": bool(providers.routes("asr"))})
+
+
+@routes.post("/api/transcription")
+async def transcribe_audio(req):
+    configured = providers.routes("asr")
+    if not configured:
+        return auth.err(503, "请在控制台配置语音转写服务")
+    if req.content_type != "multipart/form-data":
+        raise bad("请选择音频文件")
+    try:
+        part = await (await req.multipart()).next()
+        if part is None or part.name != "file" or not part.filename:
+            raise bad("请选择音频文件")
+        extension = Path(part.filename).suffix.lower()
+        content_type = ASR_AUDIO_TYPES.get(extension)
+        if content_type is None:
+            raise bad("不支持的音频格式")
+        audio = bytearray()
+        while chunk := await part.read_chunk(64 * 1024):
+            audio.extend(chunk)
+            if len(audio) > ASR_AUDIO_LIMIT:
+                return auth.err(413, "音频文件不能超过 8 MB")
+    except (ValueError, AssertionError):
+        raise bad("无法读取上传的音频")
+    if not is_transcription_audio(audio, extension):
+        raise bad("音频内容与文件格式不符")
+    transcript = await plain_transcript(req, configured, bytes(audio), extension, content_type)
+    if transcript is not None:
+        return web.json_response({"text": transcript})
+    return auth.err(502, "语音转写服务暂时不可用，请稍后重试")
+
+
+async def plain_transcript(req, configured, audio, extension, content_type):
+    for route in configured:
+        try:
+            return await providers.transcribe(req.app["http"], route["provider"], route["model"],
+                                              audio, extension, content_type)
+        except providers.ProviderError:
+            continue
+
+
+def audio_node_source(req, payload):
+    if not isinstance(payload, dict) or not all(isinstance(payload.get(k), str) for k in ("board", "node", "ref")):
+        raise bad("请选择画布上的音频版本")
+    board = board_meta(board_path(payload["board"]))
+    if not board or not can_edit(req["user"], board):
+        raise web.HTTPForbidden()
+    source = next((n for n in board.get("nodes", []) if n["id"] == payload["node"] and n["type"] == "audio"), None)
+    if not source or not any(v.get("ref") == payload["ref"] for v in source.get("versions", [])):
+        raise bad("音频版本已移除，请重新选择")
+    require_media(req["user"], {payload["ref"]})
+    return payload["ref"]
+
+
+def stem_source(user, bid, nid, ref):
+    if not all(isinstance(value,str) for value in (bid,nid,ref)):
+        raise bad("请选择画布上的视频或音频版本")
+    board = board_meta(board_path(bid))
+    if not board or not can_edit(user,board):
+        raise web.HTTPForbidden()
+    source = next((n for n in board.get("nodes",[]) if n["id"] == nid and n["type"] in ("audio","video")),None)
+    if not source or not any(v.get("ref") == ref for v in source.get("versions",[])):
+        raise bad("原素材版本已移除，请重新选择")
+    require_media(user,{ref})
+    return source
+
+
+@routes.get("/api/audio/waveform")
+async def get_audio_waveform(req):
+    ref = req.query.get("ref","")
+    try:
+        source = tools.ref_path(COMFY_DIR,ref)
+    except ValueError:
+        raise web.HTTPNotFound() from None
+    if source.suffix.lower() not in AUDIO_MEDIA_EXT or not source.is_file() or not can_read_media(req["user"],ref):
+        raise web.HTTPNotFound()
+    try:
+        result = await asyncio.to_thread(audio_waveform.waveform,source)
+    except (OSError,ValueError,TypeError) as error:
+        raise bad("暂时无法读取此音频的波形") from error
+    return web.json_response(result,headers={"Cache-Control":"private, no-cache"})
+
+
+@routes.get("/api/audio/separate")
+async def latest_stems(req):
+    user = req["user"]
+    bid, nid, ref = (req.query.get(key) for key in ("board","node","ref"))
+    stem_source(user,bid,nid,ref)
+    last = db.one("""SELECT id,request FROM tasks WHERE user_id=? AND board_id=? AND capability='audio_separation'
+                     AND json_extract(request,'$.node')=? AND json_extract(request,'$.ref')=?
+                     ORDER BY created DESC LIMIT 1""",user["id"],bid,nid,ref)
+    return web.json_response({"available":bool(audio_separation.executable()),
+        "latest":{"id":last["id"],"range":json.loads(last["request"])["range"]} if last else None})
+
+
+@routes.post("/api/audio/separate")
+async def request_stems(req):
+    payload = await req.json()
+    if not isinstance(payload,dict):
+        raise bad("请选择画布上的视频或音频版本")
+    user = req["user"]
+    bid, nid, ref, attempt = (payload.get(key) for key in ("board","node","ref","request_key"))
+    source = stem_source(user,bid,nid,ref)
+    if not isinstance(attempt,str) or not re.fullmatch(r"[A-Za-z0-9-]{16,80}",attempt):
+        raise bad("音轨分离请求编号无效")
+    try:
+        requested = audio_separation.range_values(payload)
+        path = tools.ref_path(COMFY_DIR,ref)
+        start, end = await asyncio.to_thread(audio_separation.media_range,path,source["type"],*requested)
+    except (ValueError,OSError,OverflowError) as error:
+        raise bad(str(error)) from None
+    source = stem_source(user,bid,nid,ref)
+    jid = "t" + hashlib.sha256(json.dumps(["stems",user["id"],bid,nid,ref,attempt]).encode()).hexdigest()[:12]
+    interval = {"start":start / film.SR,"end":end / film.SR}
+    receipt = {"node":nid,"ref":ref,"range":interval}
+    if prior := db.one("SELECT request FROM tasks WHERE id=? AND user_id=?",jid,user["id"]):
+        if json.loads(prior["request"]) != receipt:
+            return auth.err(409,"分离区间已变更，请重新提交")
+        return web.json_response({"id":jid,"range":interval})
+    for job in JOBS.values():
+        if job["state"] not in ("running","queued") or job.get("mode") != "audio_separation":
+            continue
+        if (job["meta"]["uid"],job["meta"]["board"],job["meta"]["node"],job["meta"]["ref"]) == (user["id"],bid,nid,ref):
+            if job["meta"]["range"] == interval:
+                return web.json_response({"id":job["id"],"range":interval})
+            return auth.err(409,"此版本已有分离任务，请等待完成或取消后再切换区间")
+    binary = audio_separation.executable()
+    if not binary:
+        return auth.err(503,"部署主机尚未配置人声分离模型")
+    mode = "人声分离"
+    label = clean(source.get("name"))[:50] or mode
+    meta = {"uid":user["id"],"board":bid,"node":nid,"ref":ref,"range":interval,
+            "label":label,"mode_name":mode}
+    job = {"id":jid,"kind":"audio","mode":"audio_separation","state":"queued","created":time.time(),"meta":meta}
+    db.task_start(id=jid,user_id=user["id"],board_id=bid,label=label,capability="audio_separation",
+                  provider_id="local_demucs",provider_kind="local_demucs",model=audio_separation.MODEL,request=receipt)
+    JOBS[jid] = job
+    asyncio.create_task(run_stems(job,binary,path,source["type"],start,end))
+    return web.json_response({"id":jid,"range":interval})
+
+
+async def run_stems(job, binary, path, kind, start, end):
+    async with STEM_LOCK:
+        if job.get("cancel"):
+            return
+        jid = job["id"]
+        job.update(state="running",started=time.time())
+        db.task_update(jid,state="running",started=job["started"])
+        try:
+            def phase(value):
+                job["phase"] = value
+            refs = await audio_separation.separate(COMFY_DIR,binary,path,kind,start,end,phase,lambda:job.get("cancel"))
+            if job.get("cancel"):
+                for ref in refs.values():
+                    tools.ref_path(COMFY_DIR,ref).unlink(missing_ok=True)
+                return
+            duration = (end-start) / film.SR
+            outputs = [{"ref":refs[stem],"url":"/media?ref="+quote(refs[stem],safe=""),
+                        "meta":{"duration":duration},"extra":{"stem":stem}} for stem in audio_separation.STEMS]
+            job.update(state="done",phase="done",outputs=outputs,finished=time.time())
+        except film.Cancelled:
+            job.update(state="error",error="已取消")
+        except Exception as error:
+            if not job.get("cancel"):
+                detail = str(error) if isinstance(error,ValueError) else "无法读取音频或运行分离模型"
+                job.update(state="error",error=detail[:300])
+        finally:
+            log_end(job)
+
+
+@routes.post("/api/audio/cut")
+async def audio_cut(req):
+    payload = await req.json()
+    ref = audio_node_source(req,payload)
+    entries = payload.get("ranges")
+    if not isinstance(entries,list) or not 1 <= len(entries) <= film.CAPTION_LIMIT:
+        raise bad("请至少选择一段要保留的音频")
+    ranges = []
+    previous = 0
+    for entry in entries:
+        start, end = (entry.get("start"),entry.get("end")) if isinstance(entry,dict) else (None,None)
+        if type(start) not in (int,float) or type(end) not in (int,float) or not 0 <= previous <= start < end <= 86400:
+            raise bad("音频区间须按时间顺序排列，且不能重叠")
+        ranges.append((float(start),float(end)))
+        previous = end
+    if ranges[-1][1] - ranges[0][0] > 90.001:
+        raise bad("每次最多剪辑 90 秒的转写区间")
+    key = hashlib.sha256(json.dumps([req["user"]["id"],ref,ranges]).encode()).hexdigest()[:24]
+    target = f"output:h3studio/audio_cut_{key}.wav"
+    try:
+        async with RENDER_LOCK:
+            result = await asyncio.to_thread(film.cut_audio_ranges,COMFY_DIR,ref,ranges,target)
+    except (KeyError,TypeError,ValueError,OSError,OverflowError) as error:
+        raise bad("无法剪辑音频：" + str(error)) from None
+    grant_media(req["user"], target)
+    result["url"] = "/media?ref=" + quote(target,safe="")
+    return web.json_response(result)
+
+
+@routes.post("/api/audio/transcript")
+async def audio_transcript(req):
+    payload = await req.json()
+    audio_node_source(req,payload)
+    configured = providers.routes("asr")
+    if not configured:
+        return auth.err(503, "请在控制台配置语音转写服务")
+    clip = {k:payload[k] for k in ("ref", "in", "out") if k in payload}
+    try:
+        wav, start, end = await asyncio.to_thread(film.transcription_wav, COMFY_DIR, clip, audio_only=True)
+    except (KeyError, TypeError, ValueError, OSError, OverflowError) as error:
+        raise bad("无法读取音频：" + str(error)) from None
+    captions = await timed_transcript(req, configured, wav, start, end)
+    text = "\n".join(cue["text"] for cue in captions) if captions is not None else (
+        await plain_transcript(req, configured, wav, ".wav", "audio/wav"))
+    if text is None:
+        return auth.err(502, "语音转写服务暂时不可用，请稍后重试")
+    return web.json_response({"text":text,"captions":captions or [],"start":start,"end":end})
+
+
+@routes.post("/api/video/captions")
+async def video_captions(req):
+    raw = await req.json()
+    if not isinstance(raw, dict) or not isinstance(raw.get("ref"), str):
+        raise bad("请选择要识别字幕的视频片段")
+    board = board_meta(board_path(raw.get("board")))
+    if not board or not can_edit(req["user"], board):
+        raise web.HTTPForbidden()
+    configured = providers.routes("asr")
+    if not configured:
+        return auth.err(503, "请在控制台配置语音转写服务")
+    clip = {k:raw[k] for k in ("ref", "in", "out", "audio_ref", "audio_start") if k in raw}
+    clip["kind"] = "video"
+    try:
+        wav, start, end = await asyncio.to_thread(film.transcription_wav, COMFY_DIR, clip)
+    except (KeyError, TypeError, ValueError, OSError, OverflowError) as error:
+        raise bad("无法提取视频原声：" + str(error)) from None
+    captions = await timed_transcript(req, configured, wav, start, end)
+    if captions is not None:
+        return web.json_response({"captions":captions})
+    return auth.err(502, "转写服务暂时不可用，或不支持返回字幕时间码")
+
+
+async def timed_transcript(req, configured, wav, start, end):
+    for route in configured:
+        try:
+            segments = await providers.transcribe(req.app["http"], route["provider"], route["model"],
+                                                   wav, ".wav", "audio/wav", timed=True)
+        except providers.ProviderError:
+            continue
+        captions = []
+        for segment in segments[:film.CAPTION_LIMIT]:
+            if not isinstance(segment, dict):
+                continue
+            a, b, caption = (segment.get(key) for key in ("start", "end", "text"))
+            if (type(a) not in (int,float) or type(b) not in (int,float) or not -math.inf < a < b < math.inf or
+                    not isinstance(caption, str) or not caption.strip()):
+                continue
+            captions.append({"start":round(max(start,start+a),3), "end":round(min(end,start+b),3), "text":caption.strip()[:500]})
+        timed = []
+        for cue in sorted(captions, key=lambda item: item["start"]):
+            if timed:
+                cue["start"] = max(cue["start"], timed[-1]["end"])
+            if cue["end"] > cue["start"]:
+                timed.append(cue)
+        if timed or not segments:
+            return timed
+
+
 @routes.post("/api/upload_audio")
 async def upload_audio(req):
     reader = await req.multipart()
     part = await reader.next()
+    if part is None or not part.filename:
+        raise bad("请选择音频文件")
     raw = await part.read(decode=False)
     ext = os.path.splitext(part.filename or "x.mp3")[1].lower() or ".mp3"
     if ext not in (".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".mp4", ".mov", ".webm"):
@@ -1697,6 +3662,118 @@ async def tts_say(req):
     return web.json_response(r)
 
 
+def audio_routes(cap):
+    routes = {}
+    for route in providers.routes(cap):
+        routes.setdefault(route["provider"]["id"],route)
+    for provider in providers.all_providers():
+        if provider["enabled"] and cap in providers.caps_of(provider):
+            routes.setdefault(provider["id"], {"provider":provider,"model":providers.default_model(provider, cap)})
+    result = []
+    for route in routes.values():
+        p = route["provider"]
+        if p["kind"] == "local_kokoro":
+            if cap == "tts" and tts.available():
+                result.append({**route, "voices":tts.VOICES})
+        elif (p["kind"], cap) in remote.ADAPTERS and p.get("secrets", {}).get("api_key"):
+            voices = [{"id":v,"name":name} for v,name in remote.MM_VOICES] if cap == "tts" else []
+            result.append({**route, "voices":voices})
+    return result
+
+
+@routes.post("/api/audio/generate")
+async def generate_audio(req):
+    raw = await req.json()
+    if not isinstance(raw, dict) or raw.get("mode") not in ("tts","music"):
+        raise bad("请选择配音或音乐")
+    cap, bid, nid, attempt = (raw.get(k) for k in ("mode","board","node","request_key"))
+    board = board_meta(board_path(bid))
+    user = req["user"]
+    if not board or not can_edit(user, board):
+        return auth.err(403, "需要画布编辑权限")
+    if nid is not None and not any(n.get("id") == nid and n.get("type") == "audio" for n in board.get("nodes", [])):
+        return auth.err(404, "音频节点已不存在")
+    if not isinstance(attempt, str) or not re.fullmatch(r"[A-Za-z0-9-]{16,80}", attempt):
+        raise bad("音频任务编号格式无效")
+    text = raw.get("prompt")
+    if not isinstance(text, str) or not 1 <= len(text.strip()) <= 3000:
+        raise bad("请填写 1 到 3000 字的配音文案或音乐描述")
+    route = next((r for r in audio_routes(cap) if not raw.get("provider") or r["provider"]["id"] == raw["provider"]), None)
+    if not route:
+        return auth.err(503, "所选音频服务不可用，请检查控制台配置")
+    provider, model = route["provider"], route["model"]
+    if isinstance(req, agent_chat.InternalRequest):
+        if req.get("fixed_audio_model") not in (None, model):
+            return auth.err(409, "原音频模型已变更，请重新配置后再重试")
+        req["generation_model"] = model
+    recipe = {"mode":cap,"prompt":text.strip(),"provider":provider["id"]}
+    if cap == "tts":
+        voice = raw.get("voice") or (route["voices"][0]["id"] if route["voices"] else "")
+        if not any(v["id"] == voice for v in route["voices"]):
+            raise bad("请选择所选服务提供的音色")
+        try:
+            speed = image_editor.number(raw.get("speed"), .5, 2, "语速", 1)
+        except ValueError as exc:
+            raise bad(str(exc)) from None
+        recipe.update(voice=voice,speed=speed)
+    else:
+        lyrics = raw.get("lyrics","")
+        if not isinstance(lyrics, str) or len(lyrics.strip()) > 3000:
+            raise bad("歌词最多 3000 字")
+        recipe["lyrics"] = lyrics.strip()
+    jid = "t" + hashlib.sha256(f"{user['id']}:{bid}:{nid}:{attempt}".encode()).hexdigest()[:12]
+    fingerprint = hashlib.sha256(json.dumps([recipe,model], sort_keys=True).encode()).hexdigest()
+    if prior := db.one("SELECT request FROM tasks WHERE id=? AND user_id=?", jid, user["id"]):
+        if json.loads(prior["request"]).get("fingerprint") != fingerprint:
+            return auth.err(409, "这次提交的音频参数已变更")
+        return web.json_response({"ids":[jid],"recipe":recipe})
+    if nid and any(j["state"] in ("queued","running") and (info:=j.get("meta",{})).get("board") == bid and
+                   info.get("audio_node") == nid for j in JOBS.values()):
+        return auth.err(409, "此音频节点已有任务")
+    mode = "配音" if cap == "tts" else "音乐生成"
+    label = clean(raw.get("label"))[:60] or mode
+    meta = {"uid":user["id"],"board":bid,"audio_node":nid,"label":label,"provider":provider["name"],
+            "model":model,"mode_name":mode,"est":10 if cap=="tts" else 60}
+    job = JOBS[jid] = {"id":jid,"kind":"audio","state":"queued","created":time.time(),"meta":meta}
+    db.task_start(id=jid,user_id=user["id"],board_id=bid,label=label,capability=cap,provider_id=provider["id"],
+                  provider_kind=provider["kind"],model=model,request={"fingerprint":fingerprint,"recipe":recipe})
+    asyncio.create_task(run_audio(req.app, job, provider, model, recipe))
+    return web.json_response({"ids":[jid],"recipe":recipe})
+
+
+async def run_audio(app, job, provider, model, recipe):
+    jid, cap = job["id"], recipe["mode"]
+    async with REMOTE_SEM.setdefault(provider["id"], asyncio.Semaphore(3)):
+        if job.get("cancel"):
+            return
+        job.update(state="running", phase="sampling", started=time.time())
+        db.task_update(jid,state="running",started=job["started"])
+        try:
+            usage = {}
+            if provider["kind"] == "local_kokoro":
+                result = await tts.say(COMFY_DIR,recipe["prompt"],recipe["voice"],recipe["speed"])
+                ref = result["ref"]
+            else:
+                request = ({"text":recipe["prompt"],"voice":recipe["voice"],"speed":recipe["speed"]} if cap=="tts"
+                           else {"prompt":recipe["prompt"],"lyrics":recipe["lyrics"]})
+                result = await remote.run(app["http"],COMFY_DIR,provider,model,cap,request)
+                ref = result["files"][0]["ref"]
+                usage = {key:result[key] for key in ("cost","units") if result.get(key) is not None}
+            if job.get("cancel"):
+                return
+            path = tools.ref_path(COMFY_DIR,ref)
+            duration = await asyncio.to_thread(film.audio_duration,path)
+            if path.suffix.lower() not in tools.AUDIO_EXT or not math.isfinite(duration):
+                raise ValueError("服务未返回可播放音频")
+            await complete_outputs(job,[{"ref":ref,"url":"/media?ref="+quote(ref,safe=""),"meta":{"duration":duration},
+                                        "extra":{"audio_recipe":recipe}}])
+            db.task_update(jid,**usage)
+        except Exception as error:
+            if not job.get("cancel"):
+                job.update(state="error",error=f"音频生成失败：{error}"[:500])
+        log_end(job)
+
+
 @routes.get("/api/queue")
 async def queue(req):
     """Everything this canvas has queued or running, in order, with the time until each is done."""
@@ -1732,8 +3809,14 @@ async def queue(req):
             rt += remaining(j)
             out.append({"id": i, "kind": "render", "state": j["state"], "label": (j.get("meta") or {}).get("label") or "成片",
                         "eta": round(rt), "value": j.get("value"), "max": j.get("max")})
+    audio_eta = 0
+    for i,j in JOBS.items():
+        if j.get("kind")=="audio" and j["state"] in ("queued","running"):
+            eta = round(remaining(j))
+            audio_eta = max(audio_eta,eta)
+            out.append({"id":i,"kind":"audio","state":j["state"],"label":j["meta"]["label"],"eta":eta})
     foreign = sum(1 for i in order if i not in JOBS)
-    return web.json_response({"jobs": out, "total": round(max(t, rt)), "foreign": foreign})
+    return web.json_response({"jobs": out, "total": round(max(t, rt, audio_eta)), "foreign": foreign})
 
 
 LLM_PRESETS = {
@@ -1825,6 +3908,8 @@ async def sample_open(req):
     b = json.loads(src.read_text())
     b["name"] = (b.get("name") or "示例") + "（副本）"
     b["owner"] = req["user"]["id"]; b["shared"] = False
+    b.pop("collaborators", None)
+    b.pop("access", None)
     for n in b.get("nodes", []):
         n["job"] = None
     bid = "b" + uuid.uuid4().hex[:10]
@@ -2016,7 +4101,7 @@ _following = False
 
 
 def job_from_log(row):
-    kind = "image" if row.get("capability") == "image" else "video"
+    kind = {"tts":"audio","music":"audio","audio_separation":"audio","image":"image"}.get(row.get("capability"),"video")
     return {"id":row["id"], "kind":kind, "state":row["state"], "created":row.get("created") or time.time(),
             "meta":{"label":row.get("label"), "uid":row.get("user_id"), "board":row.get("board_id"),
                     "mode_name":(row.get("model") or "").replace("MiniMax-H3 ", "")}}
@@ -2031,15 +4116,27 @@ def restore_logged_job(app, row):
         except (ValueError, TypeError):
             refs = []
         outputs = []
-        for ref in refs if isinstance(refs, list) else []:
+        for index, ref in enumerate(refs if isinstance(refs,list) else []):
             if not isinstance(ref, str):
                 continue
             try:
                 path = tools.ref_path(COMFY_DIR, ref)
             except ValueError:
                 continue
+            stem = None
+            if row.get("capability") == "audio_separation":
+                stems = tuple(audio_separation.STEMS)
+                if index >= len(stems) or not path.is_file():
+                    continue
+                stem = stems[index]
             outputs.append({"ref":ref, "url":"/media?ref=" + quote(ref, safe=""),
                             "meta":media_info(path, job["kind"])})
+            if stem:
+                outputs[-1]["extra"] = {"stem":stem}
+            if draft := db.one("SELECT expires FROM video_drafts WHERE ref=? AND job_id=?", ref, jid):
+                outputs[-1].setdefault("extra",{})["draft_expires"] = draft["expires"]
+            if Path(ref).name.startswith("ai_") and db.one("SELECT 1 FROM task_watermarks WHERE job_id=?",jid):
+                outputs[-1].setdefault("extra",{})["ai_watermark"] = True
         job.update(error=row.get("error"), outputs=outputs, _logged=True)
         JOBS[jid] = job
         return job
@@ -2129,6 +4226,205 @@ def plain_prompt(p: dict) -> str:
     return "。".join(parts)
 
 
+def reference_routes(*, require_motion=False, segment_edit=False):
+    check = motion_reference.supports if require_motion or segment_edit else motion_reference.supports_audio
+    def supports(provider, model):
+        return check(provider,model) and (not segment_edit or "seedance-2-5" in model)
+    configured = {}
+    for route in providers.routes("video"):
+        # Prefer the first compatible route for a service with several configured models.
+        if supports(route["provider"], route["model"]):
+            configured.setdefault(route["provider"]["id"], route)
+    for provider in providers.all_providers():
+        model = providers.default_model(provider, "video")
+        if supports(provider, model):
+            configured.setdefault(provider["id"], {"provider":provider, "model":model})
+    return list(configured.values())
+
+
+def previs_routes():
+    return reference_routes(require_motion=True)
+
+
+def resolve_camera_plan(raw):
+    if "camera_plan" not in raw:
+        return None
+    if raw.get("segment_edit") is not True or not raw.get("video_refs") or raw.get("extension"):
+        raise bad("镜头重拍需要指定原视频片段")
+    try:
+        return camera_plan.validate(raw["camera_plan"])
+    except ValueError as error:
+        raise bad(str(error)) from None
+
+
+def resolve_object_edit(raw):
+    if "object_edit" not in raw:
+        return None
+    if raw.get("segment_edit") is not True or not raw.get("video_refs") or raw.get("camera_plan") or raw.get("extension"):
+        raise bad("物体编辑需要指定原视频片段")
+    try:
+        return object_edit.validate(raw["object_edit"])
+    except ValueError as error:
+        raise bad(str(error)) from None
+
+
+def reference_prompt(raw):
+    retake = resolve_camera_plan(raw)
+    object_plan = resolve_object_edit(raw)
+    prompt = plain_prompt(raw)
+    if not prompt and not retake and not object_plan:
+        raise bad("请描述正式视频的内容或画面风格")
+    prompt = re.sub(r"@图(\d+)", r"@图片\1", prompt)
+    prompt = re.sub(r"@音(\d+)", r"@音频\1", prompt)
+    extension = raw.get("extension")
+    edit = raw.get("segment_edit")
+    if raw.get("previs_guide"):
+        n = 2 if extension or edit else 1
+        guidance = "人物走位和空间关系，机位服从重拍方案。" if retake else "镜头运动、人物走位和空间构图。"
+        prompt = (f"参考 @视频{n} 的{guidance}"
+                  "按描述和参考图生成正式画面，使用正式场景的材质、光线和色彩。\n" + prompt)
+    if extension in ("before","after"):
+        direction = "向前" if extension=="before" else "向后"
+        boundary = "开头之前" if extension=="before" else "结尾之后"
+        prompt = (f"{direction}延长 @视频1。只生成接在原视频{boundary}的新片段。"
+                  "让人物外观、场景、光线和动作在接点自然衔接。\n" + prompt)
+    if object_plan:
+        prompt = (object_edit.instructions(object_plan,len(raw.get("images") or [])+1)+"\n"+prompt).strip()
+    elif retake:
+        direction = camera_plan.instructions(retake)
+        prompt = ("按下列机位方案重拍 @视频1。保留人物外观、原场景、动作内容和发生顺序。"
+                  f"保持原片段的时长和画幅。{direction}\n{prompt}").strip()
+    elif edit:
+        prompt = ("编辑 @视频1 中指定的内容，保留其他人物、场景和镜头节奏。保持原片段的时长和画幅。\n" + prompt)
+    return prompt
+
+
+async def resolve_audio_refs(user, raw, model):
+    limit, max_seconds = motion_reference.av_limits(model)
+    entries = raw["audio_refs"]
+    if not isinstance(entries, list) or len(entries) > limit:
+        raise bad(f"此服务最多可采用 {limit} 段参考音频")
+    board = board_meta(board_path(raw.get("board")))
+    if not board or not can_edit(user, board):
+        return_error = json.dumps({"error":"需要画布编辑权限才能提交参考音频"}, ensure_ascii=False)
+        raise web.HTTPForbidden(text=return_error, content_type="application/json")
+    nodes = {n["id"]:n for n in board.get("nodes", []) if n.get("type") == "audio"}
+    paths = []
+    for entry in entries:
+        ref, nid = (entry.get("ref"), entry.get("node_id")) if isinstance(entry, dict) else (None, None)
+        if (not isinstance(ref, str) or not isinstance(nid, str) or
+                not any(v.get("ref") == ref for v in nodes.get(nid, {}).get("versions", []))):
+            raise bad("音频参考版本已移除或尚未保存，请重新选择")
+        try:
+            path = tools.ref_path(COMFY_DIR, ref)
+        except ValueError:
+            raise bad("音频素材格式无效") from None
+        if path.suffix.lower() not in AUDIO_MEDIA_EXT:
+            raise bad("请选择音频文件作为参考")
+        require_media(user, {ref})
+        paths.append(path)
+    result = []
+    for path in paths:
+        try:
+            seconds = await asyncio.to_thread(film.audio_duration, path)
+        except (OSError, ValueError):
+            raise bad("音频文件无法读取") from None
+        if not 2 <= seconds <= max_seconds + .05:
+            raise bad(f"每段参考音频须为 2 到 {max_seconds} 秒")
+        result.append((path, min(seconds, max_seconds)))
+    if sum(seconds for _, seconds in result) > max_seconds + .05:
+        raise bad(f"参考音频总时长不能超过 {max_seconds} 秒")
+    if max_seconds == 15 and not raw.get("images") and not raw.get("previs_guide") and not raw.get("video_refs"):
+        raise bad("此服务需要同时连入参考图或参考视频")
+    return result
+
+
+async def resolve_previs_guide(user, raw):
+    guide = raw["previs_guide"]
+    if not isinstance(guide, dict):
+        raise bad("白模动作参考格式无效")
+    ref, nid = guide.get("ref"), guide.get("node_id")
+    if (not isinstance(ref, str) or not re.fullmatch(r"output:h3studio/previs_\d{8}_\d{6}_[a-f0-9]{5}\.mp4", ref)
+            or not isinstance(nid, str)):
+        raise bad("请选择已渲染的白模预演版本")
+    board = board_meta(board_path(raw.get("board")))
+    if not board or not can_edit(user, board):
+        raise web.HTTPForbidden(text=json.dumps({"error":"需要画布编辑权限才能提交白模动作参考"}, ensure_ascii=False),
+                                content_type="application/json")
+    node = next((n for n in board.get("nodes", []) if n.get("id") == nid and n.get("type") == "video"), None)
+    if not node or not any(v.get("source") == "previs" and v.get("ref") == ref for v in node.get("versions", [])):
+        raise bad("白模预演版本已移除或尚未保存，请重新选择")
+    require_media(user, {ref})
+    path = tools.ref_path(COMFY_DIR, ref)
+    try:
+        w, h, seconds, _ = await asyncio.to_thread(film.probe, path, display=False)
+        ticks = round(seconds * film.FPS)
+    except (OSError, ValueError, IndexError):
+        raise bad("白模预演文件无法读取，请重新渲染") from None
+    if not motion_reference.eligible(w, h, ticks) or ticks > previs.MAX_SECONDS * film.FPS:
+        raise bad("白模预演时长或画幅超出动作参考范围")
+    return {"path":path, "ticks":ticks, "source":"previs"}
+
+
+async def resolve_video_refs(user, raw, model, motion):
+    limit, max_seconds = motion_reference.av_limits(model)
+    entries = raw["video_refs"]
+    if not isinstance(entries, list) or len(entries) + bool(motion) > limit:
+        raise bad(f"此服务最多可采用 {limit} 段参考视频（包含白模）")
+    board = board_meta(board_path(raw.get("board")))
+    if not board or not can_edit(user, board):
+        raise web.HTTPForbidden(text=json.dumps({"error":"需要画布编辑权限才能提交参考视频"}, ensure_ascii=False),
+                                content_type="application/json")
+    nodes = {n["id"]:n for n in board.get("nodes", []) if n.get("type") == "video"}
+    clips = []
+    for index, entry in enumerate(entries):
+        ref, nid = (entry.get("ref"), entry.get("node_id")) if isinstance(entry, dict) else (None, None)
+        if (not isinstance(ref, str) or not isinstance(nid, str) or
+                not any(v.get("ref") == ref for v in nodes.get(nid, {}).get("versions", []))):
+            raise bad("参考视频版本已移除或尚未保存，请重新选择")
+        require_media(user, {ref})
+        try:
+            path = tools.ref_path(COMFY_DIR, ref)
+            if path.suffix.lower() not in tools.VIDEO_EXT:
+                raise ValueError()
+            w, h, seconds, _ = await asyncio.to_thread(film.probe, path)
+            if not w or not h or not .4 <= w / h <= 2.5:
+                raise ValueError()
+        except (OSError, ValueError, IndexError):
+            raise bad("参考视频无法读取，或宽高比超出 0.4 到 2.5") from None
+        extension = raw.get("extension") if index==0 else None
+        edit = raw.get("segment_edit") and index==0
+        default_start = max(0,seconds-4) if extension=="after" else 0
+        try:
+            start = image_editor.number(entry.get("start"), 0, seconds, "视频参考入点", default_start)
+            default_end = seconds if extension=="after" else min(seconds,start+(4 if extension=="before" else max_seconds))
+            end = min(seconds, image_editor.number(entry.get("end"), start, seconds + .025, "视频参考出点",
+                                                   default_end))
+        except ValueError as exc:
+            raise bad(str(exc)) from None
+        if (extension=="before" and start > .025) or (extension=="after" and seconds-end > .025):
+            raise bad("续拍参考须包含原片接点，请保留片头或片尾")
+        if extension=="before":
+            start=0
+        elif extension=="after":
+            end=seconds
+        if edit:
+            start=round(start*film.FPS)/film.FPS
+            end=min(seconds,round(end*film.FPS)/film.FPS)
+        minimum = 4 if edit else 2
+        ticks = round((end-start) * film.FPS)
+        if not film.FPS * minimum <= ticks <= max_seconds * film.FPS:
+            raise bad(f"待编辑片段须为 {minimum} 到 {max_seconds} 秒" if edit else f"每段参考视频须为 2 到 {max_seconds} 秒")
+        clips.append({"path":path, "start":start, "ticks":ticks, "ratio":w / h, "source_seconds":seconds})
+    if sum(clip["ticks"] for clip in clips) + (motion["ticks"] if motion else 0) > max_seconds * film.FPS:
+        raise bad(f"参考视频总时长不能超过 {max_seconds} 秒（包含白模）")
+    for entry, clip in zip(entries, clips):
+        entry.update(start=clip["start"], end=min(clip["source_seconds"],round(clip["start"]+clip["ticks"]/film.FPS, 5)))
+    if raw.get("segment_edit"):
+        entries[0]["source_seconds"] = clips[0]["source_seconds"]
+    return clips
+
+
 def media_info(path: Path, kind: str) -> dict:
     try:
         if kind == "video":
@@ -2138,16 +4434,24 @@ def media_info(path: Path, kind: str) -> dict:
             from PIL import Image
             with Image.open(path) as im:
                 return {"width": im.width, "height": im.height}
+        if kind == "audio":
+            return {"duration":film.audio_duration(path)}
     except Exception:
         pass
     return {}
 
 
-async def generate_remote(req, raw: dict, route: dict, cap: str):
+async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None, audio_refs=(), video_refs=()):
     """Run one image / video request on a third-party provider; tracked in JOBS like a local job (id "x…")."""
     p, model = route["provider"], route["model"]
     u = req["user"]
-    prompt = plain_prompt(raw)
+    draft = raw.get("draft")
+    if draft and (draft is not True or cap != "video" or not remote.supports_video_draft(p,model)):
+        raise bad("请选择支持原生样片的 Seedance 2.5 服务")
+    from_previs = motion and motion.get("source") == "previs"
+    object_plan = raw.get("object_edit")
+    full_reference = from_previs or audio_refs or video_refs
+    prompt = reference_prompt(raw) if full_reference else plain_prompt(raw)
     if not prompt:
         raise bad("提示词不能为空")
     imgs = []
@@ -2158,43 +4462,205 @@ async def generate_remote(req, raw: dict, route: dict, cap: str):
             pass
     if cap == "image":
         nreq = {"prompt": re.sub(r"@图(\d+)", r"图\1", prompt), "images": [x["path"] for x in imgs], "ar": float(raw.get("ar") or 1), "n": int(raw.get("count") or 1)}
+    elif full_reference:
+        limit = motion_reference.image_limit(model)
+        extra_images = (1 + bool(object_plan.get("replacement_ref"))) if object_plan else 0
+        if (len(imgs) + extra_images > limit or len(imgs) != len(raw.get("images") or []) or
+                any(x["path"].suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp") or not x["path"].is_file() for x in imgs)):
+            raise bad(f"此服务最多支持 {limit} 张有效参考图")
+        require_media(u, {x["ref"] for x in imgs})
+        try:
+            limit = 14 if from_previs and not raw.get("extension") else 30 if "2-5" in model else 15
+            seconds = max(4, round(image_editor.number(raw.get("duration"), 2, limit, "成片时长", 5)))
+            ratio = image_editor.number(raw.get("ar"), .4, 2.5, "画面宽高比", 16 / 9)
+        except ValueError as exc:
+            raise bad(str(exc))
+        nreq = {"prompt":prompt, "first":None, "last":None, "refs":[x["path"] for x in imgs],
+                "duration":seconds, "ar":ratio,
+                "quality":raw.get("quality") or "hd", "audio":True, "audio_refs":audio_refs}
+        if raw.get("extension"):
+            nreq["extension"] = raw["extension"]
+        if raw.get("segment_edit"):
+            nreq["segment_edit"] = True
+        if object_plan:
+            clip = video_refs[0]
+            if not clip["start"] <= object_plan["at"] < min(clip["source_seconds"], clip["start"] + clip["ticks"]/film.FPS):
+                raise bad("物体标注帧须位于要修改的区间内")
+            nreq["object_edit"] = object_plan
+            if ref := object_plan.get("replacement_ref"):
+                require_media(u, {ref})
+                try:
+                    path = tools.ref_path(COMFY_DIR, ref)
+                    if path.suffix.lower() not in (".png",".jpg",".jpeg",".webp") or not path.is_file():
+                        raise ValueError()
+                except ValueError:
+                    raise bad("请选择可读取的替换参考图") from None
+                nreq["replacement_path"] = path
     else:
         frames = [x for x in imgs if x.get("role") != "subject"]
         nreq = {"prompt": prompt, "first": frames[0]["path"] if frames else None, "last": frames[-1]["path"] if len(frames) > 1 else None,
                 "refs": [x["path"] for x in imgs if x.get("role") == "subject"], "duration": float(raw.get("duration") or 5),
                 "ar": float(raw.get("ar") or 16 / 9), "quality": raw.get("quality") or "hd", "audio": True}
+    if motion or video_refs:
+        if cap != "video" or not motion_reference.supports(p, model) or nreq["first"] is not None:
+            raise bad("此服务或参考素材不能用于动作参考")
+        if motion and not from_previs:
+            if not nreq["refs"]:
+                raise bad("深度参考需要已采用的首帧图")
+            nreq.update(audio=False)
+    if draft:
+        nreq["draft"] = True
     cls = f"remote|{p['kind']}|{cap}|{model}"
     count = 1 if cap == "image" else max(1, min(3, int(raw.get("count") or 1)))
     ids = []
     for _ in range(count):
         jid = "x" + uuid.uuid4().hex[:12]
         meta = {"label": clean(raw.get("label"))[:60] or p["name"], "cls": cls, "units": 1, "est": estimate(cls, 1, 40 if cap == "image" else 150),
-                "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "prompt": prompt}
+                "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "model":model, "prompt": prompt}
+        if raw.get("segment_edit"):
+            operation = object_edit.ACTIONS[object_plan["action"]] if object_plan else "镜头重拍" if raw.get("camera_plan") else "片段修改"
+            meta["mode_name"]=operation+" · "+meta["mode_name"]
+        if draft:
+            meta["mode_name"]="480p 样片 · "+meta["mode_name"]
         j = JOBS[jid] = {"id": jid, "kind": cap, "state": "queued", "created": time.time(), "meta": meta}
         attach_image_edit(j, raw)
+        request_data = {"prompt":prompt[:2000]}
+        if from_previs:
+            request_data["previs_ref"] = raw["previs_guide"]["ref"]
+        if audio_refs:
+            request_data["audio_refs"] = [entry["ref"] for entry in raw["audio_refs"]]
+        if video_refs:
+            request_data["video_refs"] = [{k:entry[k] for k in ("ref","start","end") if k in entry} for entry in raw["video_refs"]]
+        if raw.get("extension"):
+            request_data["extension"] = raw["extension"]
+        if raw.get("segment_edit"):
+            request_data["segment_edit"] = True
+        if raw.get("camera_plan"):
+            request_data["camera_plan"] = raw["camera_plan"]
+        if object_plan:
+            request_data["object_edit"] = object_plan
+        if draft:
+            request_data["draft"] = True
         db.task_start(id=jid, user_id=u["id"], board_id=clean(raw.get("board")), label=meta["label"], capability=cap, provider_id=p["id"],
-                      provider_kind=p["kind"], model=model, state="queued", request={"prompt": prompt[:2000]})
-        asyncio.create_task(run_remote(req.app, j, p, model, cap, nreq))
+                      provider_kind=p["kind"], model=model, state="queued", request=request_data)
+        asyncio.create_task(run_remote(req.app, j, p, model, cap, nreq, motion=motion, video_refs=video_refs))
         ids.append(jid)
     return web.json_response({"ids": ids, "meta": JOBS[ids[0]]["meta"]})
+
+
+def video_draft_source(ref):
+    return db.one("SELECT d.provider_task,d.expires,t.provider_id,t.model FROM video_drafts d "
+                  "JOIN tasks t ON t.id=d.job_id WHERE d.ref=? AND t.state='done'", ref)
+
+
+@routes.post("/api/video/draft/finalize")
+async def finalize_video_draft(req):
+    raw = await req.json()
+    if not isinstance(raw, dict):
+        raise bad("请选择样片和定稿分辨率")
+    bid, nid, ref, resolution, key = (raw.get(field) for field in ("board","node","ref","resolution","request_key"))
+    if (not all(isinstance(value, str) for value in (bid,nid,ref,key)) or
+            not _ID.fullmatch(nid) or not re.fullmatch(r"[A-Za-z0-9-]{16,80}", key) or resolution not in ("1080p","4k")):
+        raise bad("请选择样片和定稿分辨率")
+    user = req["user"]
+    board = board_meta(board_path(bid))
+    if not board or not can_edit(user, board):
+        raise web.HTTPForbidden()
+    node = next((n for n in board["nodes"] if n["id"] == nid and n["type"] == "video"), None)
+    if not node or not any(v.get("ref") == ref for v in node.get("versions", [])):
+        raise bad("画布里的样片版本已移除")
+    require_media(user, {ref})
+    source = video_draft_source(ref)
+    if not source:
+        raise bad("这个视频版本没有可用的样片任务")
+
+    jid = "r" + hashlib.sha256(f"draft-final:{user['id']}:{key}".encode()).hexdigest()[:24]
+    fingerprint = {"board":bid,"node":nid,"ref":ref,"resolution":resolution}
+    if existing := db.one("SELECT request FROM tasks WHERE id=?", jid):
+        if json.loads(existing["request"] or "{}") != fingerprint:
+            raise bad("该定稿请求已经用于另一项任务")
+        return web.json_response({"ids":[jid],"meta":JOBS.get(jid, {}).get("meta", {})})
+    if source["expires"] <= time.time():
+        raise bad("样片已过定稿有效期，请重新生成样片")
+    provider = providers.get(source["provider_id"])
+    if not provider or not provider["enabled"] or not remote.supports_video_draft(provider,source["model"]):
+        raise bad("原样片的 Seedance 服务不可用")
+    model = source["model"]
+    label = (node["name"] + " · " + resolution.upper() + " 定稿")[:60]
+    cls = f"remote|ark|video|{model}|final|{resolution}"
+    meta = {"label":label,"cls":cls,"units":1,"est":estimate(cls,1,150),"board":bid,"uid":user["id"],
+            "mode_name":resolution.upper()+" 定稿","provider":provider["name"],"model":model}
+    db.task_start(id=jid,user_id=user["id"],board_id=bid,label=label,capability="video",provider_id=provider["id"],
+                  provider_kind="ark",model=model,request=fingerprint)
+    job = JOBS[jid] = {"id":jid,"kind":"video","state":"queued","created":time.time(),"meta":meta}
+    asyncio.create_task(run_remote(req.app,job,provider,model,"video",
+                                  {"draft_task":source["provider_task"],"resolution":resolution}))
+    return web.json_response({"ids":[jid],"meta":meta})
 
 
 REMOTE_SEM: dict = {}
 
 
-async def run_remote(app, j: dict, p: dict, model: str, cap: str, nreq: dict):
+async def run_with_motion(app, j, p, model, nreq, motion, video_refs=()):
+    origin = motion_reference.public_origin(p["config"].get("motion_origin"))
+    with tempfile.TemporaryDirectory(prefix="oneshot-motion-") as temp, ExitStack() as leases:
+        j["phase"] = "encoding"
+        cancelled = lambda: j.get("cancel")
+        paths = []
+        if motion:
+            path = Path(temp) / "guide.mp4"
+            await asyncio.to_thread(motion_reference.prepare, motion["path"], path, motion["ticks"], cancelled)
+            paths.append(path)
+        for i, clip in enumerate(video_refs):
+            if cancelled():
+                return None
+            path = Path(temp) / f"reference-{i}.mp4"
+            await asyncio.to_thread(motion_reference.prepare_clip, clip["path"], path, clip["start"], clip["ticks"], clip["ratio"], cancelled)
+            paths.append(path)
+        if cancelled():
+            return None
+        j["phase"] = "sampling"
+        urls = [leases.enter_context(motion_reference.publish(origin, path, lambda:j["state"] == "running" and not cancelled())) for path in paths]
+        request = {**nreq, "motion_url":urls[0] if motion else None, "video_urls":urls[bool(motion):]}
+        try:
+            if plan := nreq.get("object_edit"):
+                guide = Path(temp) / "selection.png"
+                await asyncio.to_thread(object_edit.annotate, video_refs[0]["path"], guide, plan)
+                request["refs"] = [*nreq["refs"],guide]
+                if replacement := nreq.get("replacement_path"):
+                    request["refs"].append(replacement)
+                if cancelled():
+                    return None
+            return await remote.run(app["http"], COMFY_DIR, p, model, "video", request)
+        except Exception as exc:
+            message = str(exc)
+            for url in urls:
+                message = message.replace(url, "视频参考链接").replace(url.rsplit("/", 1)[-1], "已隐藏")
+            raise providers.ProviderError(message) from None
+
+
+async def run_remote(app, j: dict, p: dict, model: str, cap: str, nreq: dict, *, motion=None, video_refs=()):
     sem = REMOTE_SEM.setdefault(p["id"], asyncio.Semaphore(3))       # be polite to each provider
     async with sem:
         if j.get("cancel"):
             return
         j["state"] = "running"; j["started"] = time.time()
         try:
-            r = await remote.run(app["http"], COMFY_DIR, p, model, cap, nreq)
+            r = await (run_with_motion(app, j, p, model, nreq, motion, video_refs) if motion or video_refs else
+                       remote.run(app["http"], COMFY_DIR, p, model, cap, nreq))
+            if r is None or j.get("cancel"):
+                return
             outs = []
             for f in r["files"]:
                 outs.append({"ref": f["ref"], "url": "/media?ref=" + quote(f["ref"], safe=""), "meta": media_info(f["path"], f["kind"])})
             if j.get("cancel"):
                 return
+            if nreq.get("draft"):
+                expires = r["draft_created"] + 14 * 86400
+                for output in outs:
+                    db.run("INSERT INTO video_drafts VALUES (?,?,?,?)",
+                           output["ref"], j["id"], r["draft_task"], expires)
+                    output["extra"] = {"draft_expires":expires}
             await complete_outputs(j, outs)
             db.task_update(j["id"], cost=r.get("cost"), units=r.get("units"))
         except Exception as e:
@@ -2235,10 +4701,22 @@ async def capabilities(req):
         lst = []
         for pr in providers.all_providers():
             if pr["enabled"] and cap in providers.caps_of(pr):
+                model = providers.default_model(pr,cap)
                 lst.append({"id": pr["id"], "name": pr["name"], "kind": pr["kind"], "local": pr["kind"].startswith("local_"),
-                            "model": providers.default_model(pr, cap), "default": pr["id"] == default})
+                            "model": model,"default":pr["id"] == default,
+                            **({"draft":remote.supports_video_draft(pr,model)} if cap=="video" else {})})
         lst.sort(key=lambda x: (not x["default"], not x["local"]))
         out[cap] = lst
+        if cap=="video":
+            out["default_video_draft"] = bool(rts and remote.supports_video_draft(rts[0]["provider"],rts[0]["model"]))
+    out["previs"] = [{"id":r["provider"]["id"], "name":r["provider"]["name"], "model":r["model"],"draft":remote.supports_video_draft(r["provider"],r["model"])}
+                     for r in previs_routes()]
+    out["audio_reference"] = [{"id":r["provider"]["id"], "name":r["provider"]["name"], "model":r["model"],"draft":remote.supports_video_draft(r["provider"],r["model"])}
+                              for r in reference_routes()]
+    out["segment_edit"] = [{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"draft":remote.supports_video_draft(r["provider"],r["model"])}
+                           for r in reference_routes(segment_edit=True)]
+    out["audio_generation"] = {cap:[{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"voices":r["voices"]}
+                                   for r in audio_routes(cap)] for cap in ("tts","music")}
     return web.json_response(out)
 
 
@@ -2423,14 +4901,20 @@ async def on_stop(app):
 def main():
     app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[auth.middleware, media_input_guard])
     agent_chat.install(app, sys.modules[__name__])
+    canvas_live.install(app, sys.modules[__name__])
     app.add_routes(routes)
     app.add_routes(auth.routes)
     app.add_routes(console_routes)
     app.add_routes(local_admin.routes)
+    creative_events.install(app,ROOT,COMFY_DIR)
+    mcp_bridge.install(app,ROOT)
+    shared_canvas_items.install(app,sys.modules[__name__])
+    connector_oauth.install(app)
     app.router.add_static("/static", ROOT / "static")
     app.on_startup.insert(0, on_start)
     app.on_cleanup.append(on_stop)
-    web.run_app(app, host="0.0.0.0", port=PORT, print=lambda *_: print(f"OneShot: http://0.0.0.0:{PORT}", flush=True))
+    web.run_app(app, host="0.0.0.0", port=PORT, access_log_class=motion_reference.PublicAccessLogger,
+                print=lambda *_: print(f"OneShot: http://0.0.0.0:{PORT}", flush=True))
 
 
 if __name__ == "__main__":

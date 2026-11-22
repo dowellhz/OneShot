@@ -15,6 +15,7 @@ from rewriter import LLM, image_part, strip_fences
 FPS = 24
 SR = 44100
 VIDEO_EXT = {".mp4", ".mov", ".webm", ".m4v", ".mkv"}
+AUDIO_EXT = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 
 
 def ref_path(comfy_dir: Path, ref: str) -> Path:
@@ -138,6 +139,33 @@ async def describe(llm: LLM, comfy_dir: Path, images: list, mode: str) -> dict:
 
 # ------------------------------------------------------------------ 拉片
 
+def shot_cut_indices(times, diffs, max_shots, minimum=.8):
+    cuts = [0]
+    for i in range(1, len(times)):
+        around = max(diffs[i - 1], diffs[i + 1] if i + 1 < len(diffs) else 0.0)
+        if diffs[i] > 30 and diffs[i] > 2.5 * around and times[i] - times[cuts[-1]] >= minimum:
+            cuts.append(i)
+    while len(cuts) > max_shots:
+        cuts.remove(min(cuts[1:], key=diffs.__getitem__))
+    return cuts
+
+
+def video_split_points(path, start, end, fps, max_shots):
+    """Find isolated hard cuts on the editable frame grid without saving stills."""
+    import numpy as np
+    from contextlib import closing
+    from render import video_ticks
+
+    diffs, previous = [], None
+    with closing(video_ticks(path, start / fps, end - start, relative_time=True, seek=True)) as frames:
+        for frame in frames:
+            gray = frame.reformat(width=48, height=28, format="gray").to_ndarray().astype(np.float32)
+            diffs.append(float(np.mean(np.abs(gray - previous))) if previous is not None else 0.0)
+            previous = gray
+    times = [index / fps for index in range(len(diffs))]
+    return [start + index for index in shot_cut_indices(times, diffs, max_shots)[1:] if index + start < end - 1]
+
+
 def find_shots(comfy_dir: Path, ref: str, max_shots: int = 12, *, relative_time=False) -> dict:
     """Cut detection on 4 fps samples; each shot's first frame is saved as an input image."""
     import av
@@ -161,15 +189,7 @@ def find_shots(comfy_dir: Path, ref: str, max_shots: int = 12, *, relative_time=
     if not samples:
         raise RuntimeError("读不出视频画面")
     diffs = [0.0] + [float(np.mean(np.abs(samples[i][1] - samples[i - 1][1]))) for i in range(1, len(samples))]
-    # a cut is an isolated spike; fast motion inside a shot gives runs of high values instead
-    cuts = [0]
-    for i in range(1, len(samples)):
-        around = max(diffs[i - 1] if i > 1 else 0.0, diffs[i + 1] if i + 1 < len(diffs) else 0.0)
-        if diffs[i] > 30 and diffs[i] > 2.5 * around and samples[i][0] - samples[cuts[-1]][0] >= 0.8:
-            cuts.append(i)
-    while len(cuts) > max_shots:       # merge the weakest cut
-        k = min(range(1, len(cuts)), key=lambda j: diffs[cuts[j]])
-        cuts.pop(k)
+    cuts = shot_cut_indices([sample[0] for sample in samples], diffs, max_shots)
     shots = []
     for j, i in enumerate(cuts):
         start = samples[i][0]

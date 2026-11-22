@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>连接外部助手 · OneShot</title>
+  <link rel="stylesheet" href="/static/showcase.css?v=2">
+  <link rel="stylesheet" href="/static/connect-agents.css?v=1">
+  <script defer src="/static/connect-agents.js?v=2"></script>
+</head>
+<body>
+  <header class="showcase-top"><a href="/" id="connectorBack">返回画布</a></header>
+  <main class="connector">
+    <h1>连接外部助手</h1>
+    <section class="connector-panel">
+      <h2>MCP 连接</h2>
+      <p id="connectorOAuth" hidden>支持浏览器授权的客户端只需填入服务地址，随后在 OneShot 登录并选择「允许访问」。</p>
+      <p>在支持自定义请求头的 MCP 客户端选择 Streamable HTTP，填入服务地址，并用连接令牌设置 Authorization 请求头。</p>
+      <div class="connector-copy">
+        <input id="connectorUrl" aria-label="MCP 服务地址" readonly>
+        <button id="connectorCopyUrl" type="button">复制地址</button>
+      </div>
+      <label for="connectorHandoff">交给助手的画布说明</label>
+      <textarea id="connectorHandoff" rows="4" readonly></textarea>
+      <button id="connectorCopyHandoff" type="button">复制画布说明</button>
+    </section>
+    <section class="connector-panel">
+      <h2>连接令牌</h2>
+      <p>连接可预览你拥有的素材，也能把尺寸适配后的图片写成新版本。图片与视频生成需要你在画布内确认。令牌 30 天有效，可随时撤销。</p>
+      <form id="connectorCreate">
+        <label>连接名称<input name="label" required maxlength="60" placeholder="例如：制作助手"></label>
+        <button>生成令牌</button>
+      </form>
+      <section id="connectorSecret" hidden>
+        <p>请现在复制请求头，关闭本页后无法再次查看。</p>
+        <div class="connector-copy">
+          <input id="connectorToken" aria-label="Authorization 请求头" readonly autocomplete="off" spellcheck="false">
+          <button id="connectorCopyToken" type="button">复制请求头</button>
+        </div>
+      </section>
+      <ul id="connectorList"></ul>
+    </section>
+    <p id="connectorStatus" role="status"></p>
+  </main>
+</body>
+</html>

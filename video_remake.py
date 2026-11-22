@@ -14,6 +14,8 @@ from PIL import Image, ImageChops
 
 import db
 import image_editor
+import motion_reference
+import video_depth
 import video_matte
 from creative_memory import IMAGE_EXT, character_notes, fail
 from tools import VIDEO_EXT
@@ -109,6 +111,11 @@ def update_jobs(host, owner, session):
                 sync_job(host, owner, preview, IMAGE_EXT)
         for video in shot.get("videos", []):
             sync_job(host, owner, video, VIDEO_EXT)
+        if depth := shot.get("depth"):
+            sync_job(host, owner, depth, VIDEO_EXT)
+            if depth["state"] == "done" and not host.tools.ref_path(host.COMFY_DIR, depth["ref"]).is_file():
+                depth.update(state="error", error="深度参考文件已丢失，请重新生成")
+                depth.pop("ref", None)
     if session.get("export"):
         sync_job(host, owner, session["export"], VIDEO_EXT)
     if session.get("playback"):
@@ -500,7 +507,8 @@ async def edit_cuts(req, host, source, session, data):
     old_ranges, new_ranges = ranges(old), ranges(bounds)
     existing = dict(zip(old_ranges, old_shots))
     affected = [shot for span, shot in existing.items() if span not in new_ranges]
-    if any(pending(shot.get("videos", [])) or any(pending(f["previews"]) for f in shot["frames"].values()) for shot in affected):
+    if any(pending(shot.get("videos", [])) or any(pending(f["previews"]) for f in shot["frames"].values())
+           or shot.get("depth") and pending([shot["depth"]]) for shot in affected):
         fail("受影响的镜头有任务正在处理，请等待完成", 409)
     export = session.get("export")
     if export and pending([export]):
@@ -863,6 +871,8 @@ async def queue_shots(req, host, key, session, data):
         else:
             outcome["submitted" if submitted else "skipped"].append(index)
             if submitted:
+                if previews_only and data.get("plan_id"):
+                    shot["frames"][params["frame"]]["previews"][-1]["plan_id"] = data["plan_id"]
                 # Keep each task reachable even if a later service call fails.
                 save(key, session)
     return outcome
@@ -893,6 +903,8 @@ async def apply_remake_plan(req, host, key, session, data):
         else:
             requests.append({"shot":index, "frame":frame_key, "view":"main", "reference":data.get("reference")})
     if requests:
+        if data.get("plan_id"):
+            save(key, session)
         queued = await queue_shots(req, host, key, session, {**data, "action":"batch_previews", "shots":requests})
         for field in queued:
             outcome[field].extend(queued[field])
@@ -901,6 +913,17 @@ async def apply_remake_plan(req, host, key, session, data):
                 frame = session["shots"][item["shot"]]["frames"][item["frame"]]
                 outcome["jobs"].append({"index":item["shot"], "frame":item["frame"], "job":frame["previews"][-1]["job"]})
     return outcome
+
+
+def remake_plan_result(session, plan_id, receipt):
+    if receipt.get("result") is not None:
+        return receipt["result"]
+    jobs = [{"index":index, "frame":frame, "job":preview["job"]}
+            for index, shot in enumerate(session["shots"])
+            for frame, item in shot["frames"].items()
+            for preview in item["previews"] if preview.get("plan_id") == plan_id]
+    return {"submitted":[job["index"] for job in jobs], "jobs":jobs, "skipped":[], "needs_selection":[],
+            "failed":[], "uncertain":True}
 
 
 async def queue_one_shot(req, host, key, shot, params, mapping, preview):
@@ -933,7 +956,7 @@ async def queue_one_shot(req, host, key, shot, params, mapping, preview):
         if pending(videos) or any(
             v.get("ref") and matches_mapping(v, mapping) and v.get("first_frame") == ref and
             v.get("entry_tick", 0) == entry_tick and
-            v.get("guides", []) == guides and v.get("motion", "") == params["motion"] for v in videos
+            not v.get("depth_ref") and v.get("guides", []) == guides and v.get("motion", "") == params["motion"] for v in videos
         ):
             return False
         await generate_shot(req, host, key, shot, params, mapping)
@@ -1003,7 +1026,45 @@ def shot_guides(shot, approved, fps, mapping=None, entry_tick=0):
     return guides
 
 
-async def generate_shot(req, host, key, shot, data, mapping=None):
+def motion_routes(host):
+    choices = {}
+    for route in host.providers.routes("video"):
+        provider = route["provider"]
+        if motion_reference.supports(provider, route["model"]):
+            choices.setdefault(provider["id"], route)
+    for provider in host.providers.all_providers():
+        model = host.providers.default_model(provider, "video")
+        if motion_reference.supports(provider, model):
+            choices.setdefault(provider["id"], {"provider":provider, "model":model})
+    return list(choices.values())
+
+
+def motion_providers(host):
+    return [{"id":r["provider"]["id"], "name":r["provider"]["name"], "model":r["model"]} for r in motion_routes(host)]
+
+
+def depth_motion(user, host, key, shot, start_ref, first, ticks, entry_tick, guides):
+    board = host.board_meta(host.board_path(key[1]))
+    if not board or not host.can_edit(user, board):
+        fail("需要画布编辑权限才能提交动作参考", 403)
+    if entry_tick or guides:
+        fail("这个镜头已有入画帧或动作关键帧，请使用按关键帧生成")
+    if not motion_reference.eligible(first["w"], first["h"], ticks):
+        fail("动作参考需要至少 2 秒，且宽高比在 0.4 到 2.5 之间")
+    depth = shot.get("depth")
+    if not depth or depth.get("state") != "done" or not depth.get("ref"):
+        fail("请先生成当前镜头的深度参考")
+    fps = host.film.FPS
+    if any(round(depth[k] * fps) != round(shot[k] * fps) for k in ("start", "end")):
+        fail("剪辑点已更新，请重新生成深度参考", 409)
+    path = host.tools.ref_path(host.COMFY_DIR, depth["ref"])
+    if not path.is_file() or not host.tools.ref_path(host.COMFY_DIR, start_ref).is_file():
+        fail("深度参考或已采用的首帧文件不存在")
+    host.require_media(user, {depth["ref"], start_ref})
+    return depth["ref"], {"path":path, "ticks":ticks}
+
+
+async def generate_shot(req, host, key, shot, data, mapping=None, *, motion_route=None):
     first = shot["frames"]["first"]
     start_ref, approved, entry_tick = shot_start(shot, mapping, host.film.FPS)
     videos = shot.setdefault("videos", [])
@@ -1027,12 +1088,12 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
     motion = "。".join(part for part in segments if isinstance(part, str) and part.strip())
     beginning = (f"从原片首帧开始，在 {entry_tick / host.film.FPS:.3f} 秒按对应关键帧让替换角色入画。"
                  if entry_tick else "从输入首帧开始。角色的身份、服装、光线和周围场景与首帧一致。")
-    prompt = (
-        beginning
-        + f"用原镜头的机位与节奏，在前 {length:g} 秒完成镜头动作。"
+    timing = (
+        f"用原镜头的机位与节奏，在前 {length:g} 秒完成镜头动作。"
         "原片人物说话时，保留发言时的口部动作和停顿，供后续与原声合成。"
         + (motion.replace("@", "＠") if motion else "沿用首帧构图，保持动作自然。")
-    )[:3000]
+    )
+    prompt = (beginning + timing)[:3000]
     raw = {
         "kind": "video", "board": key[1], "label": "镜头重制 · " + approved["asset"]["name"],
         "prompt": prompt, "duration": max(2, length), "ar": first["w"] / first["h"], "quality": "std",
@@ -1040,7 +1101,18 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         "images": [{"ref": start_ref, "role": "frame", "time": 0}],
     }
     guides = shot_guides(shot, approved, host.film.FPS, mapping, entry_tick)
-    if guides:
+    depth_ref = None
+    if motion_route:
+        if data.get("first_job") != approved["job"]:
+            fail("已采用的首帧已变更，请核对后重试", 409)
+        depth_ref, motion = depth_motion(req["user"], host, key, shot, start_ref, first, ticks, entry_tick, guides)
+        prompt = ("以 @图片1 确定开场构图、角色外观、场景光线及成片色彩。"
+                  "使用 @视频1 的深度变化参考人物走位、姿态变化、遮挡关系和相机运动。"
+                  "成片保持图片的正常色彩、纹理和照明，视频的灰度仅用于空间与时间参考。" + timing)[:3000]
+        raw.update(prompt=prompt, duration=max(4, math.ceil(ticks / fps)), provider=motion_route["provider"]["id"],
+                   images=[{"ref":start_ref, "role":"subject"}])
+        response = await host.generate_remote(req, raw, motion_route, "video", motion=motion)
+    elif guides:
         provider = host.providers.get("local_h3")
         if not provider or not provider["enabled"]:
             fail("动作关键帧需要启用本地 H3 视频服务")
@@ -1056,11 +1128,15 @@ async def generate_shot(req, host, key, shot, data, mapping=None):
         for index, image in enumerate(images, 1):
             image["index"] = index
         raw.update(planned=True, provider=provider["id"])
-    version = submitted_job(await host.generate_request(req, raw))
+    if not motion_route:
+        response = await host.generate_request(req, raw)
+    version = submitted_job(response)
     version.update(first_frame=start_ref, entry_tick=entry_tick, mask=approved.get("mask"), asset=approved["asset"],
                    source_person=approved.get("source_person"),
                    motion=instructions[:1600], guides=guides, prompt=prompt,
                    generation={key: raw[key] for key in ("duration", "quality", "provider") if key in raw})
+    if depth_ref:
+        version.update(mode="depth", depth_ref=depth_ref, motion_model=motion_route["model"])
     videos.append(version)
 
 
@@ -1138,6 +1214,8 @@ def localize_shot(req, host, key, shot, job, mapping=None, *, display):
                    motion=generated.get("motion", ""), guides=generated.get("guides", []),
                    prompt=generated.get("prompt", ""), generation=generated.get("generation", {}),
                    corrections=corrections, replacement_corrections=replacement_corrections, protections=protections)
+    if generated.get("depth_ref"):
+        version.update(depth_ref=generated["depth_ref"], motion_model=generated.get("motion_model"))
     videos.append(version)
 
 
@@ -1340,6 +1418,38 @@ async def prepare_playback(req, host, key, session):
                                                            label="视频重制 · 播放预览", board=key[1]))
 
 
+def prepare_depth(req, host, key, session, shot):
+    board = host.board_meta(host.board_path(key[1]))
+    if not board or not host.can_edit(req["user"], board):
+        fail("需要画布编辑权限才能生成深度参考", 403)
+    if depth := shot.get("depth"):
+        if depth["state"] != "error":
+            return
+    config = video_depth.configuration()
+    if not config:
+        fail("部署主机尚未安装 Small 视频深度模型", 503)
+    fps = host.film.FPS
+    start, end = round(shot["start"] * fps), round(shot["end"] * fps)
+    if not 0 < end - start <= MAX_SHOT_SECONDS * fps:
+        fail(f"单段深度参考最多 {MAX_SHOT_SECONDS} 秒，请先拆分长镜头")
+    source = host.tools.ref_path(host.COMFY_DIR, key[3])
+    if not source.is_file():
+        fail("原片文件已丢失")
+    if any(other.get("depth") and pending([other["depth"]]) for other in session["shots"]):
+        fail("此原片已有深度任务，请等待完成或取消后再提交", 409)
+    display = session.get("display_oriented", False)
+
+    def encode(progress, cancelled):
+        return video_depth.generate(host.COMFY_DIR, source, start / fps, end - start, display,
+                                    progress, cancelled, config)
+
+    depth = submitted_job(host.enqueue_render(req, encode, seconds=(end - start) / fps,
+                                              label="视频重制 · 深度参考", board=key[1], depth=True))
+    first = shot["frames"]["first"]
+    w, h = video_depth.dimensions(first["w"], first["h"])
+    shot["depth"] = {**depth, "start": start / fps, "end": end / fps, "w": w, "h": h}
+
+
 def refresh_export_status(session, source, fps):
     export = session.get("export")
     if not export or not export.get("clips"):
@@ -1374,9 +1484,13 @@ def public_session(host, session, **extra):
         version, issue = export_choice(shot, session.get("mapping"), i)
         jobs.append(version["job"] if version and not issue else None)
     result["reviewed_jobs"] = jobs
+    result["remake_plans"] = {key:{"shots":receipt["shots"], "result":remake_plan_result(session, key, receipt)}
+                              for key, receipt in session.get("remake_plans", {}).items()}
     if "export" in result:
         result["export"] = available_export(host, result["export"])
-    return {**result, "can_undo_cut": bool(session.get("cut_undo")), "export_review": export_review(session), **extra}
+    return {**result, "can_undo_cut": bool(session.get("cut_undo")), "export_review": export_review(session),
+            "motion_providers": motion_providers(host),
+            "depth_available": video_depth.configuration() is not None, **extra}
 
 
 async def handle(req, host):
@@ -1400,6 +1514,14 @@ async def handle(req, host):
         response = {}
         session = load(key)
         action = data.get("action")
+        plan_id = data.get("plan_id") if action == "apply_plan" else None
+        if plan_id is not None:
+            if not isinstance(plan_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", plan_id):
+                fail("计划编号无效")
+            if session and (receipt := session.get("remake_plans", {}).get(plan_id)):
+                update_jobs(host, key[0], session)
+                return web.json_response(public_session(host, session, session_node=key[2],
+                    apply_plan=remake_plan_result(session, plan_id, receipt)))
         if session and data.get("cut_revision", 0) != session.get("cut_revision", 0):
             fail("剪辑点已更新，请重新打开视频重制界面", 409)
         if action == "analyze":
@@ -1423,7 +1545,18 @@ async def handle(req, host):
             set_mapping(req, board, session, data)
         elif action == "apply_plan":
             update_jobs(host, key[0], session)
-            response[action] = await apply_remake_plan(req, host, key, session, data)
+            if plan_id is None:
+                response[action] = await apply_remake_plan(req, host, key, session, data)
+            else:
+                plans = session.setdefault("remake_plans", {})
+                receipt = plans[plan_id] = {"shots":data.get("shots"), "result":None}
+                try:
+                    response[action] = await apply_remake_plan(req, host, key, session, data)
+                except web.HTTPException:
+                    plans.pop(plan_id, None)
+                    save(key, session)
+                    raise
+                receipt["result"] = response[action]
         elif action == "remove_mapping":
             activate_role_frames(session, None)
             session.pop("mapping", None)
@@ -1445,7 +1578,7 @@ async def handle(req, host):
             )
             if (scoped is not None and data["shot"] not in scoped and
                     not adopting_combined and
-                    action in ("preview", "approve", "generate_video", "localize", "approve_video",
+                    action in ("preview", "approve", "generate_video", "generate_depth_video", "localize", "approve_video",
                                "locate_person", "apply_person_hint", "set_absence", "analyze_motion", "suggest_entry")):
                 fail("此镜头未包含在人物映射范围内，请先确认该镜头")
             if action == "set_absence":
@@ -1474,6 +1607,8 @@ async def handle(req, host):
                 await locate_person(req, host, session, frame, data)
             elif action == "analyze_motion":
                 await analyze_motion(req, host, source, session, shot, mapping)
+            elif action == "prepare_depth":
+                prepare_depth(req, host, key, session, shot)
             elif action == "suggest_entry":
                 response["captured_frame"] = await suggest_entry(req, host, source, session, shot, mapping, data)
             elif action == "capture_correction":
@@ -1502,6 +1637,11 @@ async def handle(req, host):
                 frame.pop("approved", None)
             elif action == "generate_video":
                 await generate_shot(req, host, key, shot, data, mapping)
+            elif action == "generate_depth_video":
+                route = next((r for r in motion_routes(host) if r["provider"]["id"] == data.get("provider")), None)
+                if not route:
+                    fail("请先在控制台配置支持参考视频的 Seedance 服务", 503)
+                await generate_shot(req, host, key, shot, data, mapping, motion_route=route)
             elif action == "localize":
                 localize_shot(req, host, key, shot, data.get("job"), mapping, display=session.get("display_oriented", False))
             elif action in ("add_role_layer", "remove_role_layer", "move_role_layer"):

@@ -6,6 +6,7 @@ import base64
 import copy
 import io
 import json
+import math
 import time
 import uuid
 from urllib.parse import quote
@@ -34,8 +35,8 @@ def register(tools, tool, prop, node, text, prompt):
     for item in tools:
         fn = item["function"]
         if fn["name"] == "image_edit":
-            fn["parameters"]["properties"].update(params)
-            fn["description"] = "编辑图片并在原节点追加历史版本。用户只改背景/主体时必须指定target=background/foreground，工具自动生成真实保护遮罩；指定selection使用选区ID。whole只用于整图修改。"
+            fn["parameters"]["properties"].update(params,review_id=node)
+            fn["description"] = "编辑图片并在原节点追加历史版本。区域批注自动限制修改范围，可传 review_id 指定其中一条。用户只改背景/主体时指定target=background/foreground；指定selection使用选区ID。"
     tool("image_select", "生成并保存可跨轮复用的选区。foreground/background自动识别主体；manual等待用户在编辑器画区域；existing复用已保存选区。", {
         "node_id": node, "mode": prop("string", enum=["foreground", "background", "manual", "existing"]),
         "selection_id": node, "instruction": text}, ["node_id", "mode"])
@@ -74,7 +75,7 @@ def lookup(s, run, node_id, source_ref, selection_id=None, mask_ref=None):
     return row
 
 
-def persist_selection(s, run, node_id, source_ref, mask, method):
+def store_selection(s, session_id, node_id, source_ref, mask, method):
     editor, root = s.host.image_editor, s.host.COMFY_DIR
     source = editor.load(root, source_ref)
     if mask.size != source.size:
@@ -87,18 +88,43 @@ def persist_selection(s, run, node_id, source_ref, mask, method):
     overlay = Image.composite(Image.new("RGBA", source.size, "#ef4acb"), source, mask.point(lambda a: round(a * .45)))
     overlay.thumbnail((768, 768))
     preview = editor.save(root, overlay, "selection-preview")
-    sid = "m" + uuid.uuid4().hex[:20]
-    db.run("INSERT INTO chat_selections VALUES(?,?,?,?,?,?,?,?)", sid, run["session_id"], node_id, source_ref, saved["ref"], preview["ref"], method, time.time())
-    run["data"].setdefault("masks", {})[saved["ref"]] = source_ref
+    selection_id = "m" + uuid.uuid4().hex[:20]
+    db.run("INSERT INTO chat_selections VALUES(?,?,?,?,?,?,?,?)", selection_id, session_id, node_id, source_ref, saved["ref"], preview["ref"], method, time.time())
+    return {"selection_id": selection_id, "node_id": node_id, "source_ref": source_ref, "mask_ref": saved["ref"],
+            "preview_ref": preview["ref"], "method": method, "selected_pixels": sum(mask.histogram()[1:]), "w": source.width, "h": source.height}
+
+
+def persist_selection(s, run, node_id, source_ref, mask, method):
+    result = store_selection(s, run["session_id"], node_id, source_ref, mask, method)
+    run["data"].setdefault("masks", {})[result["mask_ref"]] = source_ref
     s.update(run)
-    result = {"selection_id": sid, "node_id": node_id, "source_ref": source_ref, "mask_ref": saved["ref"],
-              "preview_ref": preview["ref"], "method": method, "selected_pixels": sum(mask.histogram()[1:]), "w": source.width, "h": source.height}
     s.emit(run["session_id"], run["id"], "selection", result)
     return result
 
 
-async def automatic_selection(s, run, user, node_id, mode):
-    _, version = s.source(run, user, node_id)
+def review_selection(s, run, node_id, source_ref, reviews, base):
+    """Rasterize the pinned review rectangles on the original, oriented image."""
+    root, editor = s.host.COMFY_DIR, s.host.image_editor
+    inputs = [node_id,source_ref,[r["id"] for r in reviews],base and base["mask_ref"]]
+    cache = run["data"].setdefault("review_masks",{})
+    key = json.dumps(inputs,separators=(",",":"))
+    if key in cache:
+        return lookup(s,run,node_id,source_ref,cache[key])
+    width, height = editor.load(root,source_ref).size
+    mask = Image.new("L",(width,height))
+    for review in reviews:
+        left, top, right, bottom = review["box"]
+        mask.paste(255,(math.floor(left*width),math.floor(top*height),math.ceil(right*width),math.ceil(bottom*height)))
+    if base:
+        mask = ImageChops.multiply(mask,editor.load(root,base["mask_ref"]).convert("L"))
+    result = persist_selection(s,run,node_id,source_ref,mask,"review")
+    cache[key] = result["selection_id"]
+    s.update(run)
+    return result
+
+
+async def automatic_selection(s, run, user, node_id, mode, source_ref=None):
+    _, version = s.source(run, user, node_id, pinned_ref=source_ref)
     result = await s.response(s.host.image_edit_tool, user, {"ref": version["ref"]}, "/api/image-edit/cutout")
     foreground = s.host.image_editor.load(s.host.COMFY_DIR, result["ref"]).getchannel("A")
     # Protect the entire antialiased foreground plus a small rim, rather than mixing across it.
@@ -117,7 +143,7 @@ async def wait_input(s, run, user, cid):
     while True:
         if s.stopped(run):
             raise ValueError("用户已停止选区任务")
-        if time.time() - run["created"] > 1800:
+        if time.time() - run["data"].get("started_at",run["created"]) > 1800:
             raise ValueError("等待选区超过30分钟，请发送新消息继续")
         row = db.one("SELECT state,result FROM chat_calls WHERE id=? AND run_id=?", cid, run["id"])
         if not row:
@@ -184,7 +210,14 @@ def validate_stack(s, run, user, stack):
 
 async def execute(s, run, user, cid, name, args):
     h = s.host
-    n, version = s.source(run, user, args["node_id"])
+    reviews = []
+    if name == "image_edit":
+        reviews = [r for r in run["data"].get("attached_reviews",[]) if r.get("box") and r["node_id"] == args["node_id"]]
+        if args.get("review_id"):
+            reviews = [r for r in reviews if r["id"] == args["review_id"]]
+            if not reviews:
+                raise ValueError("指定的区域批注不属于本轮引用的图片版本")
+    n, version = s.source(run, user, args["node_id"], pinned_ref=reviews[0]["source_ref"] if reviews else None)
     source_ref = version["ref"]
     if name == "image_select":
         mode = args["mode"]
@@ -207,14 +240,19 @@ async def execute(s, run, user, cid, name, args):
     if name == "image_edit":
         target = args.get("target") or ("selection" if args.get("mask_ref") or args.get("selection_id") else "whole")
         selection = None
-        if args.get("selection_id") or args.get("mask_ref"):
+        attached = run["data"].get("attached_selection")
+        if attached and attached["node_id"] == n["id"]:
+            selection = lookup(s, run, n["id"], source_ref, attached["selection_id"])
+        elif args.get("selection_id") or args.get("mask_ref"):
             selection = lookup(s, run, n["id"], source_ref, args.get("selection_id"), args.get("mask_ref"))
-            if target == "whole":
+            if target == "whole" and not reviews:
                 raise ValueError("已有选区时不能同时要求整图修改，请明确编辑范围")
         elif target in ("background", "foreground"):
-            selection = await automatic_selection(s, run, user, n["id"], target)
-        elif target == "selection":
+            selection = await automatic_selection(s, run, user, n["id"], target, source_ref)
+        elif target == "selection" and not reviews:
             raise ValueError("请先生成选区，或通过手动选区工具等待用户画区域")
+        if reviews:
+            selection = review_selection(s,run,n["id"],source_ref,reviews,selection)
         payload = {"ref": source_ref, "mode": "region" if selection else "whole", "prompt": args["prompt"],
                    "backend": args.get("backend", "h3"), "feather": args.get("feather", 4), "strength": args.get("strength", 1),
                    "denoise": args.get("denoise", .95), "steps": args.get("steps", 25), "seed": args.get("seed", -1)}
@@ -316,6 +354,37 @@ def decode_mask(s, source_ref, encoded):
     if not mask.getbbox():
         raise ValueError("选区为空，请先画出需要修改的区域")
     return mask
+
+
+def has_image_version(n, source_ref):
+    return n and n.get("type") == "image" and any(v.get("ref") == source_ref for v in n.get("versions", []))
+
+
+@routes.post("/api/chat/sessions/{sid}/selection")
+async def submit_draft_selection(req):
+    from agent_chat import ToolError, service, session_for
+    session = session_for(req, req.match_info["sid"])
+    s = service(req)
+    payload = await req.json()
+    if not isinstance(payload, dict):
+        return web.json_response({"error": "选区格式不正确"}, status=400)
+    node_id, source_ref = payload.get("node_id"), payload.get("source_ref")
+    if not isinstance(node_id, str) or not isinstance(source_ref, str) or not source_ref:
+        return web.json_response({"error": "请选择需要编辑的图片版本"}, status=400)
+
+    def check_source():
+        board = s.board(req["user"], session["board_id"])
+        n = next((n for n in board.get("nodes", []) if n["id"] == node_id), None)
+        if not has_image_version(n, source_ref):
+            raise ValueError("源图版本已不存在，请重新圈选")
+
+    try:
+        check_source()
+        mask = await asyncio.to_thread(decode_mask, s, source_ref, payload.get("mask_data"))
+        check_source()
+        return web.json_response(store_selection(s, session["id"], node_id, source_ref, mask, "manual"))
+    except (ToolError, ValueError, OSError) as e:
+        return web.json_response({"error": str(e)[:300]}, status=400)
 
 
 @routes.post("/api/chat/runs/{rid}/selection")

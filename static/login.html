@@ -37,7 +37,12 @@ button:disabled { opacity: .5; }
 </form></div>
 <script>
 const $ = s => document.querySelector(s);
-const next = new URLSearchParams(location.search).get("next") || "/console";
+const nextParam = new URLSearchParams(location.search).get("next") || "";
+let next = "/console";
+try {
+  const target = new URL(nextParam, location.origin);
+  if (nextParam.startsWith("/") && target.origin === location.origin) next = target.pathname + target.search + target.hash;
+} catch {}
 let setup = false;
 fetch("/api/auth/state").then(r => r.json()).then(s => {
   if (s.user) { location.href = next; return; }

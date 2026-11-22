@@ -11,10 +11,12 @@ from urllib.parse import quote
 
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
+import image_camera
 from tools import _new, ref_path
 
 MAX_PIXELS = 32 * 1024 * 1024
 MAX_SIDE = 8192
+RESIZE_FITS = {"contain":"透明补边", "cover":"居中裁切", "stretch":"拉伸"}
 
 
 def number(value, low, high, label, default=None):
@@ -57,7 +59,36 @@ def rectangle(value, w, h):
     return x, y, x + cw, y + ch
 
 
+def resize_spec(value):
+    if not isinstance(value, dict):
+        raise ValueError("请设置输出宽度和高度")
+    w, h, fit = value.get("width"), value.get("height"), value.get("fit", "contain")
+    if type(w) is not int or type(h) is not int:
+        raise ValueError("输出宽度和高度须为整数像素")
+    check_size(w,h)
+    if not isinstance(fit,str) or fit not in RESIZE_FITS:
+        raise ValueError("请选择透明补边、居中裁切或拉伸")
+    return {"width":w,"height":h,"fit":fit}
+
+
+def resize_image(im, spec):
+    w, h, fit = spec["width"], spec["height"], spec["fit"]
+    if im.size == (w,h):
+        return im
+    if fit == "stretch":
+        return im.resize((w,h),Image.Resampling.LANCZOS)
+    if fit == "cover":
+        return ImageOps.fit(im,(w,h),method=Image.Resampling.LANCZOS)
+    scale = min(w/im.width,h/im.height)
+    inner = (max(1,round(im.width*scale)),max(1,round(im.height*scale)))
+    resized = im.resize(inner,Image.Resampling.LANCZOS)
+    result = Image.new("RGBA",(w,h))
+    result.paste(resized,((w-inner[0])//2,(h-inner[1])//2))
+    return result
+
+
 def transform(root: Path, p: dict) -> dict:
+    size = resize_spec(p["resize"]) if "resize" in p else None
     im = load(root, p.get("ref", ""))
     if p.get("crop") is not None:
         im = im.crop(rectangle(p["crop"], *im.size))
@@ -76,7 +107,9 @@ def transform(root: Path, p: dict) -> dict:
         rgb = cls(rgb).enhance(number(p.get(k), 0, 2, k, 1))
     im = rgb.convert("RGBA")
     im.putalpha(alpha)
-    return save(root, im)
+    if size is not None:
+        return {**save(root,resize_image(im,size),"resize"),"resize":size}
+    return save(root,im)
 
 
 def compose_layers(root: Path, p: dict) -> dict:
@@ -130,14 +163,22 @@ def prepare(root: Path, p: dict) -> dict:
     mode = p.get("mode", "region")
     if mode not in ("region", "whole", "outpaint"):
         raise ValueError("未知图像编辑模式")
+    camera = image_camera.validate(p["camera_view"]) if "camera_view" in p else None
     prompt = str(p.get("prompt") or "").strip()
-    if not prompt or len(prompt) > 8000:
+    if (not prompt and camera is None) or len(prompt) > 8000:
         raise ValueError("请输入 1–8000 字的修改要求")
     strength = number(p.get("strength"), 0.01, 1, "结果融合比例", 1)
     feather = number(p.get("feather"), 0, 128, "边缘羽化", 8)
     backend = p.get("backend", "h3")
     if backend not in ("h3", "native"):
         raise ValueError("未知重绘引擎")
+    count = 1
+    if camera is not None:
+        if mode != "whole" or backend != "h3" or strength != 1:
+            raise ValueError("换机位需要使用整图编辑并采用完整生成结果")
+        count = p.get("count",1)
+        if type(count) is not int or not 1 <= count <= 4:
+            raise ValueError("请选择 1–4 张机位候选图")
     denoise = number(p.get("denoise"), .1, 1, "重绘强度", .95)
     steps = int(number(p.get("steps"), 10, 50, "采样步数", 25))
     mask = Image.new("L", source.size, 255)
@@ -182,18 +223,26 @@ def prepare(root: Path, p: dict) -> dict:
                        "请在 @图1 的对应区域按要求修改，保持构图、位置和其他内容一致，输出完整的 @图1 画面，不能出现粉色标记。修改要求：")
     elif mode == "outpaint":
         instruction = "扩展 @图1 的画面：把四周灰色留白补成连贯自然的场景，保持原有主体的位置、比例、细节和光线。要求："
+    elif camera is not None:
+        instruction = ("@图1 提供原始机位、主体、服装和场景。以同一时刻的新相机视角重新构图，"
+                       "保持主体身份、姿态、画风、场景结构和光照一致。"
+                       + image_camera.instructions(camera) + "。合理补足新机位下可见的部分，不添加文字、边框或分镜格。")
+        if prompt:
+            instruction += "补充要求："
     else:
         instruction = "根据要求编辑 @图1，保持未要求修改的内容和构图一致。要求："
     spec = {"base": base_ref, "mask": mask_ref, "bounds": list(bounds), "strength": strength,
             "feather": feather, "mode": mode, "source": p["ref"], "prompt": prompt}
     spec["recipe"] = {k: p[k] for k in ("ref", "mask", "mode", "prompt", "strength", "feather", "padding", "seed", "provider", "backend", "denoise", "steps") if k in p}
     spec["recipe"].setdefault("backend", backend)
+    if camera is not None:
+        spec["recipe"].update(camera_view=camera,count=count,quality=p.get("quality","4mp"))
     native = None
     if backend == "native":
         native = {"image": context_ref, "mask": save(root, mask.crop(bounds), "native-mask", "input")["ref"],
                   "prompt": prompt, "denoise": denoise, "steps": steps}
     return {"kind": "image", "model": "h3img", "prompt": instruction + prompt, "images": images,
-            "ar": context.width / context.height, "quality": p.get("quality", "4mp"), "count": 1,
+            "ar": context.width / context.height, "quality": p.get("quality", "4mp"), "count": count,
             "seed": p.get("seed", -1), "provider": p.get("provider"), "label": p.get("label"),
             "board": p.get("board"), "memory_ids": p.get("memory_ids", []), "_image_edit": spec, "_native_inpaint": native}
 

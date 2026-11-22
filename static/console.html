@@ -120,6 +120,7 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 .meter { background: #26262b; }
 
 </style>
+<link rel="stylesheet" href="/static/console-projects.css?v=1">
 </head>
 <body>
 <div class="app">
@@ -139,6 +140,7 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 </div>
 <div class="modal" id="modal"><div class="box" id="mbox"></div></div>
 <div class="toast" id="toast"></div>
+<script src="/static/console-projects.js?v=2"></script>
 <script>
 "use strict";
 const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -153,56 +155,11 @@ async function api(path, body, method) {
 const ago = t => { if (!t) return ""; const s = Date.now() / 1000 - t; return s < 60 ? "刚刚" : s < 3600 ? Math.round(s / 60) + " 分钟前" : s < 86400 ? Math.round(s / 3600) + " 小时前" : new Date(t * 1000).toLocaleDateString(); };
 const fmtS = s => s == null ? "" : s >= 90 ? (s / 60).toFixed(1) + " 分钟" : Math.round(s) + " 秒";
 const gb = b => (b / 1e9).toFixed(b > 1e11 ? 0 : 1) + " GB";
-const CAPN = { text: "文本", vision: "看图", image: "生图", video: "视频", tts: "配音", music: "配乐" };
+const CAPN = { text: "文本", vision: "看图", image: "生图", video: "视频", tts: "配音", music: "配乐", asr: "语音转写", audio_separation: "人声分离", search: "网页搜索" };
 const modal = html => { $("#mbox").innerHTML = html; $("#modal").classList.add("on"); return $("#mbox"); };
 const closeModal = () => $("#modal").classList.remove("on");
 $("#modal").addEventListener("pointerdown", e => { if (e.target.id === "modal") closeModal(); });
 let ME = null, timer = null;
-
-// ============================================================ projects
-async function pgProjects() {
-  const all = ME.role === "admin" && localStorage.getItem("c.allp") === "1";
-  const [list, samples] = await Promise.all([api("/api/boards" + (all ? "?all=1" : "")), api("/api/samples").catch(() => [])]);
-  let users = {}; if (ME.role === "admin") (await api("/api/admin/users").catch(() => [])).forEach(u => users[u.id] = u.name || u.username);
-  $("#main").innerHTML = `<h1>项目</h1><p class="lead">每个项目是一张画布。从一句话开始，或者自己搭。</p>
-    <div class="grid newcards">
-      <div class="nc grad" data-new="wiz"><b>一句话成片</b><small>写下想法，AI 帮你写剧本、定角色、出分镜、生成视频、剪成片</small></div>
-      <div class="nc" data-new="blank"><b>＋ 空白画布</b><small class="dim">自由搭建图片、视频节点和工作流</small></div>
-      ${samples.length ? `<div class="nc" data-new="samples"><b>看示例</b><small class="dim">${samples.length} 部用「一句话成片」自动做的短片</small></div>` : ""}
-    </div>
-    <div class="row" style="margin:18px 0 10px"><h2 style="margin:0">${all ? "全部成员的项目" : "我的项目"}</h2><span class="dim">${list.length} 个</span><span class="grow"></span>
-      ${ME.role === "admin" ? `<label class="dim"><input type="checkbox" id="allp" ${all ? "checked" : ""}> 显示全部成员的项目</label>` : ""}</div>
-    <div class="grid projects">${list.map(b => `<div class="pj" data-id="${b.id}">
-        <div class="cv">${b.cover ? (b.cover.includes("cover_") ? `<img src="${b.cover}" loading="lazy">` : `<video src="${b.cover}#t=1" preload="metadata" muted></video>`) : "空白"}</div>
-        <div class="bd"><div class="nm">${esc(b.name)}</div><div class="mt"><span>${ago(b.mtime)}</span><span>${b.nodes} 个节点</span>
-          ${b.wiz != null ? `<span class="tag">向导 ${b.wiz + 1}/6</span>` : ""}${b.shared ? `<span class="tag loc">团队共享</span>` : ""}${all && b.owner !== ME.id ? `<span>${esc(users[b.owner] || "")}</span>` : ""}</div></div>
-        <div class="acts">${b.owner === ME.id || ME.role === "admin" ? `<button class="btn sm" data-a="share">${b.shared ? "取消共享" : "共享给团队"}</button><button class="btn sm" data-a="rename">改名</button><span class="grow"></span><button class="btn sm danger" data-a="del">删除</button>` : `<span class="faint">共享自 ${esc(users[b.owner] || "队友")}</span>`}</div></div>`).join("")
-      || `<div class="dim">还没有项目，点上面的「一句话成片」开始吧</div>`}</div>`;
-  $("#allp")?.addEventListener("change", e => { localStorage.setItem("c.allp", e.target.checked ? "1" : "0"); pgProjects(); });
-  $$("[data-new]").forEach(c => c.onclick = async () => {
-    if (c.dataset.new === "samples") return location.href = "/?samples=1";
-    const id = "b" + Date.now().toString(36);
-    await api("/api/board/" + id, { name: c.dataset.new === "wiz" ? "新项目" : "新画布", nodes: [], edges: [], view: { x: 0, y: 0, k: 1 }, seq: 1 }, "PUT");
-    location.href = "/?board=" + id + (c.dataset.new === "wiz" ? "&wizard=1" : "");
-  });
-  $$(".pj").forEach(el => {
-    el.onclick = e => { if (!e.target.closest(".acts")) location.href = "/?board=" + el.dataset.id; };
-    $$("[data-a]", el).forEach(b => b.onclick = async () => {
-      const id = el.dataset.id, board = await api("/api/board/" + id);
-      if (b.dataset.a === "del") {
-        if (!b.classList.contains("arm")) { b.classList.add("arm"); b.textContent = "确定删除？"; return; }
-        await api("/api/board/" + id, null, "DELETE"); toast("已删除"); return pgProjects();
-      }
-      if (b.dataset.a === "share") board.shared = !board.shared;
-      if (b.dataset.a === "rename") {
-        const box = modal(`<h3>改名</h3><input class="in" id="nn" value="${esc(board.name || "")}"><div class="row" style="margin-top:14px"><span class="grow"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn pri" id="ok">保存</button></div>`);
-        $("#nn", box).focus();
-        return $("#ok", box).onclick = async () => { board.name = $("#nn", box).value.trim() || board.name; await api("/api/board/" + id, board, "PUT"); closeModal(); pgProjects(); };
-      }
-      await api("/api/board/" + id, board, "PUT"); toast(board.shared ? "已共享：团队成员都能看到和编辑" : "已取消共享"); pgProjects();
-    });
-  });
-}
 
 // ============================================================ tasks
 async function pgTasks() {
@@ -247,7 +204,7 @@ async function pgServices() {
           <select class="in" data-k="provider_id">${opts.map(p => `<option value="${p.id}" ${p.id === r.provider_id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
           <input class="in" data-k="model" value="${esc(r.model || "")}" placeholder="模型" list="m_${cap}_${i}"><datalist id="m_${cap}_${i}">${(SV.catalog[P[r.provider_id]?.kind]?.models?.[cap] || []).map(m => `<option value="${m}">`).join("")}</datalist>
           <button class="x" data-x="${i}" title="移除">×</button></div>`).join("") || `<div class="faint">还没有设置，用到这项功能时会报错</div>`}
-      <div class="row" style="margin-top:6px">${opts.length > rts.length ? `<button class="btn sm" data-add>＋ 备用</button>` : ""}<span class="faint">${rts.length > 1 ? "默认失败时依次尝试备用（文本、看图）" : ""}</span><span class="grow"></span><button class="btn sm pri" data-save style="display:none">保存</button></div></div>`;
+      <div class="row" style="margin-top:6px">${opts.length > rts.length ? `<button class="btn sm" data-add>${rts.length ? "＋ 备用" : "＋ 设置默认"}</button>` : ""}<span class="faint">${rts.length > 1 && ["text","vision","asr"].includes(cap) ? "默认失败时依次尝试备用" : ""}</span><span class="grow"></span><button class="btn sm pri" data-save style="display:none">保存</button></div></div>`;
   }).join("");
   const provCards = SV.providers.map(p => `<div class="card prov"><div><b>${esc(p.name)}</b> ${p.group === "local" ? `<span class="tag loc">本地</span>` : ""}${!p.enabled ? `<span class="tag bad">已停用</span>` : ""}
       <div class="faint">${esc(p.label || "")}${p.config.base_url ? " · " + esc(p.config.base_url) : ""}${p.config.region ? " · " + esc(p.config.region) : ""}${Object.entries(p.secrets).map(([k, v]) => ` · ${k}: ${esc(v)}`).join("")}</div>
@@ -419,6 +376,7 @@ async function route() {
   closeModal();
   let p = (location.hash || "#projects").slice(1);
   if (!PAGES[p] || (["services", "local", "members"].includes(p) && ME.role !== "admin")) p = "projects";
+  if (p !== "projects") consoleCanvasDirectory = null;
   $$("nav a").forEach(a => a.classList.toggle("on", a.dataset.p === p));
   try { await PAGES[p](); } catch (e) { $("#main").innerHTML = `<h1>出错了</h1><p class="dim">${esc(e.message)}</p>`; }
 }

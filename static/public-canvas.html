@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>公开画布 · OneShot</title>
+  <link rel="stylesheet" href="/static/public-canvas.css?v=4">
+  <script defer src="/static/vendor/marked.js?v=18.2.1"></script>
+  <script defer src="/static/vendor/purify.min.js?v=3.4.18"></script>
+  <script defer src="/static/agent-markdown.js?v=3"></script>
+  <script defer src="/static/public-canvas.js?v=5"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="identity"><span>OneShot</span><h1>公开画布</h1><time id="published"></time></div>
+    <div class="view-actions">
+      <button type="button" id="zoomOut" aria-label="缩小">−</button>
+      <button type="button" id="fitView" aria-label="适应画布">适应画布</button>
+      <button type="button" id="zoomIn" aria-label="放大">＋</button>
+      <button type="button" id="copyBoard" disabled>复制到我的画布</button>
+      <button type="button" id="explainBoard" disabled>解读制作过程</button>
+    </div>
+  </header>
+  <main id="viewport" aria-label="公开画布内容" tabindex="0">
+    <canvas id="links" aria-hidden="true"></canvas>
+    <div id="snapshotNodes"></div>
+    <p id="emptyView" role="status">正在读取画布…</p>
+  </main>
+  <p id="shareFeedback" role="status" hidden></p>
+</body>
+</html>

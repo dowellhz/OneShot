@@ -173,6 +173,25 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual((await r.json())["w"], 192)
 
+    async def test_resize_fits_keep_exact_dimensions_and_alpha(self):
+        original = Image.new("RGBA", (80,40), (80,100,120,160))
+        original_ref = editor.save(self.root, original)["ref"]
+        url = "/api/image-edit/transform"
+        for fit in ("contain","cover","stretch"):
+            size = {"width":96,"height":96,"fit":fit}
+            response = await self.client.post(url,json={"ref":original_ref,"resize":size})
+            self.assertEqual(response.status,200,await response.text())
+            result = await response.json()
+            self.assertEqual(result["resize"],size)
+            pixels = editor.load(self.root,result["ref"])
+            self.assertEqual(pixels.size,(96,96))
+            self.assertEqual(pixels.getpixel((48,0))[3],0 if fit=="contain" else 160)
+            self.assertEqual(pixels.getpixel((48,48))[3],160)
+        self.assertEqual(editor.load(self.root,original_ref).tobytes(),original.tobytes())
+        for size in ({"width":True,"height":96},{"width":8192,"height":8192},
+                     {"width":5,"height":6,"fit":"unknown"}):
+            self.assertEqual((await self.client.post(url,json={"ref":original_ref,"resize":size})).status,400)
+
     async def test_invalid_mask_returns_400(self):
         r = await self.client.post("/api/image-edit/generate", json={**self.payload(), "mask": "input:h3studio/missing.png"})
         self.assertEqual(r.status, 400)

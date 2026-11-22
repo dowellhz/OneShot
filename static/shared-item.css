@@ -1,0 +1,9 @@
+#sharedItem { max-width:1000px; }
+#sharedStatus:empty { display:none; }
+#sharedContent :is(video,img) { display:block; max-width:100%; max-height:76dvh; border-radius:12px; }
+#sharedContent audio { width:min(100%,550px); }
+#sharedContent article { padding:15px; border:1px solid #38383e; background:#19191d; border-radius:10px; margin-bottom:12px; overflow-wrap:anywhere; }
+#sharedContent h2 { color:#b5b5bf; font-size:14px; }
+#sharedContent pre { overflow-x:auto; }
+#sharedContent p { line-height:1.55; }
+#sharedContent .ac-table { overflow-x:auto; }

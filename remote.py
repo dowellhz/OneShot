@@ -6,7 +6,7 @@ Entry points used by the server:
   await test(http, provider) -> {"ok", "detail"}
 req (normalized by the server):
   image: {prompt, images: [Path], ar, n, size_hint}
-  video: {prompt, first: Path|None, last: Path|None, refs: [Path], duration, ar, quality, audio: bool}
+  video: {prompt, first: Path|None, last: Path|None, refs: [Path], duration, ar, quality, audio: bool, motion_url?}
   tts:   {text, voice, speed}
   music: {prompt, lyrics, instrumental}
 """
@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import time
 import uuid
+import wave
 from pathlib import Path
 
 import aiohttp
@@ -293,12 +295,43 @@ async def mm_video(http, comfy_dir, p, model, req):
     return await _save_video(http, comfy_dir, p["name"], await _poll(check, p["name"]))
 
 
-async def ark_video(http, comfy_dir, p, model, req):
-    """Seedance (Volcengine Ark content generation tasks)."""
-    base = (p["config"].get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
-    h = {"Authorization": "Bearer " + p["secrets"].get("api_key", ""), "Content-Type": "application/json"}
+def ark_audio_url(path, seconds):
+    import numpy as np
+    from render import SR, read_audio
+
+    samples = read_audio(path, t1=seconds)
+    pcm = (np.clip(samples, -1, 1).T * 32767).astype("<i2")
+    with io.BytesIO() as sink:
+        with wave.open(sink, "wb") as audio:
+            audio.setparams((2, 2, SR, 0, "NONE", "not compressed"))
+            audio.writeframes(pcm.tobytes())
+        return "data:audio/wav;base64," + base64.b64encode(sink.getvalue()).decode("ascii")
+
+
+def supports_video_draft(provider, model):
+    name = (model or "").lower()
+    return provider["kind"] == "ark" and "seedance-2-5" in name and not any(x in name for x in ("flash","fast","mini"))
+
+
+async def ark_video_body(model, req):
+    if draft_task := req.get("draft_task"):
+        return {"model":model, "content":[{"type":"draft_task","draft_task":{"id":draft_task}}],
+                "resolution":req["resolution"], "watermark":False}
     content = [{"type": "text", "text": req["prompt"]}]
-    if req.get("first"):
+    motion_url = req.get("motion_url")
+    video_urls = ([motion_url] if motion_url else []) + list(req.get("video_urls") or [])
+    extension, edit = req.get("extension"), req.get("segment_edit")
+    if (extension or edit) and motion_url and len(video_urls)>1:
+        video_urls[0], video_urls[1] = video_urls[1], video_urls[0]
+    audio_refs = req.get("audio_refs") or []
+    if video_urls or audio_refs:
+        content.extend({"type": "image_url", "image_url": {"url": data_url(path, 2048, min_side=300)}, "role": "reference_image"}
+                       for path in req["refs"])
+        content.extend({"type":"video_url", "video_url":{"url":url}, "role":"reference_video"} for url in video_urls)
+        for path, seconds in audio_refs:
+            sound = await asyncio.to_thread(ark_audio_url, path, seconds)
+            content.append({"type":"audio_url", "audio_url":{"url":sound}, "role":"reference_audio"})
+    elif req.get("first"):
         content.append({"type": "image_url", "image_url": {"url": data_url(req["first"], 2048)}, "role": "first_frame"})
         if req.get("last"):
             content.append({"type": "image_url", "image_url": {"url": data_url(req["last"], 2048)}, "role": "last_frame"})
@@ -308,9 +341,31 @@ async def ark_video(http, comfy_dir, p, model, req):
     body = {"model": model, "content": content, "resolution": "720p" if fast or req.get("quality") != "hd" else "1080p",
             "ratio": "adaptive" if req.get("first") else _ratio(req.get("ar") or 16 / 9),
             "duration": max(4, min(30 if "2-5" in model else 15, int(round(req.get("duration") or 5)))), "watermark": False}
-    if "seedance-2" in model:
+    if video_urls or audio_refs or "seedance-2" in model:
         body["generate_audio"] = bool(req.get("audio", True))
-    j = await json_req(http, "POST", base + "/contents/generations/tasks", p["name"], json=body, headers=h)
+    if extension and "seedance-2-5" in model:
+        body.update(ratio="adaptive",omni_reference_task_type="extend")
+    elif extension and model.startswith("ep-"):
+        body["ratio"] = "adaptive"
+    if edit:
+        body.update(ratio="adaptive",duration=-1,omni_reference_task_type="edit")
+    if req.get("draft"):
+        body.update(draft=True,resolution="480p")
+    return body
+
+
+async def ark_video(http, comfy_dir, p, model, req):
+    """Seedance (Volcengine Ark content generation tasks)."""
+    base = (p["config"].get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+    h = {"Authorization": "Bearer " + p["secrets"].get("api_key", ""), "Content-Type": "application/json"}
+    body = await ark_video_body(model, req)
+    created = time.time()
+    try:
+        j = await json_req(http, "POST", base + "/contents/generations/tasks", p["name"], json=body, headers=h)
+    except ProviderError as e:
+        if req.get("audio_refs"):
+            raise ProviderError(str(e).split("data:audio/", 1)[0].rstrip()) from None
+        raise
     tid = j.get("id")
     if not tid:
         raise ProviderError(f"{p['name']} 没有返回任务号：{str(j)[:200]}")
@@ -323,7 +378,10 @@ async def ark_video(http, comfy_dir, p, model, req):
         if st == "succeeded":
             return (q.get("content") or {}).get("video_url")
         return None
-    return await _save_video(http, comfy_dir, p["name"], await _poll(check, p["name"]))
+    result = await _save_video(http, comfy_dir, p["name"], await _poll(check, p["name"]))
+    if req.get("draft"):
+        result.update(draft_task=tid,draft_created=created)
+    return result
 
 
 # =========================================================================== dispatch

@@ -5,8 +5,45 @@
 const TRANS_CN = { cut: "硬切", fade: "叠化", black: "黑场" };
 const FIT_CN = { pad: "加黑边", blur: "模糊背景填充", crop: "裁切铺满" };
 const ASPECT_CN = { source: "跟随原片", "16:9": "横屏 16:9", "9:16": "竖屏 9:16", "1:1": "方形 1:1", "4:3": "4:3", "3:4": "3:4" };
+const FILM_FPS = 24;
 let FILM = null;            // { n (film node or null), spec, sel, srcIds }
 let voiceList = null;
+
+function filmDraftPrefix() { return `oneshot.film:${ME_USER?.id ?? "local"}:${boardId}:`; }
+function filmDraftKey(spec, n) {
+  return filmDraftPrefix() + (n ? n.id : JSON.stringify([spec.remake_audio || "", spec.clips.map(c => c.node)]));
+}
+function saveFilmDraft(F = FILM) {
+  if (!F || F.board !== boardId) return;
+  if (F.n?.data.playlist && !canvasCanEdit()) return;
+  if (ME_USER?.id == null) return;
+  const clip = F.spec.clips[F.sel];
+  const offset = clip ? Math.max(0, Math.min(clipLen(clip), filmClipOffset(F))) : 0;
+  const spec = {...F.spec, clips:F.spec.clips.map(({src_len, ...c}) => c)};
+  const state = JSON.stringify({spec, sel:F.sel, offset:Math.round(offset * 4) / 4, node:F.n?.id, target:F.target, attempt:F.attempt,playlistBase:F.playlistBase});
+  if (state === F.saved) return;
+  try {
+    localStorage.setItem(F.key, state);
+    localStorage.setItem(filmDraftPrefix() + "latest", F.key);
+    if (F.n) localStorage.setItem(filmDraftKey(spec, F.n), state);
+    F.saved = state;
+    $("#fmDraftState").textContent = "草稿已保存到此浏览器";
+  } catch {
+    $("#fmDraftState").textContent = "浏览器空间不足，草稿未保存";
+  }
+}
+
+function resumeFilmDraft() {
+  try {
+    const key = localStorage.getItem(filmDraftPrefix() + "latest");
+    const saved = key && JSON.parse(localStorage.getItem(key));
+    const owner = saved?.node ? node(saved.node) : null;
+    if (owner?.data.playlist) return openFilm(owner);
+    if (saved?.playlistBase) return toast("播放列表已从画布移除");
+    if (saved?.spec?.clips?.length) return showFilm(saved.spec, node(saved.node), key, saved.target);
+  } catch {}
+  toast("此项目没有剪辑草稿");
+}
 
 // subtitles from a shot's 对话 field: drop the "名字（语气）：" prefix and the quotes
 function subsOf(n) {
@@ -23,10 +60,23 @@ function filmVersion(c) {
   return c.ref ? {ref:c.ref, url:remakeMedia(c.ref), seconds:c.media_seconds} : curV(node(c.node));
 }
 function filmMediaLength(c) { return c.src_len || filmVersion(c)?.seconds || vlen(node(c.node)); }
-function clipLen(c) { return Math.max(c.remake_shot ? 0 : .5, (c.out ?? filmMediaLength(c)) - (c.in || 0)); }
+function filmSpeed(c) { return c.kind !== "image" && Number.isFinite(c.speed) && c.speed >= .5 && c.speed <= 2 ? c.speed : 1; }
+function clipLen(c) {
+  if (c.kind === "image") return c.duration;
+  const seconds = (c.out ?? filmMediaLength(c)) - (c.in || 0), speed = filmSpeed(c);
+  if (speed !== 1) return Math.max(1, Math.round(seconds / speed * FILM_FPS)) / FILM_FPS;
+  return Math.max(c.remake_shot || c.tight ? 0 : .5, seconds);
+}
+function filmSource(n) { return n && ["image", "video"].includes(n.type) && curV(n); }
+function newFilmClip(n) { return filmClipForVersion(n,curV(n)); }
+function filmClipForVersion(n, v) {
+  const data = v === curV(n) ? n.data : v.node_data;
+  return {node:n.id, kind:n.type, ref:v.ref, name:n.name, trans:"cut", volume:1, subs:subsOf({data}),
+    ...(n.type === "image" ? {duration:3} : {in:0, out:null, media_seconds:v.seconds || data?.duration || 5})};
+}
 function clipOverlap(c, next) {
-  if (c.trans !== "fade" || !next) return 0;
-  const fps = 24;
+  if (c?.trans !== "fade" || !next) return 0;
+  const fps = FILM_FPS;
   return Math.min(fps / 2, Math.floor(Math.round(clipLen(c) * fps) / 2),
     Math.floor(Math.round(clipLen(next) * fps) / 2)) / fps;
 }
@@ -35,10 +85,10 @@ function filmTotal(spec) {
   spec.clips.forEach((c, i) => { t += clipLen(c) - clipOverlap(c, spec.clips[i + 1]); });
   return Math.max(0, t);
 }
-function newSpec(vids) {
+function newSpec(media) {
   return {
-    clips: vids.map(m => ({ node: m.id, in: 0, out: null, trans: "cut", subs: subsOf(m), volume: 1 })),
-    aspect: "source", fit: "blur", subtitles: true, sub_size: 1, bgm: null, narration: [], cover: 0,
+    clips: media.map(newFilmClip),
+    aspect: "source", fit: "blur", subtitles: true, sub_size: 1, titles:[], cutaways:[], bgm: null, narration: [], audio_clips:[], cover: 0,
   };
 }
 
@@ -47,44 +97,86 @@ function openFilm(arg) {
   let n = null, spec;
   if (arg && !Array.isArray(arg) && arg.data?.film) { n = arg; spec = JSON.parse(JSON.stringify(n.data.film)); }
   else {
-    const vids = (arg || []).filter(m => m && m.type === "video" && curV(m));
-    if (!vids.length) return toast("先选中至少一段已生成的视频");
-    spec = newSpec(vids);
+    const media = (arg || []).filter(filmSource);
+    if (!media.length) return toast("先选择至少一张图片或一段视频");
+    spec = newSpec(media);
   }
   showFilm(spec, n);
 }
-function showFilm(spec, n = null) {
-  FILM = { n, spec, sel: 0 };
-  $("#film").classList.add("on");
-  renderFilm(); selectClip(0);
+function editVideoTimeline(n, version = curV(n)) {
+  if (!canvasCanEdit() || !version?.ref || !n.versions.includes(version)) return;
+  if (n.job || prepping.has(n.id)) return toast("请等待当前视频任务完成后再剪辑");
+  const target = {id:n.id, ref:version.ref};
+  const key = filmDraftPrefix() + "video:" + JSON.stringify([target.id,target.ref]);
+  const saved = version.film_recipe?.timeline;
+  const spec = saved?.clips?.length ? vtClone(saved) : {...newSpec([]),clips:[filmClipForVersion(n,version)]};
+  showFilm(spec, null, key, target);
 }
-function closeFilm() { $("#film").classList.remove("on"); $("#fmV").pause(); $("#fmOriginal").pause(); FILM = null; }
+function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
+  if (target && !node(target.id)?.versions.some(v => v.ref === target.ref)) return toast("剪辑草稿对应的视频版本已移除");
+  if (FILM) { saveFilmDraft(); syncFilmAudio(FILM); }
+  playAll = false;
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(key)); } catch {}
+  const playlistBase = n?.data.playlist ? JSON.stringify(n.data.film) : undefined;
+  if (playlistBase && (saved?.playlistBase !== playlistBase || !canvasCanEdit())) saved = null;
+  if (saved?.spec?.clips?.length || playlistBase && Array.isArray(saved?.spec?.clips)) spec = saved.spec;
+  const sel = Math.max(0, Math.min(spec.clips.length - 1, saved?.sel || 0));
+  FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, attempt:saved?.attempt,playlistBase};
+  $("#fmHeading").textContent = playlistBase ? n.name : "成片编辑";
+  $("#film").classList.toggle("playlist-review",!!playlistBase && !canvasCanEdit());
+  $("#fmSaveList").hidden = !playlistBase || !canvasCanEdit();
+  $("#fmPlaylistSources").hidden = !playlistBase;
+  $("#fmGo").textContent = target ? "导出为新版本" : "导出成片";
+  $("#fmGo").disabled = !canvasCanEdit();
+  $("#film").classList.add("on");
+  renderFilm(); selectClip(sel, saved?.offset || 0);
+  saveFilmDraft();
+}
+function closeFilm() {
+  saveFilmDraft(); if (FILM) syncFilmAudio(FILM);
+  playAll = false; FILM = null;
+  clearFilmCutawayPreview();
+  $("#film").classList.remove("on"); $("#fmAdd").classList.remove("on");
+  for (const id of ["fmV", "fmOriginal", "fmA"]) {
+    const media = $("#"+id);
+    if (!media.paused) media.pause();
+  }
+}
 
 function renderFilm() {
   const F = FILM, s = F.spec, total = filmTotal(s);
+  const playlist = !!F.n?.data.playlist, editable = canvasCanEdit();
+  if (playlist) $("#fmGo").disabled = !editable || F.busy || !s.clips.length;
+  $("#fmAll").disabled = !s.clips.length;
+  $("#fmPlaylistSources").disabled = !s.clips.length;
   $("#fmTotal").textContent = `${s.clips.length} 段 · ${total.toFixed(1)} 秒`;
   // timeline strip
   const tl = $("#fmTl");
   tl.innerHTML = s.clips.map((c, i) => {
     const m = node(c.node), v = filmVersion(c), L = clipLen(c);
-    return `<div class="fc ${i === F.sel ? "on" : ""}" draggable="true" data-i="${i}" style="width:${Math.round(90 + L * 22)}px">
-        <video src="${v ? v.url + "#t=" + ((c.in || 0) + 0.05) : ""}" preload="metadata" muted></video>
+    const lines = c.captions ? c.captions.map(cue => cue.text).filter(Boolean) : c.subs;
+    const preview = v && (c.kind === "image" ? `<img src="${esc(v.url)}" alt="">` :
+      `<video src="${esc(v.url)}#t=${(c.in || 0) + .05}" preload="metadata" muted></video>`);
+    return `<div class="fc ${i === F.sel ? "on" : ""}" draggable="${!playlist || editable}" data-i="${i}" style="width:${Math.round(90 + L * 22)}px">
+        ${preview || ""}
         <div class="fl"><b>${i + 1}</b> ${esc(c.name || m?.name || "已删除")}<span>${L.toFixed(1)}s</span></div>
-        ${c.subs.length && s.subtitles ? `<div class="fs">${esc(c.subs[0])}${c.subs.length > 1 ? " …" : ""}</div>` : ""}
+        ${lines.length && s.subtitles ? `<div class="fs">${esc(lines[0])}${lines.length > 1 ? " …" : ""}</div>` : ""}
         <button class="x" title="从成片中移除">×</button></div>` +
       (i + 1 < s.clips.length ? `<button class="ft" data-i="${i}" title="点击切换转场">${TRANS_CN[c.trans] || "硬切"}</button>` : "");
-  }).join("") + `<button class="fadd" title="把画布上的其他视频加进来">＋ 添加片段</button>`;
+  }).join("") + `<button class="fadd" title="添加画布上的图片或视频">＋ 添加片段</button>`;
   $$(".fc", tl).forEach(el => {
     const i = +el.dataset.i;
     el.onclick = e => { if (e.target.closest(".x")) return; selectClip(i); };
-    $(".x", el).onclick = () => { if (s.clips.length <= 1) return toast("至少保留一段"); s.clips.splice(i, 1); F.sel = Math.min(F.sel, s.clips.length - 1); renderFilm(); selectClip(F.sel); };
+    $(".x", el).onclick = () => { if (s.clips.length <= 1 && !playlist) return toast("至少保留一段"); s.clips.splice(i, 1); F.sel = Math.max(0,Math.min(F.sel,s.clips.length-1)); renderFilm(); selectClip(F.sel); saveFilmDraft(F); };
     el.addEventListener("dragstart", e => { e.dataTransfer.setData("text/x-clip", String(i)); el.classList.add("drag"); });
     el.addEventListener("dragend", () => el.classList.remove("drag"));
     el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("over"); });
     el.addEventListener("dragleave", () => el.classList.remove("over"));
     el.addEventListener("drop", e => {
       e.preventDefault(); el.classList.remove("over");
-      const from = +e.dataTransfer.getData("text/x-clip"); if (isNaN(from) || from === i) return;
+      const source = e.dataTransfer.getData("text/x-clip"), from = Number(source);
+      if (!source || !Number.isInteger(from) || from < 0 || from >= s.clips.length || from === i) return;
       const [c] = s.clips.splice(from, 1); s.clips.splice(i, 0, c); F.sel = i; renderFilm(); selectClip(i);
     });
   });
@@ -100,8 +192,15 @@ function renderFilm() {
     <h4>画面</h4>
     <label>画幅${opt("aspect", ASPECT_CN, s.aspect)}</label>
     ${s.aspect !== "source" ? `<label>比例不同时${opt("fit", FIT_CN, s.fit)}</label>` : ""}
+    <h4>补画面</h4>
+    ${canvasCanEdit() ? `<select id="fmCutawaySource" aria-label="在播放头添加补画面"><option value="">在播放头添加补画面</option>${B.nodes.filter(filmSource).map(n=>
+      `<option value="${esc(n.id)}">${esc(n.name)} · 版本 ${n.cur+1}</option>`).join("")}</select>` : ""}
+    <div id="fmCutawaySettings"></div>
+    <h4>画面标题</h4>
+    ${canvasCanEdit() ? '<button class="pill" type="button" data-b="title">＋ 在播放头添加标题</button>' : ""}
+    <div id="fmTitleSettings"></div>
     <h4>字幕</h4>
-    <label class="ck"><input type="checkbox" data-k="subtitles" ${s.subtitles ? "checked" : ""}>烧录字幕（来自每段的台词，可在下方改）</label>
+    <label class="ck"><input type="checkbox" data-k="subtitles" ${s.subtitles ? "checked" : ""}>导出时烧录字幕</label>
     ${s.subtitles ? `<label>字号${opt("sub_size", { 0.8: "小", 1: "中", 1.25: "大" }, s.sub_size)}</label>` : ""}
     <h4>背景音乐</h4>
     ${bg ? `<div class="bgm"><span title="${esc(bg.name || "")}">♪ ${esc(bg.name || "音乐")}</span><button class="pill" data-b="play">试听</button><button class="pill" data-b="rm">移除</button></div>
@@ -111,9 +210,13 @@ function renderFilm() {
     <h4>旁白配音</h4>
     <div id="fmNarr"></div>
     <button class="pill" data-b="narr">＋ 添加一段旁白</button>
+    <h4>音频片段</h4>
+    <div id="fmAudioSettings"></div>
+    <button class="pill" data-b="audio">＋ 上传到当前播放位置</button>
+    <select id="fmCanvasAudio" aria-label="选用画布音频"><option value="">选用画布音频</option>${B.nodes.filter(n=>n.type==="audio"&&curV(n)?.seconds).map(n=>`<option value="${esc(n.id)}">${esc(n.name)} · 版本 ${n.cur+1}</option>`).join("")}</select>
     <h4>封面</h4>
     <label>取第<input type="range" min="0" max="${Math.max(0.1, total).toFixed(1)}" step="0.1" value="${Math.min(s.cover || 0, total)}" data-k="cover"><span>${(+s.cover || 0).toFixed(1)}s</span></label>
-    <div class="h">导出时把这一帧存为封面图（含字幕）</div>`;
+    <div class="h">取这一帧作为封面，包含当时显示的标题和字幕。</div>`;
   $$("select[data-k]", set).forEach(x => x.onchange = () => { s[x.dataset.k] = x.dataset.k === "sub_size" ? +x.value : x.value; renderFilm(); });
   $$("input[type=checkbox][data-k]", set).forEach(x => x.onchange = () => { s[x.dataset.k] = x.checked; renderFilm(); });
   const cov = $("input[data-k=cover]", set);
@@ -122,19 +225,165 @@ function renderFilm() {
     if (x.type === "checkbox") bg.duck = x.checked; else { bg.volume = +x.value; x.nextElementSibling.textContent = Math.round(bg.volume * 100) + "%"; }
   });
   $$("button[data-b]", set).forEach(b => b.onclick = () => ({
-    up: () => pickAudio(async f => {
-      const fd = new FormData(); fd.append("file", f);
-      try { const r = await (await fetchOk("/api/upload_audio", { method: "POST", body: fd })).json(); s.bgm = { ref: r.ref, url: r.url, name: r.name, volume: 0.35, duck: true }; renderFilm(); toast(`已加入背景音乐（${r.seconds.toFixed(0)} 秒）`); }
-      catch (e) { toast(e.message, 4000); }
-    }),
+    title: () => addFilmTitle(F),
+    up: () => uploadFilmAudio(F, false),
+    audio: () => uploadFilmAudio(F, true),
     rm: () => { s.bgm = null; renderFilm(); },
     play: () => { const a = $("#fmA"); if (!a.paused && a.src.endsWith(bg.url)) { a.pause(); return; } a.src = bg.url; a.volume = bg.volume; a.play(); },
     narr: () => { s.narration.push({ text: "", voice: voiceList?.voices?.[0]?.id || "zf_001", speed: 1, start: +(timelinePos() || 0).toFixed(1), volume: 1 }); renderNarr(); },
   })[b.dataset.b]());
+  const canvasAudio=$("#fmCanvasAudio",set);
+  canvasAudio.onchange=()=>{
+    const n=node(canvasAudio.value), v=curV(n);
+    canvasAudio.value="";
+    if (!v?.seconds) return;
+    addFilmAudio(F,{ref:v.ref,name:n.name,seconds:v.seconds,node:n.id},+timelinePos().toFixed(2));
+  };
+  const cutawaySource = $("#fmCutawaySource",set);
+  if (cutawaySource) cutawaySource.onchange = () => {
+    const media = node(cutawaySource.value);
+    cutawaySource.value = "";
+    if (filmSource(media)) addFilmCutaway(F,media);
+  };
   renderNarr();
+  renderFilmAudio();
+  renderFilmTitles();
+  renderFilmCutaways();
 }
 async function fetchOk(url, opt) { const r = await fetch(url, opt); if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch {} throw new Error(m); } return r; }
 function pickAudio(cb) { const i = document.createElement("input"); i.type = "file"; i.accept = "audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg"; i.onchange = () => i.files[0] && cb(i.files[0]); i.click(); }
+
+function addFilmAudio(F, audio, start) {
+  (F.spec.audio_clips ||= []).push({ref:audio.ref, name:audio.name, seconds:audio.seconds, node:audio.node,
+    start, in:0, out:audio.seconds, volume:1});
+  renderFilmAudio();
+  saveFilmDraft(F);
+}
+
+function uploadFilmAudio(F, timed) {
+  const start = +timelinePos().toFixed(2);
+  pickAudio(async file => {
+    const body = new FormData(); body.append("file", file);
+    try {
+      const audio = await (await fetchOk("/api/upload_audio", {method:"POST", body})).json();
+      if (FILM !== F || F.board !== boardId) return;
+      if (timed) {
+        addFilmAudio(F,audio,start);
+        return;
+      } else {
+        F.spec.bgm = {ref:audio.ref, url:audio.url, name:audio.name, volume:.35, duck:true};
+        renderFilm();
+      }
+      saveFilmDraft(F);
+    } catch (e) { toast(e.message, 4000); }
+  });
+}
+
+function filmAudioTranscripts(track) {
+  return B.nodes.filter(n=>n.type === "text" && n.data.transcript?.source_ref === track.ref &&
+    Array.isArray(n.data.transcript.cues) && n.data.transcript.cues.length);
+}
+
+function filmAudioCaption(spec,time) {
+  for (const track of spec.audio_clips || []) {
+    const start = track.start ?? 0, begin = track.in ?? 0, end = track.out ?? track.seconds;
+    if (!Array.isArray(track.captions) || time < start || time >= start + end - begin) continue;
+    const source = begin + time - start;
+    const cue = track.captions.find(cue=>source >= cue?.start && source < cue.end && cue.text?.trim());
+    if (cue) return cue.text;
+  }
+  return "";
+}
+
+function renderFilmAudio() {
+  const F = FILM, box = $("#fmAudioSettings"), tracks = F.spec.audio_clips || [];
+  box.innerHTML = tracks.map((clip, i) => {
+    const choices = filmAudioTranscripts(clip);
+    const saved = clip.captions?.length ? `<option value=":saved" selected>已采用的字幕 · ${clip.captions.length} 条</option>` : "";
+    return `<div class="nar" data-audio-index="${i}">
+    <div class="nr"><b title="${esc(clip.name)}">${esc(clip.name)}</b><button class="pill" type="button" data-audio-locate>定位</button><button class="pill" type="button" data-audio-remove>移除</button></div>
+    <div class="nr">${[["start","起点",null],["in","入点",clip.seconds],["out","出点",clip.seconds]].map(([key,label,max]) =>
+      `<label>${label}<input type="number" data-audio-key="${key}" min="0" ${max === null ? "" : `max="${max}"`} step="0.01" value="${clip[key]}">秒</label>`).join("")}</div>
+    <label>音量<input type="range" data-audio-key="volume" min="0" max="1" step="0.01" value="${clip.volume}"><output>${Math.round(clip.volume * 100)}%</output></label>
+    ${saved || choices.length ? `<label>旁白字幕<select data-audio-transcript aria-label="${esc(clip.name)}的旁白字幕" ${canvasCanEdit() ? "" : "disabled"}>
+      <option value="">不使用旁白字幕</option>${saved}${choices.map(n=>`<option value="${esc(n.id)}">采用 ${esc(n.name)}</option>`).join("")}</select></label>` : ""}
+  </div>`;
+  }).join("");
+  $$("[data-audio-index]", box).forEach(row => {
+    const index = Number(row.dataset.audioIndex), clip = tracks[index];
+    const captions = $("[data-audio-transcript]",row);
+    if (captions) captions.onchange = () => {
+      if (!canvasCanEdit() || captions.value === ":saved") return;
+      if (captions.value) {
+        const source = filmAudioTranscripts(clip).find(n=>n.id===captions.value);
+        if (!source) { renderFilmAudio(); return toast("所选转写已移除，请重新选择"); }
+        clip.captions = vtClone(source.data.transcript.cues);
+        F.spec.subtitles = true;
+      } else delete clip.captions;
+      saveFilmDraft(F);
+      renderFilm();
+      previewTick();
+    };
+    $("[data-audio-locate]", row).onclick = () => seekTimeline(Math.min(clip.start, filmTotal(F.spec)));
+    $("[data-audio-remove]", row).onclick = () => {
+      tracks.splice(index, 1); syncFilmAudio(F); renderFilmAudio(); saveFilmDraft(F);
+    };
+    $$("[data-audio-key]", row).forEach(input => input.onchange = () => {
+      const key = input.dataset.audioKey, value = input.valueAsNumber;
+      if (!Number.isFinite(value) || value < 0 || key === "in" && value >= clip.out ||
+          key === "out" && (value <= clip.in || value > clip.seconds)) {
+        input.value = clip[key]; toast("请检查音频时间，出点须晚于入点"); return;
+      }
+      clip[key] = value;
+      if (key === "volume") input.nextElementSibling.textContent = Math.round(value * 100) + "%";
+      syncFilmAudio(F); renderFilmAudioLanes(); saveFilmDraft(F);
+    });
+  });
+  renderFilmAudioLanes();
+}
+
+function renderFilmAudioLanes() {
+  const F = FILM, host = $("#fmAudioLanes"), tracks = F.spec.audio_clips || [], total = filmTotal(F.spec);
+  $("#fmTime").max = total;
+  host.hidden = !tracks.length;
+  host.innerHTML = tracks.map((clip, i) => {
+    const start = Math.min(total, clip.start);
+    const end = Math.min(total, clip.start + clip.out - clip.in);
+    const label = start >= total ? `${esc(clip.name)} · 超出成片范围` : esc(clip.name);
+    const position = start >= total ? "left:0;max-width:100%" : `left:${100 * start / total}%;width:${100 * (end - start) / total}%`;
+    return `<div class="fm-audio-lane"><button type="button" data-audio-jump="${i}" style="${position}" title="${esc(clip.name)} · ${clip.start.toFixed(2)}s">${label}</button></div>`;
+  }).join("");
+  $$("[data-audio-jump]", host).forEach(button => button.onclick = () => {
+    const index = Number(button.dataset.audioJump);
+    seekTimeline(Math.min(tracks[index].start, total));
+    $("[data-audio-index='"+index+"'] [data-audio-locate]").focus();
+  });
+}
+
+function syncFilmAudio(F, time) {
+  const players = F.audioPlayers ||= new Map();
+  const active = new Set();
+  if (Number.isFinite(time)) for (const clip of F.spec.audio_clips || []) {
+    const offset = clip.in + time - clip.start;
+    if (offset < clip.in || offset >= clip.out || !clip.volume) continue;
+    active.add(clip);
+    let player = players.get(clip);
+    if (!player) {
+      player = {media:new Audio(remakeMedia(clip.ref)), pending:false, blocked:false};
+      players.set(clip, player);
+    }
+    const media = player.media;
+    media.volume = clip.volume;
+    if (Math.abs(media.currentTime - offset) > .12) media.currentTime = offset;
+    if (media.paused && !player.pending && !player.blocked) {
+      player.pending = true;
+      media.play().catch(() => { player.blocked = true; }).finally(() => { player.pending = false; });
+    }
+  }
+  for (const [clip, player] of players) {
+    if (!active.has(clip)) { player.media.pause(); players.delete(clip); }
+  }
+}
 
 function renderNarr() {
   const s = FILM.spec, box = $("#fmNarr");
@@ -171,34 +420,211 @@ function renderNarr() {
 // ---- preview: one clip (trimmed) or the whole film in sequence, with the subtitles on top
 let playAll = false;
 function clipStart(i) { const s = FILM.spec; let t = 0; for (let k = 0; k < i; k++) t += clipLen(s.clips[k]) - clipOverlap(s.clips[k], s.clips[k + 1]); return t; }
-function timelinePos() { const v = $("#fmV"), c = FILM.spec.clips[FILM.sel]; return c ? clipStart(FILM.sel) + Math.max(0, v.currentTime - (c.in || 0)) : 0; }
+function filmClipOffset(F) {
+  const c = F.spec.clips[F.sel];
+  if (F.still) {
+    const elapsed = F.still.started === null ? 0 : (performance.now() - F.still.started) / 1000;
+    return Math.min(c.duration, F.still.offset + elapsed);
+  }
+  return F.pendingOffset ?? Math.max(0, (($("#fmV").currentTime || 0) - (c.in || 0)) / filmSpeed(c));
+}
+function timelinePos() { return FILM.spec.clips.length ? clipStart(FILM.sel) + filmClipOffset(FILM) : 0; }
+function playFilmClip() {
+  if (FILM.still) {
+    if (filmClipOffset(FILM) >= clipLen(FILM.spec.clips[FILM.sel])) FILM.still.offset = 0;
+    FILM.still.started = performance.now();
+    $("#fmStillPlay").textContent = "暂停";
+  } else {
+    $("#fmV").play().catch(() => { playAll = false; });
+  }
+}
 function seekTimeline(t) {
   const s = FILM.spec; let i = 0;
+  if (!s.clips.length) return;
   while (i + 1 < s.clips.length && clipStart(i + 1) <= t) i++;
   selectClip(i, t - clipStart(i));
 }
-function selectClip(i, offset = 0) {
+function selectClip(i, offset = 0, autoplay = false) {
   const F = FILM; if (!F) return; F.sel = i;
+  if (!autoplay) { playAll = false; syncFilmAudio(F); }
+  F.still = null;
+  F.pendingOffset = offset;
   $$("#fmTl .fc").forEach(el => el.classList.toggle("on", +el.dataset.i === i));
-  const c = F.spec.clips[i], v = filmVersion(c), vid = $("#fmV");
-  if (!v) return;
+  const c = F.spec.clips[i], vid = $("#fmV"), image = $("#fmStill");
+  if (!c) {
+    if (!vid.paused) vid.pause();
+    vid.hidden = image.hidden = $("#fmStillControls").hidden = true;
+    $("#fmClip").textContent = "添加视频片段后即可连续预览";
+    $("#fmSub").textContent = "";
+    clearFilmCutawayPreview(); renderFilmTitlePreview(0);
+    return;
+  }
+  const v = filmVersion(c);
+  const isStill = c.kind === "image";
+  vid.hidden = isStill || !v;
+  image.hidden = !isStill || !v;
+  $("#fmStillControls").hidden = !isStill || !v;
+  if (!vid.paused) vid.pause();
+  vid.onloadedmetadata = null;
+  vid.onerror = null;
+  if (!v) { $("#fmClip").textContent = "片段素材已不存在"; return; }
+  if (isStill) {
+    F.pendingOffset = null;
+    F.still = {offset:Math.min(offset, c.duration), started:null};
+    image.src = v.url;
+    image.onload = sizeFilmTitleLayer;
+    const seek = $("#fmStillSeek");
+    seek.max = c.duration; seek.value = F.still.offset;
+    $("#fmStillPlay").textContent = "播放";
+    renderClipBox();
+    if (autoplay) playFilmClip();
+    return;
+  }
   if (!vid.src.endsWith(v.url)) vid.src = v.url;
-  const go = () => { c.src_len = vid.duration || c.src_len; vid.currentTime = (c.in || 0) + offset; renderClipBox(); syncFilmOriginal(); };
-  if (vid.readyState >= 1) go(); else vid.onloadedmetadata = () => { vid.onloadedmetadata = null; go(); };
+  vid.playbackRate = filmSpeed(c);
+  const go = () => {
+    if (FILM !== F || F.spec.clips[F.sel] !== c) return;
+    c.src_len = vid.duration || c.src_len;
+    sizeFilmTitleLayer();
+    vid.currentTime = Math.min(c.out ?? filmMediaLength(c), (c.in || 0) + offset * filmSpeed(c));
+    F.pendingOffset = null;
+    renderClipBox();
+    if (autoplay) playFilmClip();
+  };
+  if (vid.readyState >= 1) go();
+  else {
+    $("#fmClip").textContent = "正在加载片段…";
+    vid.onloadedmetadata = () => { vid.onloadedmetadata = null; go(); };
+    vid.onerror = () => {
+      if (FILM === F && F.spec.clips[F.sel] === c) $("#fmClip").textContent = "无法预览这段素材";
+    };
+  }
 }
+function filmSubtitleCues(lines, length) {
+  const weights = lines.map(line => [...line].length + 4);
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const span = Math.max(.3, length - .15) - .15;
+  let start = .15;
+  return lines.map((text, index) => {
+    const end = start + span * weights[index] / total;
+    const cue = {text, start, end};
+    start = end;
+    return cue;
+  });
+}
+function splitFilmClip(F, clip, position) {
+  const start = clip.in || 0, end = clip.out ?? filmMediaLength(clip), speed = filmSpeed(clip);
+  // Snap to the rendered timeline so splitting a retimed clip keeps its export length.
+  const tick = Math.round((position - start) / speed * FILM_FPS);
+  const frames = Math.round((end - start) / speed * FILM_FPS);
+  if (!(0 < tick && tick < frames)) return toast("请把播放头移到片段内部再分割");
+  const elapsed = tick / FILM_FPS, split = start + elapsed * speed;
+  const cues = filmSubtitleCues(clip.subs, frames / FILM_FPS);
+  const right = {...clip, in:split, out:end, tight:true,
+    subs:cues.filter(cue => (cue.start + cue.end) / 2 >= elapsed).map(cue => cue.text)};
+  const left = {...clip, out:split, tight:true, trans:"cut",
+    subs:cues.filter(cue => (cue.start + cue.end) / 2 < elapsed).map(cue => cue.text)};
+  if (clip.captions) {
+    left.captions = clip.captions.filter(cue => cue.start < split);
+    right.captions = clip.captions.filter(cue => cue.end > split);
+  }
+  const previous = F.spec.clips[F.sel - 1], next = F.spec.clips[F.sel + 1];
+  if ((previous && clipOverlap(previous, left) < clipOverlap(previous, clip)) ||
+      clipOverlap(right, next) < clipOverlap(clip, next))
+    return toast("切点太靠近叠化转场，请把播放头移开后再分割");
+  F.spec.clips.splice(F.sel, 1, left, right);
+  renderFilm();
+  selectClip(F.sel + 1);
+  saveFilmDraft();
+}
+async function captureFilmFrame(F, clip, button) {
+  const video = $("#fmV"), version = filmVersion(clip);
+  if (video.readyState < 1 || !version) return toast("请等待当前视频片段载入");
+  // The out point belongs to the next clip, so use the preceding frame at that boundary.
+  const time = Math.max(clip.in || 0, Math.min(video.currentTime, (clip.out ?? filmMediaLength(clip)) - .001));
+  button.disabled = true;
+  try {
+    const image = await captureOnCanvas(clip.node, version, {position:"time", at:time, allowDetached:true, active:()=>FILM===F});
+    if (image && FILM===F) closeFilm();
+  } catch (error) { toast("截帧失败：" + error.message); }
+  finally { button.disabled = false; }
+}
+
+function filmCaptionInput(F, clip) {
+  const audioRef = clip.audio_ref || (clip.audio_start != null && F.spec.remake_audio);
+  return {board:F.board, ref:filmVersion(clip)?.ref, in:clip.in || 0, out:clip.out,
+    ...(audioRef ? {audio_ref:audioRef, audio_start:clip.audio_start} : {})};
+}
+
+async function transcribeFilmClip(F, clip, button) {
+  const pending = F.captionRequests ||= new Set();
+  if (pending.has(clip)) return;
+  const request = filmCaptionInput(F, clip);
+  if (!request.ref) return toast("找不到要识别字幕的视频");
+  const signature = () => JSON.stringify([filmCaptionInput(F, clip),clip.subs,clip.captions]);
+  const before = signature();
+  pending.add(clip);
+  button.disabled = true;
+  button.textContent = "正在识别…";
+  try {
+    const result = await api("/api/video/captions", request);
+    if (FILM !== F || !F.spec.clips.includes(clip)) return;
+    if (signature() !== before) return toast("字幕或素材区间已修改，请重新识别");
+    if (!result.captions?.length) return toast("这段原声未识别到台词");
+    clip.captions = result.captions;
+    F.spec.subtitles = true;
+    renderFilm();
+    saveFilmDraft(F);
+  } catch (error) {
+    if (FILM === F) toast("字幕识别失败：" + error.message, 5000);
+  } finally {
+    pending.delete(clip);
+    if (FILM === F && F.spec.clips[F.sel] === clip) renderClipBox();
+  }
+}
+
 function renderClipBox() {
   const F = FILM, c = F.spec.clips[F.sel], box = $("#fmClip"), L = filmMediaLength(c), out = c.out ?? L;
+  const isStill = c.kind === "image";
   const baseIn = c.remake_shot ? c.remake_shot.start - c.audio_start : 0;
-  const baseOut = c.remake_shot ? Math.min(L, c.remake_shot.end - c.audio_start) : L;
-  const minLength = Math.min(c.remake_shot ? 1 / RM_FPS : .5, Math.max(0, baseOut - baseIn));
-  const seekStep = c.remake_shot ? 1 / RM_FPS : .1;
+  const baseOut = c.remake_shot ? Math.min(L, c.remake_shot.end - c.audio_start)
+    : c.audio_ref ? Math.min(L, c.audio_seconds - c.audio_start) : L;
+  const minLength = Math.min(c.remake_shot || c.tight ? 1 / RM_FPS : .5, Math.max(0, baseOut - baseIn));
+  const volumeLabel = c.audio_ref ? "原片音量" : "原声音量";
+  const seekStep = c.remake_shot || c.tight ? 1 / RM_FPS : .1;
+  const updateLabel = c.remake_shot ? "更新这一镜" : "更新素材版本";
+  const trimControls = isStill ? "" : '<button class="pill" data-a="in">从这里开始</button><button class="pill" data-a="out">到这里结束</button><button class="pill" data-a="reset">恢复完整</button><button class="pill" data-split-clip>在播放头分割</button>' +
+    (canvasCanEdit() ? '<button class="pill" data-film-capture>截帧到画布</button>' : "");
+  const captionBusy = F.captionRequests?.has(c);
+  const captions = c.captions ? `<div class="fm-captions" aria-label="时间码字幕">
+    ${c.captions.map((cue,i) => `<div class="fm-caption" data-cue="${i}">
+      <button class="pill" type="button" data-cue-seek aria-label="定位第 ${i+1} 条字幕">▶</button>
+      <input type="number" min="0" step=".001" data-cue-time="start" value="${esc(cue.start)}" aria-label="第 ${i+1} 条字幕开始时间">
+      <input type="number" min="0" step=".001" data-cue-time="end" value="${esc(cue.end)}" aria-label="第 ${i+1} 条字幕结束时间">
+      <input type="text" data-cue-text maxlength="500" value="${esc(cue.text)}" aria-label="第 ${i+1} 条字幕文本">
+      <button class="pill" type="button" data-cue-remove aria-label="删除第 ${i+1} 条字幕">×</button>
+    </div>`).join("")}</div>`
+    : `<label>手写字幕（一行一句）<textarea data-film-lines rows="2" placeholder="这段没有字幕">${esc(c.subs.join("\n"))}</textarea></label>`;
   box.innerHTML = `<div class="row"><b>第 ${F.sel + 1} 段 · ${esc(c.name || node(c.node)?.name || "")}</b>
-      <span class="grow"></span>${c.ref ? '<button class="pill" data-update-version>更新这一镜</button>' : ''}<button class="pill" data-a="in" title="把当前画面设为开始">从这里开始</button><button class="pill" data-a="out" title="把当前画面设为结束">到这里结束</button><button class="pill" data-a="reset">恢复完整</button></div>
+      <span class="grow"></span>${c.ref && (c.remake_shot || (c.node !== F.target?.id && node(c.node))) ? `<button class="pill" data-update-version>${updateLabel}</button>` : ""}${trimControls}</div>
+    ${isStill ? `<label class="still-duration">停留时长 <input type="number" min="0.5" max="60" step="0.1" value="${c.duration}"> 秒</label>` : `
     <div class="trim"><span>入点 <b>${(c.in || 0).toFixed(1)}s</b></span><input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${c.in || 0}" data-t="in">
-      <input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${out}" data-t="out"><span>出点 <b>${out.toFixed(1)}s</b></span><span class="dim">保留 ${(out - (c.in || 0)).toFixed(1)}s / 原长 ${(baseOut - baseIn).toFixed(1)}s</span></div>
-    <div class="row2"><label>字幕（一行一句，按顺序出现）<textarea rows="2" placeholder="这段没有字幕">${esc(c.subs.join("\n"))}</textarea></label>
-      <label class="vol">原声音量<input type="range" min="0" max="1.5" step="0.05" value="${c.volume}"><span>${Math.round(c.volume * 100)}%</span></label></div>`;
+      <input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${out}" data-t="out"><span>出点 <b>${out.toFixed(1)}s</b></span><span class="dim">保留 ${(out - (c.in || 0)).toFixed(1)}s / 原长 ${(baseOut - baseIn).toFixed(1)}s</span></div>`}
+    <div class="row2">${captions}
+      ${isStill ? "" : `<label class="vol">${volumeLabel}<input type="range" min="0" max="1.5" step="0.05" value="${c.volume}"><span>${Math.round(c.volume * 100)}%</span></label><label class="clip-speed">速度（倍）<input type="number" min="0.5" max="2" step="any" value="${filmSpeed(c)}" data-clip-speed></label>`}</div>`;
+  if (!isStill && canvasCanEdit()) box.insertAdjacentHTML("beforeend", `<div class="row fm-caption-actions">
+    <button class="pill" type="button" data-film-transcribe ${captionBusy ? "disabled" : ""}>${captionBusy ? "正在识别…" : c.captions ? "重新识别字幕" : "识别原声字幕"}</button>
+    ${c.captions ? '<button class="pill" type="button" data-film-manual>改用手写字幕</button><span class="dim">时间为原片秒数</span>' : ""}</div>`);
   const vid = $("#fmV");
+  if (F.n?.data.playlist) {
+    const locate = document.createElement("button");
+    locate.className = "pill";
+    locate.type = "button";
+    locate.textContent = "定位原片";
+    locate.dataset.playlistLocate = "";
+    locate.onclick = () => locateFilmPlaylistSource(F,c);
+    $(".row", box).append(locate);
+  }
   const update = $("[data-update-version]", box);
   if (update) update.onclick = async () => {
     update.disabled = true;
@@ -206,12 +632,57 @@ function renderClipBox() {
     catch (error) { toast(error.message); }
     finally { update.disabled = false; }
   };
+  const manual = $("[data-film-lines]", box);
+  if (manual) {
+    manual.oninput = e => { c.subs = e.target.value.split("\n").map(x => x.trim()).filter(Boolean); };
+    manual.onblur = () => renderFilm();
+  }
+  const transcribe = $("[data-film-transcribe]", box);
+  if (transcribe) transcribe.onclick = () => transcribeFilmClip(F, c, transcribe);
+  const useManual = $("[data-film-manual]", box);
+  if (useManual) useManual.onclick = () => {
+    c.subs = c.captions.map(cue => cue.text).filter(Boolean);
+    delete c.captions;
+    renderFilm(); renderClipBox(); saveFilmDraft(F);
+  };
+  $$("[data-cue]", box).forEach(row => {
+    const i = Number(row.dataset.cue), cue = c.captions[i];
+    $("[data-cue-seek]", row).onclick = () => { vid.currentTime = Math.max(c.in || 0, Math.min(cue.start, out)); };
+    $("[data-cue-text]", row).onchange = e => { cue.text = e.target.value.trim(); saveFilmDraft(F); };
+    $("[data-cue-remove]", row).onclick = () => { c.captions.splice(i,1); renderFilm(); renderClipBox(); saveFilmDraft(F); };
+    $$("[data-cue-time]", row).forEach(input => input.onchange = () => {
+      const key = input.dataset.cueTime, value = input.valueAsNumber;
+      const start = key === "start" ? value : cue.start, end = key === "end" ? value : cue.end;
+      if (!Number.isFinite(value) || !(start >= (c.captions[i-1]?.end ?? 0) && start < end && end <= (c.captions[i+1]?.start ?? L + .001))) {
+        input.value = cue[key];
+        return toast("字幕时间须在原片范围内，且不能与相邻字幕重叠");
+      }
+      cue[key] = value;
+      saveFilmDraft(F);
+    });
+  });
+  if (isStill) {
+    syncFilmOriginal();
+    const duration = $(".still-duration input", box);
+    duration.onchange = () => {
+      const value = duration.valueAsNumber;
+      if (!Number.isFinite(value) || value < .5 || value > 60) {
+        duration.value = c.duration;
+        toast("图片停留时长须在 0.5–60 秒之间");
+        return;
+      }
+      const offset = filmClipOffset(F);
+      c.duration = value;
+      renderFilm(); selectClip(F.sel, Math.min(offset, value)); saveFilmDraft();
+    };
+    return;
+  }
   const trim = (k, value) => {
-    const time = c.remake_shot ? Math.round(value * RM_FPS) / RM_FPS : +value.toFixed(2);
+    const time = c.remake_shot || c.tight ? Math.round(value * RM_FPS) / RM_FPS : +value.toFixed(2);
     if (k === "in") c.in = Math.max(baseIn, Math.min(time, (c.out ?? baseOut) - minLength));
     else {
       c.out = Math.min(baseOut, Math.max(time, (c.in || 0) + minLength));
-      if (!c.remake_shot && c.out >= L - .05) c.out = null;
+      if (!c.remake_shot && !c.tight && c.out >= L - .05) c.out = null;
     }
   };
   $$("input[data-t]", box).forEach(r => r.oninput = () => {
@@ -221,21 +692,37 @@ function renderClipBox() {
   });
   $$("button[data-a]", box).forEach(b => b.onclick = () => {
     const a = b.dataset.a;
-    if (a === "reset") { c.in = baseIn; c.out = c.remake_shot ? baseOut : null; }
+    if (a === "reset") { c.in = baseIn; c.out = c.remake_shot || c.audio_ref ? baseOut : null; }
     else trim(a, vid.currentTime);
     renderClipBox(); refreshTimelineLabels();
   });
-  $("textarea", box).oninput = e => { c.subs = e.target.value.split("\n").map(x => x.trim()).filter(Boolean); };
-  $("textarea", box).onblur = () => renderFilm();
-  const vr = $(".vol input", box); vr.oninput = () => { c.volume = +vr.value; vr.nextElementSibling.textContent = Math.round(c.volume * 100) + "%"; vid.volume = Math.min(1, c.volume); };
+  const vr = $(".vol input", box); vr.oninput = () => { c.volume = +vr.value; vr.nextElementSibling.textContent = Math.round(c.volume * 100) + "%"; vid.volume = Math.min(1, c.volume); syncFilmOriginal(); };
+  const speed = $("[data-clip-speed]", box);
+  $("[data-split-clip]", box).onclick = () => splitFilmClip(F, c, vid.currentTime);
+  const capture = $("[data-film-capture]", box);
+  if (capture) capture.onclick = () => captureFilmFrame(F, c, capture);
+  speed.onchange = () => {
+    const rate = speed.valueAsNumber;
+    if (!Number.isFinite(rate) || rate < .5 || rate > 2) {
+      speed.value = filmSpeed(c);
+      toast("播放速度须在 0.5–2 倍之间");
+      return;
+    }
+    if (rate === 1) delete c.speed; else c.speed = rate;
+    vid.playbackRate = rate;
+    syncFilmOriginal();
+    refreshTimelineLabels();
+    saveFilmDraft();
+  };
   vid.volume = Math.min(1, c.volume);
   syncFilmOriginal();
 }
 function syncFilmOriginal() {
   const track = $("#fmOriginal"), video = $("#fmV"), clip = FILM?.spec.clips[FILM.sel];
-  const ref = FILM?.spec.remake_audio;
-  video.muted = !!ref && clip?.audio_start != null;
-  if (!video.muted) { track.pause(); return; }
+  const ref = clip?.audio_ref || FILM?.spec.remake_audio;
+  const original = !!ref && clip?.kind !== "image" && clip?.audio_start != null;
+  video.muted = original && !(clip.audio_ref === clip.ref && clip.audio_start === 0);
+  if (!video.muted) { if (!track.paused) track.pause(); return; }
   const url = remakeMedia(ref);
   if (track.getAttribute("src") !== url) track.src = url;
   const time = clip.audio_start + video.currentTime;
@@ -261,76 +748,162 @@ async function updateFilmVersion(F, clip) {
     const next = remakeTimelineSpec(target.node, version, session).clips[index];
     const start = (clip.in || 0) + clip.audio_start - provenance.start;
     const end = (clip.out ?? filmMediaLength(clip)) + clip.audio_start - provenance.start;
+    if (clip.ref !== next.ref || clip.audio_start !== next.audio_start) delete clip.captions;
     Object.assign(clip, {ref:next.ref, media_seconds:next.media_seconds, audio_start:next.audio_start, src_len:undefined,
       in:Math.max(next.in, next.in + start), out:Math.min(next.out, next.in + end)});
   } else {
     const version = curV(node(clip.node));
     if (!version) throw new Error("画布上没有可用的镜头版本");
-    const limit = version.seconds || filmMediaLength(clip);
-    if ((clip.in || 0) >= limit) throw new Error("新版本短于当前入点");
-    clip.ref = version.ref; clip.media_seconds = limit; delete clip.src_len;
-    if (clip.out != null) clip.out = Math.min(clip.out, limit);
+    if (clip.kind !== "image") {
+      const limit = version.seconds || vlen(node(clip.node));
+      if ((clip.in || 0) >= limit) throw new Error("新版本短于当前入点");
+      clip.media_seconds = limit; delete clip.src_len;
+      if (clip.out != null) clip.out = Math.min(clip.out, limit);
+    }
+    if (clip.ref !== version.ref) delete clip.captions;
+    clip.ref = version.ref;
   }
   renderFilm(); selectClip(F.sel);
 }
 function refreshTimelineLabels() {
   const s = FILM.spec;
   $$("#fmTl .fc").forEach(el => { const c = s.clips[+el.dataset.i]; const L = clipLen(c); el.style.width = Math.round(90 + L * 22) + "px"; $(".fl span", el).textContent = L.toFixed(1) + "s"; });
-  $("#fmTotal").textContent = `${s.clips.length} 段 · ${filmTotal(s).toFixed(1)} 秒`;
+  const total = filmTotal(s);
+  $("#fmTotal").textContent = `${s.clips.length} 段 · ${total.toFixed(1)} 秒`;
+  const cover = $("#fmSet [data-k=cover]");
+  if (cover) {
+    cover.max = Math.max(.1, total).toFixed(1);
+    s.cover = Math.min(s.cover || 0, total);
+    cover.value = s.cover;
+    cover.nextElementSibling.textContent = s.cover.toFixed(1) + "s";
+  }
+  renderFilmAudioLanes();
+  renderFilmTitleLane();
+  renderFilmCutawayLane();
 }
 function previewTick() {
   const F = FILM; if (!F) return;
   const vid = $("#fmV"), c = F.spec.clips[F.sel]; if (!c) return;
-  const L = c.src_len || vid.duration || 0, out = c.out ?? L;
-  if (!vid.paused && vid.currentTime >= out - 0.04) {
-    if (playAll && F.sel + 1 < F.spec.clips.length) { selectClip(F.sel + 1); vid.play(); } else { vid.pause(); playAll = false; }
+  const isStill = c.kind === "image";
+  if (isStill && !F.still) return;
+  const L = isStill ? c.duration : c.src_len || vid.duration || 0, out = c.out ?? L;
+  const offset = filmClipOffset(F);
+  const playing = isStill ? F.still.started !== null : !vid.paused || playAll && vid.ended;
+  // The sequential preview cuts at the start of an exported dissolve.
+  // This keeps the preview clock and the timed audio on the same timeline.
+  const overlap = playAll ? clipOverlap(c, F.spec.clips[F.sel + 1]) : 0;
+  const ended = isStill ? offset >= c.duration - overlap : vid.ended || vid.currentTime >= out - overlap * filmSpeed(c) - .001;
+  if (playing && ended) {
+    if (playAll && F.sel + 1 < F.spec.clips.length) { selectClip(F.sel + 1, 0, true); return; }
+    if (isStill) {
+      F.still.offset = c.duration; F.still.started = null;
+      $("#fmStillPlay").textContent = "播放";
+    } else vid.pause();
+    playAll = false;
   }
-  if (!vid.paused && vid.currentTime < (c.in || 0) - 0.1) vid.currentTime = c.in || 0;
+  if (isStill) $("#fmStillSeek").value = offset;
+  else if (!vid.paused && vid.currentTime < (c.in || 0) - .1) vid.currentTime = c.in || 0;
   // subtitle overlay: the same spread as the renderer
   const sub = $("#fmSub"), lines = F.spec.subtitles ? c.subs : [];
-  let txt = "";
-  if (lines.length) {
-    const len = out - (c.in || 0), t = vid.currentTime - (c.in || 0), a = 0.15, b = Math.max(0.3, len - 0.15);
-    const w = lines.map(x => x.length + 4), tot = w.reduce((p, q) => p + q, 0); let st = a;
-    lines.forEach((x, k) => { const d = (b - a) * w[k] / tot; if (t >= st && t < st + d) txt = x; st += d; });
-  }
+  const position = clipStart(F.sel) + offset;
+  const voiceCaption = F.spec.subtitles ? filmAudioCaption(F.spec,position) : "";
+  const sourcePosition = (c.in || 0) + offset * filmSpeed(c);
+  const timedVisible = offset >= clipOverlap(F.spec.clips[F.sel - 1], c) && offset < clipLen(c) - clipOverlap(c, F.spec.clips[F.sel + 1]);
+  const txt = voiceCaption || (c.captions && F.spec.subtitles
+    ? (timedVisible && c.captions.find(cue => sourcePosition >= cue.start && sourcePosition < cue.end)?.text || "")
+    : filmSubtitleCues(lines, clipLen(c)).find(cue => offset >= cue.start && offset < cue.end)?.text || "");
   sub.textContent = txt; sub.style.fontSize = (F.spec.sub_size || 1) * 100 + "%"; sub.style.display = txt ? "" : "none";
   syncFilmOriginal();
+  previewFilmCutaway(F,position,playing && !ended);
+  const mainPlay = $("#fmMainPlay"), playLabel = playing && !ended ? "暂停" : "播放";
+  if (mainPlay.textContent !== playLabel) mainPlay.textContent = playLabel;
+  renderFilmTitlePreview(position);
+  $("#fmTime").value = position;
+  $("#fmTimeLabel").textContent = Math.min(Number($("#fmTime").max), position).toFixed(2) + "s";
+  syncFilmAudio(F, playing && !ended ? position : undefined);
 }
 function addClipMenu(e) {
-  const have = new Set(FILM.spec.clips.map(c => c.node));
-  const vids = byPosition(B.nodes.filter(m => m.type === "video" && curV(m) && !m.data.film).map(m => m.id));
+  const F = FILM;
+  const have = new Set(F.spec.clips.map(c => c.ref || filmVersion(c)?.ref));
+  const media = byPosition(B.nodes.filter(n => filmSource(n) && (!F.n?.data.playlist || playlistVideo(n)) && n !== F.n && n.id !== F.target?.id).map(n => n.id));
   const m = $("#fmAdd");
-  m.innerHTML = `<div class="mt">点击加到成片末尾</div>` + (vids.map(v => `<button data-id="${v.id}">${esc(v.name)}<span class="k">${have.has(v.id) ? "已在成片中" : vlen(v).toFixed(1) + "s"}</span></button>`).join("") || `<div class="h" style="padding:8px">画布上没有其他视频</div>`);
+  m.innerHTML = `<div class="mt">添加到末尾</div>` + (media.map(n => `<button data-id="${esc(n.id)}">${ico(n.type)}${esc(n.name)}<span class="k">${have.has(curV(n).ref) ? "已加入" : n.type === "image" ? "图片 · 3s" : vlen(n).toFixed(1) + "s"}</span></button>`).join("") || `<div class="h" style="padding:8px">画布上没有可用素材</div>`);
   m.classList.add("on");
   const r = e.target.getBoundingClientRect();
   m.style.left = Math.min(r.left, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.max(8, r.top - m.offsetHeight - 8) + "px";
   $$("button", m).forEach(b => b.onclick = () => {
-    m.classList.remove("on"); const v = node(b.dataset.id);
-    FILM.spec.clips.push({ node: v.id, in: 0, out: null, trans: "cut", subs: subsOf(v), volume: 1 }); renderFilm(); selectClip(FILM.spec.clips.length - 1);
+    m.classList.remove("on");
+    const n = node(b.dataset.id);
+    if (FILM !== F || !filmSource(n)) return;
+    F.spec.clips.push(newFilmClip(n)); renderFilm(); selectClip(F.spec.clips.length - 1); saveFilmDraft(F);
   });
 }
 
 // ---- export: create / update the film node and render it as a job
 async function exportFilm() {
-  const F = FILM, s = F.spec;
+  const F = FILM;
+  if (!F || F.busy || !canvasCanEdit()) return;
+  if (!F.spec.clips.length) return toast("先添加视频片段");
+  if (F.captionRequests?.size) return toast("请等待字幕识别完成后再导出");
+  if (F.n?.job) return toast("此成片仍在导出，请稍候");
+  F.busy = true;
+  $("#fmGo").disabled = true;
+  try { await submitFilm(F); }
+  catch (error) { toast("导出失败：" + error.message, 5000); }
+  finally {
+    F.busy = false;
+    if (!FILM || FILM === F) $("#fmGo").disabled = !canvasCanEdit();
+  }
+}
+
+async function submitFilm(F) {
+  const s = vtClone(F.spec);
   const clips = s.clips.map(c => ({ c, v: filmVersion(c) }));
-  if (clips.some(x => !x.v)) return toast("有片段的视频已被删除或还没生成，先移除它");
+  const missing = clips.findIndex(x => !x.v);
+  if (missing >= 0) { selectClip(missing); throw new Error(`第 ${missing + 1} 段素材已不存在`); }
+  const narration = () => s.narration.filter(x => x.ref).map(x => ({ref:x.ref, start:x.start, volume:x.volume ?? 1}));
+  const spec = {
+    clips: clips.map(({ c, v }) => ({ ref: v.ref, kind:c.kind, duration:c.duration, in: c.in || 0, out: c.out, trans: c.trans, volume: c.volume, subs: c.subs, captions:c.captions,
+      tight:c.tight, speed:c.speed, audio_ref:c.audio_ref, audio_start:c.audio_start, remake_shot:c.remake_shot && {...c.remake_shot, node:c.node} })),
+    remake_audio:s.remake_audio,
+    aspect: s.aspect, fit: s.fit, subtitles: s.subtitles, sub_size: s.sub_size, cover: s.cover || 0,
+    titles: (s.titles || []).filter(title => title.text.trim()),
+    cutaways: (s.cutaways || []).map(({node,ref,kind,start,duration,in:inPoint,memory_id,name,version})=>
+      ({node,ref,kind,start,duration,in:inPoint,memory_id,name,version})),
+    bgm: s.bgm ? { ref: s.bgm.ref, volume: s.bgm.volume, duck: s.bgm.duck !== false } : null,
+    narration: narration(),
+    audio_clips: (s.audio_clips || []).map(({ref,start,in:inPoint,out,volume,node,captions}) => ({ref,start,in:inPoint,out,volume,node,captions})),
+  };
+  const preflight = await api("/api/render/check", {spec, board:F.board});
+  if (FILM !== F || F.board !== boardId) return;
+  if (!preflight.ok) {
+    const first = preflight.issues[0];
+    if (Number.isInteger(first.clip)) selectClip(first.clip);
+    if (Number.isInteger(first.audio)) $("#fmAudioSettings [data-audio-index='"+first.audio+"'] input")?.focus();
+    throw new Error(first.error);
+  }
   const pending = s.narration.filter(x => x.text.trim() && !x.ref);
   for (const x of pending) {
     toast(`正在为旁白配音（${pending.indexOf(x) + 1}/${pending.length}）…`, 8000);
-    try { const r = await api("/api/tts", { text: x.text, voice: x.voice, speed: x.speed }); x.ref = r.ref; x.seconds = r.seconds; }
-    catch (e) { return toast("旁白配音失败：" + e.message, 5000); }
+    try {
+      const r = await api("/api/tts", {text:x.text, voice:x.voice, speed:x.speed});
+      x.ref = r.ref; x.seconds = r.seconds;
+      const current = F.spec.narration[s.narration.indexOf(x)];
+      if (current && !current.ref && ["text","voice","speed"].every(k => current[k] === x[k])) {
+        current.ref = r.ref; current.seconds = r.seconds;
+      }
+      saveFilmDraft(F);
+    } catch (e) { throw new Error("旁白配音失败：" + e.message); }
+    if (FILM !== F || F.board !== boardId) return;
   }
-  const spec = {
-    clips: clips.map(({ c, v }) => ({ ref: v.ref, in: c.in || 0, out: c.out, trans: c.trans, volume: c.volume, subs: c.subs, audio_start:c.audio_start })),
-    remake_audio:s.remake_audio,
-    aspect: s.aspect, fit: s.fit, subtitles: s.subtitles, sub_size: s.sub_size, cover: s.cover || 0,
-    bgm: s.bgm ? { ref: s.bgm.ref, volume: s.bgm.volume, duck: s.bgm.duck !== false } : null,
-    narration: s.narration.filter(x => x.ref).map(x => ({ ref: x.ref, start: x.start, volume: x.volume || 1 })),
-  };
-  checkpoint();
-  let n = F.n && node(F.n.id);
+  spec.narration = narration();
+  const target = F.target;
+  let n = target ? node(target.id) : F.n && node(F.n.id);
+  const versionIndex = target ? n?.versions.findIndex(v => v.ref === target.ref) : -1;
+  if (target && !(versionIndex >= 0)) throw new Error("剪辑所用的视频版本已移除");
+  if (n?.job || prepping.has(n?.id)) throw new Error("节点正在处理另一个任务，请稍候");
+  const sourceVersion = target ? vtSnapshot(n,versionIndex) : null;
+  if (!target && !n?.data.playlist) checkpoint();
   if (!n) {
     const src = clips.map(x => node(x.c.node)).filter(Boolean);
     const right = src.reduce((a, b) => !a || b.x + size(b).w > a.x + size(a).w ? b : a, null);
@@ -338,14 +911,57 @@ async function exportFilm() {
     n = addNode("video", at.x, at.y, { aspect: s.aspect === "source" ? "auto" : s.aspect }, { name: "成片" });
     F.n = n;
   }
-  const keep = JSON.parse(JSON.stringify(s)); keep.clips.forEach(c => delete c.src_len);
-  n.data.film = keep;
+  const keep = s;
+  keep.clips.forEach((c,i) => { c.ref = clips[i].v.ref; delete c.src_len; });
+  if (!target && n.data.playlist) {
+    if (!saveFilmPlaylist(F,{notify:false,spec:keep})) return;
+  } else if (!target) n.data.film = keep;
+  const fingerprint = JSON.stringify(spec);
+  if (F.attempt?.fingerprint !== fingerprint) {
+    const key = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,"0")).join("");
+    F.attempt = {key, fingerprint};
+  }
+  saveFilmDraft(F);
+  const filmNodeId = n.id;
+  prepping.add(filmNodeId);
+  let r;
   try {
-    const r = await api("/api/render", { spec, label: n.name });
-    n.job = { ids: r.ids, prompt: "", t0: Date.now(), st: {} }; save(); render(n); poll();
-    closeFilm(); selectOnly(n.id); fit([n]);
-    toast(`正在合成成片（约 ${fmtT(r.meta.est)}），完成后可以在节点上播放和下载`, 4000);
-  } catch (e) { toast("合成失败：" + e.message, 5000); }
+    save(); await flushSave();
+    if (FILM !== F || F.board !== boardId || node(filmNodeId) !== n || n.job) return;
+    r = await api("/api/render", {spec, board:F.board, label:n.name, request_key:F.attempt.key,
+      ...(target ? {target:{node:filmNodeId,ref:target.ref}} : {})});
+    if (F.board !== boardId || node(filmNodeId) !== n || n.job) return;
+  } finally {
+    prepping.delete(filmNodeId);
+  }
+  F.attempt = null;
+  saveFilmDraft(F);
+  const filmRecipe = {
+    clips:spec.clips.map(({ref,in:at,out,duration,trans,speed,audio_ref,audio_start}, index)=>
+      ({node:clips[index].c.node,ref,in:at,out,duration,trans,speed,audio_ref,audio_start})),
+    audio:[
+      ...(spec.remake_audio ? [{ref:spec.remake_audio,role:"original_sound"}] : []),
+      ...(spec.bgm ? [{ref:spec.bgm.ref,role:"bgm"}] : []),
+      ...spec.narration.map(({ref,start})=>({ref,start,role:"narration"})),
+      ...spec.audio_clips.map(({ref,start,node})=>({ref,start,node,role:"audio"})),
+    ],
+    ...(spec.titles.length ? {titles:spec.titles} : {}),
+    ...(spec.cutaways.length ? {cutaways:spec.cutaways} : {}),
+  };
+  const history = {film_recipe:filmRecipe};
+  if (target) {
+    checkpoint();
+    rememberVideoVersion(n);
+    history.node_data = sourceVersion.node_data;
+    history.input_edges = sourceVersion.input_edges;
+    history.mode = "剪辑";
+    filmRecipe.timeline = keep;
+  }
+  n.job = { ids: r.ids, prompt: sourceVersion?.prompt || "", t0: Date.now(), st: {}, source:"film", history };
+  save(); render(n); poll();
+  if (FILM === F) closeFilm();
+  selectOnly(n.id); fit([n]);
+  toast(target ? "正在导出，完成后会加入原视频的版本 Tab" : `正在导出 ${preflight.dimensions.join("×")} 成片，完成后可在节点上播放和下载`, 4000);
 }
 
 // ================================================================= queue panel + ETAs + "all done"
@@ -397,24 +1013,46 @@ function initFilm() {
   css.textContent = `
 #film { position: fixed; inset: 0; z-index: 60; background: #0b0b0c; display: none; flex-direction: column; }
 #film.on { display: flex; }
+#film.playlist-review :is(#fmSet,#fmTl .x,#fmTl .fadd,#fmTl .ft,#fmClip .trim,#fmClip .row2,#fmClip .fm-caption-actions,#fmClip button:not([data-playlist-locate])) { display:none; }
 #film .hd { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 #film .hd b { font-size: var(--fs-heading); } #film .hd .dim, #film .dim { color: var(--dim); font-size: var(--fs-small); }
 #film .main { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 16px 18px 8px; }
 #film .pv { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 #film .scr { position: relative; flex: 1; min-height: 0; background: #000; border-radius: 12px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-#film .scr video { max-width: 100%; max-height: 100%; }
+#film .scr :is(video, img) { max-width: 100%; max-height: 100%; object-fit: contain; }
+#film-output .fm-output-layer { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); overflow:hidden; container-type:size; pointer-events:none;
+  width:var(--fm-frame-width,100%); height:var(--fm-frame-height,100%); }
+#fmCutawayLayer { background:#000; }
+#film .scr #fmCutawayLayer :is(video,img) { display:block; width:100%; height:100%; object-fit:cover; }
+.fm-title-block { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); max-width:86%; box-sizing:border-box; color:white;
+  font-size:max(8px,min(7.5cqw,7.5cqh)); line-height:1.22; font-weight:600; text-align:center; overflow-wrap:anywhere;
+  text-shadow:0 0 3px #000,0 1px 4px #000; }
+.fm-title-block[data-position=top] { top:13%; font-size:max(8px,min(5cqw,5cqh)); }
+.fm-title-block[data-position=lower_left] { top:76%; left:7%; transform:translateY(-50%); max-width:72%; text-align:left; font-size:max(8px,min(5cqw,5cqh)); }
+.fm-title-block[data-style=label] { padding:.4em; border-radius:.4em; background:#141417dc; text-shadow:none; }
+#fmStillControls { display: flex; align-items: center; gap: 10px; }
+#fmStillControls[hidden] { display: none; }
+#fmStillSeek { flex: 1; accent-color: var(--c-image); }
+#fmClip .still-duration { font-size: var(--fs-small); color: var(--dim); }
+#fmClip .still-duration input { width: 75px; margin: 0 5px; padding: 4px 7px; background: var(--card-hi); border: 1px solid var(--line); border-radius: 6px; }
+#fmAdd { z-index: 61; }
 #fmSub { position: absolute; left: 5%; right: 5%; bottom: 7%; text-align: center; color: #fff; font-size: 100%; font-weight: 600; pointer-events: none;
   text-shadow: 0 0 3px #000, 0 0 3px #000, 0 0 6px #000; font-size: clamp(14px, 2.4vw, 30px); }
 #fmClip { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 #fmClip .row, #fmClip .trim, #fmClip .row2 { display: flex; align-items: center; gap: 10px; }
+#fmClip .row { flex-wrap: wrap; }
 #fmClip .grow { flex: 1; } #fmClip .trim input { flex: 1; accent-color: #ffb36b; }
 #fmClip .row2 label { display: flex; flex-direction: column; gap: 4px; color: var(--dim); font-size: var(--fs-small); flex: 1; }
-#fmClip .row2 label.vol { flex: 0 0 180px; } #fmClip .row2 .vol input { width: 100%; }
+#fmClip .row2 { flex-wrap: wrap; }
+#fmClip .row2 label.vol { flex: 0 1 150px; } #fmClip .row2 .vol input { width: 100%; }
+#fmClip .row2 label.clip-speed { flex: 0 0 68px; }
+#fmClip .clip-speed input { width: 68px; padding:4px 7px; color:var(--text); background:var(--card-hi); border:1px solid var(--line); border-radius:6px; }
 #fmClip textarea, #fmNarr textarea { width: 100%; resize: vertical; background: #111113; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--text); }
 #fmSet { width: 330px; flex: none; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 8px; }
 #fmSet h4 { margin: 12px 0 0; font-size: var(--fs-small); color: var(--dim); font-weight: 600; letter-spacing: .5px; }
 #fmSet label { display: flex; align-items: center; gap: 8px; font-size: var(--fs-small); }
-#fmSet label select { flex: 1; background: #222226; border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+#fmSet :is(label select,#fmCutawaySource) { background:#222226; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:4px 6px; }
+#fmSet label select { flex:1; }
 #fmSet label input[type=range] { flex: 1; } #fmSet .h, #qp .h { color: var(--faint); font-size: var(--fs-caption); line-height: 1.5; }
 #fmSet .bgm { display: flex; align-items: center; gap: 6px; } #fmSet .bgm span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nar { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
@@ -425,7 +1063,7 @@ function initFilm() {
 #fmTl { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 10px 18px 16px; border-top: 1px solid var(--line); min-height: 128px; }
 #fmTl .fc { position: relative; flex: none; height: 104px; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid transparent; cursor: pointer; }
 #fmTl .fc.on { border-color: var(--c-video); } #fmTl .fc.over { border-color: var(--blue); } #fmTl .fc.drag { opacity: .4; }
-#fmTl .fc video { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+#fmTl .fc :is(video, img) { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
 #fmTl .fl { position: absolute; left: 0; right: 0; top: 0; padding: 4px 7px; font-size: var(--fs-caption); background: linear-gradient(#000c, #0000); display: flex; gap: 4px; white-space: nowrap; overflow: hidden; }
 #fmTl .fl span { margin-left: auto; color: #ddd; }
 #fmTl .fs { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 7px; font-size: var(--fs-caption); background: #000a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -433,6 +1071,26 @@ function initFilm() {
 #fmTl .fc:hover .x { display: block; }
 #fmTl .ft { flex: none; align-self: center; margin: 0 4px; padding: 3px 7px; font-size: var(--fs-caption); border-radius: 8px; border: 1px solid var(--line2); background: #1b1b1f; color: #cfcfd5; writing-mode: vertical-rl; letter-spacing: 2px; }
 #fmTl .fadd { flex: none; align-self: center; margin-left: 12px; height: 104px; padding: 0 16px; border-radius: 10px; border: 1px dashed var(--line2); background: none; color: var(--dim); }
+.fm-time { display: flex; align-items: center; gap: 10px; margin: 0 18px 8px; color: var(--dim); font-size: var(--fs-caption); }
+#fmTime { flex: 1; accent-color: var(--c-video); }
+.fm-captions { flex:1 1 100%; min-width:0; max-height:210px; overflow:auto; }
+.fm-caption { display:grid; grid-template-columns:auto 5.8ch 5.8ch minmax(8ch,1fr) auto; align-items:center; gap:5px; margin:4px 0; }
+.fm-caption input { min-width:0; width:100%; padding:4px 5px; color:var(--text); background:var(--card); border:1px solid var(--line2); border-radius:6px; }
+.fm-caption-actions { margin-top:6px; flex-wrap:wrap; }
+#fmTimeLabel { min-width: 7ch; text-align: right; font-variant-numeric: tabular-nums; }
+#fmAudioLanes { max-height: 120px; overflow: auto; padding: 0 18px 12px; }
+#fmTitleLanes { max-height:72px; overflow:auto; padding:0 18px 6px; }
+.fm-title-lane { position:relative; height:26px; margin-top:4px; border-radius:7px; background:var(--card); }
+.fm-title-lane button { position:absolute; height:100%; min-width:1.5rem; max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+  text-align:left; border:1px solid var(--line2); border-radius:7px; background:var(--card-hi); color:var(--text); font-size:var(--fs-caption); }
+#fmCutawayLane { position:relative; margin:0 18px 7px; min-height:26px; background:var(--card); border-radius:7px; overflow:hidden; }
+#fmCutawayLane button { position:absolute; height:100%; min-width:1.5rem; max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+  text-align:left; border:1px solid var(--line2); border-radius:7px; background:var(--card-hi); color:var(--text); font-size:var(--fs-caption); }
+.fm-title-edit input[type=text] { min-width:0; flex:1; color:var(--text); background:var(--card-hi); border:1px solid var(--line2); border-radius:6px; padding:4px 6px; }
+.fm-audio-lane { position: relative; height: 28px; margin-top: 4px; border-radius: 7px; background: var(--card); }
+.fm-audio-lane button { position: absolute; height: 100%; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border: 1px solid var(--line2); border-radius: 7px; background: var(--card-hi); color: var(--text); text-align: left; font-size: var(--fs-caption); }
+.fm-audio-lane button:focus-visible { outline: 2px solid var(--c-image); outline-offset: -2px; }
+#fmAudioSettings .nr b { flex: 1; min-width: 100px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #fmGo { background: #fff; color: #000; font-weight: 600; }
 #qp { position: fixed; top: 54px; right: 14px; z-index: 31; width: 360px; max-height: 70vh; overflow-y: auto; display: none; flex-direction: column; gap: 4px; padding: 8px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 12px 40px rgba(0,0,0,.55); }
@@ -447,29 +1105,75 @@ function initFilm() {
   document.head.appendChild(css);
   document.body.insertAdjacentHTML("beforeend", `
 <div id="film">
-  <div class="hd"><b>成片编辑</b><span class="dim" id="fmTotal"></span><span style="flex:1"></span>
-    <button class="pill" id="fmAll" title="从头连续播放（含转场以外的效果）">▶ 预览全片</button>
+  <div class="hd"><b id="fmHeading">成片编辑</b><span class="dim" id="fmTotal"></span><span class="dim" id="fmDraftState" role="status"></span><span style="flex:1"></span>
+    <button class="pill" id="fmSaveList" type="button" hidden>保存列表</button><button class="pill" id="fmPlaylistSources" type="button" hidden>下载原片</button>
+    <button class="pill" id="fmAll" title="从头顺序播放片段与字幕">▶ 预览全片</button>
     <button class="pill" id="fmClose">关闭</button><button class="pill" id="fmGo">导出成片</button></div>
   <div class="main">
-    <div class="pv"><div class="scr"><video id="fmV" controls playsinline></video><audio id="fmOriginal" preload="metadata" hidden></audio><div id="fmSub"></div></div><div id="fmClip"></div></div>
+    <div class="pv"><div id="film-output" class="scr"><video id="fmV" controls playsinline></video><img id="fmStill" alt="静态片段预览" hidden><audio id="fmOriginal" preload="metadata" hidden></audio><div id="fmCutawayLayer" class="fm-output-layer" aria-hidden="true" hidden></div><div id="fmSub"></div><div id="fmTitleLayer" class="fm-output-layer" aria-hidden="true"></div></div>
+      <div id="fmStillControls" hidden><button class="pill" type="button" id="fmStillPlay">播放</button><input id="fmStillSeek" aria-label="图片片段播放进度" type="range" min="0" max="3" step="0.01"></div><div id="fmClip"></div></div>
     <div id="fmSet"></div>
   </div>
   <div id="fmTl"></div>
+  <div class="fm-time"><button class="pill" id="fmMainPlay" type="button" hidden>播放</button><label for="fmTime">全片播放位置</label><input id="fmTime" type="range" min="0" max="0" step="0.01"><output id="fmTimeLabel">0.00s</output></div>
+  <div id="fmCutawayLane" aria-label="补画面时间线" hidden></div>
+  <div id="fmTitleLanes" aria-label="画面标题时间线" hidden></div>
+  <div id="fmAudioLanes" aria-label="音频片段时间线" hidden></div>
   <audio id="fmA"></audio>
 </div>
 <div class="menu" id="fmAdd"></div>
 <div id="qp"></div>`);
   $("#fmClose").onclick = closeFilm;
+  $("#fmSaveList").onclick = () => { if (FILM) saveFilmPlaylist(FILM); };
+  $("#fmPlaylistSources").onclick = () => { if (FILM) downloadFilmPlaylistSources(FILM); };
+  if (typeof ResizeObserver === "function") new ResizeObserver(sizeFilmTitleLayer).observe($("#fmTitleLayer").parentElement);
   $("#fmGo").onclick = exportFilm;
-  $("#fmAll").onclick = () => { playAll = true; selectClip(0); setTimeout(() => $("#fmV").play(), 100); };
+  $("#fmMainPlay").onclick = () => {
+    if (!FILM) return;
+    const video = $("#fmV");
+    if (FILM.still?.started != null || !FILM.still && !video.paused) {
+      playAll = false;
+      if (FILM.still) $("#fmStillPlay").click(); else video.pause();
+    } else {
+      playAll = true;
+      playFilmClip();
+    }
+    previewTick();
+  };
+  $("#fmTime").oninput = e => seekTimeline(e.target.valueAsNumber);
+  $("#fmAll").onclick = () => { if (FILM) { playAll = true; selectClip(0, 0, true); } };
+  $("#fmStillPlay").onclick = () => {
+    if (!FILM?.still) return;
+    if (FILM.still.started === null) playFilmClip();
+    else {
+      FILM.still.offset = filmClipOffset(FILM); FILM.still.started = null; playAll = false;
+      syncFilmAudio(FILM);
+      $("#fmStillPlay").textContent = "播放";
+    }
+  };
+  $("#fmStillSeek").oninput = e => {
+    if (!FILM?.still) return;
+    FILM.still.offset = e.target.valueAsNumber;
+    if (FILM.still.started !== null) FILM.still.started = performance.now();
+  };
   setInterval(previewTick, 50);
+  setInterval(() => saveFilmDraft(), 900);
+  addEventListener("pagehide", () => saveFilmDraft());
   $("#tr").addEventListener("click", e => { if (!e.target.closest("button")) { e.stopPropagation(); toggleQueue(); } });
   for (const event of ["play","pause","seeked","ratechange"]) $("#fmV").addEventListener(event, syncFilmOriginal);
+  $("#fmV").addEventListener("pause", () => { if (FILM) syncFilmAudio(FILM); });
   document.addEventListener("pointerdown", e => {
     if (qOpen && !e.target.closest("#qp, #tr")) toggleQueue(false);
     if (!e.target.closest("#fmAdd, .fadd")) $("#fmAdd").classList.remove("on");
   });
-  document.addEventListener("keydown", e => { if (FILM && e.key === "Escape") { e.stopPropagation(); closeFilm(); } }, true);
+  document.addEventListener("keydown", e => {
+    if (!FILM) return;
+    if (e.key === "Escape") { e.stopPropagation(); closeFilm(); return; }
+    if (!FILM.n?.data.playlist || !canvasCanEdit() || e.ctrlKey || e.metaKey || e.altKey ||
+        e.target.closest?.("input,textarea,select,button,[contenteditable=true]")) return;
+    const action = {c:"[data-split-clip]",q:"[data-a=in]",e:"[data-a=out]"}[e.key.toLowerCase()];
+    if (action) { e.preventDefault(); $(action,$("#fmClip"))?.click(); }
+  }, true);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && doneCount) { doneCount = 0; document.title = "OneShot"; } });
   if (window.Notification && Notification.permission === "default") document.addEventListener("pointerdown", () => { try { Notification.requestPermission(); } catch {} }, { once: true });
   setInterval(watchDone, 1500);

@@ -23,3 +23,25 @@
 #assetLibrary .cm-editor .cm-character-primary:hover { background: #f1f1f6; }
 .cm-character-status { color: #c3c4d0; font-size: 11px; }
 .cm-character-candidate { display: flex; align-items: center; gap: 5px; flex: 1 0 100%; }
+
+.cm-document { padding: 7px 8px; border: 1px solid var(--line2); border-radius: 7px; }
+.cm-document summary { cursor: pointer; overflow-wrap: anywhere; }
+.cm-document pre { max-height: 210px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dim); font: inherit; }
+#cmFolderPicker { width:min(445px,calc(100% - 24px)); max-height:76dvh; padding:0; border:1px solid var(--line2); border-radius:14px; background:var(--panel); color:var(--text); }
+#cmFolderPicker[open] { display:flex; flex-direction:column; }
+#cmFolderPicker::backdrop { background:#0009; }
+#cmFolderPicker :is(header,footer) { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:10px 13px; }
+#cmFolderPicker header { border-bottom:1px solid var(--line); }
+#cmFolderPicker footer { border-top:1px solid var(--line); }
+#cmFolderPicker header small { display:block; margin-top:3px; }
+#cmFolderPicker :is(small,[role=status]) { color:var(--dim); font-size:var(--fs-small); }
+#cmFolderPicker :is(button,input[type=search]) { padding:6px 8px; border:1px solid var(--line2); border-radius:7px; background:var(--card); color:var(--text); font:inherit; }
+#cmFolderPicker button { flex:none; }
+#cmFolderPicker button:disabled { opacity:.45; }
+#cmFolderPicker button:hover:not(:disabled) { background:var(--card-hi); }
+#cmFolderPicker input[type=search] { margin:10px 13px 2px; }
+#cmFolderPicker .cm-folder-items { min-height:52px; overflow:auto; padding:5px 13px; }
+#cmFolderPicker .cm-folder-items label { display:flex; align-items:center; gap:8px; min-height:38px; padding:4px; border-bottom:1px solid var(--line); cursor:pointer; }
+#cmFolderPicker label span { flex:1; overflow-wrap:anywhere; }
+#cmFolderPicker label img { width:32px; height:32px; border-radius:5px; object-fit:cover; }
+.cm-editor .cm-hero audio,.cm-editor .cm-media-item audio{width:100%;display:block}

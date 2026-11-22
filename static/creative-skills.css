@@ -1,0 +1,32 @@
+#creativeSkills {
+ width:min(600px,calc(100% - 28px));max-height:calc(100dvh - 48px);overflow:auto;
+ padding:16px;margin:auto;background:var(--panel);color:var(--text);border:1px solid var(--line2);
+ border-radius:14px;box-shadow:0 16px 50px #0009;font-size:var(--fs-small);
+}
+#creativeSkills::backdrop{background:#0008}
+#creativeSkills header,.cs-top,#csRows article{display:flex;gap:8px;align-items:center}
+#creativeSkills header{justify-content:space-between;margin-bottom:14px}
+#creativeSkills button,#creativeSkills input:not([type=checkbox]),#creativeSkills textarea {
+ border:1px solid var(--line2);border-radius:7px;background:var(--card-hi);color:var(--text);font:inherit;padding:7px 9px;
+}
+#creativeSkills button{white-space:nowrap}
+#creativeSkills button:hover{background:var(--line2)}
+.cs-top{flex-wrap:wrap;margin-bottom:10px}
+#csSearch,#csRows article>div{flex:1;min-width:0}
+#csRows article{align-items:flex-start;border-top:1px solid var(--line);padding:10px 0}
+#csRows strong,#csRows p{overflow-wrap:anywhere}
+#csRows span{display:block;color:var(--faint);font-size:var(--fs-caption);margin-top:2px}
+#csRows p,#csStatus{color:var(--dim);margin:4px 0}
+#csStatus:empty{display:none}
+#csEditor fieldset{padding:0;border:0;min-inline-size:0}
+#csEditor label,#csReferences details{display:grid;gap:5px;margin-bottom:10px}
+#csEditor textarea{width:100%;resize:vertical}
+#csEditor .cs-check{display:flex;align-items:center;gap:6px}
+#csReferences details summary{overflow-wrap:anywhere;cursor:pointer}
+#csReferences details textarea{min-height:110px;margin:6px 0}
+#csSave{margin-left:auto}
+.ac-skill-controls{display:flex;gap:2px;min-width:0}
+#acSkills{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:145px}
+#acSkillClear:not([hidden]){display:block}
+.ac-sent-skill{color:var(--dim);border-top:1px solid var(--line);padding-top:5px;margin-top:5px;font-size:var(--fs-caption)}
+@media(max-width:480px){#acSkills{max-width:90px}#csRows article{flex-wrap:wrap}#csRows article>div{flex-basis:100%}}

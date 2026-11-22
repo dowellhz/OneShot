@@ -1,0 +1,16 @@
+#nodeSearch { width:min(560px,calc(100vw - 32px)); max-height:72dvh; padding:14px; color:var(--text); background:var(--card); border:1px solid var(--line2); border-radius:12px; }
+#nodeSearch::backdrop { background:#0008; }
+#nodeSearch header,#nodeSearch footer,.ns-filters { display:flex; gap:8px; align-items:center; }
+#nodeSearch h2 { flex:1; margin:0; font-size:var(--fs-heading); }
+#nodeSearch > input { width:100%; margin:12px 0 8px; padding:8px 9px; color:inherit; background:var(--panel); border:1px solid var(--line2); border-radius:7px; }
+#nodeSearch .ns-status { margin-bottom:8px; }
+#nodeSearch .ns-filters { flex-wrap:wrap; }
+#nodeSearch [aria-pressed="true"] { border-color:var(--text); }
+#nodeSearch ol { max-height:42dvh; overflow:auto; list-style:none; padding:0; margin:10px 0; }
+#nodeSearch li { display:flex; gap:8px; align-items:center; padding:4px 0; border-bottom:1px solid var(--line); }
+#nodeSearch li button { flex:1; min-width:0; text-align:left; color:inherit; background:none; border:0; border-radius:5px; padding:6px 7px; }
+#nodeSearch li button:hover,#nodeSearch li button:focus-visible { background:var(--panel); }
+#nodeSearch li span,#nodeSearch output { color:var(--dim); font-size:var(--fs-small); }
+#nodeSearch li span { display:block; overflow-wrap:anywhere; }
+#nodeSearch li .node-pin { display:inline-block; }
+#nodeSearch output { flex:1; }

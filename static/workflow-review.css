@@ -1,0 +1,23 @@
+#workflowReview{width:min(700px,calc(100% - 24px));max-height:calc(100dvh - 36px);overflow:auto;
+  border:1px solid var(--line2);border-radius:14px;background:var(--panel);color:var(--text);padding:14px;font-size:var(--fs-small)}
+#workflowReview::backdrop{background:#0008}
+#workflowReview button,#workflowReview select{border:1px solid var(--line2);border-radius:7px;padding:6px 8px;color:var(--text);background:var(--card-hi);font:inherit}
+#workflowReview button:disabled{opacity:.5}
+#workflowReview button:hover:not(:disabled){background:var(--line2)}
+.wr-head,.wr-subhead,.wr-step>header{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.wr-head>div,.wr-step>header>div{flex:1;min-width:130px}
+#wrTitle{font-size:var(--fs-body)}
+#wrContext,.wr-step header span,#wrStatus,.wr-step p{color:var(--dim);font-size:var(--fs-caption)}
+.wr-subhead{margin:12px 0}
+.wr-subhead label select{margin-left:6px}
+#wrSteps{margin:0;padding:0;list-style:none;display:grid;gap:8px}
+.wr-step{border:1px solid var(--line);padding:10px;border-radius:9px;background:var(--card)}
+.wr-step header span{display:block;margin-top:3px}
+.wr-step header strong,.wr-step li,.wr-step dd{overflow-wrap:anywhere}
+.wr-inputs{display:grid;gap:5px;margin:8px 0;padding:0;list-style:none}
+.wr-inputs li>span:last-of-type{color:var(--dim);margin-left:7px;font-size:var(--fs-caption)}
+.wr-step dl{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:8px 0}
+.wr-step dt{color:var(--dim)}
+.wr-step dd{margin:0}
+.wr-step summary{cursor:pointer;color:var(--dim);padding:4px 0}
+.wr-step pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:3px 0 5px;max-height:180px;overflow:auto;background:var(--card-hi);padding:8px;border-radius:6px}

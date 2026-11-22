@@ -3,18 +3,28 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import math
+import re
 import uuid
 import time
 
 from aiohttp import web
 
 import video_remake
+import previs
+import camera_plan
+import object_edit
+import workflow_review
+import broll
+from render import CUTAWAY_LIMIT, TITLE_LIMIT, TITLE_POSITIONS, TITLE_STYLES
 
-NAMES = {"video_generate", "video_regenerate", "video_remake_status", "video_remake_analyze", "video_remake_plan",
+NAMES = {"video_generate", "video_regenerate", "video_extend", "video_edit_segment", "video_object_settings", "video_capture_frame", "video_remake_status", "video_remake_analyze", "video_remake_plan",
+         "video_draft_status", "video_draft_finalize", "video_titles_get", "video_titles_edit",
+         "video_cutaways_get", "video_cutaways_edit", "video_broll_generate",
          "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate",
-         "video_remake_review", "video_remake_export"}
+         "video_remake_review", "video_remake_export", "video_previs_get", "video_previs_save", "video_previs_render"}
 
 
 def result_id(cid):
@@ -25,7 +35,8 @@ def node_data(recipe):
     return {"prompt": recipe.get("prompt", ""), "duration": recipe.get("duration", 5), "aspect": "auto", "quality": recipe.get("quality", "hd"),
             "mode": "keyframes" if recipe.get("planned") else "auto", "turbo": recipe.get("turbo", True), "seed": recipe.get("seed", -1),
             "sound": recipe.get("sound", ""), "music": recipe.get("music", ""), "pmode": "fields" if recipe.get("fields") else "free",
-            "fields": copy.deepcopy(recipe.get("fields", {})), "count": 1, "provider": recipe.get("provider", "")}
+            "fields": copy.deepcopy(recipe.get("fields", {})), "count": 1, "provider": recipe.get("provider", ""),
+            **{key:copy.deepcopy(recipe[key]) for key in ("camera_plan","object_edit","draft") if recipe.get(key)}}
 
 
 def connect_inputs(board, nid, recipe):
@@ -42,9 +53,30 @@ def connect_inputs(board, nid, recipe):
         else:
             role = "first" if i == 0 else "last"
         edge = {"from": source_id, "to": nid, "role": role}
+        if type(image.get("prompt_slot")) is int and image["prompt_slot"]>0:
+            edge.update(ref=image["ref"],prompt_slot=image["prompt_slot"])
         if recipe.get("planned") and role != "subject":
             edge["time"] = image.get("time", 0)
         if edge not in board.setdefault("edges", []):
+            board["edges"].append(edge)
+    guide = recipe.get("previs_guide")
+    if guide and any(n["id"] == guide["node_id"] and any(v.get("ref") == guide["ref"] and v.get("source") == "previs"
+                     for v in n.get("versions", [])) for n in board["nodes"]):
+        board["edges"].append({"from":guide["node_id"], "to":nid, "relation":"previs", "ref":guide["ref"]})
+    for sound in recipe.get("audio_refs", []):
+        if any(n["id"] == sound["node_id"] and n.get("type") == "audio" and
+               any(v.get("ref") == sound["ref"] for v in n.get("versions", [])) for n in board["nodes"]):
+            board["edges"].append({"from":sound["node_id"], "to":nid, "relation":"audio_ref", "ref":sound["ref"],**reference_slot(sound)})
+    for index, clip in enumerate(recipe.get("video_refs", [])):
+        if any(n["id"] == clip["node_id"] and n.get("type") == "video" and
+               any(v.get("ref") == clip["ref"] for v in n.get("versions", [])) for n in board["nodes"]):
+            edge = {"from":clip["node_id"],"to":nid,"relation":"video_ref","ref":clip["ref"],
+                    **reference_slot(clip),
+                    **{key:clip[key] for key in ("start","end") if key in clip}}
+            if index==0 and recipe.get("extension"):
+                edge["extension"]=recipe["extension"]
+            if index==0 and recipe.get("segment_edit"):
+                edge["segment_edit"]=True
             board["edges"].append(edge)
 
 
@@ -58,6 +90,7 @@ def remember_version(s, board, n):
 
 def queued_node(s, run, user, cid, pending):
     nid = pending.get("target_id") or result_id(cid)
+    version_history = pending.get("version_history") or pending.get("draft_history")
     def change(b):
         n = next((n for n in b["nodes"] if n["id"] == nid), None)
         if pending.get("target_id"):
@@ -67,23 +100,47 @@ def queued_node(s, run, user, cid, pending):
                 raise ValueError("原节点已有其他任务，未覆盖其进度")
             if pending.get("kind") == "video":
                 remember_version(s, b, n)
-                image_ids = {im["id"] for im in b["nodes"] if im.get("type") == "image"}
-                b["edges"] = [e for e in b.get("edges", []) if not (e.get("to") == nid and e.get("from") in image_ids)]
-                n["data"].update(copy.deepcopy(pending.get("target_data") or node_data(pending["recipe"])))
-                connect_inputs(b, nid, pending["recipe"])
+                recipe = pending.get("recipe")
+                if recipe and not version_history:
+                    image_ids = {im["id"] for im in b["nodes"] if im.get("type") == "image"}
+                    b["edges"] = [e for e in b.get("edges", []) if not (e.get("to") == nid and
+                                  (e.get("from") in image_ids or e.get("relation") in ("previs","audio_ref","video_ref")))]
+                    n["data"].update(copy.deepcopy(pending.get("target_data") or node_data(recipe)))
+                    for prop in ("camera_plan","object_edit","draft"):
+                        if not recipe.get(prop):
+                            n["data"].pop(prop, None)
+                    connect_inputs(b, nid, recipe)
+            elif pending.get("audio_recipe"):
+                n["data"].update(pending["audio_recipe"])
         elif n:
             return {"node_id": nid}
         else:
             x = max((n.get("x", 0) + s.dimensions(n)[0] for n in b["nodes"]), default=20) + 100
             y = min((n.get("y", 100) for n in b["nodes"]), default=100)
-            n = {"id": nid, "type": "video", "name": pending["name"][:40], "x": x, "y": y,
-                 "data": node_data(pending["recipe"]), "versions": [], "cur": -1, "agent_call": cid}
+            kind=pending["kind"]
+            recipe=pending.get("recipe",{})
+            if recipe.get("extension")=="before":
+                x=min((item.get("x",0) for item in b["nodes"]),default=0)-540
+            n = {"id": nid, "type": kind, "name": pending["name"][:40], "x": x, "y": y,
+                 "data": node_data(recipe) if kind=="video" else dict(pending["audio_recipe"]),
+                 "versions": [], "cur": -1, "agent_call": cid}
             b["nodes"].append(n)
-            connect_inputs(b, nid, pending["recipe"])
+            if kind=="video":
+                connect_inputs(b, nid, recipe)
+                if source := pending.get("broll_source"):
+                    if any(item["id"] == source["node"] and any(v.get("ref")==source["ref"] for v in item.get("versions",[])) for item in b["nodes"]):
+                        b["edges"].append({"from":source["node"],"to":nid,"relation":"broll","ref":source["ref"]})
         n["job"] = {"ids": pending["ids"], "prompt": pending["prompt"], "t0": round(time.time() * 1000), "agent_call": cid}
         n.pop("agent_error", None)
         history = {"input_edges": copy.deepcopy([e for e in b.get("edges", []) if e.get("to") == nid]),
                    "node_data": copy.deepcopy(n["data"])} if pending.get("kind") == "video" else {}
+        if version_history:
+            history = copy.deepcopy(version_history)
+        if source := pending.get("broll_source"):
+            history.update(broll_source=source,broll_recipe=pending["broll_recipe"],mode="B-roll")
+        if scene := pending.get("previs_render"):
+            history.update(previs_recipe=scene, node_data={**history["node_data"], "previs":scene,
+                           "aspect":scene["aspect"], "duration":scene["duration"]})
         return {"node_id": nid, "history": history}
     return s.commit(run, user, "queued_" + cid, change)
 
@@ -96,7 +153,7 @@ def fail_node(s, run, user, cid, message, target_id=None):
             queued = next((op for op in b.get("agent_ops", []) if op["id"] == "queued_" + cid), None)
             history = (queued or {}).get("result", {}).get("history", {})
             previous = s.current(n)
-            if target_id and previous and history:
+            if target_id and previous and history and not any(history.get(k) for k in ("previs_recipe","draft_final","film_recipe")) and n.get("type")=="video":
                 incoming = [e for e in b.get("edges", []) if e.get("to") == nid]
                 if incoming == history.get("input_edges") and "input_edges" in previous:
                     existing = {node["id"] for node in b["nodes"]}
@@ -113,13 +170,87 @@ def fail_node(s, run, user, cid, message, target_id=None):
 def register(tool, prop, node, prompt):
     frame = prop("object", properties={"node_id": node, "role": prop("string", enum=["first", "last", "keyframe", "subject"]),
                                       "time": prop("number", minimum=0, maximum=15)}, required=["node_id"], additionalProperties=False)
-    options = {"prompt": prompt, "duration": prop("number", minimum=2, maximum=15), "quality": prop("string", enum=["hd", "std"]),
+    options = {"prompt": prompt, "duration": prop("number", minimum=2, maximum=30), "quality": prop("string", enum=["hd", "std"]),
+               "draft": prop("boolean"),
                "seed": prop("integer", minimum=-1, maximum=2**48), "provider": prop("string", maxLength=100), "name": node}
-    tool("video_generate", "生成真正的视频（MP4），使用平台视频服务与队列。参考帧指定图片节点，支持首尾帧、多关键帧及人物设定；不能用image_generate代替。", {
-        **options, "frames": prop("array", items=frame, maxItems=12)}, ["prompt"])
-    tool("video_regenerate", "重新生成已有视频，复用提示词、时长、关键帧连线和配置。可用replacements替换关键帧。结果在原视频节点追加版本，用Tab切换，历史视频与输入连线保留。", {
-        **options, "node_id": node, "replacements": prop("array", maxItems=12, items=prop("object", properties={
+    guide = prop("object", properties={"node_id":node, "version":prop("integer", minimum=1, maximum=5000)},
+                 required=["node_id"], additionalProperties=False)
+    sounds = prop("array", items=guide, maxItems=10)
+    clips = prop("array", items=prop("object", properties={**guide["properties"],
+                 "start":prop("number", minimum=0), "end":prop("number", minimum=0)},
+                 required=["node_id"], additionalProperties=False), maxItems=10)
+    camera_view=prop("object",properties={"angle":prop("string",enum=list(camera_plan.ANGLES)),
+                     "scale":prop("string",enum=list(camera_plan.SCALES))},required=["angle","scale"],additionalProperties=False)
+    camera=prop("object",properties={"mode":prop("string",enum=list(camera_plan.MODES)),
+                "start":camera_view,"end":camera_view},required=["mode","start"],additionalProperties=False)
+    replacement=prop("object",properties={**guide["properties"],"memory_id":node},additionalProperties=False)
+    object_plan=prop("object",properties={"action":prop("string",enum=list(object_edit.ACTIONS)), "at":prop("number",minimum=0),
+                     "box":prop("array",items=prop("number",minimum=0,maximum=1),minItems=4,maxItems=4),
+                     "replacement":replacement},additionalProperties=False)
+    tool("video_generate", "生成真正的视频（MP4）。frames 支持首尾帧、关键帧和人物设定；提供已渲染的 previs 时，图片作为外观参考，白模控制运镜和走位。", {
+        **options, "frames": prop("array", items=frame, maxItems=30), "previs":guide, "audio_refs":sounds, "video_refs":clips}, ["prompt"])
+    tool("video_extend", "生成接在现有视频之前或之后的新镜头，使用原片的连续画面。node_id 指原视频；version 省略时使用本轮选择的视频版本。direction 为 before 补拍片头或 after 续拍片尾。可加入角色图、音频等辅助素材。", {
+        **options, **guide["properties"], "direction":prop("string", enum=["before","after"]),
+        "frames":prop("array", items=frame, maxItems=30), "audio_refs":sounds, "video_refs":clips}, ["node_id","direction","prompt"])
+    tool("video_edit_segment", "编辑原片的指定范围（4 到 30 秒），结果放在相连的新节点。普通修改提供 prompt；重拍提供 camera_plan；框选物体用 object_edit，须有明确的原片秒数 at 和归一化框 [左,上,右,下]。替换参考用 replacement 的图片节点或资产ID。", {
+        "node_id":node,"version":guide["properties"]["version"],"prompt":prompt,"provider":options["provider"],"name":node,"draft":options["draft"],
+        "start":prop("number",minimum=0),"end":prop("number",minimum=0),
+        "frames":prop("array",items=frame,maxItems=30),"audio_refs":sounds,"video_refs":clips,"camera_plan":camera,"object_edit":object_plan},
+        ["node_id","start","end"])
+    tool("video_object_settings", "读取物体编辑节点已保存的原片区间、框选位置及替换参考图。可读取还未生成的草稿或指定历史版本。", guide["properties"], ["node_id"])
+    tool("video_draft_status", "列出视频节点中实际生成过的 480p 样片及其定稿有效期；普通视频不会列为样片。", {"node_id":node}, ["node_id"])
+    tool("video_draft_finalize", "把已生成的原生 480p 样片交给原生成服务定稿。同一节点保留样片并追加定稿 Tab。version 选定样片版本，默认当前引用；resolution 默认 1080p。", {
+        **guide["properties"],"resolution":prop("string",enum=["1080p","4k"])}, ["node_id"])
+    tool("video_titles_get", "读取所选视频版本的时长和可编辑画面标题。标题编号从 1 开始，时间是该版本的成片秒数。", guide["properties"], ["node_id"])
+    title = prop("object", properties={"text":prop("string",minLength=1,maxLength=120),
+        "start":prop("number",minimum=0),"end":prop("number",minimum=0),
+        "position":prop("string",enum=list(TITLE_POSITIONS)),"style":prop("string",enum=sorted(TITLE_STYLES))},
+        additionalProperties=False)
+    change = prop("object", properties={"action":prop("string",enum=["add","update","remove"]),
+        "number":prop("integer",minimum=1,maximum=TITLE_LIMIT),"title":title}, required=["action"], additionalProperties=False)
+    tool("video_titles_edit", "给已有视频添加、修改或移除片头、地名条等画面文字。add 提供 title.text，其他字段可选；update 必须提供原编号和要改的 title 字段；remove 只提供原编号。同次改动中编号以原列表为准。输出追加到原节点新版本。", {
+        **guide["properties"],"changes":prop("array",items=change,minItems=1,maxItems=TITLE_LIMIT)}, ["node_id","changes"])
+    source = prop("object",properties={**guide["properties"],"memory_id":node},additionalProperties=False)
+    cutaway = prop("object",properties={"source":source,"start":prop("number",minimum=0),
+        "duration":prop("number",minimum=1/24),"in":prop("number",minimum=0)},additionalProperties=False)
+    cutaway_change = prop("object",properties={"action":prop("string",enum=["add","update","remove"]),
+        "number":prop("integer",minimum=1,maximum=CUTAWAY_LIMIT),"cutaway":cutaway},required=["action"],additionalProperties=False)
+    tool("video_cutaways_get", "读取所选视频版本的时长、补画面编号和标题，不会提交渲染。", guide["properties"], ["node_id"])
+    tool("video_cutaways_edit", "在现有视频指定时段插入补画面，保留主片时长、声音和字幕。同一次可改标题。add 提供 cutaway.source（画布图片/视频节点及可选版本，或资产 memory_id）、start 和 duration，视频可用 in 指定源素材入点。update 传原编号与改动；remove 只传原编号。编号以改动前为准。结果保存到原节点的新版本。", {
+        **guide["properties"],"changes":prop("array",items=cutaway_change,minItems=1,maxItems=CUTAWAY_LIMIT),
+        "title_changes":prop("array",items=change,minItems=1,maxItems=TITLE_LIMIT)}, ["node_id","changes"])
+    graphics_bar = prop("object",properties={"label":prop("string",minLength=1,maxLength=18),
+        "value":prop("number",minimum=0,maximum=1e9)},required=["label","value"],additionalProperties=False)
+    tool("video_broll_generate", "在用户确认后，把指定图片或视频版本制作成相连的独立 B-roll 视频。title 为动态标题，captions 为依次显示的字幕卡，chart 为条形图，motion 为图片推拉。只做草稿时直接用文字回复。图表只用用户给出的数值，不补造。start/end 是源视频或图片片段的秒数，视频保留原声和总长，图片片段默认 4 秒。", {
+        **guide["properties"],"mode":prop("string",enum=list(broll.MODES)),"style":prop("string",enum=sorted(broll.STYLES)),
+        "start":prop("number",minimum=0),"end":prop("number",minimum=0),"duration":prop("number",minimum=.5,maximum=12),
+        "title":prop("string",minLength=1,maxLength=100),"lines":prop("array",items=prop("string",minLength=1,maxLength=70),minItems=1,maxItems=6),
+        "bars":prop("array",items=graphics_bar,minItems=2,maxItems=6),"direction":prop("string",enum=["in","out"])}, ["node_id","mode"])
+    tool("video_capture_frame", "把视频的首帧、末帧或指定时间的画面保存成相连的图片节点。position 为 first、last 或 time；仅 time 需要 at（原视频秒数）。返回真实图片节点，可以在后续生成用作首帧或参考图。", {
+        **guide["properties"], "position":prop("string", enum=["first","last","time"]),
+        "at":prop("number", minimum=0), "name":node}, ["node_id","position"])
+    tool("video_regenerate", "在同一节点重新生成并追加版本。可选 version 指定旧版，默认沿用当前引用。可用 replacements 替换关键帧，或传入 object_edit 中需要更新的字段，其他框选和参考沿用所选版本。", {
+        **options, **guide["properties"], "previs":guide, "audio_refs":sounds, "video_refs":clips, "camera_plan":camera, "object_edit":object_plan,
+        "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
+    def track(fields):
+        pose = {field:prop("number", minimum=18 if field == "fov" else -360 if field == "yaw" else -50,
+                           maximum=95 if field == "fov" else 360 if field == "yaw" else 50) for field in fields}
+        key = prop("object", properties={**pose, "t":prop("integer", minimum=0, maximum=24 * previs.MAX_SECONDS),
+                   "ease":prop("string", enum=["linear","smooth"])}, required=["t", *fields], additionalProperties=False)
+        return prop("array", items=key, minItems=1, maxItems=32)
+    dimensions = {key:prop("number", minimum=.1, maximum=20) for key in ("width","height","depth")}
+    item = prop("object", properties={"id":node, "label":node, "shape":prop("string", enum=sorted(previs.SHAPES)), **dimensions,
+                                    "keys":track(previs.POSE_FIELDS)},
+                required=["id","label","shape",*dimensions,"keys"], additionalProperties=False)
+    scene = prop("object", properties={"duration":prop("integer", minimum=2, maximum=previs.MAX_SECONDS),
+                 "aspect":prop("string", enum=list(previs.ASPECTS)), "camera":track(previs.CAMERA_FIELDS),
+                 "objects":prop("array", items=item, maxItems=24)},
+                 required=["duration","aspect","camera","objects"], additionalProperties=False)
+    tool("video_previs_get", "读取白模当前可编辑场景、场景版本校验码和已渲染的 Tab。", {"node_id":node}, ["node_id"])
+    tool("video_previs_save", "保存可编辑的白模场景。创建时省略 node_id。修改时先读取原场景，保留无关物体和关键帧，并传 node_id 与 scene_revision。坐标 X 左右、Y 向上、Z 前后。t 为 24 FPS 帧号，含 0 并按升序排列。", {
+        "node_id":node, "scene_revision":prop("string", maxLength=64), "name":node, "scene":scene}, ["scene"])
+    tool("video_previs_render", "把已保存的白模场景渲染为无声 MP4，追加在同一节点的版本 Tab。等待可播放结果后返回。", {"node_id":node}, ["node_id"])
     shot_number = prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS)
     tool("video_remake_status", "读取原片视频版本的角色替换进度。指定shot可查看该镜头的已完成视频版本和任务编号。", {
         "node_id": node, "shot": shot_number,
@@ -151,11 +282,11 @@ def register(tool, prop, node, prompt):
             "view": prop("string", enum=sorted(video_remake.VIEWS)), "note": prop("string", maxLength=800),
         }, required=["number"], additionalProperties=False)),
     }, ["node_id", "person", "asset_id", "cut_revision", "shots"])
-    tool("video_remake_generate", "用已采用的起始帧和动作关键帧提交一个重制镜头视频。first_job取自重制状态的approved_start_job。", {
+    tool("video_remake_generate", "用已采用的起始帧和动作关键帧提交一个重制镜头视频。first_job取自重制状态的approved_start_job。仅在用户明确要求用深度参考时，传入可用的motion_provider。", {
         "node_id": node, "person": prop("string", minLength=1, maxLength=60), "asset_id": node,
         "cut_revision": prop("integer", minimum=0),
         "shot": prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS), "first_job": node,
-        "motion": prop("string", maxLength=1600),
+        "motion": prop("string", maxLength=1600), "motion_provider": node,
     }, ["node_id", "person", "asset_id", "cut_revision", "shot", "first_job"])
     tool("video_remake_export", "把已审核的重制镜头与保留原片的镜头合成，保留原声。须使用最新cut_revision；只有用户明确要求重新导出时才设rebuild。", {
         "node_id": node, "cut_revision": prop("integer", minimum=0), "rebuild": prop("boolean"),
@@ -176,7 +307,487 @@ def video_node(s, run, user, nid, *, allow_film=False):
     return b, n
 
 
-def plan_payload(s, run, user, frames, duration, data, prompt):
+def scene_revision(scene):
+    return hashlib.sha256(json.dumps(scene, sort_keys=True).encode()).hexdigest()
+
+
+def previs_scene(n):
+    scene = n.get("data", {}).get("previs")
+    if not isinstance(scene, dict):
+        raise ValueError("请选择白模场景节点")
+    return previs.validate(scene)
+
+
+def get_previs(n):
+    scene = previs_scene(n)
+    return {"node_id":n["id"], "name":n.get("name"), "scene":scene, "scene_revision":scene_revision(scene),
+            "versions":[{"number":i, "ref":v.get("ref"), "seconds":v.get("seconds"), "current":i - 1 == n.get("cur")}
+                        for i, v in enumerate(n.get("versions", []), 1) if v.get("source") == "previs"]}
+
+
+def save_previs(s, run, user, cid, args):
+    scene = previs.validate(args["scene"])
+    nid = args.get("node_id") or result_id(cid)
+    def change(b):
+        n = next((n for n in b["nodes"] if n["id"] == nid), None)
+        if args.get("node_id"):
+            if not n or n.get("type") != "video" or scene_revision(previs_scene(n)) != args.get("scene_revision"):
+                raise ValueError("白模场景已更新，请重新读取后再保存")
+            if n.get("job"):
+                raise ValueError("请等待白模渲染完成后再编辑")
+            remember_version(s, b, n)
+        else:
+            x = max((item.get("x", 0) + s.dimensions(item)[0] for item in b["nodes"]), default=20) + 100
+            y = min((item.get("y", 100) for item in b["nodes"]), default=100)
+            n = {"id":nid, "type":"video", "name":"白模预演", "x":x, "y":y, "data":node_data({}), "versions":[], "cur":-1}
+            b["nodes"].append(n)
+        if args.get("name", "").strip():
+            n["name"] = args["name"].strip()
+        n["data"].update(previs=scene, aspect=scene["aspect"], duration=scene["duration"])
+        return {"node_id":nid, "name":n["name"], "scene_revision":scene_revision(scene), "scene":scene}
+    result = s.commit(run, user, cid, change)
+    return {**result, "previs_node":nid, "text":"白模已保存，可打开编辑器调整，或渲染预演。"}
+
+
+async def render_previs(s, run, user, cid, nid):
+    b, n = video_node(s, run, user, nid)
+    scene = previs_scene(n)
+    if n.get("job"):
+        raise ValueError("白模正在渲染，请等待完成")
+    await s.begin_generation(run,cid,"previs",1,{"label":n["name"],"node":nid,"scene":scene,
+                                              "duration":scene.get("duration")},target_id=nid)
+    result = await s.response(s.host.render_previs, user, {"board":run["board_id"], "node":nid,
+                              "revision":b.get("rev"), "request_key":cid})
+    return await s.wait_submitted_jobs(run, user, cid, {"ids":result["ids"], "name":n["name"], "prompt":"",
+        "kind":"video", "target_id":nid, "previs_render":scene, "source":"previs"})
+
+
+def reference_slot(record):
+    slot = (record or {}).get("prompt_slot")
+    return {"prompt_slot":slot} if type(slot) is int and slot>0 else {}
+
+
+def reference_version(s, run, user, selection=None, edge=None, *, kind="video"):
+    nid = selection["node_id"] if selection else edge["from"]
+    if kind != "audio":
+        _, node = video_node(s, run, user, nid, allow_film=kind=="clip")
+    else:
+        board = s.board(user, run["board_id"])
+        node = next((n for n in board["nodes"] if n["id"] == nid and n["type"] == "audio"), None)
+        if node is None:
+            raise ValueError("音频节点已不存在")
+    versions = node.get("versions", [])
+    if selection and "version" in selection:
+        index = selection["version"] - 1
+    elif edge or (nid in run["data"].get("bindings", {})):
+        ref = edge.get("ref") if edge else run["data"]["bindings"][nid]
+        index = next((i for i, v in enumerate(versions) if v.get("ref") == ref), -1)
+    else:
+        index = node.get("cur", -1)
+    if not 0 <= index < len(versions) or (kind == "video" and versions[index].get("source") != "previs"):
+        raise ValueError({"video":"请选择已渲染的白模 Tab", "clip":"请选择仍存在的视频版本", "audio":"请选择仍存在的音频版本"}[kind])
+    version = versions[index]
+    return {"node_id":nid, "ref":version["ref"], "name":node.get("name"), "version":index + 1, **reference_slot(edge)}, version
+
+
+def video_edit_snapshot(s, run, board, node, version=None):
+    active = s.current(node)
+    versions = node.get("versions", [])
+    bound = run["data"].get("bindings", {}).get(node["id"])
+    if version is not None:
+        if not 1 <= version <= len(versions):
+            raise ValueError("指定的视频版本已移除")
+        current = versions[version - 1]
+    elif bound:
+        current = next((v for v in versions if v.get("ref") == bound), None)
+        if current is None:
+            raise ValueError("本轮引用的视频版本已移除，请重新选择")
+    else:
+        current = active
+    recipe = copy.deepcopy((current or {}).get("video_recipe") or {})
+    data = copy.deepcopy(node.get("data") or {})
+    incoming = [edge for edge in board.get("edges", []) if edge.get("to") == node["id"]]
+    if current is not active or (version is not None and recipe):
+        if isinstance(current.get("input_edges"), list):
+            incoming = current["input_edges"]
+        else:
+            detached = {"nodes":board["nodes"],"edges":[]}
+            connect_inputs(detached,node["id"],recipe)
+            incoming = detached["edges"]
+        data = copy.deepcopy(current["node_data"]) if isinstance(current.get("node_data"), dict) else node_data(recipe)
+    return current, recipe, data, incoming
+
+
+def read_draft_status(s, run, user, nid):
+    _, node = video_node(s,run,user,nid,allow_film=True)
+    now = time.time()
+    drafts = []
+    for index, version in enumerate(node.get("versions", []), 1):
+        if source := s.host.video_draft_source(version.get("ref")):
+            expiry = source["expires"]
+            drafts.append({"version":index,"current":node.get("cur")==index-1,
+                           "expires":expiry,"expired":expiry<=now,"resolution":"480p"})
+    return {"node_id":nid,"name":node["name"],"drafts":drafts,"final_resolutions":["1080p","4k"],
+            "text":"已读取样片版本。" if drafts else "这个节点还没有可列出的原生样片。"}
+
+
+async def finalize_draft(s, run, user, cid, args):
+    board, target = video_node(s,run,user,args["node_id"],allow_film=True)
+    if target.get("job"):
+        raise ValueError("请等待当前视频任务完成或取消后再生成定稿")
+    selected, source = reference_version(s,run,user,selection=args,kind="clip")
+    draft = s.host.video_draft_source(source["ref"])
+    if not draft:
+        raise ValueError("所选版本不是原生样片，请从样片版本生成定稿")
+    if draft["expires"]<=time.time():
+        raise ValueError("样片已过定稿有效期，请重新生成样片")
+
+    _, recipe, data, inputs = video_edit_snapshot(s,run,board,target,selected["version"])
+    recipe.pop("draft",None)
+    data.pop("draft",None)
+    recipe["quality"] = data["quality"] = "hd"
+    resolution = args.get("resolution","1080p")
+    record = copy.deepcopy(source.get("generation_record") or workflow_review.capture_generation(recipe))
+    record.setdefault("settings", {})["resolution"] = resolution
+    prompt = source.get("prompt") or recipe.get("prompt") or ""
+    await s.begin_generation(run,cid,"video",1,{"label":target["name"]+" · 定稿","ref":source["ref"],
+                                              "node":target["id"],"resolution":resolution,"prompt":prompt},target_id=target["id"])
+    result = await s.response(s.host.finalize_video_draft,user,{
+        "board":run["board_id"],"node":target["id"],"ref":source["ref"],"resolution":resolution,"request_key":cid})
+    return await s.wait_submitted_jobs(run,user,cid,{
+        "ids":result["ids"],"name":target["name"]+" · 定稿","prompt":prompt,"kind":"video",
+        "target_id":target["id"],"recipe":recipe,"generation_record":record,
+        "memory_used":source.get("memory_used",[]),"version_history":{
+            "input_edges":inputs,"node_data":data,"draft_final":{"source_ref":source["ref"],"resolution":resolution}}})
+
+
+def restore_video_snapshot(board, target, version):
+    nid = target["id"]
+    known = {n["id"] for n in board["nodes"]}
+    restored = [e for e in version["input_edges"] if e.get("from") in known and e.get("from") != nid]
+    board["edges"] = [e for e in board.get("edges", []) if e.get("to") != nid] + copy.deepcopy(restored)
+    target["data"] = copy.deepcopy(version["node_data"])
+
+
+async def saved_video_timeline(s, run, user, target, args):
+    selected, video = reference_version(s,run,user,selection=args,kind="clip")
+    ref = selected["ref"]
+    s.host.require_media(user,{ref})
+    path = s.host.tools.ref_path(s.host.COMFY_DIR,ref)
+    _, _, seconds, _ = await asyncio.to_thread(s.host.film.probe,path)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("无法读取所选视频的时长")
+    saved = workflow_review.obj(video.get("film_recipe"))
+    saved_timeline = saved.get("timeline")
+    editable = isinstance(saved_timeline,dict) and bool(workflow_review.items(saved_timeline.get("clips")))
+    if editable:
+        timeline = copy.deepcopy(saved_timeline)
+        recipe = copy.deepcopy(saved)
+    else:
+        clip = {"node":target["id"],"name":target["name"],"ref":ref,"kind":"video","media_seconds":seconds,
+                "in":0,"out":seconds,"trans":"cut","volume":1,"subs":[],"audio_ref":ref,"audio_start":0,
+                "audio_seconds":seconds}
+        timeline = {"clips":[clip],"aspect":"source","fit":"blur","subtitles":True,"sub_size":1,"bgm":None,
+                    "narration":[],"audio_clips":[],"cover":0}
+        recipe = {"clips":[{"node":target["id"],"ref":ref,"in":0,"out":seconds,"trans":"cut","audio_ref":ref,
+                            "audio_start":0}],"audio":[]}
+    return selected, video, seconds, editable, timeline, recipe
+
+
+def change_titles(film, titles, changes, seconds):
+    previous = copy.deepcopy(titles)
+    combined = copy.deepcopy(titles)
+    changed = set()
+    for change in changes:
+        action, number, fields = change["action"], change.get("number"), change.get("title")
+        if action == "add":
+            if number is not None or not fields or not fields.get("text","").strip():
+                raise ValueError("添加标题需要文字，标题编号由时间线分配")
+            start = fields.get("start",0)
+            title = {"start":start,"end":min(seconds,start+2.5),**fields}
+            combined.append(title)
+        else:
+            if number is None or not 1 <= number <= len(previous) or number in changed:
+                raise ValueError("请使用所选版本里的有效标题编号，每次只能修改同一编号一次")
+            changed.add(number)
+            if action == "remove":
+                if fields is not None:
+                    raise ValueError("删除标题只需要标题编号")
+                combined[number-1] = None
+                continue
+            if not fields or ("text" in fields and not fields["text"].strip()):
+                raise ValueError("请填写需要更新的标题字段")
+            title = {**combined[number-1],**fields}
+            combined[number-1] = title
+        if not 0 <= title["start"] < title["end"] <= seconds + .001:
+            raise ValueError(f"标题须在 0 到 {seconds:.3f} 秒内，结束时间须晚于开始时间")
+    return film.title_items([title for title in combined if title is not None])
+
+
+async def cutaway_source(s, run, user, board, source):
+    nid, mid, index = (source.get(key) for key in ("node_id","memory_id","version"))
+    if bool(nid) == bool(mid) or (mid and index is not None):
+        raise ValueError("补画面请选择一个画布节点和版本，或一项资产")
+    if mid:
+        try:
+            asset = s.app["creative_memory"].get(user,mid,run["board_id"])
+        except web.HTTPException:
+            raise ValueError("补画面资产不存在或不可访问") from None
+        ref, label = asset.get("ref"), asset.get("name")
+        origin = {"memory_id":mid}
+    else:
+        node = next((item for item in board.get("nodes",[]) if item["id"] == nid and item.get("type") in ("image","video")),None)
+        if not node:
+            raise ValueError("请选择画布上的图片或视频作为补画面")
+        versions = node.get("versions",[])
+        if index is None:
+            bound = run["data"].get("bindings",{}).get(nid)
+            index = next((i for i,v in enumerate(versions,1) if v.get("ref")==bound),0) if bound else node.get("cur",-1)+1
+        if not 1 <= index <= len(versions):
+            raise ValueError("补画面的所选版本不存在")
+        ref, label = versions[index-1].get("ref"), node.get("name")
+        origin = {"node":nid,"version":index}
+    suffix = "." + ref.rsplit(".",1)[-1].lower() if isinstance(ref,str) else ""
+    kind = "video" if suffix in s.host.tools.VIDEO_EXT else "image" if suffix in s.host.creative_memory.IMAGE_EXT else None
+    if not kind:
+        raise ValueError("补画面素材须为图片或视频")
+    s.host.require_media(user,{ref})
+    item = {**origin,"kind":kind,"ref":ref,"name":label or "补画面"}
+    if kind == "video":
+        path = s.host.tools.ref_path(s.host.COMFY_DIR,ref)
+        _, _, duration, _ = await asyncio.to_thread(s.host.film.probe,path,display=False)
+        item["seconds"] = duration
+    return item
+
+
+async def change_cutaways(s, run, user, board, items, changes, seconds):
+    combined = copy.deepcopy(items)
+    changed = set()
+    for change in changes:
+        action, number, fields = change["action"], change.get("number"), change.get("cutaway")
+        if action == "add":
+            if number is not None or not fields or not {"source","start","duration"} <= fields.keys():
+                raise ValueError("添加补画面需要素材、开始时间和时长")
+            item = {"in":0}
+        else:
+            if number is None or not 1 <= number <= len(items) or number in changed:
+                raise ValueError("请使用所选版本里的有效补画面编号，每次只能修改同一编号一次")
+            changed.add(number)
+            if action == "remove":
+                if fields is not None:
+                    raise ValueError("删除补画面只需要原编号")
+                combined[number-1] = None
+                continue
+            if not fields:
+                raise ValueError("请填写需要修改的补画面设置")
+            item = copy.deepcopy(items[number-1])
+        if "source" in fields:
+            source = await cutaway_source(s,run,user,board,fields["source"])
+            for key in ("node","version","memory_id","seconds"):
+                item.pop(key,None)
+            item.update(source)
+            if item["kind"] == "image":
+                item["in"] = 0
+        item.update({key:fields[key] for key in ("start","duration","in") if key in fields})
+        duration = item["duration"]
+        if item["start"] + duration > seconds + .001:
+            raise ValueError(f"补画面须位于成片的 0 到 {seconds:.3f} 秒内")
+        if item.get("seconds") and item.get("in",0) + duration > item["seconds"] + 1/24:
+            raise ValueError("补画面的出点超出原片范围")
+        if action == "add":
+            combined.append(item)
+        else:
+            combined[number-1] = item
+    result = [item for item in combined if item is not None]
+    s.host.film.cutaway_layout(result)
+    return result
+
+
+def timeline_items(items):
+    return [{**item,"number":i} for i,item in enumerate(items,1)]
+
+
+async def edit_video_timeline(s, run, user, cid, name, args):
+    board, target = video_node(s,run,user,args["node_id"],allow_film=True)
+    selected, video, seconds, editable, timeline, recipe = await saved_video_timeline(s,run,user,target,args)
+    titles = s.host.film.title_items(timeline.get("titles",[]))
+    cutaways = timeline.get("cutaways",[])
+    s.host.film.cutaway_layout(cutaways)
+    if name.endswith("_get"):
+        return {"node_id":target["id"],"version":selected["version"],"seconds":seconds,"timeline_saved":editable,
+                "titles":timeline_items(titles),"cutaways":timeline_items(cutaways)}
+    editing_cutaways = name == "video_cutaways_edit"
+    title_changes = args.get("title_changes",[]) if editing_cutaways else args["changes"]
+    edited_titles = change_titles(s.host.film,titles,title_changes,seconds) if title_changes else titles
+    edited_cutaways = await change_cutaways(s,run,user,board,cutaways,args["changes"],seconds) if editing_cutaways else cutaways
+    board, target = video_node(s,run,user,target["id"],allow_film=True)
+    matches = [i for i,v in enumerate(target.get("versions",[]),1) if v.get("ref")==selected["ref"]]
+    if not matches:
+        raise ValueError("所选视频版本已移除")
+    source_index = selected["version"] if selected["version"] in matches else matches[0]
+    if target.get("job"):
+        raise ValueError("请等待当前视频任务完成后再剪辑")
+    if edited_titles == titles and edited_cutaways == cutaways:
+        return {"nodes":[],"text":"剪辑设置与所选版本相同。"}
+    timeline.update(titles=edited_titles,cutaways=edited_cutaways)
+    spec = copy.deepcopy(timeline)
+    for clip in spec["clips"]:
+        if clip.get("remake_shot"):
+            clip["remake_shot"]["node"] = clip.get("node")
+    s.host.require_media(user,s.host.media_references(spec))
+    recipe.update(titles=edited_titles,cutaways=edited_cutaways,timeline=timeline)
+    _, generation_recipe, data, inputs = video_edit_snapshot(s,run,board,target,source_index)
+    if not generation_recipe and not video.get("node_data"):
+        data = target.get("data",{})
+    if not generation_recipe and not isinstance(video.get("input_edges"),list):
+        inputs = [edge for edge in board.get("edges",[]) if edge.get("to")==target["id"]]
+    mode = "补画面剪辑" if editing_cutaways else "标题剪辑"
+    label = target["name"] + " · " + mode
+    await s.begin_generation(run,cid,"video",1,{"label":label,"node":target["id"],"spec":spec,"ref":selected["ref"]},
+                             target_id=target["id"])
+    result = await s.response(s.host.render_film,user,{"board":run["board_id"],"spec":spec,"label":label,
+        "request_key":cid,"target":{"node":target["id"],"ref":selected["ref"]}})
+    return await s.wait_submitted_jobs(run,user,cid,{"ids":result["ids"],"name":label,
+        "prompt":video.get("prompt",""),"source":"film","kind":"video","target_id":target["id"],
+        "version_history":{"input_edges":inputs,"node_data":data,"mode":mode,"film_recipe":recipe}})
+
+
+async def generate_broll(s, run, user, cid, args):
+    bid, nid = run["board_id"], args["node_id"]
+    board = s.board(user,bid)
+    node = next((item for item in board["nodes"] if item["id"]==nid and item.get("type") in ("image","video")),None)
+    if not node:
+        raise ValueError("请选择画布上的图片或视频")
+    versions = node.get("versions",[])
+    pinned = run["data"].get("bindings",{}).get(nid)
+    if args.get("version") is not None:
+        index = args["version"]-1
+    elif pinned:
+        index = next((i for i,version in enumerate(versions) if version.get("ref")==pinned),-1)
+    else:
+        index = node.get("cur",-1)
+    if not 0 <= index < len(versions) or not versions[index].get("ref"):
+        raise ValueError("所选图片或视频版本已移除或尚未完成")
+    ref = versions[index]["ref"]
+    source = {"board":bid,"node":nid,"ref":ref}
+    _, _, _, duration = await s.host.broll_source(user,source)
+    recipe = broll.recipe(args,node["type"],duration)
+    mode = recipe["mode"]
+    label = f"{(node.get('name') or '来源素材')[:30]} · B-roll"
+    details = [f"来源版本 {index+1} · {recipe['start']:g}–{recipe['end']:g} 秒",
+               "深色卡片" if recipe["style"]=="card" else "简洁样式"]
+    if mode == "motion":
+        details[1] = "推进" if recipe["direction"]=="in" else "拉远"
+    if recipe.get("title"):
+        details.append(recipe["title"])
+    details.extend(recipe.get("lines",[]))
+    details.extend(f"{bar['label']}  {bar['value']:g}" for bar in recipe.get("bars",[]))
+    await s.begin_generation(run,cid,"video",1,{**source,"label":label,"prompt":"\n".join(details),
+        "mode":broll.MODES[mode],"duration":recipe.get("duration",duration)},force_confirmation=True)
+    result = await s.response(s.host.render_broll,user,{**source,"recipe":recipe,"request_key":cid})
+    return await s.wait_submitted_jobs(run,user,cid,{"ids":result["ids"],"name":label,"kind":"video","source":"broll",
+        "prompt":recipe.get("title") or "\n".join(recipe.get("lines",[])),
+        "broll_source":{"node":nid,"ref":ref},"broll_recipe":result["recipe"]})
+
+
+def read_object_settings(s, run, user, args):
+    board, node = video_node(s, run, user, args["node_id"])
+    current, recipe, data, incoming = video_edit_snapshot(s,run,board,node,args.get("version"))
+    plan = data.get("object_edit") or recipe.get("object_edit")
+    source_edge = next((e for e in incoming if e.get("relation")=="video_ref" and e.get("segment_edit")), None)
+    if not plan or source_edge is None:
+        raise ValueError("这个视频版本没有已保存的物体选区，请先在画布框选并创建物体编辑节点")
+    source, _ = reference_version(s,run,user,edge=source_edge,kind="clip")
+    source.update({key:source_edge[key] for key in ("start","end") if key in source_edge})
+    return {"node_id":node["id"],"version":next((i for i,v in enumerate(node.get("versions",[]),1) if v is current),None),
+            "source":source,"object_edit":object_edit.validate(plan),"text":"已读取原片范围、框选和替换参考。"}
+
+
+def object_replacement(s, run, user, selection):
+    nid, mid, index = selection.get("node_id"), selection.get("memory_id"), selection.get("version")
+    if bool(nid) == bool(mid) or (mid and index is not None):
+        raise ValueError("请选择一个图片节点及版本，或一项资产")
+    if mid:
+        try:
+            asset = s.app["creative_memory"].get(user,mid,run["board_id"])
+        except web.HTTPException:
+            raise ValueError("该参考资产不存在或不可访问") from None
+        ref, label = asset.get("ref"), asset.get("name")
+    elif index is None:
+        node, version = s.source(run,user,nid)
+        ref, label = version["ref"], node.get("name")
+    else:
+        board = s.board(user,run["board_id"])
+        node = next((n for n in board["nodes"] if n["id"]==nid and n["type"]=="image"),None)
+        versions = node.get("versions",[]) if node else []
+        if not 1 <= index <= len(versions):
+            raise ValueError("所选参考图版本已移除")
+        ref, label = versions[index-1]["ref"], node.get("name")
+    if not ref or not ref.lower().endswith((".png",".jpg",".jpeg",".webp")):
+        raise ValueError("替换参考须为图片")
+    return {"replacement_ref":ref,"replacement_name":label}
+
+
+def update_object_plan(s, run, user, plan, changes):
+    merged = {**(plan or {}), **{key:changes[key] for key in ("action","at","box") if key in changes}}
+    if "replacement" in changes:
+        if changes.get("action") == "remove":
+            raise ValueError("移除物体无需指定替换参考")
+        merged.update(action="replace",**object_replacement(s,run,user,changes["replacement"]))
+    return object_edit.validate(merged)
+
+
+async def capture_video_frame(s, run, user, cid, args):
+    board = s.board(user, run["board_id"])
+    prior = next((op["result"] for op in board.get("agent_ops", []) if op["id"] == cid), None)
+    if prior:
+        return prior
+    source, _ = reference_version(s, run, user, args, kind="clip")
+    position = args["position"]
+    image = await s.response(s.host.lastframe, user, {"ref":source["ref"], "position":position, "at":args.get("at")})
+    if s.stopped(run):
+        raise ValueError("本轮任务已停止")
+    nid = result_id(cid)
+    suffix = {"first":"首帧", "last":"末帧"}.get(position, f"{image['at']:.2f} 秒")
+
+    def change(current):
+        original = next((n for n in current["nodes"] if n["id"] == source["node_id"]
+                         and any(v.get("ref") == source["ref"] for v in n.get("versions", []))), None)
+        if original is None:
+            raise ValueError("取帧所用的原视频版本已移除")
+        name = (args.get("name") or f"{original.get('name','视频')} · {suffix}")[:80]
+        capture = {"source_node":original["id"], "source_ref":source["ref"], "position":position, "at":image["at"]}
+        version = {**{key:image[key] for key in ("ref","url","w","h")}, "source":"frame", "prompt":"", "capture":capture}
+        x = max(n.get("x", 0) + s.dimensions(n)[0] for n in current["nodes"]) + 110
+        current["nodes"].append({"id":nid, "type":"image", "name":name, "x":x, "y":original.get("y", 100),
+            "data":{"prompt":"", "caption":""}, "versions":[version], "cur":0, "job":None})
+        current.setdefault("edges", []).append({"from":original["id"], "to":nid, "relation":"capture",
+                                               "source_ref":source["ref"], "at":image["at"]})
+        return {"media_type":"image", "nodes":[{"id":nid, "type":"image", "name":name, "ref":image["ref"], "url":image["url"],
+                "version_index":0}], "capture":capture, "text":f"已把{suffix}放到画布。"}
+
+    result = s.commit(run, user, cid, change)
+    run["data"]["bindings"][nid] = image["ref"]
+    s.update(run)
+    return result
+
+
+def resolve_canvas_prompt(prompt, images, sounds=(), clips=(), *, guide=False, special=False):
+    slots = {}
+    for tag, inputs in (("图",images),("音",sounds),("视频",clips)):
+        for i, entry in enumerate(inputs):
+            if slot := reference_slot(entry).get("prompt_slot"):
+                slots[tag,slot] = i+1+int(tag=="视频" and bool(guide) and (not special or i>0))
+    def resolve(match):
+        tag, slot = match.groups()
+        index = slots.get((tag,int(slot)))
+        if not index:
+            raise ValueError("提示词中的素材引用已断开，请在画布重新选择")
+        return f"@{tag}{index}"
+    return re.sub(r"@(图|视频|音)\{(\d{1,16})\}",resolve,prompt)
+
+
+def plan_payload(s, run, user, frames, duration, data, prompt, *, sounds=(), clips=(), guide=False, special=False):
     frames=[{**f,"_slot":i} for i,f in enumerate(frames)]
     images, kinds = [], []
     end = (s.host.frames_for(duration) - 4) / 24
@@ -187,7 +798,7 @@ def plan_payload(s, run, user, frames, duration, data, prompt):
         frames = [{**f, "role": "subject"} if f.get("role", "auto") == "auto" else f for f in frames]
         ordered = [f for f in ordered if f.get("role", "auto") != "auto"]
     for i, f in enumerate(frames):
-        src, version = s.source(run, user, f["node_id"])
+        src, version = s.source(run, user, f["node_id"],pinned_ref=f.get("ref"))
         role = f.get("role", "auto")
         t = 0
         if role != "subject" and f in ordered:
@@ -195,7 +806,8 @@ def plan_payload(s, run, user, frames, duration, data, prompt):
             t = 0 if role == "first" else end if role == "last" else f.get("time", end * j / max(1, len(ordered) - 1))
             t = max(0, min(end, t))
         images.append({"node_id": src["id"], "ref": version["ref"], "name": src.get("name"), "caption": src.get("data", {}).get("caption", ""),
-                       "index": i + 1, "role": "subject" if role == "subject" else "frame", "time": t, "w": version.get("w"), "h": version.get("h")})
+                       "index": i + 1, "role": "subject" if role == "subject" else "frame", "time": t, "w": version.get("w"), "h": version.get("h"),
+                       **({"prompt_slot":f["prompt_slot"]} if f.get("prompt_slot") else {})})
         kinds.append(role)
     if not planned:
         indices = [frames.index(f) for f in ordered]
@@ -211,7 +823,7 @@ def plan_payload(s, run, user, frames, duration, data, prompt):
                 raise ValueError()
         except (ValueError, ZeroDivisionError, AttributeError):
             raise ValueError("视频画幅格式不正确") from None
-    payload = {"kind": "video", "prompt": prompt, "images": images, "duration": duration, "ar": ar,
+    payload = {"kind": "video", "prompt": resolve_canvas_prompt(prompt,images,sounds,clips,guide=guide,special=special), "images": images, "duration": duration, "ar": ar,
                "quality": data.get("quality", "hd"), "turbo": bool(data.get("turbo", True)), "seed": data.get("seed", -1),
                "count": 1, "sound": data.get("sound", ""), "music": data.get("music", ""), "mode": "fl2v"}
     if planned:
@@ -220,6 +832,25 @@ def plan_payload(s, run, user, frames, duration, data, prompt):
 
 
 async def execute(s, run, user, cid, name, args):
+    if name == "video_broll_generate":
+        return await generate_broll(s,run,user,cid,args)
+    if name == "video_draft_status":
+        return read_draft_status(s,run,user,args["node_id"])
+    if name == "video_draft_finalize":
+        return await finalize_draft(s,run,user,cid,args)
+    if name in ("video_titles_get", "video_titles_edit", "video_cutaways_get", "video_cutaways_edit"):
+        return await edit_video_timeline(s,run,user,cid,name,args)
+    if name == "video_capture_frame":
+        return await capture_video_frame(s, run, user, cid, args)
+    if name == "video_object_settings":
+        return read_object_settings(s,run,user,args)
+    if name == "video_previs_get":
+        result = get_previs(video_node(s, run, user, args["node_id"])[1])
+        return {**result, "previs_node":result["node_id"], "text":"已读取当前白模场景。"}
+    if name == "video_previs_save":
+        return save_previs(s, run, user, cid, args)
+    if name == "video_previs_render":
+        return await render_previs(s, run, user, cid, args["node_id"])
     if run["data"].get("remake_plan_pending") and name in ("video_remake_map", "video_remake_locate",
             "video_remake_preview", "video_remake_generate", "video_remake_review", "video_remake_export"):
         raise ValueError("本轮有待确认的换角计划，请先使用计划卡选择镜头")
@@ -230,7 +861,7 @@ async def execute(s, run, user, cid, name, args):
     if name == "video_remake_analyze":
         return await analyze_remake(s, run, user, args["node_id"], retry=args.get("retry", False))
     if name == "video_remake_plan":
-        return plan_remake(s, run, user, args)
+        return plan_remake(s, run, user, args, cid)
     if name == "video_remake_map":
         return await map_remake(s, run, user, args)
     if name == "video_remake_locate":
@@ -243,27 +874,46 @@ async def execute(s, run, user, cid, name, args):
         return await export_remake(s, run, user, cid, args)
     if name == "video_remake_review":
         return await review_remake(s, run, user, args)
-    frames, data, original = args.get("frames", []), {}, None
+    frames, data, original, guide_edge = args.get("frames", []), {}, None, None
+    sound_edges, clip_edges, extension, segment = [], [], None, False
     prompt = args.get("prompt", "")
+    if name=="video_extend":
+        extension=args["direction"]
+        first={key:args[key] for key in ("node_id","version") if key in args}
+        args={**args,"video_refs":[first, *args.get("video_refs",[])]}
+    if name=="video_edit_segment":
+        segment=True
+        first={key:args[key] for key in ("node_id","version","start","end") if key in args}
+        args={**args,"video_refs":[first,*args.get("video_refs",[])]}
     if name == "video_regenerate":
         b, original = video_node(s, run, user, args["node_id"])
-        data = copy.deepcopy(original.get("data") or {})
         if original.get("job"):
             raise ValueError("原视频仍有任务，请等待完成或取消后再重新生成")
-        incoming = [e for e in b.get("edges", []) if e.get("to") == original["id"]]
+        _, recipe, data, incoming = video_edit_snapshot(s,run,b,original,args.get("version"))
+        if data.get("previs"):
+            raise ValueError("这是白模预演，请用白模渲染工具")
+        guide_edge = next((e for e in incoming if e.get("relation") == "previs"), None)
+        sound_edges = [e for e in incoming if e.get("relation") == "audio_ref"]
+        clip_edges = sorted((e for e in incoming if e.get("relation") == "video_ref"),key=lambda e:not (e.get("extension") or e.get("segment_edit")))
+        if clip_edges and "video_refs" not in args:
+            extension=clip_edges[0].get("extension")
+            segment=clip_edges[0].get("segment_edit") is True
+        if segment and recipe and not data.get("camera_plan") and recipe.get("camera_plan"):
+            data["camera_plan"] = copy.deepcopy(recipe["camera_plan"])
+        if segment and recipe and not data.get("object_edit") and recipe.get("object_edit"):
+            data["object_edit"] = copy.deepcopy(recipe["object_edit"])
         nodes = {n["id"]: n for n in b.get("nodes", [])}
-        frames = [{"node_id": e["from"], "role": e.get("role", "auto"), **({"time": e["time"]} if e.get("time") is not None else {})}
+        frames = [{"node_id":e["from"],"role":e.get("role","auto"),**{key:e[key] for key in ("time","ref","prompt_slot") if e.get(key) is not None}}
                   for e in incoming if nodes.get(e["from"], {}).get("type") == "image"]
         inputs = [(nodes[e["from"]].get("data", {}).get("text") or "").strip() for e in incoming if nodes.get(e["from"], {}).get("type") == "text"]
         prompt = prompt or "\n".join([t for t in inputs if t] + ([data.get("prompt", "")] if data.get("prompt") else []))
-        current = next((v for v in original.get("versions", []) if v.get("ref") == run["data"].get("bindings", {}).get(original["id"])), None) or s.current(original)
-        recipe = copy.deepcopy((current or {}).get("video_recipe"))
         if not frames and recipe:
             frames = [{"node_id": im["node_id"], "role": "subject" if im.get("role") == "subject" else "keyframe" if recipe.get("planned") else "auto",
+                       **({key:im[key] for key in ("ref","prompt_slot") if key in im} if im.get("prompt_slot") else {}),
                        **({"time": im["time"]} if "time" in im else {})} for im in recipe.get("images", []) if im.get("node_id")]
             data.update({k: recipe[k] for k in ("duration", "quality", "turbo", "seed", "sound", "music", "provider") if k in recipe})
             prompt = args.get("prompt") or prompt or recipe.get("prompt", "")
-            if recipe.get("ar"):
+            if recipe.get("ar") and not guide_edge and not args.get("previs"):
                 data["aspect"] = str(recipe["ar"]) + ":1"
         replacements = args.get("replacements", [])
         if len({r["from_node_id"] for r in replacements}) != len(replacements):
@@ -271,21 +921,108 @@ async def execute(s, run, user, cid, name, args):
         mapping = {r["from_node_id"]: r["to_node_id"] for r in replacements}
         if set(mapping) - {f["node_id"] for f in frames}:
             raise ValueError("要替换的图片不是原视频的输入关键帧")
-        frames = [{**f, "node_id": mapping.get(f["node_id"], f["node_id"])} for f in frames]
-    duration = args.get("duration", data.get("duration", 5))
-    if type(duration) not in (int, float) or not math.isfinite(duration) or not 2 <= duration <= 15:
-        raise ValueError("视频时长须在2至15秒之间")
+        for frame in frames:
+            if frame["node_id"] in mapping:
+                frame["node_id"] = mapping[frame["node_id"]]
+                frame.pop("ref",None)
+    guide = sample = None
+    if args.get("previs") or guide_edge:
+        guide, sample = reference_version(s, run, user, args.get("previs"), guide_edge if not args.get("previs") else None)
+    sounds = ([reference_version(s, run, user, selection=entry, kind="audio")[0] for entry in args["audio_refs"]]
+              if "audio_refs" in args else [reference_version(s, run, user, edge=e, kind="audio")[0] for e in sound_edges])
+    if "audio_refs" in args:
+        sound_slots = {edge["from"]:reference_slot(edge) for edge in sound_edges}
+        for sound in sounds:
+            sound.update(sound_slots.get(sound["node_id"],{}))
+    if len({entry["node_id"] for entry in sounds}) != len(sounds):
+        raise ValueError("同一音频节点只可选一个版本")
+    clips = []
+    clip_slots = {edge["from"]:reference_slot(edge) for edge in clip_edges}
+    for entry in args.get("video_refs", clip_edges):
+        clip, version = reference_version(s, run, user, **({"selection":entry} if "video_refs" in args else {"edge":entry}), kind="clip")
+        if original and clip["node_id"]==original["id"]:
+            raise ValueError("要参考同一节点的历史视频时，请先另建独立的视频节点")
+        if not sample:
+            sample = version
+        clips.append({**clip, **clip_slots.get(clip["node_id"],{}), **{key:entry[key] for key in ("start","end") if key in entry}})
+    if len({entry["node_id"] for entry in clips}) != len(clips) or (guide and any(clip["node_id"]==guide["node_id"] for clip in clips)):
+        raise ValueError("同一视频节点只可选一个参考版本")
+    default_length = (sample or {}).get("seconds") if guide else (clips[0]["end"] - clips[0].get("start",0) if clips and "end" in clips[0] else 5)
+    duration = args.get("duration", data.get("duration", max(2,default_length or 5)))
+    if segment:
+        duration=clips[0].get("end",4)-clips[0].get("start",0)
+        if not 4 <= duration <= 30+.01:
+            raise ValueError("待编辑片段须为 4 到 30 秒")
+        duration=min(duration,30)
+    if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 2:
+        raise ValueError("视频时长至少为 2 秒")
     data.update({k: args[k] for k in ("quality", "seed", "provider") if k in args})
-    payload = plan_payload(s, run, user, frames, duration, data, prompt)
+    guide_aspect = {}
+    if guide or sounds or clips:
+        if guide and not (extension or segment) and duration > previs.MAX_SECONDS:
+            raise ValueError("白模参考成片最长 14 秒")
+        routes = s.host.reference_routes(require_motion=bool(guide or clips),segment_edit=segment)
+        provider = args.get("provider") or data.get("provider")
+        chosen = next((r for r in routes if r["provider"]["id"] == provider), None)
+        if not chosen and "provider" not in args and routes:
+            chosen = routes[0]
+        if not chosen:
+            if segment:
+                raise ValueError("请选择已配置参考视频公网地址的 Seedance 2.5 服务")
+            raise ValueError("请选择已配置参考视频公网地址的 Seedance 2.x 服务" if guide or clips else "请选择支持音频参考的 Seedance 2.x 服务")
+        data["provider"] = chosen["provider"]["id"]
+        maximum = 14 if guide and not (extension or segment) else 30 if "2-5" in chosen["model"] else 15
+        if duration > maximum:
+            if "duration" in args or "duration" in data:
+                raise ValueError(f"此模式成片最长 {maximum} 秒")
+            duration = maximum
+        if sample and data.get("aspect", "auto") == "auto" and sample.get("w") and sample.get("h"):
+            guide_aspect["aspect"] = f"{sample['w']}:{sample['h']}"
+        duration = max(4, round(duration))
+        frames = [{**f, "role":"subject"} for f in frames]
+    elif len(frames) > 12 or duration > 15:
+        raise ValueError("此模式最多接受 12 张画布图片，成片最长 15 秒")
+    special = bool(extension or segment)
+    payload = plan_payload(s, run, user, frames, duration, {**data, **guide_aspect}, prompt,
+                           sounds=sounds,clips=clips,guide=bool(guide),special=special)
+    if args.get("draft",data.get("draft")):
+        payload["draft"] = True
+        data["draft"] = True
+    if guide:
+        payload.update(previs_guide=guide, planned=True, mode="previs")
+    if sounds:
+        payload.update(audio_refs=sounds, planned=True, mode="previs" if guide else "reference")
+    if clips:
+        payload.update(video_refs=clips, planned=True, mode="previs" if guide else "reference")
+    if extension:
+        payload.update(extension=extension,mode="extension")
+    if segment:
+        payload.update(segment_edit=True,mode="segment_edit")
+    if "camera_plan" in args and "object_edit" in args:
+        raise ValueError("请分别提交镜头重拍和物体编辑")
+    if not segment and ("camera_plan" in args or "object_edit" in args):
+        raise ValueError("镜头重拍和物体编辑需要指定原视频片段")
+    if segment and "object_edit" in args:
+        data["object_edit"] = update_object_plan(s,run,user,data.get("object_edit"),args["object_edit"])
+        payload.update(object_edit=data["object_edit"],mode="object_edit")
+    elif segment and (retake := args.get("camera_plan") or data.get("camera_plan")):
+        data["camera_plan"] = camera_plan.validate(retake)
+        payload.update(camera_plan=data["camera_plan"], mode="camera_retake")
+    elif segment and data.get("object_edit"):
+        payload.update(object_edit=data["object_edit"],mode="object_edit")
     if data.get("pmode") == "fields" and data.get("fields") and not args.get("prompt"):
-        payload["fields"] = data["fields"]
-    if not prompt.strip() and not payload.get("fields"):
+        payload["fields"] = {key:resolve_canvas_prompt(value,payload["images"],sounds,clips,guide=guide,special=special) if isinstance(value,str) else value
+                             for key,value in data["fields"].items()}
+    if not prompt.strip() and not any(payload.get(key) for key in ("fields","camera_plan","object_edit")):
         raise ValueError("原视频没有可用提示词，请提供视频动作要求")
     if data.get("provider"):
         payload["provider"] = data["provider"]
     target_data = None
     if original:
         target_data = {**data, "duration": duration}
+        for prop in ("camera_plan","object_edit","draft"):
+            if not payload.get(prop):
+                target_data.pop(prop, None)
         if args.get("prompt"):
             target_data.update(prompt=args["prompt"], pmode="free")
     return await s.submit_generation(run, user, cid, payload, args.get("name") or (original.get("name", "视频") + " · 重生成" if original else "助手视频"),
@@ -328,7 +1065,7 @@ async def analyze_remake(s, run, user, nid, *, retry=False):
     return result
 
 
-def plan_remake(s, run, user, args):
+def plan_remake(s, run, user, args, cid):
     nid = args["node_id"]
     key = remake_source(s, run, user, nid)
     session = video_remake.load(key)
@@ -355,7 +1092,7 @@ def plan_remake(s, run, user, args):
         run["data"]["remake_plan_pending"] = True
         s.update(run)
     return {"text":"勾选要处理的镜头，再确认提交换角计划。", "remake":{"node_id":nid,"source_ref":key[3]},
-            "remake_plan":{"board":key[1], "cut_revision":session.get("cut_revision", 0), "asset":asset["id"],
+            "remake_plan":{"id":cid, "board":key[1], "cut_revision":session.get("cut_revision", 0), "asset":asset["id"],
                            "asset_name":asset["name"], "reference":reference, "person":person, "look":args.get("look", ""),
                            "shots":planned}}
 
@@ -433,7 +1170,7 @@ async def preview_remake(s, run, user, cid, args):
 
     outcome = {"submitted": [], "skipped": [], "failed": []}
     if requests:
-        s.begin_generation(run, cid, "image", len(requests))
+        await s.begin_generation(run,cid,"image",len(requests),{"label":"换角预览","node":nid,"args":args,"shots":requests})
         session = await apply_remake_action(s, user, nid, key, {
             "action": "batch_previews", "person": args["person"], "asset": args["asset_id"],
             "shots": requests, "cut_revision": args["cut_revision"],
@@ -484,14 +1221,30 @@ async def generate_remake(s, run, user, cid, args):
     if shot.get("keep_original"):
         raise ValueError("此镜头已设为保留原片，请在工作区核对")
     video_remake.update_jobs(s.host, user["id"], session)
+    motion_provider = args.get("motion_provider")
     try:
-        _, approved, entry_tick = video_remake.shot_start(shot, mapping, s.host.film.FPS)
-        video_remake.shot_guides(shot, approved, s.host.film.FPS, mapping, entry_tick)
+        fps = s.host.film.FPS
+        ref, approved, entry_tick = video_remake.shot_start(shot, mapping, fps)
+        guides = video_remake.shot_guides(shot, approved, fps, mapping, entry_tick)
+        if motion_provider:
+            if not any(p["id"] == motion_provider for p in video_remake.motion_providers(s.host)):
+                raise ValueError("所选视频服务未配置深度参考，请重新读取视频重制状态")
+            ticks = round(shot["end"] * fps) - round(shot["start"] * fps)
+            video_remake.depth_motion(user, s.host, key, shot, ref, shot["frames"]["first"], ticks, entry_tick, guides)
     except web.HTTPException as error:
         raise ValueError(json.loads(error.text)["error"]) from None
     if approved["job"] != args["first_job"]:
         raise ValueError("已采用的起始帧已变更，请重新读取视频重制状态")
-    s.begin_generation(run, cid, "video", 1)
+    await s.begin_generation(run,cid,"video",1,{"label":f"重制镜头 {index+1}","node":nid,"args":args,
+                                              "ref":ref,"duration":shot["end"]-shot["start"],"provider":motion_provider})
+    if motion_provider:
+        session = await apply_remake_action(s, user, nid, key, {
+            "action":"generate_depth_video", "shot":index, "first_job":approved["job"], "provider":motion_provider,
+            "motion":args.get("motion", ""), "cut_revision":args["cut_revision"],
+        })
+        job = session["shots"][index]["videos"][-1]["job"]
+        return await wait_remake_generation(s, run, user, cid, key, nid, "video",
+                                            [{"shot":index,"job":job}], {"shot":index + 1,"submitted":True})
     session = await apply_remake_action(s, user, nid, key, {
         "action": "batch_videos", "person": mapping["source"], "asset": mapping["asset"],
         "shots": [{"shot": index, "first_job": approved["job"], "motion": args.get("motion", "")}],
@@ -686,6 +1439,7 @@ def remake_status(host, nid, key, session, *, review_shot=None):
                                        hint.get("look") == mapping.get("look", "")),
             "start_frame_approved": frame_approved,
             "approved_start_job": adopted_frame["job"] if frame_approved else None,
+            "depth_ready": bool(shot.get("depth", {}).get("ref") and shot["depth"]["state"] == "done"),
             "video_available": any(item.get("ref") and video_remake.matches_mapping(item, mapping) for item in videos),
             "pending": video_remake.pending(frames + videos), "review_issue": issues.get(index),
         })
@@ -697,6 +1451,7 @@ def remake_status(host, nid, key, session, *, review_shot=None):
         text += warning
     return {**result, "analyzed": True, "text": text, "missing_analysis_shots": missing,
             "cut_revision": session.get("cut_revision", 0),
+            "motion_providers": video_remake.motion_providers(host),
             "source_people": session.get("source_people", []), "warning": warning,
             "mapping": {"source": mapping["source"], "asset": mapping.get("asset_name"), "asset_id": mapping["asset"],
                         "shots": [index + 1 for index in mapping["shots"]]} if mapping else None,

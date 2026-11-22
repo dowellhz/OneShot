@@ -6,7 +6,7 @@
 <title>OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
 <link rel="stylesheet" href="/static/type.css?v=1">
-<link rel="stylesheet" href="/static/canvas.css?v=2">
+<link rel="stylesheet" href="/static/canvas.css?v=45">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
@@ -14,6 +14,7 @@
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m20 16-4.5-4.5L7 20"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5M14.5 5.5l4 4M10 18l-4 1 1-4L17 5a2.8 2.8 0 0 1 4 4Z"/></symbol>
   <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="5.5" width="13.5" height="13" rx="3"/><path d="m16.5 10.5 4.5-2.5v8l-4.5-2.5"/></symbol>
+  <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 10v4m4-7v10m4-14v18m4-14v10m4-7v4"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4.5 14v3.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V14"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-assets" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/></symbol>
@@ -28,34 +29,48 @@
   <symbol id="i-full" viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V5h5v2M6.5 7l1 12.5h9l1-12.5"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 1 1 8 0v3m-4 4v2"/></symbol>
   <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 12h12M13 7l5 5-5 5"/></symbol>
   <symbol id="i-scissors" viewBox="0 0 24 24"><circle cx="6.5" cy="7" r="2.5"/><circle cx="6.5" cy="17" r="2.5"/><path d="M8.5 8.5 20 18M8.5 15.5 20 6"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="18" cy="12" r="1" fill="currentColor"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
   <symbol id="i-left" viewBox="0 0 24 24"><path d="m14 7-5 5 5 5"/></symbol>
   <symbol id="i-right" viewBox="0 0 24 24"><path d="m10 7 5 5-5 5"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/></symbol>
+  <symbol id="i-motion" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 15v-4m5 4V8m5 7v-6"/></symbol>
+  <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><path d="M17 13v8m-4-4h8"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/></symbol>
   <symbol id="i-hd" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="3"/><path d="M8 9.5v5M11 9.5v5M8 12h3M14 9.5v5h1.2a2.5 2.5 0 0 0 0-5Z"/></symbol>
   <symbol id="i-script" viewBox="0 0 24 24"><rect x="4" y="3.5" width="16" height="17" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+  <symbol id="i-comment" viewBox="0 0 24 24"><path d="M20 14a3 3 0 0 1-3 3H9l-5 3V7a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3Z"/><path d="M8 9h8m-8 4h5"/></symbol>
   <symbol id="i-grip" viewBox="0 0 18 12"><circle cx="4" cy="3" r="1.5"/><circle cx="9" cy="3" r="1.5"/><circle cx="14" cy="3" r="1.5"/><circle cx="4" cy="9" r="1.5"/><circle cx="9" cy="9" r="1.5"/><circle cx="14" cy="9" r="1.5"/></symbol>
   <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5c0 4-2.5 6.5-6 6.5-2.6 0-4.2-1.3-5.6-3.4L3.8 14a1.5 1.5 0 0 1 2.5-1.6L8 14.5"/></symbol>
   <symbol id="i-select" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M12 4h2M18 4h1a1 1 0 0 1 1 1v1M4 12v2M4 18v1a1 1 0 0 0 1 1h1"/><path d="m11 11 9 3.5-4 1.5-1.5 4z"/></symbol>
   <symbol id="i-map" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><rect x="11" y="11" width="6" height="5" rx="1"/></symbol>
+  <symbol id="i-layout" viewBox="0 0 24 24"><path d="M5 4v16m7-16v16m7-16v16M3 8h18M3 16h18"/></symbol>
   <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5M12 17v.01"/></symbol>
   <symbol id="i-stack" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/><path d="M9 3.5h9A2.5 2.5 0 0 1 20.5 6v9"/></symbol>
 </svg>
 
-<div id="vp"><div id="world"><svg id="edges" width="1" height="1"></svg></div></div>
+<div id="vp"><div id="world"><svg id="edges" width="1" height="1"></svg></div>
+  <svg id="canvasDragGuides" aria-hidden="true"><line style="display:none"/><line style="display:none"/></svg>
+  <span id="acPlacementMarker" aria-hidden="true" hidden></span>
+</div>
 <div id="marquee"></div>
 
 <div class="float" id="tl">
   <div class="logo" title="OneShot"><svg viewBox="0 0 32 32" width="100%" height="100%" aria-hidden="true"><rect x=".5" y=".5" width="31" height="31" rx="7.5" fill="#242429" stroke="#4a4a52"/><circle cx="16" cy="16" r="9" fill="none" stroke="#ededf0" stroke-width="2"/><path d="M14 11.6v8.8l6.8-4.4z" fill="#ededf0"/></svg></div>
   <span class="bname" id="bname" contenteditable="true" spellcheck="false">我的画布</span>
-  <button class="tb" id="bmenuBtn" title="画布列表"><svg class="i"><use href="#i-down"/></svg></button>
+  <span id="boardAccessBadge" hidden>审阅模式</span>
+  <button class="tb" id="bmenuBtn" title="项目和画布" aria-label="项目和画布" aria-controls="boards"><svg class="i"><use href="#i-down"/></svg></button>
+  <button id="boardSaveRetry" type="button" hidden>保存失败 · 重试</button>
+  <button class="tb" id="nodeSearchBtn" title="搜索节点 ⌘/Ctrl K" aria-label="搜索节点"><svg class="i"><use href="#i-search"/></svg></button>
 </div>
+<nav class="float" id="projectCanvases" aria-label="项目画布" hidden></nav>
 <div class="menu" id="boards"></div>
-<div class="float" id="tr"><button id="shotListBtn" aria-controls="shotList" aria-expanded="false"><svg class="i"><use href="#i-script"/></svg><span>镜头</span></button><button id="assetLibraryBtn" aria-controls="assetLibrary" aria-expanded="false"><svg class="i"><use href="#i-assets"/></svg><span>资产库</span></button><span class="st"><span class="sd" id="sd"></span><span id="stt">连接中…</span></span></div>
+<div class="float" id="tr"><button id="shareBtn" type="button" aria-controls="canvasShare" aria-expanded="false">分享</button><button type="button" id="commentBtn" aria-controls="canvasComments" aria-expanded="false"><svg class="i"><use href="#i-comment"/></svg><span>评论</span></button><button id="shotListBtn" aria-controls="shotList" aria-expanded="false"><svg class="i"><use href="#i-script"/></svg><span>镜头</span></button><button id="assetLibraryBtn" aria-controls="assetLibrary" aria-expanded="false"><svg class="i"><use href="#i-assets"/></svg><span>资产库</span></button><span class="st"><span class="sd" id="sd"></span><span id="stt">连接中…</span></span></div>
 
 <div class="float" id="lt">
   <button class="ib" id="toolPan" data-tip="抓手 H：拖空白处移动画布"><svg class="i"><use href="#i-hand"/></svg></button>
@@ -64,6 +79,9 @@
   <button class="ib" id="addBtn" data-tip="添加节点"><svg class="i"><use href="#i-plus"/></svg></button>
   <button class="ib" id="upBtn" data-tip="上传图片或视频" aria-label="上传图片或视频"><svg class="i"><use href="#i-upload"/></svg></button>
   <button class="ib" id="assetBtn" data-tip="资产库" aria-label="打开资产库"><svg class="i"><use href="#i-assets"/></svg></button>
+  <button class="ib" id="generationHistoryBtn" data-tip="生成历史" aria-label="生成历史" aria-controls="generationHistory"><svg class="i"><use href="#i-clock"/></svg></button>
+  <button class="ib" id="templateBtn" data-tip="工作流模板" aria-label="打开工作流模板" aria-controls="workflowTemplates"><svg class="i"><use href="#i-stack"/></svg></button>
+  <button class="ib" id="creativeAppsBtn" data-tip="创作应用" aria-label="创作应用" aria-controls="creativeApps"><svg class="i"><use href="#i-apps"/></svg></button>
   <div class="sep"></div>
   <button class="ib" id="undoBtn" data-tip="撤销 ⌘Z"><svg class="i"><use href="#i-undo"/></svg></button>
   <button class="ib" id="redoBtn" data-tip="重做 ⇧⌘Z"><svg class="i"><use href="#i-redo"/></svg></button>
@@ -74,17 +92,25 @@
   <button class="ib" id="zIn"><svg class="i"><use href="#i-plus"/></svg></button>
   <button class="ib" id="zFit" title="适应画布 ⇧1"><svg class="i"><use href="#i-fit"/></svg></button>
   <button class="ib" id="mmBtn" title="小地图 M"><svg class="i"><use href="#i-map"/></svg></button>
+  <button class="ib" id="canvasLayoutBtn" type="button" title="画布布局设置" aria-label="画布布局设置" aria-controls="canvasLayoutMenu" aria-expanded="false"><svg class="i"><use href="#i-layout"/></svg></button>
   <span class="wm" id="wmBtn" title="鼠标滚轮的作用（点击切换）"></span>
   <button class="ib" id="helpBtn" title="操作说明 ?"><svg class="i"><use href="#i-help"/></svg></button>
 </div>
+<div class="menu" id="canvasLayoutMenu" role="group" aria-label="画布布局设置">
+  <label><input type="checkbox" data-canvas-layout="guides">对齐参考线</label>
+  <label><input type="checkbox" data-canvas-layout="grid">吸附到网格</label>
+  <p>拖动时按住 Alt / Option 可临时关闭吸附</p>
+</div>
 <div id="mm"><canvas id="mmc" width="420" height="280"></canvas></div>
 <div class="menu" id="ctxMenu"></div>
-<div class="menu" id="slashMenu"></div>
+<div class="menu" id="slashMenu" role="listbox" aria-label="图片快捷工具"></div>
 <div id="anglePop">
   <b style="font-size:var(--fs-body)">换角度</b>
   <label>水平环绕<input type="range" id="agYaw" min="-180" max="180" step="15" value="45"><span id="agYawV"></span></label>
   <label>俯仰<input type="range" id="agPitch" min="-60" max="60" step="5" value="0"><span id="agPitchV"></span></label>
-  <label>景别<select id="agSize"><option value="">保持不变</option><option>面部特写</option><option>近景</option><option>中景</option><option>全景</option><option>远景</option></select><span></span></label>
+  <label>拍摄距离<input type="range" id="agDistance" min="-100" max="100" value="0"><span id="agDistanceV"></span></label>
+  <label>景别<select id="agFraming"><option value="">保持不变</option><option>面部特写</option><option>近景</option><option>中景</option><option>全景</option><option>远景</option></select><span></span></label>
+  <label>焦段<select id="agLens"><option value="24">24 mm 广角</option><option value="35">35 mm 小广角</option><option value="50" selected>50 mm 标准</option><option value="85">85 mm 人像</option><option value="135">135 mm 长焦</option></select><span></span></label>
   <div class="tx" id="agText"></div>
   <div class="bt"><button class="pill" id="agCancel">取消</button><button class="pill" id="agOk" style="background:#fff;color:#000">填入提示词</button></div>
 </div>
@@ -119,15 +145,148 @@
   <button data-add="text"><span class="sw" style="background:#2a2236;color:var(--c-text)"><svg class="i"><use href="#i-text"/></svg></span>文本</button>
   <button data-add="image"><span class="sw" style="background:#242429;color:var(--c-image)"><svg class="i"><use href="#i-image"/></svg></span>图片</button>
   <button data-add="video"><span class="sw" style="background:#242933;color:var(--c-video)"><svg class="i"><use href="#i-video"/></svg></span>视频</button>
+  <button data-add="audio"><span class="sw" style="background:#242429;color:var(--c-image)"><svg class="i"><use href="#i-audio"/></svg></span>音频生成</button>
   <button data-add="script"><span class="sw" style="background:#22263a;color:#8fb0ff"><svg class="i"><use href="#i-script"/></svg></span>分镜脚本</button>
+  <button data-add="previs"><span class="sw" style="background:#242933;color:var(--c-video)"><svg class="i"><use href="#i-video"/></svg></span>3D 白模预演</button>
+  <button data-add="playlist"><span class="sw" style="background:#242933;color:var(--c-video)"><svg class="i"><use href="#i-stack"/></svg></span>播放列表</button>
   <div class="sep"></div>
-  <button data-add="upload"><span class="sw" style="background:#222;color:#ccc"><svg class="i"><use href="#i-upload"/></svg></span>上传图片或视频</button>
+  <button data-add="upload"><span class="sw" style="background:#222;color:#ccc"><svg class="i"><use href="#i-upload"/></svg></span>上传图片、视频或音频</button>
   <div class="sep" data-arrange-entry hidden></div>
+  <button type="button" data-comment-entry hidden><svg class="i"><use href="#i-comment"/></svg>评论此位置</button>
   <button data-arrange-entry hidden><svg class="i"><use href="#i-assets"/></svg>整理对齐…</button>
 </div>
 
 <div id="ntools" role="toolbar" aria-label="节点操作"></div>
 <div id="nodeToolTip" role="tooltip" hidden></div>
+<dialog id="videoExtension" aria-labelledby="videoExtensionTitle">
+  <form>
+    <header><strong id="videoExtensionTitle">续拍视频</strong><button type="button" data-ve-close aria-label="关闭">×</button></header>
+    <p data-ve-source></p>
+    <label>方向<select name="direction"><option value="before">补拍片头</option><option value="after">续拍片尾</option></select></label>
+    <label>方式<select name="method"></select></label>
+    <label>新增时长<input name="duration" type="number" min="4" max="30" step="1" required> 秒</label>
+    <p data-ve-help></p>
+    <textarea name="prompt" rows="3" maxlength="3000" aria-label="续拍描述"></textarea>
+    <footer><button type="submit">创建续拍节点</button></footer>
+  </form>
+</dialog>
+<dialog id="videoSegment" aria-labelledby="videoSegmentTitle">
+  <form>
+    <header><strong id="videoSegmentTitle">修改视频片段</strong><button type="button" data-vs-close aria-label="关闭">×</button></header>
+    <p data-vs-title></p>
+    <div class="video-segment-surface">
+      <video controls playsinline preload="metadata"></video>
+      <div class="video-object-overlay" data-object-overlay hidden><div data-object-box hidden></div></div>
+    </div>
+    <section data-retake-ranges hidden aria-label="重拍区间">
+      <div class="retake-strip" data-retake-strip aria-label="原片区间分布" role="img"></div>
+      <div class="retake-range-buttons" data-retake-tabs role="group" aria-label="选择重拍区间"></div>
+      <div class="retake-range-buttons">
+        <button type="button" data-retake-add>添加区间</button>
+        <button type="button" data-retake-split>在播放头拆分区间</button>
+        <button type="button" data-retake-remove>移除当前区间</button>
+        <button type="button" data-retake-preview>预览当前区间</button>
+      </div>
+    </section>
+    <label>入点 <input name="start" type="number" min="0" step="any" required> 秒 <button type="button" data-vs-point="start">设为播放位置</button></label>
+    <label>出点 <input name="end" type="number" min="0" step="any" required> 秒 <button type="button" data-vs-point="end">设为播放位置</button></label>
+    <label>服务 <select name="provider" aria-label="片段编辑服务"></select></label>
+    <fieldset data-vs-object hidden>
+      <legend>目标物体</legend>
+      <button type="button" data-object-mark>在当前帧框选</button>
+      <button type="button" data-object-locate hidden>定位标注帧</button>
+      <span data-object-status aria-live="polite"></span>
+      <div data-object-reference hidden>
+        <label>替换参考图 <select data-object-ref aria-label="选择替换参考图"></select></label>
+        <div class="object-reference-actions">
+          <button type="button" data-object-upload>上传本地图片</button>
+          <input type="file" data-object-file accept=".png,.jpg,.jpeg,.webp" hidden>
+          <img data-object-preview alt="当前所选替换参考图" hidden>
+          <span data-object-ref-status role="status"></span>
+        </div>
+      </div>
+    </fieldset>
+    <fieldset data-vs-camera hidden>
+      <legend>镜头方案</legend>
+      <label>镜头方式 <select name="cameraMode">
+        <option value="fixed">固定机位</option><option value="cut">切换机位</option><option value="move">连续运镜</option>
+      </select></label>
+      <div class="retake-views">
+        <fieldset data-vs-view="start"><legend>机位</legend></fieldset>
+        <fieldset data-vs-view="end" hidden><legend>结束机位</legend></fieldset>
+      </div>
+      <p data-vs-camera-hint></p>
+    </fieldset>
+    <p data-vs-status role="status"></p>
+    <textarea name="prompt" rows="3" maxlength="3000" aria-label="片段修改描述" placeholder="例如把窗外改成雨天，保留人物和镜头节奏"></textarea>
+    <footer><button type="submit">创建修改节点</button><button type="submit" data-retake-generate hidden>创建并生成</button></footer>
+  </form>
+</dialog>
+<dialog id="segmentReview" aria-labelledby="segmentReviewTitle">
+  <header><strong id="segmentReviewTitle">审核修改片段</strong><button type="button" data-sr-close aria-label="关闭">×</button></header>
+  <p data-sr-name></p>
+  <div data-sr-list></div>
+  <p><label><input type="checkbox" data-sr-original-audio> 保留原片声音</label></p>
+  <p data-sr-preview></p><video controls playsinline preload="metadata" hidden></video>
+  <p data-sr-status role="status"></p>
+  <footer><button type="button" data-sr-save>保存决定</button><button type="button" data-sr-send>送入剪辑台</button></footer>
+</dialog>
+<dialog id="videoTrim" aria-labelledby="videoTrimTitle">
+  <form novalidate>
+    <header><strong id="videoTrimTitle">裁剪视频</strong><button type="button" data-trim-close aria-label="关闭">×</button></header>
+    <p data-trim-source></p>
+    <video controls playsinline preload="metadata"></video>
+    <div class="trim-points">
+      <label>入点（秒） <input name="start" type="number" min="0" step="any" required></label>
+      <button type="button" data-trim-point="start">用播放头设入点</button>
+      <label>出点（秒） <input name="end" type="number" min="0" step="any" required></label>
+      <button type="button" data-trim-point="end">用播放头设出点</button>
+    </div>
+    <div class="trim-actions">
+      <button type="button" data-trim-preview>预览所选区间</button>
+      <button type="button" data-trim-split>在播放头分割</button>
+      <button type="button" data-trim-detect>智能识别切点</button>
+    </div>
+    <div data-trim-cuts aria-label="分割点"></div>
+    <p data-trim-status role="status"></p>
+    <footer><button type="submit">生成裁剪视频</button></footer>
+  </form>
+</dialog>
+<dialog id="frameCapture" aria-labelledby="frameCaptureTitle">
+  <header><strong id="frameCaptureTitle">视频截帧</strong><button type="button" data-capture-close aria-label="关闭">×</button></header>
+  <p data-capture-source></p>
+  <video controls playsinline preload="metadata"></video>
+  <p data-capture-status role="status"></p>
+  <footer>
+    <button type="button" data-capture-position="first">截取首帧</button>
+    <button type="button" data-capture-position="time">截取当前帧</button>
+    <button type="button" data-capture-position="last">截取末帧</button>
+  </footer>
+</dialog>
+<dialog id="videoCompare" aria-labelledby="videoCompareTitle">
+  <header><strong id="videoCompareTitle">对比视频版本</strong><button type="button" data-compare-close aria-label="关闭">×</button></header>
+  <div class="compare-panes">
+    <section><label>左侧版本 <select data-compare-version></select></label><video playsinline preload="auto"></video><p data-compare-meta></p></section>
+    <section><label>右侧版本 <select data-compare-version></select></label><video playsinline preload="auto"></video><p data-compare-meta></p></section>
+  </div>
+  <footer>
+    <button type="button" data-compare-play disabled>播放</button>
+    <input type="range" min="0" max="0" step=".01" value="0" aria-label="同步播放进度" data-compare-time disabled>
+    <output data-compare-clock>0.00 / 0.00 秒</output>
+    <label>声音 <select data-compare-audio><option value="left">左侧</option><option value="right">右侧</option><option value="mute">静音</option></select></label>
+  </footer>
+  <p role="status" data-compare-status></p>
+</dialog>
+<dialog id="videoDraftFinal" aria-labelledby="videoDraftFinalTitle">
+  <form>
+    <header><strong id="videoDraftFinalTitle">生成定稿</strong><button type="button" data-draft-close aria-label="关闭">×</button></header>
+    <p data-draft-name></p>
+    <label>分辨率 <select name="resolution"><option value="1080p">1080p</option><option value="4k">4K</option></select></label>
+    <p>沿用所选样片的提示词与参考素材。定稿会产生一项新的生成任务。</p>
+    <p data-draft-status role="status"></p>
+    <footer><button type="submit">生成定稿</button></footer>
+  </form>
+</dialog>
 <div id="pp">
   <div class="pgrip" title="按住拖动面板；双击回到节点下方"><svg class="i"><use href="#i-grip"/></svg><button class="rs" title="回到节点下方">↺ 跟随节点</button></div>
   <div class="phead"><div class="refs" id="refs"></div><div class="seg" id="pmode"></div></div>
@@ -138,7 +297,7 @@
 </div>
 
 <div id="drawer">
-  <div class="dh">素材库<div class="tabs"><button data-f="all" class="on">全部</button><button data-f="image">图片</button><button data-f="video">视频</button></div></div>
+  <div class="dh">素材库<div class="tabs"><button data-f="all" class="on">全部</button><button data-f="image">图片</button><button data-f="video">视频</button><button data-f="audio">音频</button></div></div>
   <div class="dh2"><div class="tabs lib"><button data-f="character">角色</button><button data-f="scene">场景</button><button data-f="prop">道具</button><button data-f="style">风格</button><button data-f="document">资料</button></div></div>
   <div class="cm-search"><input id="memorySearch" placeholder="搜索记忆名称、别名、标签" aria-label="搜索创作记忆"><button id="memoryNew">新建记忆</button></div>
   <div class="h">点击或拖到画布上使用</div>
@@ -155,38 +314,182 @@
     <div class="tile" data-add="script"><svg class="i" style="color:#8fb0ff"><use href="#i-script"/></svg>分镜脚本<small>剧情 → 分镜 → 成片</small></div>
   </div>
 </div>
-<div id="light"></div>
+<dialog id="light" aria-labelledby="lightTitle"></dialog>
 <div id="pv"><div class="box"><div class="hd">发给模型的完整提示词<small id="pvm"></small><span style="flex:1"></span><button class="pill" id="pvCopy">复制</button><button class="pill" id="pvClose">关闭</button></div><pre id="pvt"></pre></div></div>
 <div id="toast"></div>
-<input type="file" id="file" accept="image/*,video/*,.mp4,.mov,.webm,.m4v,.mkv" multiple hidden>
+<dialog id="audioTranscript" aria-labelledby="audioTranscriptTitle">
+  <header><strong id="audioTranscriptTitle">音频转写</strong><button type="button" data-transcript-close aria-label="关闭">×</button></header>
+  <p data-transcript-source></p><audio controls preload="metadata"></audio>
+  <form><label>开始（秒） <input name="in" type="number" min="0" step="any" required></label>
+    <label>结束（秒） <input name="out" type="number" min="0" step="any" placeholder="音频末尾"></label>
+    <button type="submit" data-transcript-run>开始转写</button></form>
+  <p role="status"></p><div data-transcript-result></div>
+  <footer><button type="button" data-transcript-download disabled>下载 SRT</button><button type="button" data-transcript-add disabled>放入画布</button><button type="button" data-transcript-cut disabled>剪出选中台词</button></footer>
+</dialog>
+<dialog id="audioSeparation" aria-labelledby="audioSeparationTitle">
+  <header><strong id="audioSeparationTitle">人声分离</strong><button type="button" data-stem-close aria-label="关闭">×</button></header>
+  <p data-stem-source></p>
+  <div class="stem-source-player"></div>
+  <form>
+    <label>开始（秒） <input name="start" type="number" min="0" step="any" required></label>
+    <label>结束（秒） <input name="end" type="number" min="0" step="any"></label>
+    <button type="submit" data-stem-start>开始分离</button>
+    <button type="button" data-stem-cancel hidden>取消任务</button>
+  </form>
+  <p role="status"></p>
+  <div data-stem-results></div>
+  <footer class="stem-result-actions" hidden>
+    <button type="button" data-stem-add>两条音轨放入画布</button>
+    <button type="button" data-stem-edit>在剪辑台使用</button>
+  </footer>
+</dialog>
+<dialog id="textDocument" aria-labelledby="textDocumentTitle">
+  <header><strong id="textDocumentTitle">文本节点</strong><button type="button" data-document-close aria-label="关闭文档">×</button></header>
+  <div class="document-tools">
+    <label>格式 <select id="textDocumentFormat"><option value="plain">纯文本</option><option value="markdown">Markdown</option></select></label>
+    <div id="documentFormatting" role="group" aria-label="文档格式工具">
+      <button type="button" data-document-format="heading">标题</button><button type="button" data-document-format="subheading">小标题</button>
+      <button type="button" data-document-format="bold">加粗</button><button type="button" data-document-format="italic">斜体</button>
+      <button type="button" data-document-format="bullets">项目列表</button><button type="button" data-document-format="ordered">编号列表</button>
+      <button type="button" data-document-format="table">表格</button><button type="button" data-document-format="divider">分隔线</button>
+    </div>
+  </div>
+  <div class="document-panes"><textarea aria-label="文档正文" maxlength="20000" spellcheck="false"></textarea>
+    <article id="textDocumentPreview" aria-label="文档预览"></article></div>
+  <footer><span role="status"></span><button type="button" data-document-reload hidden>放弃草稿并载入画布内容</button>
+    <button type="button" data-document-copy>复制正文</button><button type="button" data-document-annotate disabled>批注选中文字</button><button type="button" data-document-asset>收录为资产</button><button type="button" data-document-save>保存到节点</button></footer>
+</dialog>
+<div id="acConflict" class="ac-conflict" hidden><span role="status">画布保存冲突，改动已暂存</span><button type="button" aria-haspopup="dialog">查看并处理</button></div>
+<dialog id="canvasConflictReview" aria-labelledby="canvasConflictTitle">
+  <header><strong id="canvasConflictTitle">处理画布保存冲突</strong><button type="button" data-conflict-close aria-label="关闭">×</button></header>
+  <p role="status"></p>
+  <div data-conflict-bulk hidden><button type="button" data-select-side="local">全部选我的改动</button><button type="button" data-select-side="remote">全部选共享版本</button></div>
+  <ol></ol>
+  <footer><button type="button" data-conflict-copy>保存私有副本</button>
+    <button type="button" data-conflict-save>保存到当前画布</button></footer>
+</dialog>
+<dialog id="generationHistory" aria-labelledby="generationHistoryTitle">
+  <header><strong id="generationHistoryTitle">生成历史</strong><button type="button" data-gh-close aria-label="关闭生成历史">×</button></header>
+  <div class="gh-filters">
+    <input type="search" data-gh-query placeholder="搜索名称、提示词或模型" aria-label="搜索生成历史" maxlength="120">
+    <select data-gh-view aria-label="记录类型"><option value="history">生成记录</option><option value="favorites">我的收藏</option></select>
+    <select data-gh-kind aria-label="媒体类型"><option value="all">所有类型</option><option value="image">图片</option><option value="video">视频</option><option value="audio">音频</option></select>
+    <select data-gh-scope aria-label="画布范围"><option value="all">全部画布</option><option value="canvas">当前画布</option></select>
+  </div>
+  <div class="gh-content"><div data-gh-grid></div><button data-gh-more type="button" hidden>加载更多</button></div>
+  <footer><span role="status" data-gh-status></span><span data-gh-count></span><button type="button" data-gh-download>下载所选</button><button type="button" data-gh-apply>放入画布</button></footer>
+</dialog>
+<dialog id="brollDialog" aria-labelledby="brollTitle">
+  <header><div><strong id="brollTitle">B-roll 动态画面</strong><span data-br-source></span></div><button type="button" data-br-close aria-label="关闭 B-roll">×</button></header>
+  <form><fieldset>
+    <div class="br-preview" data-br-preview></div>
+    <div class="br-row">
+      <label>画面类型<select name="mode"><option value="title">动态标题</option><option value="captions">动态字幕卡</option><option value="chart">条形图</option><option value="motion">图片推拉</option></select></label>
+      <label data-br-modes="title captions chart">样式<select name="style"><option value="card">深色卡片</option><option value="plain">简洁</option></select></label>
+      <label data-br-modes="motion">方向<select name="direction"><option value="in">推进</option><option value="out">拉远</option></select></label>
+    </div>
+    <div class="br-row br-time">
+      <label>开始（秒）<input name="start" type="number" min="0" step="any" value="0"></label>
+      <label>结束（秒）<input name="end" type="number" min="0" step="any" placeholder="片段末尾"></label>
+      <label data-br-duration>图片时长（秒）<input name="duration" type="number" min=".5" max="12" step="any" value="4"></label>
+    </div>
+    <div class="br-brief"><label>交给创作助手<textarea name="brief" maxlength="1000" rows="2" placeholder="描述要加的文字、画面或图表数据"></textarea></label><button type="button" data-br-draft>用助手起草</button></div>
+    <label data-br-modes="title chart">标题<input name="title" maxlength="100"></label>
+    <label data-br-modes="captions">字幕卡<textarea name="lines" rows="3" maxlength="450" placeholder="每行一张，按顺序显示"></textarea></label>
+    <label data-br-modes="chart">图表数据<textarea name="bars" rows="4" maxlength="420" placeholder="每行填写名称和数值，例如 春季, 18"></textarea></label>
+    <footer><button type="submit">生成 B-roll 视频</button></footer>
+  </fieldset><p role="status" data-br-status></p></form>
+</dialog>
+<dialog id="cmFolderPicker" aria-labelledby="cmFolderTitle">
+  <header><div><strong id="cmFolderTitle" data-cf-title></strong><small data-cf-scope></small></div><button type="button" data-cf-close aria-label="关闭文件夹引用">×</button></header>
+  <input type="search" data-cf-query aria-label="搜索文件夹内的素材" placeholder="搜索文件夹内的素材">
+  <div class="cm-folder-items" data-cf-items></div>
+  <footer><span role="status" data-cf-status></span><button type="button" data-cf-apply>插入所选引用</button></footer>
+</dialog>
+<dialog id="creativeApps" aria-labelledby="creativeAppsTitle">
+  <header><h1 id="creativeAppsTitle">创作应用</h1><button type="button" data-app-skills>创作技能</button><button type="button" data-app-close aria-label="关闭创作应用">×</button></header>
+  <div class="app-filters"><input type="search" data-app-search placeholder="搜索创作应用" aria-label="搜索创作应用">
+    <select data-app-category aria-label="应用分类"><option value="">所有类型</option><option>策划</option><option>图片</option><option>视频</option></select></div>
+  <div class="app-workspace"><nav data-app-list aria-label="创作应用列表"></nav><section data-app-detail aria-label="应用详情"></section></div>
+</dialog>
+<input type="file" id="file" accept="image/*,video/*,audio/*,.mp4,.mov,.webm,.m4v,.mkv,.wav,.mp3,.m4a,.aac,.flac,.ogg" multiple hidden>
 
-<link rel="stylesheet" href="/static/image-editor.css?v=4">
-<script src="/static/image-editor.js?v=6"></script>
-<script src="/static/editor-workspace.js?v=3"></script>
-<script src="/static/canvas-tools.js?v=5"></script>
-<script src="/static/video-tabs.js?v=3"></script>
-<link rel="stylesheet" href="/static/agent-chat.css?v=6">
+<link rel="stylesheet" href="/static/image-editor.css?v=6">
+<script src="/static/image-relight.js?v=1"></script>
+<script src="/static/image-camera.js?v=1"></script>
+<script src="/static/image-pixel-size.js?v=1"></script>
+<script src="/static/image-editor.js?v=11"></script>
+<script src="/static/editor-workspace.js?v=7"></script>
+<script src="/static/canvas-alignment.js?v=1"></script>
+<section id="assetTransferPanel" aria-label="素材下载进度" hidden>
+  <div><strong data-transfer-state role="status"></strong><button type="button" data-transfer-close aria-label="关闭下载进度">×</button></div>
+  <p data-transfer-name></p>
+  <progress aria-label="文件传输进度"></progress>
+</section>
+<iframe name="assetTransferDownload" title="素材下载" hidden></iframe>
+<script src="/static/canvas-groups.js?v=10"></script>
+<script src="/static/canvas-tools.js?v=10"></script>
+<script src="/static/video-tabs.js?v=22"></script>
+<link rel="stylesheet" href="/static/agent-chat.css?v=25">
+<link rel="stylesheet" href="/static/creative-skills.css?v=1">
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
-<script src="/static/agent-markdown.js?v=1"></script>
-<script src="/static/agent-chat.js?v=19"></script>
-<script src="/static/agent-editing.js?v=2"></script>
-<script src="/static/tools.js?v=10a"></script>
-<link rel="stylesheet" href="/static/creative-memory.css?v=5">
+<script src="/static/agent-markdown.js?v=3"></script>
+<script src="/static/agent-voice.js?v=4"></script>
+<script src="/static/creative-skills.js?v=1"></script>
+<script src="/static/creative-profile.js?v=1"></script>
+<script src="/static/agent-chat.js?v=66"></script>
+<script src="/static/canvas-conflicts.js?v=3"></script>
+<link rel="stylesheet" href="/static/canvas-document.css?v=1">
+<script src="/static/canvas-document.js?v=3"></script>
+<script src="/static/agent-editing.js?v=4"></script>
+<script src="/static/tools.js?v=17"></script>
+<link rel="stylesheet" href="/static/creative-memory.css?v=8">
 <script src="/static/character-views.js?v=3"></script>
-<script src="/static/creative-memory.js?v=7"></script>
-<link rel="stylesheet" href="/static/asset-library.css?v=2">
-<script src="/static/asset-library.js?v=3"></script>
-<script src="/static/film.js?v=6"></script>
+<script src="/static/creative-memory.js?v=17"></script>
+<link rel="stylesheet" href="/static/asset-library.css?v=4">
+<script src="/static/asset-library.js?v=13"></script>
+<script src="/static/film-titles.js?v=3"></script>
+<script src="/static/film-cutaways.js?v=1"></script>
+<script src="/static/film-playlists.js?v=1"></script>
+<script src="/static/film.js?v=24"></script>
 <script src="/static/wizard.js?v=9t"></script>
 <script src="/static/settings.js?v=3t"></script>
 <script src="/static/account.js?v=5t"></script>
-<link rel="stylesheet" href="/static/video-remake.css?v=8">
-<script src="/static/video-remake.js?v=35"></script>
+<link rel="stylesheet" href="/static/video-remake.css?v=10">
+<script src="/static/video-remake.js?v=37"></script>
 <link rel="stylesheet" href="/static/shot-list.css?v=1">
-<script src="/static/shot-list.js?v=1"></script>
-<script src="/static/canvas.js?v=4"></script>
-<script src="/static/canvas-generation.js?v=2"></script>
-<script src="/static/canvas-projects.js?v=2"></script>
+<script src="/static/shot-list.js?v=2"></script>
+<link rel="stylesheet" href="/static/node-search.css?v=2">
+<script src="/static/node-search.js?v=2"></script>
+<link rel="stylesheet" href="/static/canvas-comments.css?v=3">
+<script src="/static/canvas-comments.js?v=8"></script>
+<link rel="stylesheet" href="/static/canvas-share.css?v=10">
+<script src="/static/canvas-share.js?v=8"></script>
+<script src="/static/canvas-live.js?v=3"></script>
+<script src="/static/canvas-review-region.js?v=1"></script>
+<script src="/static/canvas.js?v=67"></script>
+<script src="/static/canvas-generation.js?v=23"></script>
+<script src="/static/canvas-group-run.js?v=2"></script>
+<script src="/static/video-extension.js?v=2"></script>
+<script src="/static/video-object.js?v=2"></script>
+<script src="/static/video-drafts.js?v=1"></script>
+<script src="/static/video-compare.js?v=2"></script>
+<script src="/static/video-segment.js?v=7"></script>
+<script src="/static/video-trim.js?v=1"></script>
+<script src="/static/audio-node.js?v=3"></script>
+<script src="/static/audio-transcript.js?v=3"></script>
+<script src="/static/audio-separation.js?v=2"></script>
+<link rel="stylesheet" href="/static/workflow-templates.css?v=3">
+<script src="/static/workflow-templates.js?v=3"></script>
+<link rel="stylesheet" href="/static/workflow-review.css?v=1">
+<script src="/static/workflow-review.js?v=3"></script>
+<link rel="stylesheet" href="/static/previs-editor.css?v=1">
+<script src="/static/previs-render.js?v=1"></script>
+<script src="/static/previs-editor.js?v=3"></script>
+<script src="/static/canvas-projects.js?v=36"></script>
+<script src="/static/generation-history.js?v=4"></script>
+<script src="/static/broll.js?v=1"></script>
+<script src="/static/creative-apps.js?v=1"></script>
 </body>
 </html>

@@ -1,0 +1,63 @@
+#shareBtn { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 8px; border: 1px solid var(--line2); border-radius: 7px; background: var(--card-hi); color: var(--text); font: inherit; }
+#boardAccessBadge { color: var(--dim); white-space: nowrap; }
+#canvasShare { position: fixed; inset: 64px 14px auto auto; z-index: 50; width: min(365px,calc(100vw - 28px)); max-height: calc(100dvh - 80px); overflow: auto; padding: 12px; border: 1px solid var(--line2); border-radius: 13px; background: var(--panel); box-shadow: 0 12px 35px #0007; font-size: var(--fs-small); }
+#canvasShare header, .share-link, .share-account, .share-form, .share-team { display: flex; align-items: center; gap: 6px; }
+#canvasShare header strong, .share-account span { margin-right: auto; }
+#shareMode, #shareManage p, #shareStatus { color: var(--dim); margin: 8px 0; }
+#shareItems { min-width:0;margin:10px 0 0;padding:10px 0 0;border:0;border-top:1px solid var(--line); }
+#shareItems summary { cursor:pointer;margin-bottom:8px; }
+#shareItems label:not([hidden]) { display:flex;align-items:center;gap:6px;margin:5px 0; }
+#shareItems select { max-width:70%; }
+#shareItemPreview:not(:empty) { margin-block:8px;max-height:230px;overflow:auto;padding:8px;background:var(--card-hi);border-radius:8px; }
+#shareItemPreview p { white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0; }
+#shareItemPreview :is(img,video,audio) { display:block;max-width:100%;max-height:170px;margin-top:6px; }
+#shareItemLink:not([hidden]) { margin-top:8px; }
+#shareItemLink[hidden] { display:none; }
+#shareItemLinks { margin:7px 0 0;padding:0;list-style:none; }
+#shareItemLinks li { display:flex;align-items:center;justify-content:space-between;gap:8px;padding-block:4px;overflow-wrap:anywhere; }
+#shareStatus:empty { margin: 0; }
+#canvasShare button, #canvasShare input:not([type=checkbox]), #canvasShare select { min-width: 0; padding: 5px 7px; border: 1px solid var(--line2); border-radius: 6px; background: var(--card-hi); color: var(--text); font: inherit; }
+#canvasShare button { white-space: nowrap; }
+.share-link input, .share-form input { flex: 1; }
+#shareManage, #sharePublic, #shareShowcase { min-width: 0; margin: 10px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); }
+#sharePublic legend { padding: 0 4px; }
+#sharePublic p, #publicState { color: var(--dim); margin: 6px 0; }
+#publicLink[hidden] { display: none; }
+#canvasShare a { color: var(--text); }
+#shareShowcaseForm { margin-top: 8px; }
+#shareShowcaseForm:not([hidden]), #shareShowcaseForm label:not(.share-team):not([hidden]) { display: grid; gap: 6px; }
+#shareShowcaseForm textarea { resize: vertical; padding: 5px 7px; border: 1px solid var(--line2); border-radius: 6px; background: var(--card-hi); color: var(--text); font: inherit; }
+#shareShowcaseForm p, #shareShowcaseEntries p { margin: 2px 0; color: var(--dim); }
+#shareShowcaseProgress { width: 100%; }
+#shareShowcaseEntries:empty { display: none; }
+#shareShowcaseEntries { list-style: none; display: grid; padding: 0; margin: 8px 0 0; gap: 6px; }
+#shareShowcaseEntries li { padding: 6px; overflow-wrap: anywhere; background: var(--card-hi); border-radius: 6px; }
+#shareShowcaseEntries span { display: block; margin-bottom: 4px; }
+#shareTeamTarget { flex: 1; }
+#shareTeamEditor { margin: 8px 0; }
+#shareTeamEditor summary { cursor: pointer; }
+#shareTeamSettings { margin: 5px 0; padding: 7px; border: 1px solid var(--line2); border-radius: 6px; }
+#shareTeamSettings > label { display: block; margin-top: 6px; }
+#shareTeamRoster { display: grid; gap: 4px; padding: 0; margin: 5px 0; list-style: none; }
+#shareTeamRoster li { display:flex; justify-content:space-between; align-items:center; gap:6px; }
+#canvasLive{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+#canvasLive h3{margin:0;font-size:var(--fs-small)}
+#liveNote{margin:6px 0;color:var(--dim)}
+.live-actions{display:flex;flex-wrap:wrap;gap:6px}
+#livePeople{display:grid;gap:6px;padding:0;list-style:none;margin:8px 0 0;max-height:180px;overflow:auto}
+#livePeople:empty,#tr #liveBadge[hidden]{display:none}
+#livePeople li{display:flex;align-items:center;justify-content:space-between;gap:6px}
+#livePeople li span,#tr #liveBadge{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tr #liveBadge{display:block;max-width:130px}
+#livePointerSettings{margin-top:7px;color:var(--dim)}
+#livePointerSettings:not([hidden]){display:flex;align-items:center;gap:6px}
+#liveCursors{position:absolute;inset:0;overflow:hidden;z-index:9;pointer-events:none}
+.live-cursor{position:absolute;left:0;top:0;color:var(--live-cursor);transition:transform 140ms linear}
+.live-cursor::before{content:"";display:block;width:13px;height:16px;background:currentColor;clip-path:polygon(0 0,100% 64%,50% 68%,22% 100%);filter:drop-shadow(0 1px 2px #0009)}
+.live-cursor span{display:block;margin:-4px 0 0 11px;padding:3px 6px;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:var(--fs-caption);color:var(--text);background:var(--panel);border:1px solid var(--live-cursor);border-radius:6px}
+@media(prefers-reduced-motion:reduce){.live-cursor{transition:none}}
+#sharePeople:not(:empty) { display: grid; gap: 6px; margin-bottom: 8px; }
+.share-account span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.review-only :is(#addBtn,#upBtn,#assetBtn,#assetLibraryBtn,#undoBtn,#redoBtn,#selectionTools,#chatLaunch,#wizBtn,#shotListBtn,#empty,.node .plus,.node .job button,.node .rs,.elabel,.elrole,#boards [data-qnew],#boards [data-qall],#boards [data-del]) { display: none !important; }
+body.review-only #ntools button:not([data-a=prev],[data-a=next],[data-a=full],[data-a=dl],[data-a=favorite],[data-a=more],[data-a=text-document]) { display: none; }

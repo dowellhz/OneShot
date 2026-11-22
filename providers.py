@@ -1,7 +1,7 @@
 """Provider layer: every AI capability goes through here, local (this 4090) or a third-party API.
 
 Capabilities: text (scripts, rewriting), vision (look at pictures), image (generate / edit with references),
-video (text / first frame / references), tts (narration), music.
+video (text / first frame / references), tts (narration), music, asr (transcription).
 
 A provider instance = a catalog kind + its config (base URL, model ids) + sealed secrets (API keys), stored in db.providers.
 routes(capability) gives the order to try: the default first, then fallbacks. Local providers are always available
@@ -19,6 +19,7 @@ from pathlib import Path
 import aiohttp
 
 import db
+from motion_reference import public_origin
 
 CAPS = {
     "text": "文本（剧本、改写、扩写）",
@@ -27,12 +28,17 @@ CAPS = {
     "video": "生视频",
     "tts": "配音",
     "music": "配乐",
+    "asr": "语音转写（创作助手）",
+    "search": "公开网页搜索",
 }
 
 # --------------------------------------------------------------------------- catalog
 # fields: config the admin fills in. secret fields are sealed in db and never sent back in full.
 # models: per capability, the model ids offered in the UI (first = default); the admin can type others.
 CATALOG: dict[str, dict] = {
+    "brave_search": {"label":"Brave Search", "group":"multi", "caps":["search"],
+                     "models":{"search":["web"]}, "fields":[{"k":"api_key","t":"搜索 API Key","secret":True}],
+                     "desc":"用于创作助手搜索公开网页；支持限定站点及最近一天、一周、一月或一年。"},
     "local_h3": {"label": "本地 H3（4090）", "group": "local", "caps": ["image", "video"],
                  "models": {"image": ["h3-image"], "video": ["h3-video"]}, "fields": [],
                  "desc": "MiniMax H3 视频 + H3-Image，跑在这台 4090 上，不花钱，排队用 GPU"},
@@ -64,6 +70,11 @@ CATALOG: dict[str, dict] = {
                                  {"k": "api_key", "t": "API Key", "secret": True, "optional": True},
                                  {"k": "vision", "t": "模型能看图", "options": {"no": "不能", "yes": "能"}, "default": "no"}],
                       "desc": "任何兼容 /v1/chat/completions 的服务"},
+    "asr_compat": {"label": "OpenAI 兼容语音转写", "group": "audio", "caps": ["asr"],
+                   "models": {"asr": ["gpt-transcribe", "whisper-1", "gpt-4o-transcribe-diarize"]},
+                   "fields": [{"k": "base_url", "t": "接口地址", "hint": "例如 https://api.openai.com/v1"},
+                              {"k": "api_key", "t": "API Key", "secret": True, "optional": True}],
+                   "desc": "兼容 /v1/audio/transcriptions 的本地或云端语音转写服务"},
     "kling": {"label": "可灵 Kling", "group": "video", "caps": ["video"],
               "models": {"video": ["kling-4.0", "kling-4.0-flash", "kling-3.0-turbo", "kling-3.0", "kling-2.6"]},
               "fields": [{"k": "region", "t": "地域", "options": {"cn": "中国 api-beijing", "intl": "国际 api-singapore"}, "default": "cn"},
@@ -78,7 +89,8 @@ CATALOG: dict[str, dict] = {
     "ark": {"label": "火山方舟（即梦 Seedance / Seedream）", "group": "multi", "caps": ["video", "image"],
             "models": {"video": ["doubao-seedance-2-5-260628", "doubao-seedance-2-5-flash-261115", "doubao-seedance-2-0-fast-260128"], "image": ["doubao-seedream-5-5-261028", "doubao-seedream-5-0-flash-260915", "doubao-seedream-5-0-pro-260628"], "text": [], "vision": []},
             "fields": [{"k": "base_url", "t": "接口地址", "default": "https://ark.cn-beijing.volces.com/api/v3"},
-                       {"k": "api_key", "t": "API Key", "secret": True}],
+                       {"k": "api_key", "t": "API Key", "secret": True},
+                       {"k": "motion_origin", "t": "参考视频公网地址（可选）", "hint": "填方舟可访问的 OneShot HTTPS 站点根地址"}],
             "desc": "即梦 Seedance 2.5 视频（带音频，最长 30 秒）与 Seedream 生图"},
 }
 
@@ -174,6 +186,11 @@ def save(pid: str | None, kind: str, name: str, config: dict, secrets: dict, ena
     for k in ("models",):                       # admin-chosen model ids per capability
         if isinstance(config.get(k), dict):
             conf[k] = {c: str(m).strip() for c, m in config[k].items() if c in CAPS and str(m).strip()}
+    if kind == "ark":
+        try:
+            conf["motion_origin"] = public_origin(conf.get("motion_origin"))
+        except ValueError as e:
+            raise ProviderError(str(e)) from None
     old = get(pid) if pid else None
     sec = dict(old["secrets"]) if old else {}
     for f in cat["fields"]:
@@ -226,9 +243,12 @@ def primary(cap: str) -> dict | None:
 
 # --------------------------------------------------------------------------- helpers shared by adapters
 
-def data_url(path: Path, max_side: int = 1536, quality: int = 90) -> str:
+def data_url(path: Path, max_side: int = 1536, quality: int = 90, *, min_side: int = 0) -> str:
     from PIL import Image
     im = Image.open(path).convert("RGB")
+    if min_side and min(im.size) < min_side:
+        scale = min_side / min(im.size)
+        im = im.resize((round(im.width * scale), round(im.height * scale)), Image.Resampling.LANCZOS)
     im.thumbnail((max_side, max_side))
     buf = io.BytesIO()
     im.save(buf, "JPEG", quality=quality)
@@ -318,6 +338,42 @@ async def chat(http, p: dict, model: str, system: str, content, max_tokens=2000,
     return re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
 
 
+async def transcribe(http, p: dict, model: str, audio: bytes, extension: str, content_type: str, *, timed=False):
+    base = p["config"].get("base_url", "").rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        raise ProviderError("请填写语音转写接口地址")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    key = p["secrets"].get("api_key")
+    headers = {"Authorization": "Bearer " + key} if key else {}
+    form = aiohttp.FormData()
+    form.add_field("model", model)
+    form.add_field("file", audio, filename="voice" + extension, content_type=content_type)
+    if timed:
+        if "transcribe-diarize" in model:
+            form.add_field("response_format", "diarized_json")
+            form.add_field("chunking_strategy", "auto")
+        else:
+            form.add_field("response_format", "verbose_json")
+            if model == "whisper-1":
+                form.add_field("timestamp_granularities[]", "segment")
+    try:
+        async with http.post(base + "/audio/transcriptions", data=form, headers=headers,
+                             timeout=aiohttp.ClientTimeout(total=90), allow_redirects=False) as response:
+            if response.status != 200:
+                raise ProviderError(f"语音转写服务返回 HTTP {response.status}")
+            payload = await response.json()
+    except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+        raise ProviderError("语音转写服务连接失败或返回格式异常") from e
+    if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+        raise ProviderError("语音转写服务缺少文本结果")
+    if timed:
+        if not isinstance(payload.get("segments"), list) or (not payload["segments"] and payload["text"].strip()):
+            raise ProviderError("语音转写服务未返回时间码")
+        return payload["segments"]
+    return payload["text"].strip()[:8000]
+
+
 async def test(http, p: dict) -> dict:
     """Cheapest real call per kind; returns {ok, detail}."""
     t0 = time.time()
@@ -325,6 +381,15 @@ async def test(http, p: dict) -> dict:
     caps = caps_of(p)
     if k.startswith("local_"):
         return {"ok": True, "detail": "本地服务"}
+    if "asr" in caps:
+        import wave
+        sample = io.BytesIO()
+        with wave.open(sample, "wb") as wav:
+            wav.setparams((1, 2, 16000, 0, "NONE", ""))
+            wav.writeframes(bytes(16000 * 2))
+        model = default_model(p, "asr")
+        await transcribe(http, p, model, sample.getvalue(), ".wav", "audio/wav")
+        return {"ok": True, "detail": f"{model} 转写接口可用"}
     if "text" in caps or "vision" in caps:
         cap = "text" if "text" in caps else "vision"
         model = default_model(p, cap)

@@ -1,0 +1,12 @@
+.connector { max-width:800px; }
+.connector-panel { background:#19191d; border:1px solid #38383e; border-radius:12px; padding:16px; margin-bottom:14px; }
+.connector-panel p { color:#b5b5bf; line-height:1.55; }
+.connector-panel label { display:block; margin-block:8px; }
+.connector-panel label input { display:block; width:100%; margin-top:5px; }
+.connector-panel textarea { display:block; margin:5px 0 8px; width:100%; resize:vertical; }
+.connector-copy,#connectorCreate { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
+.connector-copy input,#connectorCreate label { flex:1 1 240px; min-width:0; }
+#connectorCreate label { margin:0; }
+#connectorList { list-style:none; padding:0; margin-bottom:0; }
+#connectorList li { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-block:8px; border-top:1px solid #38383e; }
+#connectorList span { overflow-wrap:anywhere; }

@@ -7,14 +7,24 @@ import json
 import re
 import secrets
 import time
+from urllib.parse import urlencode
 
 from aiohttp import web
 
 import db
+from motion_reference import LEASE_PATH
 
 COOKIE = "h3s"
 SESSION_DAYS = 30
 PUBLIC = ("/login", "/api/auth/", "/static/", "/favicon")
+PUBLIC_SNAPSHOT_READ = re.compile(r"/(?:share/[A-Za-z0-9_-]{43}|api/share/[A-Za-z0-9_-]{43}(?:/media/[0-9]{1,6})?)")
+PUBLIC_SHOWCASE_READ = re.compile(
+    r"/(?:showcase(?:/[A-Za-z0-9_-]{43}|/creator/[a-f0-9]{32})?"
+    r"|api/showcase(?:/[A-Za-z0-9_-]{43}(?:/(?:cover|video))?|/creator/[a-f0-9]{32})?)")
+PUBLIC_EVENTS_READ = re.compile(r"/(?:api/)?events(?:/e[a-f0-9]{20})?")
+PUBLIC_ITEM_READ = re.compile(r"/(?:shared-item/[A-Za-z0-9_-]{43}|api/shared-item/[A-Za-z0-9_-]{43}(?:/media)?)")
+PUBLIC_CONNECTOR = frozenset(("/mcp","/.well-known/oauth-protected-resource/mcp",
+                              "/.well-known/oauth-authorization-server","/oauth/register","/oauth/token","/oauth/revoke"))
 _fails: dict[str, list[float]] = {}
 
 
@@ -61,13 +71,16 @@ def err(status: int, msg: str):
 @web.middleware
 async def middleware(req, handler):
     path = req.path
-    if path.startswith(PUBLIC):
+    if path in PUBLIC_CONNECTOR or path.startswith(PUBLIC) or req.method in ("GET", "HEAD") and (
+            PUBLIC_SNAPSHOT_READ.fullmatch(path) or PUBLIC_SHOWCASE_READ.fullmatch(path) or
+            PUBLIC_EVENTS_READ.fullmatch(path) or PUBLIC_ITEM_READ.fullmatch(path) or LEASE_PATH.fullmatch(path)):
         return await handler(req)
     u = user_of(req)
     if not u:
         if path.startswith("/api/") or path.startswith("/media"):
             return err(401, "请先登录")
-        raise web.HTTPFound("/login" + ("?next=" + path if path not in ("/", "") else ""))
+        target = req.rel_url.path_qs
+        raise web.HTTPFound("/login" + ("?" + urlencode({"next":target}) if target not in ("/", "") else ""))
     req["user"] = u
     if path.startswith("/api/admin/") and u["role"] != "admin":
         return err(403, "需要管理员权限")
@@ -78,7 +91,8 @@ def _session(resp, uid: int, req):
     tok = secrets.token_urlsafe(32)
     db.run("INSERT INTO sessions VALUES (?,?,?,?)", tok, uid, time.time(), time.time() + SESSION_DAYS * 86400)
     db.run("UPDATE users SET last_login=? WHERE id=?", time.time(), uid)
-    resp.set_cookie(COOKIE, tok, max_age=SESSION_DAYS * 86400, httponly=True, samesite="Lax", path="/")
+    secure = req.secure or (req.remote in ("127.0.0.1","::1") and req.headers.get("X-Forwarded-Proto")=="https")
+    resp.set_cookie(COOKIE, tok, max_age=SESSION_DAYS * 86400, httponly=True, secure=secure, samesite="Lax", path="/")
     return resp
 
 
@@ -140,7 +154,19 @@ async def logout(req):
 
 @routes.get("/api/me")
 async def me(req):
-    return web.json_response(public_user(req["user"]))
+    user = req["user"]
+    enabled = db.one("SELECT ai_watermark FROM media_preferences WHERE user_id=?",user["id"])
+    return web.json_response({**public_user(user),"ai_watermark":bool(enabled and enabled["ai_watermark"])})
+
+
+@routes.put("/api/me/generation-preferences")
+async def generation_preferences(req):
+    payload = await req.json()
+    if not isinstance(payload,dict) or set(payload)!={"ai_watermark"} or type(payload["ai_watermark"]) is not bool:
+        return err(400,"请选择是否添加 AI 生成水印")
+    db.run("""INSERT INTO media_preferences VALUES(?,?) ON CONFLICT(user_id)
+              DO UPDATE SET ai_watermark=excluded.ai_watermark""",req["user"]["id"],int(payload["ai_watermark"]))
+    return web.json_response(payload)
 
 
 @routes.post("/api/me/password")

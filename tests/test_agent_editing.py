@@ -4,6 +4,7 @@ import base64
 import copy
 import io
 import json
+import time
 from unittest.mock import AsyncMock, patch
 
 from aiohttp import web
@@ -38,6 +39,31 @@ class EditingIntegration(ChatFixture):
         rgba = Image.new("RGBA", (128, 96), "white")
         rgba.putalpha(self.mask())
         return image_editor.save(server.COMFY_DIR, rgba)
+
+    async def test_image_camera_request_uses_structured_instructions_and_preserves_recipe(self):
+        view = {"yaw":-90,"pitch":30,"distance":-35,"lens":24,"framing":"全景"}
+        payload = {"ref":self.source["ref"],"mode":"whole","camera_view":view,"count":3,"prompt":""}
+
+        async def generate(_req, raw):
+            self.assertEqual(raw["count"],3)
+            for instruction in ("向左环绕 90°", "俯拍 30°", "靠近主体", "24 mm 广角", "全景"):
+                self.assertIn(instruction,raw["prompt"])
+            spec = raw["_image_edit"]
+            self.assertEqual((spec["recipe"]["ref"],spec["recipe"]["camera_view"]),(payload["ref"],view))
+            output = image_editor.composite(server.COMFY_DIR,spec,[self.source])[0]
+            self.assertEqual(output["extra"]["edit"]["recipe"]["camera_view"],view)
+            rows = server.workflow_review.argument_rows(output["extra"],{}, {})
+            self.assertIn("24 mm",next(row["value"] for row in rows if row["label"]=="图片机位"))
+            return web.json_response({"ids":["camera-qa"]})
+
+        url = "/api/image-edit/generate"
+        with patch.object(server,"generate_request",side_effect=generate) as called:
+            for invalid in ({"count":5},{"backend":"native"},{"strength":.5},{"camera_view":{**view,"yaw":181}}):
+                self.assertEqual((await self.client.post(url,json={**payload,**invalid})).status,400)
+            called.assert_not_awaited()
+            response = await self.client.post(url,json=payload)
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual(await response.json(),{"ids":["camera-qa"]})
 
     async def fake_generation(self, req):
         payload = await req.json()
@@ -94,6 +120,77 @@ class EditingIntegration(ChatFixture):
         foreign = {**run, "session_id": "another-session"}
         with self.assertRaises(ValueError):
             edit.lookup(self.svc, foreign, "n1", self.source["ref"], saved["selection_id"])
+
+    async def test_attach_mask_pins_the_source_even_after_switching_versions(self):
+        endpoint = f"/api/chat/sessions/{self.sid}/selection"
+        payload = {"node_id": "n1", "source_ref": self.source["ref"], "mask_data": self.png_data(self.mask())}
+        self.assertEqual((await self.client.post(endpoint, json=payload, headers={"X-Uid": "8"})).status, 404)
+        self.assertEqual((await self.client.post(endpoint, json={**payload, "mask_data": self.png_data(Image.new("L", (128, 96)))})).status, 400)
+        response = await self.client.post(endpoint, json=payload)
+        self.assertEqual(response.status, 200, await response.text())
+        selection = await response.json()
+        self.assertEqual((await self.client.get("/media", params={"ref": selection["preview_ref"]})).status, 200)
+
+        board = self.load()
+        board["nodes"][0]["versions"].append(self.foreground())
+        board["nodes"][0]["cur"] = 1
+        server.board_path("test").write_text(json.dumps(board))
+        message = {"text": "只改圈选区域", "request_key": "edit-draft", "selected": ["n1"], "selection_id": selection["selection_id"]}
+        now = time.time()
+        db.run("INSERT INTO chat_sessions VALUES(?,?,?,?,?,?)", "other", 7, "test", "其他对话", now, now)
+        self.assertEqual((await self.client.post("/api/chat/sessions/other/messages", json=message)).status, 400)
+
+        self.generated = []
+        self.svc.model.side_effect = [call("image_edit", {"node_id": "n1", "prompt": "green", "feather": 0}), answer()]
+        with patch.object(server, "image_edit_generate", side_effect=self.fake_generation):
+            response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages", json=message)
+            self.assertEqual(response.status, 200, await response.text())
+            run = await self.wait((await response.json())["id"])
+        self.assertEqual(run["state"], "done")
+        self.assertEqual(self.generated[0]["ref"], self.source["ref"])
+        self.assertEqual(self.generated[0]["mask"], selection["mask_ref"])
+        self.assertEqual(self.generated[0]["mode"], "region")
+        result = image_editor.load(server.COMFY_DIR, self.load()["nodes"][0]["versions"][-1]["ref"])
+        self.assertEqual(result.getpixel((0, 0)), (255, 0, 0, 255))
+        self.assertEqual(result.getpixel((40, 40)), (0, 255, 0, 255))
+
+    async def test_region_review_edits_are_masked_and_keep_the_original_version(self):
+        comments = "/api/board/test/comments"
+        original = self.source["ref"]
+        boxes = [[.25,.25,.5,.5],[.625,.5,.875,.75]]
+        ids = []
+        for i,box in enumerate(boxes):
+            response = await self.client.post(comments,json={"body":f"区域 {i+1} 调成绿色",
+                "anchor":{"node":"n1","ref":original,"box":box},"request_key":f"image-region-review-{i}"})
+            self.assertEqual(response.status,201,await response.text())
+            ids.append((await response.json())["id"])
+        invalid = await self.client.post(comments,json={"body":"反向区域","request_key":"invalid-image-region",
+            "anchor":{"node":"n1","ref":original,"box":[.8,.2,.1,.9]}})
+        self.assertEqual(invalid.status,400)
+        board = self.load()
+        board["nodes"][0]["versions"].append(self.foreground())
+        board["nodes"][0]["cur"] = 1
+        server.board_path("test").write_text(json.dumps(board))
+        self.generated = []
+        self.svc.model.side_effect = [
+            call("image_edit",{"node_id":"n1","prompt":"绿色","feather":0}),
+            call("image_edit",{"node_id":"n1","review_id":ids[1],"prompt":"只改第二处","feather":0},"one-review"),
+            answer()]
+        with patch.object(server,"image_edit_generate",side_effect=self.fake_generation):
+            response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages",json={
+                "text":"按区域批注修改","review_ids":ids,"request_key":"apply-image-review-regions"})
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual((await self.wait((await response.json())["id"]))["state"],"done")
+        self.assertEqual([(r["ref"],r["mode"]) for r in self.generated],[(original,"region")]*2)
+        masks = [image_editor.load(server.COMFY_DIR,r["mask"]).convert("L") for r in self.generated]
+        self.assertEqual([m.getpixel((40,30)) for m in masks],[255,0])
+        self.assertEqual([m.getpixel((96,60)) for m in masks],[255,255])
+        self.assertEqual([m.getpixel((70,40)) for m in masks],[0,0])
+        versions = self.load()["nodes"][0]["versions"]
+        self.assertEqual(len(versions),4)
+        last = image_editor.load(server.COMFY_DIR,versions[-1]["ref"])
+        self.assertEqual(last.getpixel((40,30)),(255,0,0,255))
+        self.assertEqual(last.getpixel((96,60)),(0,255,0,255))
 
     async def test_manual_input_blocks_generation_then_continues_and_is_idempotent(self):
         self.generated = []
@@ -232,6 +329,18 @@ class EditingIntegration(ChatFixture):
         self.assertEqual(response.status, 200, await response.text())
         self.assertEqual(self.load()["nodes"], b["nodes"])
         self.assertEqual(self.load()["edges"], b["edges"])
+
+    async def test_agent_resizes_the_pinned_image_in_the_same_node(self):
+        size = {"width":200,"height":280,"fit":"contain"}
+        self.svc.model.side_effect = [call("image_transform", {"node_id":"n1","resize":size}), answer()]
+        rid = await self.send("保持比例，将图片改成 200×280 并用透明补边")
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        final = self.load()
+        self.assertEqual(len(final["nodes"]),2)
+        original, result = final["nodes"][0]["versions"]
+        self.assertEqual(original["ref"],self.source["ref"])
+        self.assertEqual((result["w"],result["h"]),(200,280))
+        self.assertEqual(result["edit"],{"source":original["ref"],"mode":"local","resize":size})
 
     async def test_compare_references_and_invalid_layer_are_safe(self):
         version = await self.edited_version()

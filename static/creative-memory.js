@@ -1,24 +1,185 @@
 "use strict";
 // The library and both prompt composers share the same memory records.
 const CM={loaded:0,board:null,items:[],epoch:0,popup:null,target:null,start:0,index:0,matches:[],timer:null,editor:null};
+let cmFolderCache = null;
+let cmFolderSelection = null;
 async function cmList(force=false){const bid=boardId;if(!force&&CM.board===bid&&Date.now()-CM.loaded<15000)return CM.items;const epoch=++CM.epoch;const r=await fetch('/api/memory?board='+encodeURIComponent(bid));if(!r.ok)throw new Error('读取创作记忆失败');const items=await r.json();if(bid!==boardId||epoch!==CM.epoch)return [];CM.board=bid;CM.loaded=Date.now();CM.items=items;return items;}
-function cmInvalidate(){CM.board=null;libCache=null;}
+function cmInvalidate(){CM.board=null;CM.epoch++;libCache=null;cmFolderCache=null;}
 function cmKind(a){return KIND_CN[a.kind]||'资料';}
+const CM_DOCUMENT_EXT = /\.(txt|md|markdown|csv|json|docx|pdf)$/i;
+function cmMediaType(ref, media) {
+  if(media?.type==="audio" || /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(ref))return "audio";
+  if(/\.(mp4|mov|webm)$/i.test(ref))return "video";
+  if(/\.(png|jpe?g|webp)$/i.test(ref))return "image";
+  return "";
+}
+function cmScopeLabel(a){return a.team ? '团队 · '+(canvasTeams.find(t=>t.id===a.team)?.name || '团队素材') :
+  a.project?'项目素材':a.board?'画布素材':a.shared?'共享素材':'个人素材库';}
+function cmNewScope(bid=boardId){
+  const project=currentProject()?.id||'';
+  return {board:project?'':bid,project};
+}
 function cmToken(a){const names=CM.items.filter(b=>[b.name,...(b.aliases||[])].some(n=>n.toLocaleLowerCase()===a.name.toLocaleLowerCase()));return names.length>1?'@{'+a.id+'}':'@'+a.name;}
-function cmInsert(ta,a,start=ta.selectionStart,end=ta.selectionStart){const token=cmToken(a);ta.setRangeText(token+' ',start,end,'end');ta.dispatchEvent(new Event('input',{bubbles:true}));ta.focus();cmClose();}
-function cmClose(){if(CM.popup)CM.popup.hidden=true;CM.target?.setAttribute('aria-expanded','false');CM.target?.removeAttribute('aria-activedescendant');CM.target=null;}
-function cmEnsure(){if(CM.popup)return;const box=document.createElement('div');box.id='memoryMention';box.className='cm-mention';box.role='listbox';box.hidden=true;box.setAttribute('aria-label','创作记忆补全');document.body.append(box);CM.popup=box;box.addEventListener('pointerdown',e=>e.preventDefault());box.addEventListener('click',e=>{const b=e.target.closest('[data-memory]');if(b&&CM.target){const a=CM.matches.find(a=>a.id===b.dataset.memory);if(a)cmInsert(CM.target,a,CM.start,CM.target.selectionStart);}});}
-function cmDraw(){const box=CM.popup;box.replaceChildren();if(!CM.matches.length){const empty=document.createElement('div');empty.className='cm-empty';empty.textContent='没有匹配素材，可在素材库新建记忆';box.append(empty);return;}CM.matches.forEach((a,i)=>{const b=document.createElement('button');b.type='button';b.id='cm-option-'+i;b.role='option';b.dataset.memory=a.id;b.setAttribute('aria-selected',String(i===CM.index));if(a.ref){const im=document.createElement('img');im.src='/media?ref='+encodeURIComponent(a.ref);im.alt='';b.append(im);}const info=document.createElement('span'),name=document.createElement('strong'),sub=document.createElement('small');name.textContent=a.name;sub.textContent=cmKind(a)+' · '+(a.board?'当前项目':'素材库')+(a.desc?' · '+a.desc.slice(0,55):'');info.append(name,sub);b.append(info);box.append(b);});CM.target?.setAttribute('aria-activedescendant','cm-option-'+CM.index);box.children[CM.index]?.scrollIntoView?.({block:'nearest'});}
+async function cmFolders() {
+ const bid=boardId;
+ if(cmFolderCache?.bid===bid && cmFolderCache.until>Date.now())return cmFolderCache.items;
+ const result=await boardRequest('/api/asset-folders/references?board='+encodeURIComponent(bid));
+ const items=Array.isArray(result)?result:[];
+ if(boardId===bid)cmFolderCache={bid,until:Date.now()+15000,items};
+ return items;
+}
+
+function cmFolderToken(asset) {
+ const safe=asset.name.replace(/[{}@\r\n]/g,char=>({'{':'｛','}':'｝','@':'＠','\r':' ','\n':' '})[char]).trim();
+ const label=Array.from(safe).slice(0,60).join('')||'素材';
+ return `@{${asset.id}|${label}}`;
+}
+function cmReadableReferences(text) {
+ return String(text||'').replace(/@\{[A-Za-z0-9_-]{1,80}\|([^{}\r\n@]{1,60})\}/g,(_match,label)=>'@'+label.replace(/[\\`*_\[\]<>]/g,'\\$&'));
+}
+
+function cmFolderClose() {
+ const dialog=$('#cmFolderPicker'), previous=cmFolderSelection;
+ cmFolderSelection=null;
+ if(dialog.open)dialog.close?.();
+ dialog.removeAttribute('open');
+ if(previous?.ta.isConnected && boardId===previous.bid)previous.ta.focus();
+}
+
+async function cmFolderOpen(ta,folder,start,end) {
+ cmClose();
+ const dialog=$('#cmFolderPicker'), status=$('[data-cf-status]',dialog), apply=$('[data-cf-apply]',dialog);
+ const selection=cmFolderSelection={ta,bid:boardId,text:ta.value,start,end,items:[],chosen:new Set()};
+ $('[data-cf-title]',dialog).textContent=folder.name;
+ $('[data-cf-scope]',dialog).textContent=cmScopeLabel(folder);
+ $('[data-cf-query]',dialog).value='';
+ $('[data-cf-items]',dialog).replaceChildren();
+ apply.disabled=true;
+ status.textContent='正在读取文件夹…';
+ if(dialog.showModal)dialog.showModal();else dialog.setAttribute('open','');
+ try{
+  const response=await boardRequest('/api/asset-folders/references?'+new URLSearchParams({board:selection.bid,folder:folder.id}));
+  if(selection!==cmFolderSelection)return;
+  if(selection.bid!==boardId){cmFolderClose();return;}
+  selection.items=response.assets;
+  if(selection.items.length<=8)selection.chosen=new Set(selection.items.map(item=>item.id));
+  cmFolderDraw();
+ }catch(error){if(selection===cmFolderSelection)status.textContent=error.message;}
+}
+
+function cmFolderDraw() {
+ const S=cmFolderSelection;
+ if(!S)return;
+ const dialog=$('#cmFolderPicker'), list=$('[data-cf-items]',dialog), status=$('[data-cf-status]',dialog);
+ const query=$('[data-cf-query]',dialog).value.trim().toLocaleLowerCase();
+ const update=()=>{
+  status.textContent=S.items.length ? `已选 ${S.chosen.size} 项 · 一次最多 8 项` : '此文件夹没有当前画布可引用的素材';
+  $('[data-cf-apply]',dialog).disabled=!S.chosen.size;
+  $$('.cm-folder-items input',dialog).forEach(input=>input.disabled=!input.checked&&S.chosen.size>=8);
+ };
+ list.replaceChildren();
+ for(const item of S.items.filter(asset=>[asset.name,cmKind(asset)].some(value=>value.toLocaleLowerCase().includes(query)))){
+  const label=document.createElement('label'), check=document.createElement('input');
+  check.type='checkbox';check.checked=S.chosen.has(item.id);
+  check.onchange=()=>{if(check.checked)S.chosen.add(item.id);else S.chosen.delete(item.id);update();};
+  label.append(check);
+  if(item.ref && cmMediaType(item.ref)==='image'){
+   const img=document.createElement('img');img.src='/media?ref='+encodeURIComponent(item.ref);img.loading='lazy';img.alt='';label.append(img);
+  }
+  const name=document.createElement('span');name.textContent=item.name;
+  const kind=document.createElement('small');kind.textContent=cmKind(item);
+  label.append(name,kind);list.append(label);
+ }
+ if(!list.childElementCount&&S.items.length){const empty=document.createElement('p');empty.textContent='没有匹配的素材';list.append(empty);}
+ update();
+}
+
+function cmFolderApply() {
+ const S=cmFolderSelection;
+ if(!S?.chosen.size)return;
+ const status=$('#cmFolderPicker [data-cf-status]');
+ if(S.bid!==boardId||!S.ta.isConnected||S.ta.value!==S.text){status.textContent='输入内容已变化，请重新引用文件夹';return;}
+ const inserted=S.items.filter(item=>S.chosen.has(item.id)).map(cmFolderToken).join(' ')+' ';
+ if(S.ta.maxLength>=0&&S.text.length-(S.end-S.start)+inserted.length>S.ta.maxLength){status.textContent='插入后超出输入长度，请减少引用';return;}
+ S.ta.setRangeText(inserted,S.start,S.end,'end');
+ cmFolderClose();
+ S.ta.dispatchEvent(new Event('input',{bubbles:true}));
+}
+
+function cmInsert(ta,a,start=ta.selectionStart,end=ta.selectionStart){
+ if(a.assetFolder)return cmFolderOpen(ta,a,start,end);
+ let token;
+ if(a.canvasNode){
+  const n=node(a.id);
+  if(ta.id==="acInput"){
+   if(!n || !acAttachNodeReference(n,a.ref??null)){cmClose();return;}
+   const name=n.name.replaceAll("@","＠").replace(/\s+/g," ");
+   const duplicate=B.nodes.some(other=>other!==n&&other.name===n.name);
+   token="「"+name+"」"+(duplicate?"（"+n.id+"）":"");
+  }else{
+   token=attachPromptMedia(ta,n,a.ref);
+   if(!token){cmClose();return;}
+  }
+ }else token=cmToken(a);
+ ta.setRangeText(token+' ',start,end,'end');ta.dispatchEvent(new Event('input',{bubbles:true}));ta.focus();cmClose();
+ if(a.canvasNode&&ta.id!=="acInput")ta._before=snap();
+}
+function cmClose(){if(CM.popup){CM.popup.hidden=true;if(CM.popup.parentElement!==document.body)document.body.append(CM.popup);}CM.target?.setAttribute('aria-expanded','false');CM.target?.removeAttribute('aria-activedescendant');CM.target=null;}
+function cmEnsure(){if(CM.popup)return;const box=document.createElement('div');box.id='memoryMention';box.className='cm-mention';box.role='listbox';box.hidden=true;box.setAttribute('aria-label','素材引用补全');document.body.append(box);CM.popup=box;box.addEventListener('pointerdown',e=>e.preventDefault());box.addEventListener('click',e=>{const b=e.target.closest('[data-option]');if(b&&CM.target){const a=CM.matches[Number(b.dataset.option)];if(a)cmInsert(CM.target,a,CM.start,CM.target.selectionStart);}});}
+function cmDraw(){
+ const box=CM.popup;box.replaceChildren();
+ if(!CM.matches.length){const empty=document.createElement('div');empty.className='cm-empty';empty.textContent='没有匹配素材，可在素材库新建记忆';box.append(empty);return;}
+ CM.matches.forEach((a,i)=>{
+  const b=document.createElement('button');b.type='button';b.id='cm-option-'+i;b.role='option';b.dataset.option=i;
+  b.dataset[a.assetFolder?'assetFolder':a.canvasNode?'canvasNode':'memory']=a.id;
+  b.setAttribute('aria-selected',String(i===CM.index));
+  if(a.assetFolder)b.insertAdjacentHTML('beforeend',ico('assets'));
+  else if(a.ref&&(!a.canvasNode||a.type==="image")){const im=document.createElement('img');im.src='/media?ref='+encodeURIComponent(a.ref);im.alt='';b.append(im);}
+  const info=document.createElement('span'),name=document.createElement('strong'),sub=document.createElement('small');
+  name.textContent=a.name;
+  sub.textContent=a.assetFolder ? `文件夹 · ${cmScopeLabel(a)} · ${a.count} 项` : a.canvasNode
+   ?'画布 · '+(TYPE_CN[a.type]||'节点')+(a.version?' · 版本 '+a.version:'')+(a.duplicate?' · '+a.id:'')
+   :cmKind(a)+' · '+cmScopeLabel(a)+(a.desc?' · '+a.desc.slice(0,55):'');
+  info.append(name,sub);b.append(info);box.append(b);
+ });
+ CM.target?.setAttribute('aria-activedescendant','cm-option-'+CM.index);
+ box.children[CM.index]?.scrollIntoView?.({block:'nearest'});
+}
 async function cmSuggest(ta,force=false){
  const pos=ta.selectionStart,part=ta.value.slice(0,pos),match=part.match(/@([^@\s，。！？、；：,.!?;:()（）\[\]【】]{0,80})$/);if(!match){cmClose();return;}
  const start=pos-match[0].length;if(start&&/[A-Za-z0-9_.]/.test(part[start-1])){cmClose();return;}cmEnsure();CM.target=ta;CM.start=start;const query=match[1].toLocaleLowerCase(),bid=boardId;
- try{const items=await cmList(force);if(boardId!==bid||document.activeElement!==ta||ta.selectionStart!==pos||ta.value.slice(0,pos)!==part)return;CM.target=ta;CM.start=start;CM.matches=items.filter(a=>[a.name,...(a.aliases||[]),...(a.tags||[])].some(v=>v.toLocaleLowerCase().includes(query))).slice(0,20);CM.index=0;cmDraw();const r=ta.getBoundingClientRect(),width=Math.min(360,innerWidth-24);Object.assign(CM.popup.style,{width:width+'px',left:Math.max(12,Math.min(r.left,innerWidth-width-12))+'px',top:'',bottom:''});if(innerHeight-r.bottom>240)CM.popup.style.top=Math.min(innerHeight-240,r.bottom+5)+'px';else CM.popup.style.bottom=Math.max(12,innerHeight-r.top+5)+'px';CM.popup.hidden=false;ta.setAttribute('aria-controls','memoryMention');ta.setAttribute('aria-autocomplete','list');ta.setAttribute('aria-expanded','true');}
- catch(e){if(CM.target===ta){CM.matches=[];cmDraw();CM.popup.firstChild.textContent=e.message;CM.popup.hidden=false;}}
+ let memoryError;
+ const [items, folders]=await Promise.all([cmList(force).catch(error=>{memoryError=error;return [];}),cmFolders().catch(()=>[])]);
+ if(boardId!==bid||CM.target!==ta||document.activeElement!==ta||ta.selectionStart!==pos||ta.value.slice(0,pos)!==part)return;
+ const target=ta.id==="acInput"?null:canvasPromptNode(ta);
+ const canvas=B.nodes.filter(n=>(n.name.toLocaleLowerCase().includes(query)||n.id.toLocaleLowerCase().includes(query))&&
+  (ta.id==="acInput"?AC.board===bid&&!!AC.session:canPromptMedia(n,target)));
+ const nodes=canvas.slice(0,20).map(n=>({id:n.id,name:n.name,type:n.type,canvasNode:true,ref:curV(n)?.ref,
+  version:n.cur+1,duplicate:canvas.some(other=>other!==n&&other.name===n.name)}));
+ const memory=items.filter(a=>[a.name,...(a.aliases||[]),...(a.tags||[])].some(v=>v.toLocaleLowerCase().includes(query)));
+ const matchingFolders=folders.filter(folder=>folder.name.toLocaleLowerCase().includes(query)).slice(0,6).map(folder=>({...folder,assetFolder:true}));
+ const slots=20-matchingFolders.length;
+ const visibleMemory=memory.slice(0,nodes.length?Math.max(8,slots-nodes.length):slots);
+ CM.matches=[...matchingFolders,...visibleMemory,...nodes.slice(0,slots-visibleMemory.length)];CM.index=0;cmDraw();
+ if(!CM.matches.length&&memoryError)CM.popup.firstChild.textContent=memoryError.message;
+ const r=ta.getBoundingClientRect(),width=Math.min(360,innerWidth-24);
+ const host=ta.closest('dialog[open]')||document.body;
+ if(CM.popup.parentElement!==host)host.append(CM.popup);
+ Object.assign(CM.popup.style,{width:width+'px',left:Math.max(12,Math.min(r.left,innerWidth-width-12))+'px',top:'',bottom:''});
+ if(innerHeight-r.bottom>240)CM.popup.style.top=Math.min(innerHeight-240,r.bottom+5)+'px';else CM.popup.style.bottom=Math.max(12,innerHeight-r.top+5)+'px';
+ CM.popup.hidden=false;ta.setAttribute('aria-controls','memoryMention');ta.setAttribute('aria-autocomplete','list');ta.setAttribute('aria-expanded','true');
 }
 function cmInit(){
- document.addEventListener('input',e=>{if(!e.target.matches('#prompt,#acInput'))return;clearTimeout(CM.timer);CM.timer=setTimeout(()=>cmSuggest(e.target),60);});
+ const folderPicker=$('#cmFolderPicker');
+ $('[data-cf-close]',folderPicker).onclick=cmFolderClose;
+ $('[data-cf-apply]',folderPicker).onclick=cmFolderApply;
+ $('[data-cf-query]',folderPicker).oninput=cmFolderDraw;
+ folderPicker.addEventListener('cancel',event=>{event.preventDefault();cmFolderClose();});
+ folderPicker.addEventListener('keydown',event=>event.stopPropagation());
+ const mentionInput=target=>target.matches('#prompt,#acInput,#pfields textarea[data-k]');
+ document.addEventListener('input',e=>{if(!mentionInput(e.target))return;clearTimeout(CM.timer);CM.timer=setTimeout(()=>cmSuggest(e.target),60);});
  document.addEventListener('keydown',e=>{if(e.target!==CM.target||CM.popup?.hidden||e.isComposing)return;if(['ArrowDown','ArrowUp','Enter','Tab','Escape'].includes(e.key)){e.stopImmediatePropagation();e.preventDefault();if(e.key==='Escape'){cmClose();return;}if(e.key==='Enter'||e.key==='Tab'){const a=CM.matches[CM.index];if(a)cmInsert(e.target,a,CM.start,e.target.selectionStart);return;}if(CM.matches.length){CM.index=(CM.index+(e.key==='ArrowDown'?1:-1)+CM.matches.length)%CM.matches.length;cmDraw();}}},true);
- document.addEventListener('compositionend',e=>{if(e.target.matches('#prompt,#acInput'))cmSuggest(e.target);});
+ document.addEventListener('compositionend',e=>{if(mentionInput(e.target))cmSuggest(e.target);});
  document.addEventListener('pointerdown',e=>{if(!e.target.closest('#memoryMention')&&e.target!==CM.target)cmClose();});
  window.addEventListener('resize',cmClose);document.addEventListener('scroll',e=>{if(!e.target.closest?.('#memoryMention'))cmClose();},true);
  const search=document.querySelector('#memorySearch');search?.addEventListener('input',()=>{if(KIND_CN[afilter])renderLibrary(afilter);});document.querySelector('#memoryNew')?.addEventListener('click',()=>cmEdit(null,afilter in KIND_CN?afilter:'character'));
@@ -26,25 +187,41 @@ function cmInit(){
 async function cmRenderLibrary(kind){
  const bid=boardId,g=$('#agrid');try{const list=(await cmList(true)).filter(a=>a.kind===kind&&[a.name,a.desc,...(a.aliases||[]),...(a.tags||[])].join(' ').toLocaleLowerCase().includes(($('#memorySearch')?.value||'').toLocaleLowerCase()));if(bid!==boardId||afilter!==kind)return;
  g.replaceChildren();if(!list.length){g.innerHTML='<div class="h" style="grid-column:1/-1">暂无匹配记忆。新建记忆可添加设定、上传素材，或采用画布上的图片和视频。</div>';return;}
- for(const a of list){const card=document.createElement('div');card.className='as lib';card.draggable=!!a.ref;card.dataset.id=a.id;card.innerHTML=(a.ref?`<img src="/media?ref=${encodeURIComponent(a.ref)}" loading="lazy" alt="">`:'<div class="cm-doc">'+ico('script')+'</div>')+`<span class="ty">${esc(cmKind(a))}</span><button class="cm-detail" title="查看设定与参考版本" aria-label="查看${esc(a.name)}的记忆">${ico('more')}</button><div class="nm">${esc(a.name)}</div>`;card.ondragstart=e=>e.dataTransfer.setData('application/x-h3-lib',JSON.stringify(a));card.onclick=e=>{if(e.target.closest('.cm-detail')){cmEdit(a);return;}placeLibAsset(a,toW(innerWidth/2-150,innerHeight/2-180));};g.append(card);}
+ for(const a of list){const card=document.createElement('div');card.className='as lib';card.draggable=!!a.ref;card.dataset.id=a.id;card.innerHTML=(a.ref?`<img src="/media?ref=${encodeURIComponent(a.ref)}" loading="lazy" alt="">`:'<div class="cm-doc">'+ico('script')+'</div>')+`<span class="ty">${esc(cmKind(a))}</span><button class="cm-detail" title="查看设定与参考版本" aria-label="查看${esc(a.name)}的记忆">${ico('more')}</button><div class="nm">${esc(a.name)}</div>`;card.ondragstart=e=>e.dataTransfer.setData('application/x-h3-lib',JSON.stringify(a));card.onclick=e=>{if(e.target.closest('.cm-detail')){cmEdit(a);return;}placeLibraryAsset(a,toW(innerWidth/2-150,innerHeight/2-180));};g.append(card);}
  }catch(e){g.textContent=e.message;}
 }
 
 async function cmEdit(a=null, kind='character', options={}) {
   if (CM.editor?.dataset.busy === 'true') { toast('正在保存或上传，请稍等'); return; }
   const host=options.host||null, readonly=!!options.readonly, initialBoard=boardId;
+  const project = currentProject();
+  const projectOptions = [project, a?.project && canvasProjects.find(p => p.id === a.project && p.id !== project?.id)].filter(Boolean);
   cmClose(); CM.editor?.remove();
   const panel=document.createElement('section'); panel.id='memoryEditor'; panel.className='cm-editor'; panel.role='dialog';
   panel.setAttribute('aria-modal','false'); panel.setAttribute('aria-label','资产详情');
-  panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>范围<select name="board"><option value="${esc(initialBoard)}">当前项目</option><option value="">个人素材库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享到素材库（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片或视频<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
+  panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>范围<select name="board">${projectOptions.map(p=>`<option value="project:${esc(p.id)}">项目 · ${esc(p.name)}</option>`).join("")}<option value="${esc(initialBoard)}">当前画布</option><option value="">个人素材库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享给所有平台账号（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片、视频或文档<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
   if(host)host.replaceChildren(panel); else document.body.append(panel); CM.editor=panel;
   const character = document.createElement("section");
   character.className = "cm-character";
   character.innerHTML = `<strong>标准角色图</strong><p>先生成并定稿主图，再补其他角度。</p><div class="cm-character-views"></div><details><summary>角色卡</summary><div class="cm-character-fields">${Object.entries(CHARACTER_FIELDS).map(([key,label]) => `<label>${label}<input name="character_${key}" maxlength="800"></label>`).join("")}</div></details>`;
   panel.querySelector(".cm-hero").after(character);
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
-  let data=a?acClone(a):{kind:options.kind||kind,board:initialBoard,name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
+  let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(initialBoard),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
+ let documentData=options.preset?.document||data.document||null, documentDirty=!!options.preset?.document;
+  const docBox=document.createElement("details");
+  docBox.className="cm-document";docBox.hidden=true;
+  docBox.innerHTML='<summary>文档正文</summary><pre></pre><button type="button">移除文档</button>';
+  field('desc').closest("label").after(docBox);
+  function paintDocument(){
+    docBox.hidden=!documentData;
+    if(!documentData)return;
+    $("summary",docBox).textContent=documentData.name+(documentData.truncated?" · 已截取可导入部分":"");
+    $("pre",docBox).textContent=documentData.text??documentData.excerpt??"";
+  }
+  $("button",docBox).hidden=readonly;
+  $("button",docBox).onclick=()=>{if(!busy){documentData=null;documentDirty=true;paintDocument();}};
+  paintDocument();
   if(options.preset)Object.assign(data,Object.fromEntries(Object.entries(options.preset).filter(([k])=>k!=='pending')));
   if(pending&&!selectedRef&&/\.(png|jpe?g|webp)$/i.test(pending.ref))selectedRef=pending.ref;
   let approvingView = null;
@@ -182,21 +359,29 @@ async function cmEdit(a=null, kind='character', options={}) {
     const hero=panel.querySelector('.cm-hero'), lead=selectedRef||media[0]?.ref;
     hero.hidden=!host||!lead;hero.replaceChildren();
     if(host&&lead){
-      const image=/\.(png|jpe?g|webp)$/i.test(lead), el=document.createElement(image?'img':'video');
+      const type=cmMediaType(lead,media.find(m=>m.ref===lead)), image=type==="image";
+      const el=document.createElement(image?'img':type==="audio"?'audio':'video');
       el.src='/media?ref='+encodeURIComponent(lead);if(image)el.alt=data.name||'资产预览';else {el.controls=true;el.playsInline=true;el.preload='metadata';}
       hero.append(el);if(image){const link=document.createElement('a');link.href=el.src;link.target='_blank';link.rel='noopener';link.textContent='查看原图';hero.append(link);}
     }
     for(const m of media){
-      const image=/\.(png|jpe?g|webp)$/i.test(m.ref), b=document.createElement(image?'button':'div');if(image)b.type='button';
+      const type=cmMediaType(m.ref,m), image=type==="image", b=document.createElement(image?'button':'div');if(image)b.type='button';
       b.className='cm-media-item'+(m.ref===selectedRef?' on':'');
-      b.innerHTML=image?`<img src="/media?ref=${encodeURIComponent(m.ref)}" alt="参考图">`:`<video src="/media?ref=${encodeURIComponent(m.ref)}" preload="metadata" controls playsinline></video>`;
+      const url="/media?ref="+encodeURIComponent(m.ref);
+      b.innerHTML=image?`<img src="${url}" alt="参考图">`:type==="audio"?`<audio src="${url}" preload="none" controls></audio>`:`<video src="${url}" preload="metadata" controls playsinline></video>`;
       const label=document.createElement('small');label.textContent=(m.ref===selectedRef?'默认参考 · ':'')+({upload:'用户上传',gen:'生成素材',generated:'生成素材',legacy:'原有素材'}[m.source]||'参考素材');b.append(label);
       if(image){b.setAttribute('aria-pressed',String(m.ref===selectedRef));b.onclick=()=>{if(!readonly&&!busy){selectedRef=m.ref;paint();}};}
       grid.append(b);
     }
   }
-  for(const k of ['name','kind','board','desc','constraints'])field(k).value=data[k]||'';
-  field('aliases').value=(data.aliases||[]).join('，');field('tags').value=(data.tags||[]).join('，');field('shared').checked=!!data.shared;paint();paintCharacter();
+  for(const k of ['name','kind','desc','constraints'])field(k).value=data[k]||'';
+  if(data.board && data.board!==initialBoard)field('board').add(new Option('原画布',data.board));
+  for(const team of canvasTeams)field('board').add(new Option('团队 · '+team.name,'team:'+team.id));
+  if(data.team && !canvasTeams.some(t=>t.id===data.team))field('board').add(new Option('原团队','team:'+data.team));
+  field('board').value=data.team?'team:'+data.team:data.project?'project:'+data.project:data.board||'';
+  const syncSharing=()=>{field('shared').disabled=readonly||!!field('board').value;};
+  field('board').onchange=syncSharing;
+  field('aliases').value=(data.aliases||[]).join('，');field('tags').value=(data.tags||[]).join('，');field('shared').checked=!!data.shared;syncSharing();paint();paintCharacter();
   panel.querySelector('[data-close]').onclick=()=>{
     if(busy)return status('正在保存或上传，请稍等');panel.remove();if(CM.editor===panel)CM.editor=null;
     if(host&&typeof alEmptyDetail==='function'){AL.selected=null;alEmptyDetail();alRender();}
@@ -209,13 +394,31 @@ async function cmEdit(a=null, kind='character', options={}) {
   };
   async function receiveFile(file) {
     if(!file||busy||readonly)return;setBusy(true);status('正在上传…');
-    try{const body=new FormData();body.append('file',file);const r=await fetch('/api/upload',{method:'POST',body}),v=await r.json();if(!r.ok)throw new Error(v.error||'上传失败');pending={...v,source:'upload'};if(!selectedRef&&file.type.startsWith('image/'))selectedRef=v.ref;paint();status('已上传，保存后加入资产');}catch(e){status(e.message);}finally{setBusy(false);}
+    try{
+      const body=new FormData();body.append('file',file);
+      const isDocument=CM_DOCUMENT_EXT.test(file.name);
+      const r=await fetch(isDocument?'/api/document-import':'/api/upload',{method:'POST',body}),v=await r.json();
+      if(!r.ok)throw new Error(v.error||'上传失败');
+      if(isDocument){
+        documentData=v;documentDirty=true;
+        if(!a)field('kind').value='document';
+        if(!field('name').value.trim())field('name').value=file.name.replace(CM_DOCUMENT_EXT,'');
+        paintDocument();paintCharacter();docBox.open=true;status('已提取正文，保存后可搜索和引用');
+      }else{
+        pending={...v,source:'upload'};if(!selectedRef&&file.type.startsWith('image/'))selectedRef=v.ref;
+        paint();status('已上传，保存后加入资产');
+      }
+    }catch(e){status(e.message);}finally{setBusy(false);}
   }
   field('upload').onchange=()=>receiveFile(field('upload').files[0]);
   form.onsubmit=async e=>{
     e.preventDefault();if(busy||readonly)return;const approval=approvingView;approvingView=null;setBusy(true);status('正在保存…');
     try{
-      const p={id:data.id,mtime:data.mtime,name:field('name').value,kind:field('kind').value,board:field('board').value,desc:field('desc').value,constraints:field('constraints').value,aliases:field('aliases').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),tags:field('tags').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),shared:field('shared').checked,default_ref:selectedRef};
+      const target=field('board').value;
+      const project=target.startsWith('project:')?target.slice(8):'';
+      const team=target.startsWith('team:')?target.slice(5):'';
+      const p={id:data.id,mtime:data.mtime,name:field('name').value,kind:field('kind').value,board:project||team?'':target,project,team,desc:field('desc').value,constraints:field('constraints').value,aliases:field('aliases').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),tags:field('tags').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),shared:!target&&field('shared').checked,default_ref:selectedRef};
+      if(documentDirty)p.document=documentData;
       if(pending)Object.assign(p,{ref:pending.ref,source_board:pending.source_board||'',node_id:pending.node_id});
       if(p.kind === "character") {
         p.character_card = readCard();
@@ -226,6 +429,7 @@ async function cmEdit(a=null, kind='character', options={}) {
         }
       }
       data=await api('/api/memory',p);if(!approval||pending?.ref===p.ref)pending=null;
+      documentDirty=false;documentData=data.document||null;paintDocument();
       if (approval?.draftKey && readCharacterDraft(approval.draftKey)?.ref === p.ref) writeCharacterDraft(approval.draftKey, null);
       selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
       panel.querySelector('header strong').textContent='编辑资产';panel.querySelector('[data-delete]').hidden=false;
@@ -238,12 +442,16 @@ async function cmEdit(a=null, kind='character', options={}) {
     setBusy(true);
     try{const r=await fetch('/api/memory/'+encodeURIComponent(data.id),{method:'DELETE'});if(!r.ok)throw new Error((await r.json()).error||'删除失败');unlinkDeletedAsset(data.id);cmInvalidate();panel.remove();if(CM.editor===panel)CM.editor=null;if(typeof alChanged==='function')alChanged(data,true);await loadAssets();}catch(e){status(e.message);}finally{setBusy(false);}
   };
-  panel.querySelector('[data-canvas]').onclick=()=>{if(!data.id)return status('请先保存资产');placeLibAsset(data,toW(innerWidth/2-150,innerHeight/2-180));if(host&&typeof alClose==='function')alClose();};
+  panel.querySelector('[data-canvas]').onclick=()=>{
+    if(!data.id)return status('请先保存资产');
+    placeLibraryAsset(data,toW(innerWidth/2-150,innerHeight/2-180),()=>{if(host&&typeof alClose==='function')alClose();},status);
+  };
   if(readonly){for(const el of panel.querySelectorAll('input,textarea,select'))el.disabled=true;panel.querySelector('[type=submit]').hidden=true;panel.querySelector('[data-delete]').hidden=true;panel.querySelector('[data-current]').hidden=true;status('共享资产可查看和引用，修改请由资产所有者操作');}else field('name').focus();
   if(a){
     const history=panel.querySelector('.cm-history>div');history.textContent='正在读取生成历史…';
     try{
       const r=await fetch('/api/memory/'+encodeURIComponent(a.id)+'?board='+encodeURIComponent(initialBoard));if(!r.ok)throw new Error('读取生成历史失败');const detail=await r.json();if(!panel.isConnected)return;history.replaceChildren();
+      if(!documentDirty && typeof detail.document?.text === "string"){data.document=documentData=detail.document;paintDocument();}
       data.character_drafts = detail.character_drafts;
       paintCharacter();
       for(const v of detail.history||[]){

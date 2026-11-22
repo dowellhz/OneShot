@@ -1,0 +1,37 @@
+#workflowTemplates { position: fixed; left: 14px; top: 64px; z-index: 49; width: min(520px,calc(100vw - 28px)); max-height: calc(100dvh - 90px); overflow: auto; padding: 12px; background: var(--panel); border: 1px solid var(--line2); border-radius: 12px; color: var(--text); box-shadow: 0 12px 32px #0007; font-size: var(--fs-small); }
+#workflowTemplates header, #templateForm, #templateRows article, .template-project { display: flex; align-items: center; gap: 6px; }
+#workflowTemplates header strong, #templateRows article div { margin-right: auto; }
+#workflowTemplates button, #workflowTemplates input, #workflowTemplates select { min-width: 0; padding: 5px 7px; border: 1px solid var(--line2); border-radius: 6px; background: var(--card-hi); color: var(--text); font: inherit; }
+#workflowTemplates button { white-space: nowrap; }
+#workflowTemplates button:hover { background: var(--line2); }
+#templateForm { margin: 12px 0; flex-wrap: wrap; }
+#templateForm[hidden] { display: none; }
+#templateScope[hidden] { display: none; }
+#templateName { flex: 1; min-width: 110px !important; }
+.template-summary, .template-filters { display: flex; align-items: center; gap: 6px; }
+.template-summary { flex-basis: 100%; }
+.template-summary input { flex: 1; }
+.template-filters { margin-top: 6px; }
+.template-project { margin: 8px 0 10px; color: var(--dim); }
+.template-project select { flex: 1; }
+#templateRows article { flex-wrap: wrap; border-top: 1px solid var(--line); padding: 7px 0; }
+#templateRows article div { min-width: 85px; display: grid; gap: 3px; flex: 1; }
+#templateRows article strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#templateRows article span, .template-empty, #templateStatus { color: var(--dim); }
+#templateRows article p, .template-description { color: var(--dim); margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#templateStatus:empty { display: none; }
+#templateScopes, .template-preview-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+#templateScopes { margin-top: 12px; }
+#templateScopes button[aria-pressed="true"] { background: var(--line2); }
+#templateSearch { flex: 1; }
+#templatePreview { padding: 10px; margin-bottom: 10px; border: 1px solid var(--line2); border-radius: 8px; }
+.template-preview-actions, #templatePublishConfirm { margin-top: 8px; }
+#templatePublishConfirm { padding: 8px; background: var(--card-hi); border-radius: 6px; }
+#templatePublishConfirm p { margin: 0 0 8px; }
+.template-preview-nodes, .template-preview-edges { list-style: none; padding: 0; margin: 8px 0 0; }
+.template-preview-nodes { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(120px,100%),1fr)); gap: 6px; }
+.template-preview-nodes li { min-width: 0; padding: 7px; background: var(--card-hi); border-radius: 6px; overflow-wrap: anywhere; }
+.template-preview-nodes span, .template-preview-edges { color: var(--dim); }
+.template-preview-nodes p { margin: 4px 0 0; white-space: pre-wrap; max-height: 5em; overflow: auto; }
+.template-preview-nodes img, .template-preview-nodes video, .template-preview-nodes audio { display: block; width: 100%; margin-top: 5px; }
+.template-preview-nodes img, .template-preview-nodes video { height: 85px; object-fit: contain; }

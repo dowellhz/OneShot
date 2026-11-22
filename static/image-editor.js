@@ -91,7 +91,7 @@ function initImageEditor() {
       <div id="ieProgress" class="ie-progress" role="progressbar" aria-label="图像编辑进度" aria-valuemin="0" aria-valuemax="100" hidden><i></i></div></div>
       <button id="ieCancel" hidden>取消生成</button></div>
     <div class="ie-layout"><div class="ie-main">${ewToolbarHTML()}<div class="ie-stage"><canvas class="ie-canvas" aria-label="图片编辑画布"></canvas><span id="ieBrushCursor" hidden></span><span class="ie-stage-note"></span></div><div class="ie-history-actions"><span id="ieDraftState">草稿自动保存</span><span class="ie-spacer"></span><button id="ieReuse">复用参数</button><button id="ieRetry" hidden>重新生成</button></div><div class="ie-history" aria-label="历史版本"></div></div>
-    <aside class="ie-side"><div class="ie-group-title">编辑方式</div><div class="ie-tabs"><button data-mode="region" class="on">局部重绘</button><button data-mode="whole">整图编辑</button><button data-mode="outpaint">智能扩图</button><button data-mode="local">裁剪 / 调色</button><button data-mode="layers">图层 / 抠图</button></div>
+    <aside class="ie-side"><div class="ie-group-title">编辑方式</div><div class="ie-tabs"><button data-mode="region" class="on">局部重绘</button><button data-mode="whole">整图编辑</button><button data-mode="outpaint">智能扩图</button><button data-mode="local">裁剪 / 调色</button><button data-mode="relight">布光</button><button data-mode="camera">换机位</button><button data-mode="layers">图层 / 抠图</button></div>
     <div class="ie-section on" data-section="region"><div class="ie-row"><button data-tool="brush" class="on">画笔</button><button data-tool="rect">矩形</button><button data-tool="erase">擦除</button><button data-tool="smart" title="点击选中物体，Shift 点击排除">智能选物</button></div>
       <label class="ie-label" for="ieBrush">画笔大小 <output id="ieBrushValue">64 px</output></label><input id="ieBrush" type="range" min="4" max="512" value="64">
       <div class="ie-row"><button id="ieUndoMask">撤销</button><button id="ieRedoMask">重做</button><button id="ieClearMask">清空</button><button id="ieInvertMask">反选</button></div>
@@ -105,9 +105,9 @@ function initImageEditor() {
       <div class="ie-row"><button data-rotate="-90" title="向左旋转 90 度">左转 90°</button><button data-rotate="90" title="向右旋转 90 度">右转 90°</button></div>
       <div class="ie-row"><button data-flip="flip_x">水平翻转</button><button data-flip="flip_y">垂直翻转</button></div>
       ${[["Brightness", "亮度"], ["Contrast", "对比度"], ["Saturation", "饱和度"]].map(([k,t])=>`<label class="ie-label" for="ie${k}">${t}<output id="ie${k}Value">100%</output></label><input id="ie${k}" type="range" min="0" max="200" value="100">`).join("")}
-      <div class="ie-row"><button id="ieResetLocal">重置调整</button></div><button id="ieSaveLocal" class="ie-primary">保存为新版本</button></div>
-    ${ewLayersHTML()}<div id="ieAI"><div class="ie-group-title">生成设置</div><label class="ie-label" for="iePrompt">修改要求</label><textarea id="iePrompt" maxlength="8000" placeholder="例如：把选中的衣服改为深蓝色，保留布料质感和光影"></textarea>
-      <div class="ie-row"><button data-preset="移除选中的物体，用自然连贯的背景填补，匹配周围纹理和光线">移除物体</button><button data-preset="修复选中区域的模糊与瑕疵，恢复自然清晰的纹理和细节">修复细节</button></div>
+      <div class="ie-row"><button id="ieResetLocal">重置调整</button></div><button id="ieSaveLocal" class="ie-primary">保存为新版本</button>${pixelSizeHTML()}</div>
+    ${relightHTML()}${imageCameraHTML()}${ewLayersHTML()}<div id="ieAI"><div class="ie-group-title">生成设置</div><label class="ie-label" for="iePrompt">修改要求</label><textarea id="iePrompt" maxlength="8000" placeholder="例如：把选中的衣服改为深蓝色，保留布料质感和光影"></textarea>
+      <div class="ie-row" id="iePresets"><button data-preset="移除选中的物体，用自然连贯的背景填补，匹配周围纹理和光线">移除物体</button><button data-preset="修复选中区域的模糊与瑕疵，恢复自然清晰的纹理和细节">修复细节</button></div>
       <div id="ieBlend"><label class="ie-label" for="ieStrength">结果融合比例 <output id="ieStrengthValue">100%</output></label><input id="ieStrength" type="range" min="1" max="100" value="100"><p class="ie-note">控制生成结果与原图的混合比例。</p></div>
       <label class="ie-label" for="ieBackend">编辑引擎</label><select id="ieBackend"><option value="h3">参考图编辑（H3 / 第三方）</option><option value="native">原生遮罩重绘（SD）</option></select><div id="ieNativeSettings" hidden><label class="ie-label" for="ieDenoise">重绘强度<output id="ieDenoiseValue">95%</output></label><input id="ieDenoise" type="range" min="10" max="100" value="95"><label class="ie-label" for="ieSteps">采样步数</label><input id="ieSteps" type="number" min="10" max="50" value="25"></div><label class="ie-label" for="ieSeed">随机种子（−1 为随机）</label><input id="ieSeed" type="number" min="-1" step="1" value="-1"><label class="ie-label" for="ieProvider">图像服务</label><select id="ieProvider"></select><button id="ieGenerate" class="ie-primary">生成新版本</button></div></aside></div>
       <button id="ieResize" class="ie-resize" aria-label="调整窗口大小" title="拖动调整大小，也可用方向键微调"></button>`;
@@ -138,7 +138,7 @@ function initImageEditor() {
   canvas.onpointerdown = e => iePointer(e, "down");
   canvas.onpointermove = e => iePointer(e, "move");
   canvas.onpointerup = e => iePointer(e, "up");
-  canvas.onpointercancel = () => { if (IMAGE_EDITOR) { IMAGE_EDITOR.drawing=null; ieRebuildMask(); } };
+  canvas.onpointercancel = () => { if (IMAGE_EDITOR) { IMAGE_EDITOR.drawing=null; IMAGE_EDITOR.movingLight=false; ieRebuildMask(); } };
   host.addEventListener("keydown", e => {
     if (ewKey(e)) { e.stopPropagation(); return; }
     if (e.key === "Escape") { e.preventDefault(); closeImageEditor(); }
@@ -147,6 +147,9 @@ function initImageEditor() {
   host.addEventListener("paste", e=>e.stopPropagation());
   ieInitWindow(host);
   ewInitEditor(host);
+  initRelightControls();
+  initImageCamera();
+  initPixelSize();
   new ResizeObserver(ieDraw).observe($(".ie-stage", host));
   setInterval(ieSync, 600);
 }
@@ -154,7 +157,7 @@ function initImageEditor() {
 async function openImageEditor(n) {
   const v = curV(n); if (!v || n.type!=="image") return toast("先选择一张图片");
   if (IMAGE_EDITOR?.busy) return ieStatus("正在提交或保存，完成后即可切换图片");
-  if (IMAGE_EDITOR?.n===n) { IE_WINDOW.collapsed=false; ieApplyWindow(); $("#ieClose").focus(); return; }
+  if (IMAGE_EDITOR?.n===n) { IE_WINDOW.collapsed=false; ieApplyWindow(); ieSync(); $("#ieClose").focus(); return; }
   if (IMAGE_EDITOR) { ewScheduleDraft(true); ewFlushDraft(IMAGE_EDITOR); }
   closeMenus();
   IMAGE_EDITOR = {n, mode:"region", tool:"brush", strokes:[], crop:null, image:null, original:null, ref:null, loading:null, busy:false, drawing:null, compare:false, ...ewNewState(n)};
@@ -211,17 +214,27 @@ async function ieLoad(v, original=false) {
     E.strokes=[];E.crop=null;E.drawing=null;ieResetLocal();ewResetImage(E);
     await ewRestoreDraft(E); if(IMAGE_EDITOR!==E || E.loadToken!==token) return;
     ieRebuildMask();ieHistory();
-  })().catch(err=>{if(IMAGE_EDITOR===E && E.loadToken===token){E.failedRef=v.ref;ieStatus(err.message,true);}}).finally(()=>{if(E.loadToken===token)E.loading=null;});
+  })().catch(err=>{if(IMAGE_EDITOR===E && E.loadToken===token){E.failedRef=v.ref;ieStatus(err.message,true);}}).finally(()=>{
+    if(E.loadToken!==token)return;
+    E.loading=null;
+    if(IMAGE_EDITOR===E && typeof aeEditorControls==="function")aeEditorControls();
+  });
   return E.loadPromise;
 }
 
 function ieMode(mode, force=false) {
   const E=IMAGE_EDITOR; if (!E || (E.busy && !force)) return;
   if(E.agentSelection&&mode!=="region")return ieStatus("请先发送当前选区，或收起窗口后在聊天中停止本轮任务");
-  E.mode=mode; E.drawing=null;
+  E.mode=mode; E.drawing=null; E.movingLight=false;
   $$("[data-mode]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.mode===mode));
   $$("[data-section]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.section===mode));
-  $("#ieAI").hidden=mode==="local" || mode==="layers"; $("#ieBlend").hidden=mode==="outpaint";
+  const camera=mode==="camera";
+  $("#ieAI").hidden=["local","layers","relight"].includes(mode); $("#ieBlend").hidden=mode==="outpaint"||camera;
+  $("#iePresets").hidden=$("#ieBackend").hidden=$('label[for="ieBackend"]').hidden=camera;
+  $('label[for="iePrompt"]').textContent = camera ? "补充要求（可选）" : "修改要求";
+  $("#iePrompt").placeholder=camera ? "例如：保持原来的灯光方向" : "例如：把选中的衣服改为深蓝色，保留布料质感和光影";
+  ewBackend();
+  if(typeof aeEditorControls==="function")aeEditorControls();
   ieDraw();
 }
 
@@ -285,13 +298,19 @@ function ieHistory() {
 }
 
 async function ieLocal(extra={}) {
-  const E=IMAGE_EDITOR; if (!E?.image || E.busy || E.n.job || E.agentSelection) return;
+  const E=IMAGE_EDITOR; if (!E?.image || E.busy || E.n.job || E.agentSelection || !canvasCanEdit()) return;
+  const board=B, source=E.ref;
   E.busy=true; ieSync(); ieStatus("正在保存新版本…");
   try {
     const ref=await ewFlatten(E);
+    const stillCurrent=()=>B===board && node(E.n.id)===E.n && curV(E.n)?.ref===source && canvasCanEdit();
+    if (extra.resize && !stillCurrent()) throw new Error("来源图片已更新，请重新选择版本");
     const p={ref,crop:E.crop,brightness:+$("#ieBrightness").value/100,contrast:+$("#ieContrast").value/100,saturation:+$("#ieSaturation").value/100,...extra};
     const result=await api("/api/image-edit/transform",p);
-    addVersion(E.n,mediaVersion(result,{source:"edit",mode:extra.rotate ? "旋转" : extra.flip_x || extra.flip_y ? "翻转" : E.crop ? "裁剪 / 调色" : "调色",edit:{source:E.ref,mode:"local"}}));
+    if (extra.resize && !stillCurrent()) throw new Error("来源图片已更新，请重新选择版本");
+    const edit={source,mode:"local",...(extra.resize ? {resize:result.resize || extra.resize} : {})};
+    const label=extra.resize ? "调整像素尺寸" : extra.rotate ? "旋转" : extra.flip_x || extra.flip_y ? "翻转" : E.crop ? "裁剪 / 调色" : "调色";
+    addVersion(E.n,mediaVersion(result,{source:"edit",mode:label,edit}));
     if (IMAGE_EDITOR===E) { ieLoad(curV(E.n)); ieHistory(); ieStatus("已保存为新版本，可在下方切回历史版本"); }
     loadAssets();
   } catch(e) { ieStatus(e.message,true); }
@@ -299,18 +318,24 @@ async function ieLocal(extra={}) {
 }
 
 async function ieGenerate() {
-  const E=IMAGE_EDITOR; if (!E?.image || E.busy || E.n.job || E.agentSelection) return;
-  const prompt=$("#iePrompt").value.trim(); if (!prompt) return ieStatus("请填写修改要求",true);
+  const E=IMAGE_EDITOR; if (!E?.image || E.busy || E.n.job || E.agentSelection || !canvasCanEdit()) return;
+  const camera=E.mode==="camera", prompt=$("#iePrompt").value.trim(); if (!prompt && !camera) return ieStatus("请填写修改要求",true);
   if (E.mode==="region" && !E.strokes.length) return ieStatus("请先选择要修改的区域",true);
+  const board=B, sourceRef=E.ref;
   E.busy=true; ieSync(); ieStatus("正在提交编辑任务…");
   try {
     const ref=await ewFlatten(E);
+    if (camera && (B!==board || node(E.n.id)!==E.n || curV(E.n)?.ref!==sourceRef || !canvasCanEdit()))
+      throw new Error("图片版本或编辑权限已变更，请重新打开换机位");
     const p={ref,mode:E.mode,prompt,backend:$("#ieBackend").value,denoise:+$("#ieDenoise").value/100,steps:+$("#ieSteps").value,seed:+$("#ieSeed").value,strength:+$("#ieStrength").value/100,feather:+$("#ieFeather").value,padding:iePadding(),provider:$("#ieProvider").value,board:boardId,label:E.n.name+" · 图像编辑"};
+    if (camera) Object.assign(p,{mode:"whole",backend:"h3",strength:1,camera_view:imageCameraSettings(),
+      count:+$("#ieCamCount").value,quality:E.n.data.quality || "4mp",label:E.n.name+" · 换机位"});
     if (E.mode==="region") p.mask=(await ewExportMask(E)).ref;
     E.n.data.lastImageEdit={...p}; save(); ewScheduleDraft(true);
     const r=await api("/api/image-edit/generate",p);
+    if (camera && (B!==board || node(E.n.id)!==E.n)) return;
     E.n.data.lastImageEdit.seed=r.meta?.seed ?? p.seed;
-    E.n.job={ids:r.ids,prompt,t0:Date.now(),st:{}}; save(); render(E.n); showPanel(); poll();
+    E.n.job={ids:r.ids,prompt:camera?imageCameraPrompt(p.camera_view)+(prompt?"。"+prompt:""):prompt,t0:Date.now(),st:{}}; save(); render(E.n); showPanel(); poll();
     if (IMAGE_EDITOR===E) ieStatus("已排队，可返回画布继续工作；完成后会保存为新版本");
   } catch(e) { ieStatus(e.message,true); }
   finally { E.busy=false; ieSync(); }
@@ -322,6 +347,10 @@ function ieSync() {
   const busy=E.busy || E.restoring || !!E.n.job || !E.image || !!E.agentSelection;
   if(typeof aeEditorControls==="function")aeEditorControls();
   for (const id of ["ieGenerate","ieSaveLocal"]) $("#"+id).disabled=busy || !!E.agentSelection;
+  for (const id of [...relightInputIds,"ieSaveLight","ieResetLight","ieRelightAI"]) $("#"+id).disabled=busy || !canvasCanEdit();
+  for (const id of imageCameraDraftIds) $("#"+id).disabled=busy || !canvasCanEdit();
+  if(E.image)updatePixelPreview(E);
+  $$("[data-camera-preset]").forEach(button=>button.disabled=busy || !canvasCanEdit());
   $$("[data-rotate], [data-flip]",$("#imageEditor")).forEach(b=>b.disabled=busy);
   $("#ieCancel").hidden=!E.n.job;
   if(typeof aeEditorControls==="function")aeEditorControls();

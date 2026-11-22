@@ -1,6 +1,6 @@
 "use strict";
 // Parse Markdown locally; never insert unsanitized model or user HTML.
-function acMarkdown(host,text){
+function acMarkdown(host,text,{images=true}={}){
   host.classList.add("ac-markdown");
   if(!globalThis.marked || !globalThis.DOMPurify){host.textContent=text;return;}
   const parsed=marked.parse(String(text||""),{gfm:true,breaks:true,async:false});
@@ -14,6 +14,7 @@ function acMarkdown(host,text){
     catch{anchor.removeAttribute("href");}
   }
   for(const image of fragment.querySelectorAll("img")){
+    if(!images){image.replaceWith(document.createTextNode(image.alt));continue;}
     try{const u=new URL(image.getAttribute("src"),location.href);if(!["http:","https:"].includes(u.protocol)){image.remove();continue;}image.loading="lazy";image.referrerPolicy="no-referrer";}
     catch{image.remove();}
   }
@@ -28,6 +29,6 @@ function acMarkdown(host,text){
 }
 async function acCopyText(text){
   if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(text);
-  const active=document.activeElement,area=document.createElement("textarea");area.value=text;area.style.cssText="position:fixed;left:-9999px;top:0";document.body.append(area);area.select();
+  const active=document.activeElement,area=document.createElement("textarea");area.value=text;area.style.cssText="position:fixed;left:-9999px;top:0";(active?.closest("dialog[open]") || document.body).append(area);area.select();
   const copied=document.execCommand?.("copy");area.remove();active?.focus();if(!copied)throw new Error("复制失败");
 }

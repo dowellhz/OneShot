@@ -1,7 +1,9 @@
 import asyncio
 import io
 import json
+import sys
 import time
+import wave
 from contextlib import asynccontextmanager, redirect_stdout
 from fractions import Fraction
 from pathlib import Path
@@ -14,13 +16,15 @@ import av
 import numpy as np
 from aiohttp import StreamReader, web
 from aiohttp.base_protocol import BaseProtocol
-from aiohttp.test_utils import make_mocked_request
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from PIL import Image, ImageDraw
 from yarl import URL
 
 import db
 import image_editor
+import motion_reference
 import server
+import video_depth
 import video_remake
 import video_matte
 from scripts import smoke_video_remake
@@ -57,6 +61,185 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.BOARDS.mkdir()
         self.user = {"id": 7, "role": "member"}
         self.source = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "red"), "asset", "input")
+
+    async def test_shot_depth_guide_keeps_exact_cut_and_can_reopen(self):
+        source = self.make_clip("depth-cuts", seconds=3, color=lambda i: (43, 43, 43) if i < 25 else (160, 160, 160),
+                                frequency=550)
+        server.board_path("test").write_text(json.dumps({"owner":7, "collaborators":{"8":"reviewer"}, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+        # Use an exact odd-frame cut. A deterministic inference fixture leaves media preparation
+        # and the final encode running through the real queue and renderer.
+        key = (7, "test", "n3", source)
+        ranges = [(0, 25 / 24), (25 / 24, 3)]
+        shots = [{"start":a, "end":b, "summary":{},
+                  "frames":{"first":{"previews":[], "w":64, "h":64}}} for a, b in ranges]
+        video_remake.save(key, {"shots":shots,"display_oriented":True})
+        payload = {"action":"prepare_depth", "shot":1}
+        with patch.object(video_depth, "configuration", return_value=None):
+            with self.assertRaises(web.HTTPServiceUnavailable):
+                await server.remake(Request(source, self.user, payload))
+        with self.assertRaises(web.HTTPForbidden):
+            video_remake.prepare_depth(Request(source, {"id":8,"role":"member"}, payload),
+                                      server, (8, *key[1:]), {}, shots[1])
+
+        model_home = server.BOARDS.parent / "depth-fixture"
+        (model_home / "checkpoints").mkdir(parents=True)
+        (model_home / video_depth.CHECKPOINT).touch()
+        (model_home / "run.py").write_text(
+            "import os, shutil, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "value = lambda flag: args[args.index(flag) + 1]\n"
+            "assert Path('checkpoints/video_depth_anything_vits.pth').is_file()\n"
+            "assert os.environ['CUDA_VISIBLE_DEVICES'] == ''\n"
+            "assert value('--encoder') == 'vits' and value('--target_fps') == '12'\n"
+            "assert '--grayscale' in args and '--fp32' in args\n"
+            "shutil.copyfile(value('--input_video'), Path(value('--output_dir')) / 'shot_vis.mp4')\n"
+        )
+        with patch.dict("os.environ", {"ONESHOT_DEPTH_HOME":str(model_home), "ONESHOT_DEPTH_PYTHON":sys.executable}):
+            response = json.loads((await server.remake(Request(source, self.user, payload))).body)
+            depth = response["shots"][1]["depth"]
+            self.assertEqual(depth["start"], 25 / 24)
+            self.assertTrue(response["depth_available"])
+            repeated = json.loads((await server.remake(Request(source, self.user, payload))).body)
+            self.assertEqual(repeated["shots"][1]["depth"]["job"], depth["job"])
+            with self.assertRaises(web.HTTPConflict):
+                await server.remake(Request(source, self.user, {"action":"move_cut", "shot":1, "at":1.5}))
+            await self.wait_for_render(depth["job"])
+            reopened = json.loads((await server.remake(Request(source, self.user))).body)
+        output = reopened["shots"][1]["depth"]
+        self.assertEqual(output["state"], "done")
+        self.assertNotIn("depth", reopened["shots"][0])
+        ref = output["ref"]
+        self.assertTrue(server.can_read_media(self.user, ref))
+        self.assertFalse(server.can_read_media({"id":8,"role":"member"}, ref))
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR, ref))) as result:
+            self.assertEqual(len(result.streams.audio), 0)
+            self.assertEqual(result.streams.video[0].average_rate, 24)
+            frames = list(result.decode(video=0))
+            self.assertEqual(len(frames), 47)
+            self.assertEqual(frames[0].width, output["w"])
+            self.assertGreater(np.asarray(frames[0].to_image()).mean(), 150)
+
+    async def test_depth_reference_is_sent_as_a_video_and_lease_expires_on_completion(self):
+        source = self.make_clip("depth-source-original", 3, (110, 80, 90), 530)
+        guide = self.make_clip("depth-reference-fixture", 3, (110, 110, 110), 100)
+        result_ref = self.make_clip("depth-provider-output", 4, (140, 100, 70), 880)
+        preview = self.source["ref"]
+        server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
+            {"id":"n3", "type":"video", "versions":[{"ref":source}]},
+        ]}))
+        key = (7, "test", "n3", source)
+        shot = {"start":0, "end":3, "summary":{}, "depth":{"job":"rendered-guide","state":"done","ref":guide,"start":0,"end":3},
+                "frames":{"first":{"w":64,"h":64,"approved":"approved-frame","previews":[
+                    {"job":"approved-frame", "state":"done", "ref":preview, "asset":{"name":"测试人物"}},
+                ]}}}
+        video_remake.save(key, {"shots":[shot],"display_oriented":True})
+        provider = {"id":"motion-test", "name":"测试方舟", "kind":"ark", "enabled":True,
+                    "config":{"motion_origin":"https://studio.example"}, "secrets":{"api_key":"test-key"}}
+        route = {"provider":provider, "model":"ep-seedance-test"}
+        request = Request(source, self.user, {"action":"generate_depth_video", "shot":0, "provider":provider["id"],
+                                             "first_job":"approved-frame"})
+        request.app["http"] = object()
+        app = web.Application(middlewares=[server.auth.middleware])
+        app.router.add_get(motion_reference.LEASE_PREFIX + "{token}", motion_reference.serve)
+        sent = []
+
+        async with TestClient(TestServer(app)) as client:
+            async def json_req(_http, method, url, _name, **kwargs):
+                if method == "GET":
+                    return {"status":"succeeded","content":{"video_url":"https://api.example/result.mp4"}}
+                body = kwargs["json"]
+                self.assertEqual(body["duration"], 4)
+                self.assertFalse(body["generate_audio"])
+                self.assertEqual(body["ratio"], "1:1")
+                text, image, motion = body["content"]
+                self.assertEqual(image["role"], "reference_image")
+                self.assertEqual(motion["role"], "reference_video")
+                self.assertIn("@视频1", text["text"])
+                signed_url = URL(motion["video_url"]["url"])
+                sent.append(signed_url.path)
+                self.assertEqual(signed_url.host, "studio.example")
+                response = await client.head(signed_url.path)
+                self.assertEqual(response.status, 200)
+                response = await client.get(signed_url.path, headers={"Range":"bytes=0-63"})
+                self.assertEqual(response.status, 206)
+                self.assertEqual(len(await response.read()), 64)
+                response = await client.get(signed_url.path)
+                self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+                with av.open(io.BytesIO(await response.read())) as video:
+                    self.assertFalse(video.streams.audio)
+                    self.assertEqual(video.streams.video[0].width, 720)
+                    self.assertEqual(video.streams.video[0].average_rate, 24)
+                    self.assertEqual(sum(1 for _ in video.decode(video=0)), 72)
+                return {"id":"test-cloud-job"}
+
+            async def save_result(*args):
+                return {"files":[{"ref":result_ref, "path":server.tools.ref_path(server.COMFY_DIR, result_ref), "kind":"video"}]}
+
+            with patch.object(server.providers, "routes", return_value=[route]), \
+                    patch.object(server.providers, "all_providers", return_value=[]), \
+                    patch.object(server.remote, "json_req", side_effect=json_req), \
+                    patch.object(server.remote, "_save_video", side_effect=save_result):
+                with self.assertRaises(web.HTTPServiceUnavailable):
+                    await server.remake(Request(source, self.user, {**request.payload,"provider":"unknown"}))
+                with self.assertRaises(web.HTTPConflict):
+                    await server.remake(Request(source, self.user, {**request.payload,"first_job":"stale-first-frame"}))
+                submitted = json.loads((await server.remake(request)).body)
+                record = submitted["shots"][0]["videos"][0]
+                job = record["job"]
+                self.assertEqual(record["depth_ref"], guide)
+                self.assertEqual(record["motion_model"], "ep-seedance-test")
+                self.assertEqual(submitted["motion_providers"][0]["id"], "motion-test")
+                await self.wait_for_render(job)
+                self.assertEqual(server.JOBS[job]["state"], "done", server.JOBS[job].get("error"))
+                self.assertEqual((await client.get(sent[0])).status, 404)
+                self.assertEqual((await client.post(sent[0])).status, 401)
+                reopened = json.loads((await server.remake(Request(source, self.user))).body)
+                self.assertEqual(reopened["shots"][0]["videos"][0]["ref"], result_ref)
+                logs = db.one("SELECT request FROM tasks WHERE id=?", job)["request"]
+                self.assertNotIn(sent[0], logs)
+                self.assertNotIn(sent[0], json.dumps(reopened))
+
+                reopened["mapping"] = {"source":"人物甲", "asset":"new-role", "shots":[0]}
+                adopted = reopened["shots"][0]["frames"]["first"]["previews"][0]
+                adopted.update(source_person="人物甲", asset={"id":"new-role","name":"测试人物"})
+                video_remake.save(key, reopened)
+                db.run("INSERT INTO users(id,username,role,disabled,pw_hash) VALUES(7,'test','member',0,'disabled')")
+                db.conn().executescript(server.agent_chat.SCHEMA)
+                now = time.time()
+                run = {"id":"depth-run", "session_id":"depth-session", "board_id":"test", "state":"running",
+                       "created":now, "data":{"bindings":{"n3":source}}}
+                db.run("INSERT INTO chat_sessions VALUES(?,?,?,?,?,?)", run["session_id"], 7, "test", "测试", now, now)
+                db.run("INSERT INTO chat_runs VALUES(?,?,?,?,?,?,?,?,?,?)", run["id"], run["session_id"], 7, "test",
+                       "depth-run-key", "running", json.dumps(run["data"]), None, now, now)
+                db.run("INSERT INTO chat_calls VALUES(?,?,?,?,?,?,?)", "depth-call", run["id"], "video_remake_generate",
+                       "{}", "executing", None, now)
+                assistant = server.agent_chat.AgentService(request.app, server)
+                status = await assistant.execute(run, self.user, "status", "video_remake_status", {"node_id":"n3"})
+                self.assertTrue(status["shots"][0]["depth_ready"])
+                self.assertEqual(status["motion_providers"][0]["id"], provider["id"])
+                result = await assistant.execute(run, self.user, "depth-call", "video_remake_generate",
+                                                 {"node_id":"n3", "person":"人物甲", "asset_id":"new-role",
+                                                  "shot":1, "cut_revision":0, "motion_provider":provider["id"],
+                                                  "first_job":"approved-frame"})
+                self.assertTrue(result["video"]["completed"])
+                self.assertEqual(run["data"]["generated_video"], 1)
+                self.assertEqual(len(set(sent)), 2)
+                self.assertEqual((await client.get(sent[-1])).status, 404)
+
+            temporarily_available = True
+            with motion_reference.publish("https://studio.example", server.tools.ref_path(server.COMFY_DIR, guide),
+                                          lambda: temporarily_available) as url:
+                link = URL(url).path
+                self.assertEqual((await client.head(link)).status, 200)
+                temporarily_available = False
+                self.assertEqual((await client.head(link)).status, 404)
+            with patch.object(motion_reference, "LEASE_SECONDS", -1):
+                with motion_reference.publish("https://studio.example", server.tools.ref_path(server.COMFY_DIR, guide),
+                                              lambda: True) as url:
+                    self.assertEqual((await client.head(URL(url).path)).status, 404)
 
     async def test_analysis_finds_color_cuts_on_the_render_timeline_without_splitting_flashes(self):
         def colors(tick):
@@ -1147,9 +1330,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             {"node_id":"n3", "asset_id":assets[0]["id"], "person":"甲", "shots":[1]})
         self.assertFalse(planned["remake_plan"]["shots"][0]["selection_ready"])
         self.assertNotIn("mapping", video_remake.load(key))
-        applied = await act("apply_plan", person="甲", asset=assets[0]["id"], reference=assets[0]["ref"], shots=[0])
+        plan_fields = {"person":"甲","asset":assets[0]["id"],"reference":assets[0]["ref"],"shots":[0],"plan_id":"saved-plan"}
+        applied = await act("apply_plan", **plan_fields)
         self.assertEqual(applied["apply_plan"]["needs_selection"], [0])
         self.assertFalse(applied["apply_plan"]["jobs"])
+        self.assertEqual((await act())["remake_plans"]["saved-plan"]["result"], applied["apply_plan"])
 
         original_masks = []
         for i, (name, asset, ref, rect) in enumerate(zip(("甲","乙"), assets, (first_take,second_take),
@@ -1170,6 +1355,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             await self.wait_for_render(job)
             await act("add_role_layer", job=job)
 
+        replayed = await act("apply_plan", **plan_fields)
+        self.assertEqual(replayed["apply_plan"], applied["apply_plan"])
+        self.assertEqual(replayed["mapping"]["source"], "乙")
         restored = await act("map_person", person="甲", asset=assets[0]["id"], shots=[0])
         self.assertEqual(restored["shots"][0]["frames"]["first"]["selection"]["mask"], original_masks[0])
         self.assertEqual(len(restored["export_review"]["remaining"]), 1)
@@ -1194,6 +1382,13 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         impact = json.loads((await server.creative_memory.asset_impact(req)).body)
         self.assertEqual([(item["shot"],item["previous"],item["reference"]) for item in impact["remake"]],
                          [(0,assets[0]["ref"],new_ref)])
+        used = {"id":assets[0]["id"], "ref":assets[0]["ref"]}
+        for project, owner, shared in (("own",7,False), ("team",8,True), ("secret",8,False)):
+            server.board_path(project).write_text(json.dumps({"owner":owner,"name":project,"shared":shared,
+                "nodes":[{"id":"n1","name":"镜头","versions":[{"ref":source,"memory_used":[used]}]}]}))
+        req.query["all"] = "1"
+        across = json.loads((await server.creative_memory.asset_impact(req)).body)
+        self.assertEqual({item["board"] for item in across["canvas"]}, {"own","team"})
         with self.assertRaises(web.HTTPConflict):
             await act("apply_plan", person="甲", asset=assets[0]["id"], reference=assets[0]["ref"], shots=[0])
         self.assertEqual((await act())["reviewed_jobs"], [job])
@@ -1215,6 +1410,239 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["seconds"], 1.5, places=2)
         self.assertEqual(np.argmax(np.abs(np.fft.rfft(pcm[:rate]))), 440)
         self.assertLess(np.max(np.abs(pcm[round(1.1*rate):])), .025)
+
+    def test_segment_replacements_can_keep_the_timestamp_aligned_original_sound(self):
+        source = self.make_clip("segment-original", 3, (40, 70, 90), 440, audio_delay=1)
+        take = self.make_clip("segment-take", 2, (10, 40, 210), 880)
+        clips = [
+            {"ref":source,"in":0,"out":.5,"audio_ref":source,"audio_start":0,"tight":True},
+            {"ref":take,"in":.25,"out":1.75,"audio_ref":source,"audio_start":.25,"tight":True},
+            {"ref":source,"in":2,"out":3,"audio_ref":source,"audio_start":0,"tight":True},
+        ]
+        spec = {"clips":clips}
+        self.assertTrue(server.film_preflight(spec)["ok"])
+        result = server.film.render(server.COMFY_DIR, spec)
+        output = server.tools.ref_path(server.COMFY_DIR, result["ref"])
+        rate = server.film.SR
+        pcm = server.film.read_audio(output)[0]
+        self.assertAlmostEqual(result["seconds"], 3)
+        self.assertLess(np.max(np.abs(pcm[:round(.9*rate)])), .025)
+        for start in (1.25, 2.25):
+            sample = pcm[round(start*rate):round((start+.5)*rate)]
+            self.assertEqual(np.argmax(np.abs(np.fft.rfft(sample))) * 2, 440)
+        with av.open(str(output)) as media:
+            frames = list(media.decode(video=0))
+        self.assertEqual(len(frames), 72)
+        self.assertGreater(frames[24].to_ndarray(format="rgb24")[0,0,2], 190)
+        clips[1]["audio_start"] = 2
+        check = server.film_preflight(spec)
+        self.assertEqual(check["issues"][0]["clip"], 1)
+        self.assertIn("原片音轨", check["issues"][0]["error"])
+
+    async def test_captions_use_the_selected_soundtrack_and_render_at_source_times(self):
+        source = self.make_clip("caption-picture", 3, (30, 30, 30), 880)
+        original = self.make_clip("caption-original", 4, (20, 20, 20), 440)
+        server.write_board(server.board_path("test"), {"owner":7,"collaborators":{"8":"reviewer"},"nodes":[
+            {"id":"n3","type":"video","versions":[{"ref":source}]},
+            {"id":"n4","type":"video","versions":[{"ref":original}]},
+        ]})
+
+        @web.middleware
+        async def fixture_user(req, handler):
+            req["user"] = {"id":int(req.headers.get("X-Uid", "7")),"role":"member"}
+            return await handler(req)
+
+        @asynccontextmanager
+        async def post(url, *, data, **kwargs):
+            fields = {options["name"]:value for options, _, value in data._fields}
+            self.assertEqual((url, fields["model"], fields["response_format"], fields["timestamp_granularities[]"]),
+                             ("https://captions.invalid/v1/audio/transcriptions","whisper-1","verbose_json","segment"))
+            with wave.open(io.BytesIO(fields["file"])) as wav:
+                rate = wav.getframerate()
+                self.assertEqual(wav.getnframes(), rate * 2)
+                pcm = np.frombuffer(wav.readframes(rate), dtype="<i2")
+                self.assertEqual(np.argmax(np.abs(np.fft.rfft(pcm))), 440)
+
+            async def transcribed():
+                return {"text":"测试字幕", "segments":[{"start":.5,"end":1.5,"text":"测试字幕"}]}
+
+            yield SimpleNamespace(status=200,json=transcribed)
+
+        app = web.Application(middlewares=[fixture_user,server.media_input_guard])
+        app["http"] = SimpleNamespace(post=post)
+        app.router.add_post("/api/video/captions", server.video_captions)
+        providers = server.providers
+        primary = providers.save(None,"asr_compat","字幕",{"base_url":"https://captions.invalid/v1"},{},True)
+        providers.set_route("asr",[{"provider_id":primary,"model":"whisper-1"}])
+        clip = {"ref":source,"in":1,"out":3,"audio_ref":original,"audio_start":.5,"speed":2}
+        async with TestClient(TestServer(app)) as client:
+            api = "/api/video/captions"
+            self.assertEqual((await client.post(api,json={"board":"test",**clip},headers={"X-Uid":"8"})).status,403)
+            response = await client.post(api,json={"board":"test",**clip})
+            self.assertEqual(response.status,200,await response.text())
+            clip["captions"] = (await response.json())["captions"]
+        self.assertEqual(clip["captions"],[{"start":1.5,"end":2.5,"text":"测试字幕"}])
+        spec = {"clips":[clip]}
+        self.assertTrue(server.film_preflight(spec)["ok"])
+        # Use a solid strip to verify the actual frame timestamps independently of the machine's fonts.
+        with patch.object(server.film,"subtitle_overlay",return_value=(np.full((4,64,4),255,np.float32),50)):
+            result = server.film.render(server.COMFY_DIR,spec)
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR,result["ref"]))) as media:
+            shown = [i for i,frame in enumerate(media.decode(video=0)) if frame.to_ndarray(format="rgb24")[51,32,0] > 200]
+        self.assertEqual(shown,list(range(6,18)))
+
+    def test_cutaways_replace_only_picture_on_the_main_timeline(self):
+        source = self.make_clip("cutaway-main",3,(26,26,26),440)
+        insert = self.make_clip("cutaway-video",2,lambda tick:(225,26,26) if tick<24 else (26,26,225),880)
+        still = image_editor.save(server.COMFY_DIR,Image.new("RGBA",(48,64),(26,220,26,255)),"input")["ref"]
+        cutaways = [{"kind":"video","ref":insert,"start":.5,"duration":1,"in":1},
+                    {"kind":"image","ref":still,"start":1.5,"duration":.5}]
+        spec = {"clips":[{"ref":source,"in":0,"out":3}],"cutaways":cutaways,"subtitles":False,"cover":.75}
+        self.assertTrue(server.film_preflight(spec)["ok"])
+        with self.assertRaisesRegex(ValueError,"补画面重叠"):
+            server.film_preflight({**spec,"cutaways":[cutaways[0],{**cutaways[1],"start":1.4}]})
+        result = server.film.render(server.COMFY_DIR,spec)
+        path = server.tools.ref_path(server.COMFY_DIR,result["ref"])
+        with av.open(str(path)) as media:
+            pixels = [frame.to_ndarray(format="rgb24")[32,32] for frame in media.decode(video=0)]
+        self.assertEqual(len(pixels),72)
+        self.assertTrue(all(max(px) < 70 for px in pixels[:12]+pixels[48:]))
+        self.assertTrue(all(px[2] > 190 for px in pixels[12:36]))
+        self.assertTrue(all(px[1] > 190 for px in pixels[36:48]))
+        rate = server.film.SR
+        soundtrack = server.film.read_audio(path)[0][rate//2:rate*3//2]
+        self.assertEqual(int(np.argmax(np.abs(np.fft.rfft(soundtrack)))),440)
+        with Image.open(server.tools.ref_path(server.COMFY_DIR,result["cover"])) as cover:
+            self.assertGreater(cover.getpixel((32,32))[2],190)
+
+    def test_titles_are_burned_into_the_timed_picture_and_cover(self):
+        from PIL import ImageFont
+
+        source = self.make_clip("title-background", 2, (28, 28, 28), 440)
+        spec = {"clips":[{"ref":source,"in":0,"out":2}],"subtitles":False,"cover":.75,
+                "titles":[{"text":"Scene I","start":.51,"end":1.02,"position":"lower_left","style":"label"}]}
+        self.assertTrue(server.film_preflight(spec)["ok"])
+        with self.assertRaisesRegex(ValueError, "第 1 条标题"):
+            server.film_preflight({**spec,"titles":[{**spec["titles"][0],"end":.2}]})
+        font = ImageFont.load_default(size=12)
+        with patch.object(ImageFont,"truetype",side_effect=lambda _path,size:font.font_variant(size=size)):
+            result = server.film.render(server.COMFY_DIR,spec)
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR,result["ref"]))) as media:
+            visible = []
+            for index, frame in enumerate(media.decode(video=0)):
+                image = frame.to_ndarray(format="rgb24")
+                self.assertLess(image[:30].max(),80)
+                if image[40:57,:46].max() > 150:
+                    visible.append(index)
+        self.assertEqual(visible,list(range(13,25)))
+        with Image.open(server.tools.ref_path(server.COMFY_DIR,result["cover"])) as cover:
+            self.assertGreater(np.asarray(cover)[40:57,:46].max(),150)
+
+    def test_film_clip_speed_changes_frame_timing_without_changing_audio_pitch(self):
+        source = self.make_clip("retime-source", 2,
+                                lambda tick: (240,20,20) if tick < 24 else (20,40,225), 440)
+        alternate_audio = self.make_clip("retime-original-sound", 2, (30,30,30), 660)
+        clips = [
+            {"ref":source,"in":0,"out":2,"speed":2},
+            {"ref":source,"in":1,"out":2,"speed":.5,"audio_ref":alternate_audio,"audio_start":0},
+        ]
+        spec = {"clips":clips}
+        self.assertTrue(server.film_preflight(spec)["ok"])
+        result = server.film.render(server.COMFY_DIR, spec)
+        output = server.tools.ref_path(server.COMFY_DIR, result["ref"])
+        with av.open(str(output)) as media:
+            frames = list(media.decode(video=0))
+        self.assertEqual(len(frames), 72)
+        for index, channel in ((11,0),(12,2),(24,2),(71,2)):
+            self.assertGreater(frames[index].to_ndarray(format="rgb24")[0,0,channel], 195)
+        self.assertAlmostEqual(result["seconds"], 3)
+        rate = server.film.SR
+        pcm = server.film.read_audio(output)[0]
+        for begin, pitch in ((.25,440),(1.25,660)):
+            samples = pcm[round(begin*rate):round((begin+.5)*rate)]
+            self.assertEqual(np.argmax(np.abs(np.fft.rfft(samples))) * 2, pitch)
+        clips[1]["speed"] = 3
+        self.assertIn("播放速度", server.film_preflight(spec)["issues"][0]["error"])
+
+    async def test_capture_at_playhead_keeps_tail_capture_available(self):
+        source = self.make_clip("playhead", seconds=2, frequency=440,
+                                color=lambda tick: (220,30,30) if tick < 24 else (30,30,220))
+        for fields, channel, timestamp in (({"at":.52},0,.5), ({"position":"first"},0,0),
+                                           ({"position":"last"},2,47/24), ({"at":None},2,47/24)):
+            request = Request(source, self.user, {"ref":source,**fields})
+            result = json.loads((await server.lastframe(request)).body)
+            image = image_editor.load(server.COMFY_DIR, result["ref"])
+            self.assertGreater(image.getpixel((32,32))[channel], 190)
+            self.assertEqual((result["w"],result["h"]), (64,64))
+            self.assertAlmostEqual(result["at"], timestamp, places=5)
+            self.assertTrue(server.can_read_media(self.user, result["ref"]))
+
+    async def test_film_checks_missing_clips_and_replays_an_accepted_export(self):
+        source = self.make_clip("checked-film", seconds=1, color=(40,70,90), frequency=440)
+        spec = {"clips":[{"ref":source,"in":0,"out":1}], "subtitles":False}
+        check = server.film_preflight({**spec,"clips":[*spec["clips"],{"ref":"input:h3studio/missing.mp4"}]})
+        self.assertFalse(check["ok"])
+        self.assertEqual(check["issues"][0]["clip"], 1)
+        self.assertEqual(check["dimensions"], (64,64))
+        with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue:
+            req = Request(source, self.user, {"spec":spec,"request_key":"same-render-attempt-1"})
+            first = json.loads((await server.render_film(req)).body)
+            repeat = json.loads((await server.render_film(req)).body)
+            self.assertEqual(repeat["ids"], first["ids"])
+            enqueue.assert_called_once()
+            await self.wait_for_render(first["ids"][0])
+            server.JOBS.pop(first["ids"][0], None)
+            after_restart = json.loads((await server.render_film(req)).body)
+            self.assertEqual(after_restart["ids"], first["ids"])
+
+    async def test_mixed_film_exports_still_and_video_with_their_timing_and_audio(self):
+        video = self.make_clip("mixed-film", seconds=1, color=(20, 30, 220), frequency=440)
+        still = {"kind":"image", "ref":self.source["ref"], "duration":.75, "trans":"fade"}
+        spec = {"clips":[still, {"ref":video, "in":0, "out":1}], "subtitles":False, "cover":.2}
+        self.assertEqual(server.film_preflight(spec)["dimensions"], (64, 64))
+        for invalid in ({"duration":0}, {"duration":61}, {"duration":"NaN"}, {"ref":video}):
+            check = server.film_preflight({"clips":[{**still, **invalid}]})
+            self.assertFalse(check["ok"])
+            self.assertEqual(check["issues"][0]["clip"], 0)
+        response = await server.render_film(Request(video, self.user, {"spec":spec, "request_key":"mixed-film-render"}))
+        result = await self.wait_for_render(json.loads(response.body)["ids"][0])
+        ref = json.loads(result["outputs"])[0]
+        path = server.tools.ref_path(server.COMFY_DIR, ref)
+        with av.open(str(path)) as output:
+            frames = [frame.to_image().getpixel((32, 32)) for frame in output.decode(video=0)]
+        self.assertEqual(len(frames), 33)
+        self.assertGreater(frames[3][0], 235)
+        self.assertGreater(frames[13][0], 70)
+        self.assertGreater(frames[13][2], 45)
+        self.assertGreater(frames[-1][2], 190)
+        pcm = server.film.read_audio(path)[0]
+        self.assertLess(np.abs(pcm[:server.film.SR // 4]).max(), .025)
+        self.assertGreater(np.abs(pcm[-server.film.SR // 2:]).max(), .10)
+
+    def test_timed_audio_is_trimmed_mixed_and_capped_to_the_picture(self):
+        path, source = server.tools._new(server.COMFY_DIR, "input", "fx", ".wav")
+        rate = server.film.SR
+        ticks = np.arange(rate // 2)
+        signal = np.concatenate([np.sin(ticks * (2 * np.pi * frequency / rate)) for frequency in (440, 660)])
+        with wave.open(str(path), "wb") as wav:
+            wav.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+            wav.writeframes((signal * 16000).astype("<i2").tobytes())
+        timed = {"ref":source, "start":.5, "in":.5, "out":1, "volume":.5}
+        spec = {"clips":[{"kind":"image", "ref":self.source["ref"], "duration":1.5}], "audio_clips":[timed, {**timed, "start":1.25}]}
+        self.assertTrue(server.film_preflight(spec)["ok"])
+        for change in ({"out":.5}, {"start":-1}, {"volume":2}):
+            invalid = {**spec, "audio_clips":[{**timed, **change}]}
+            self.assertEqual(server.film_preflight(invalid)["issues"][0]["audio"], 0)
+        result = server.film.render(server.COMFY_DIR, spec)
+        self.assertEqual(result["seconds"], 1.5)
+        pcm = server.film.read_audio(server.tools.ref_path(server.COMFY_DIR, result["ref"]))[0]
+        for start in (.1, 1.05):
+            self.assertLess(np.max(np.abs(pcm[round(start * rate):round((start + .1) * rate)])), .025)
+        measured = pcm[round(.6 * rate):round(.8 * rate)]
+        frequency = np.argmax(np.abs(np.fft.rfft(measured))) * rate / len(measured)
+        self.assertEqual(frequency, 660)
+        self.assertTrue(.13 < np.abs(measured).max() < .22)
+        self.assertGreater(np.abs(pcm[round(1.35 * rate):round(1.45 * rate)]).max(), .13)
 
     def test_editable_remake_timeline_uses_original_dimensions(self):
         _, source = server.tools._new(server.COMFY_DIR, "input", "landscape-original", ".mp4")

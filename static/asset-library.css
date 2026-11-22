@@ -7,9 +7,21 @@
 @media(max-width:520px){.al-sidebar{width:94px;padding:12px 5px}.al-toolbar button{flex:1}.al-filters select{max-width:100px}.al-card-actions{flex-wrap:wrap}.al-grid{grid-template-columns:repeat(auto-fill,minmax(135px,1fr))}.al-foot{padding:8px 12px}.al-type,.al-reference{font-size:9px;padding:2px 4px}.al-reference{top:auto;bottom:6px}}
 #alDetail .cm-hero{border:1px solid #33333c;border-radius:9px;overflow:hidden;background:#101012;text-align:center}#alDetail .cm-hero>img,#alDetail .cm-hero>video{width:100%;height:190px;display:block;object-fit:contain}#alDetail .cm-hero a{display:block;color:#aaaab9;font-size:11px;text-decoration:none;padding:7px;background:#222228}#alDetail .cm-hero a:hover{color:#eee}.cm-editor div.cm-media-item{border:1px solid #45454d;border-radius:7px}.cm-history .cm-media-item>button{padding:4px!important;font-size:10px!important}
 .al-detail:has(.al-impact) { flex-direction:column; }
+.al-asset-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
+.al-asset-actions a { display:inline-block; color:var(--text); padding:5px 0; font-size:12px; }
 #alDetail:has(.al-impact) .cm-editor { flex:1; height:auto; }
 .al-impact { padding:10px 12px; border-top:1px solid var(--line); }
 .al-impact > div { max-height:32vh; overflow:auto; }
 .al-impact ul { list-style:none; padding:0; margin:8px 0; }
 .al-impact li { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
 .al-impact output { color:var(--dim); }
+
+.al-folder-bar { padding: 0 20px 9px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#alFolders, .al-folder-actions, #alFolderEditor form, #alFileActions { display: flex; align-items: center; gap: 5px; }
+#alFolders { overflow-x: auto; min-width: 0; flex: 1; }
+#assetLibrary #alFolders button { white-space: nowrap; flex: none; }
+#assetLibrary [aria-pressed=true]#alFileMode, #assetLibrary #alFolders [aria-pressed=true] { background: #424249; color: #fff; border-color: #666673; }
+#alFolderEditor:not(:empty), #alFileActions:not([hidden]) { width: 100%; }
+#alFolderEditor input { padding: 6px; min-width: 0; border: 1px solid var(--line2); border-radius: 7px; background: var(--card); color: var(--text); }
+.al-card { position: relative; }
+.al-file-check { position: absolute; z-index: 1; right: 7px; bottom: 40px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--card-hi); border: 1px solid var(--line2); }

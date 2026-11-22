@@ -99,6 +99,23 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
             <p data-camera-motion></p>
             <ol data-motion-beats aria-label="镜头内的动作时间点"></ol>
           </div>
+          <details class="rm-depth">
+            <summary>镜头深度参考</summary>
+            <p data-depth-status role="status"></p>
+            <div class="rm-actions">
+              <button type="button" data-prepare-depth>生成深度参考</button>
+              <a data-download-depth hidden>下载 MP4</a>
+              <button type="button" data-insert-depth hidden>放入画布</button>
+            </div>
+            <video data-depth-player aria-label="镜头深度参考" preload="metadata" controls playsinline muted hidden></video>
+            <div class="rm-depth-send" hidden>
+              <div class="rm-actions">
+                <label>视频服务<select data-depth-provider></select></label>
+                <button type="button" data-generate-depth-video>用深度参考生成</button>
+              </div>
+              <p data-depth-send-status role="status"></p>
+            </div>
+          </details>
           <div class="rm-actions">
             <label>动作与运镜<textarea data-motion rows="2" maxlength="1600" placeholder="补充动作时机、人物与道具的互动，或说明镜头如何运动"></textarea></label>
             <button type="button" data-generate-video>生成镜头视频</button>
@@ -117,6 +134,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
   const el = selector => panel.querySelector(selector);
   const player = el("video");
   const result = el("[data-result]");
+  const depthPlayer = el("[data-depth-player]");
   player.src = remakeMedia(source.ref);
   let session = null, assets = [], shotIndex = 0, frameKey = "first", mode = "point", versionId = null;
   let busy = true, dragStart = null, timer = null, revision = 0;
@@ -166,6 +184,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     stopComparison();
     if (!player.paused) player.pause();
     if (!result.paused) result.pause();
+    if (!depthPlayer.paused) depthPlayer.pause();
     panel.remove();
   }
   el("[data-close]").onclick = close;
@@ -428,7 +447,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
       const motion = shotMotion(shot).slice(0, 1600);
       const ready = versions.some(v => {
         const used = v.guides || [];
-        return v.ref && matchesPerson(v) && v.first_frame === start.ref && (v.motion || "") === motion &&
+        return v.ref && !v.depth_ref && matchesPerson(v) && v.first_frame === start.ref && (v.motion || "") === motion &&
           (v.entry_tick || 0) === start.entryTick &&
           used.length === guides.length && guides.every((guide, i) => guide.tick === used[i].tick && guide.ref === used[i].ref);
       });
@@ -707,9 +726,12 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     const previous = Math.round((session.shots[shotIndex - 1]?.start || 0) * RM_FPS);
     el("[data-cut-time]").textContent = `${(at / RM_FPS).toFixed(2)} 秒`;
     const locked = busy || playbackError || !!session.export && active(session.export);
-    el('[data-cut="split_shot"]').disabled = locked || at <= start || at >= end;
-    el('[data-cut="move_cut"]').disabled = locked || !shotIndex || at <= previous || at >= end || at === start;
-    el('[data-cut="merge_shots"]').disabled = locked || !shotIndex;
+    const depthBusy = item => !!item?.depth && active(item.depth);
+    const cuttingDepth = depthBusy(shot);
+    const joiningDepth = cuttingDepth || depthBusy(session.shots[shotIndex - 1]);
+    el('[data-cut="split_shot"]').disabled = locked || cuttingDepth || at <= start || at >= end;
+    el('[data-cut="move_cut"]').disabled = locked || joiningDepth || !shotIndex || at <= previous || at >= end || at === start;
+    el('[data-cut="merge_shots"]').disabled = locked || joiningDepth || !shotIndex;
     const longSplit = el('[data-cut="split_long_shot"]');
     const pieces = Math.ceil((end - start) / (RM_MAX_SHOT_SECONDS * RM_FPS));
     longSplit.hidden = pieces <= 1 || !inScope(shotIndex);
@@ -718,7 +740,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     longSplit.textContent = `拆成 ${pieces} 个镜头`;
     const undo = el('[data-cut="undo_cut"]');
     undo.hidden = !session.can_undo_cut;
-    undo.disabled = locked;
+    undo.disabled = locked || session.shots.some(depthBusy);
     for (const button of panel.querySelectorAll("[data-step]")) button.disabled = locked;
   }
 
@@ -734,6 +756,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     const firstApproved = !!approved && matchesPerson(approved);
     const staleStart = firstApproved && !previewMatchesRegions(start.frame, approved);
     const guides = firstApproved ? shotGuides(shot, approved, start.entryTick) : [];
+    renderDepth(shot, {firstApproved, staleStart, startsAbsent, guides});
     const tooLong = Math.round(shot.end * RM_FPS) - Math.round(shot.start * RM_FPS) > RM_MAX_SHOT_SECONDS * RM_FPS;
     let hint = "先在「镜头首帧」中采用替换预览。";
     if (!inScope(shotIndex)) hint = "该镜头不在替换范围，合成时使用原片。";
@@ -770,7 +793,8 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
       const select = document.createElement("select");
       select.setAttribute("aria-label", "镜头视频版本");
       videos.forEach((v, i) => {
-        const label = v.mode === "combined" ? "多角色合成" : v.mode === "local" ? "局部合成" : v.guides?.length ? `按 ${v.guides.length} 张动作关键帧重制` : "整镜重制";
+        const label = v.mode === "combined" ? "多角色合成" : v.mode === "local" ? "局部合成" :
+          v.mode === "depth" ? "深度参考重制" : v.guides?.length ? `按 ${v.guides.length} 张动作关键帧重制` : "整镜重制";
         select.append(new Option(`${i + 1}. ${label} · ${!matchesPerson(v) ? "旧映射" : shot.adopted_video === v.job && !shot.keep_original ? "已采用" : v.ref ? "待审核" : v.state === "error" ? "失败" : "处理中"}`, v.job));
       });
       select.value = selected.job;
@@ -895,6 +919,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     if (!version?.ref || version.stale) return;
     const kind = shot ? "shot" : "export";
     const origin = {kind, source_node:video.id, source_ref:source.ref, job:version.job,
+      ...(version.depth_ref ? {depth_ref:version.depth_ref, motion_model:version.motion_model} : {}),
       ...(shot ? {start:shot.start, end:shot.end} : {clips:version.clips || []})};
     const matchesOrigin = v => v.remake?.kind === kind && v.remake.source_node === video.id &&
       v.remake.source_ref === source.ref && (!shot || v.remake.start === shot.start && v.remake.end === shot.end);
@@ -938,9 +963,86 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
         ref:version.ref, url:remakeMedia(version.ref),
         w:version.w || first?.w || source.w || 1280,
         h:version.h || first?.h || source.h || 720, seconds,
-      }, {source:"remake", label, mode:shot ? version.mode === "local" ? "局部合成" : "整镜重制" : "重制成片",
+      }, {source:"remake", label, mode:shot ? version.mode === "local" ? "局部合成" :
+        version.mode === "depth" ? "深度参考重制" : "整镜重制" : "重制成片",
         remake:origin, input_edges:edges, node_data:data}));
       switchVersion(target, target.versions.length - 1, {recordUndo:false});
+    }
+    close();
+    selectOnly(target.id);
+    fit([target]);
+  }
+
+  function renderDepth(shot, {firstApproved, staleStart, startsAbsent, guides}) {
+    const depth = shot.depth;
+    const ready = depth?.state === "done" && !!depth.ref;
+    const loading = !!depth && active(depth);
+    const ticks = Math.round(shot.end * RM_FPS) - Math.round(shot.start * RM_FPS);
+    const allowed = session.depth_available && ticks > 0 && ticks <= RM_MAX_SHOT_SECONDS * RM_FPS;
+    const button = el("[data-prepare-depth]");
+    button.hidden = ready;
+    button.disabled = busy || !canvasCanEdit() || !allowed || session.shots.some(item => item.depth && active(item.depth));
+    button.textContent = depth?.state === "error" ? "重试深度参考" : "生成深度参考";
+    el("[data-depth-status]").textContent = depth?.error || (loading ? taskProgress(depth.job).text :
+      ready ? "与原镜头同长的灰度参考，可下载或放入画布。" :
+        !session.depth_available ? "部署主机尚未安装视频深度模型。" :
+          !allowed ? `单段最多 ${RM_MAX_SHOT_SECONDS} 秒，请先拆分镜头。` : "提取前后层次、动作和运镜，生成无声灰度视频。");
+    const url = ready ? remakeMedia(depth.ref) : "";
+    const download = el("[data-download-depth]");
+    download.hidden = !ready;
+    if (ready) {
+      download.href = url;
+      download.download = `镜头 ${shotIndex + 1} · 深度参考.mp4`;
+    } else download.removeAttribute("href");
+    el("[data-insert-depth]").hidden = !ready || !canvasCanEdit();
+    el("[data-insert-depth]").disabled = busy;
+    depthPlayer.hidden = !ready;
+    if (url && depthPlayer.getAttribute("src") !== url) depthPlayer.src = url;
+    else if (!url && depthPlayer.hasAttribute("src")) {
+      depthPlayer.removeAttribute("src");
+      depthPlayer.load();
+    }
+    el(".rm-depth-send").hidden = !ready || !canvasCanEdit() || !inScope(shotIndex);
+    if (!ready) return;
+    const providers = session.motion_providers || [];
+    const service = el("[data-depth-provider]");
+    const signature = JSON.stringify(providers);
+    if (service.dataset.options !== signature) {
+      const previous = service.value;
+      service.replaceChildren(...providers.map(p => new Option(`${p.name} · ${p.model}`, p.id)));
+      if (providers.some(p => p.id === previous)) service.value = previous;
+      service.dataset.options = signature;
+    }
+    service.closest("label").hidden = !providers.length;
+    service.disabled = busy;
+    const first = shot.frames.first;
+    const ratio = first.w / first.h;
+    const missing = !providers.length ? "请在控制台配置支持参考视频的 Seedance 服务。" :
+      ticks < 2 * RM_FPS || ratio < .4 || ratio > 2.5 ? "动作参考需至少 2 秒，且宽高比在 0.4 到 2.5 之间。" :
+      startsAbsent || !guides || guides.length ? "此镜头请使用按关键帧生成。" :
+      !firstApproved || staleStart ? "先采用当前镜头的首帧预览。" : "";
+    el("[data-generate-depth-video]").disabled = !!missing || busy || (shot.videos || []).some(active);
+    el("[data-depth-send-status]").textContent = missing || "提交后，已采用的首帧和深度视频将发给选定服务。合成时可保留原声。";
+  }
+
+  function insertDepth() {
+    const shot = currentShot(), depth = shot?.depth;
+    if (boardId !== board || node(video.id) !== video || !canvasCanEdit() || !depth?.ref || depth.state !== "done") return;
+    let target = B.nodes.find(n => n.type === "video" && n.versions.some(v => v.ref === depth.ref && v.remake?.kind === "depth"));
+    if (target) {
+      if (target.job || prepping.has(target.id)) return status("画布上的参考节点正在生成，请等待完成");
+      switchVersion(target, target.versions.findIndex(v => v.ref === depth.ref));
+    } else {
+      checkpoint();
+      const at = placeRight(video, "video"), label = `镜头 ${shotIndex + 1} · 深度参考`;
+      target = addNode("video", at.x, at.y, defaults("video"), {name:label});
+      const edges = [{from:video.id, to:target.id, relation:"remake", source_ref:source.ref}];
+      target.versions.push(mediaVersion({ref:depth.ref, url:remakeMedia(depth.ref),
+        w:depth.w, h:depth.h, seconds:depth.end - depth.start}, {
+        source:"remake", label, mode:"深度参考", input_edges:edges,
+        remake:{kind:"depth", source_node:video.id, source_ref:source.ref, start:depth.start, end:depth.end, job:depth.job},
+      }));
+      switchVersion(target, 0, {recordUndo:false});
     }
     close();
     selectOnly(target.id);
@@ -978,6 +1080,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     if (session?.export && active(session.export)) tasks.push({job:session.export.job, label:"成片合成"});
     for (const [index, shot] of (session?.shots || []).entries()) {
       const label = `镜头 ${index + 1}`;
+      if (shot.depth && active(shot.depth)) tasks.push({job:shot.depth.job, label:`${label} · 深度参考`});
       for (const [key, frame] of Object.entries(shot.frames)) {
         const name = key === "first" ? "首帧预览" : key === "middle" ? "中间帧预览" : `${frame.at.toFixed(2)} 秒校正帧预览`;
         for (const preview of frame.previews.filter(active)) tasks.push({job:preview.job, label:`${label} · ${name}`});
@@ -1065,7 +1168,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     busy = true;
     renderPanel();
     const cutAction = ["split_shot", "split_long_shot", "move_cut", "merge_shots", "undo_cut"].includes(action);
-    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",retry_analysis:"正在补充缺失的镜头分析…",select:"正在处理选区…",locate_person:"正在识别原片人物…",suggest_entry:"正在查找人物入画位置…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…"}[action] || "");
+    status(cutAction ? "正在更新剪辑点…" : {analyze:"正在拆分与分析镜头…",retry_analysis:"正在补充缺失的镜头分析…",select:"正在处理选区…",locate_person:"正在识别原片人物…",suggest_entry:"正在查找人物入画位置…",batch_locate_people:"正在为各镜头查找人物位置…",apply_person_hint:"正在按建议生成选区…",preview:"正在提交预览…",batch_previews:"正在提交各镜头的起始帧预览…",generate_video:"正在提交镜头生成…",batch_videos:"正在批量提交镜头视频…",localize:"正在提交局部合成…",export:"正在提交成片合成…",analyze_motion:"正在分析带时间点的原片画面…",prepare_depth:"正在提交深度参考…"}[action] || "");
     try {
       applySession(await remakeRequest(url, {action, shot:shotIndex, frame:frameKey, cut_revision:session?.cut_revision ?? 0, ...extra}));
       if (action === "prepare_playback" && session.playback?.ref && player.getAttribute("src") === remakeMedia(session.playback.ref)) {
@@ -1086,7 +1189,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
         versionId = null;
       }
       if (action === "preview" || action === "batch_previews") versionId = null;
-      if (["generate_video", "batch_videos", "localize", "combine_roles"].includes(action)) videoId = null;
+      if (["generate_video", "generate_depth_video", "batch_videos", "localize", "combine_roles"].includes(action)) videoId = null;
       if (action === "batch_locate_people") {
         const {located, skipped, failed} = session[action];
         const items = [`${located.length} 个镜头已标出位置，请逐镜确认`];
@@ -1208,6 +1311,11 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     renderBatchButtons();
   };
   el("[data-analyze-motion]").onclick = () => change("analyze_motion");
+  el("[data-prepare-depth]").onclick = () => change("prepare_depth");
+  el("[data-insert-depth]").onclick = insertDepth;
+  el("[data-generate-depth-video]").onclick = () => change("generate_depth_video", {
+    provider:el("[data-depth-provider]").value, first_job:shotStart(currentShot())?.preview?.job, motion:el("[data-motion]").value,
+  });
   el("[data-use-motion]").onclick = () => {
     const analysis = motionAnalysis(currentShot());
     if (!analysis) return;
