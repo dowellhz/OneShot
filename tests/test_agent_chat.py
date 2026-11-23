@@ -1313,6 +1313,31 @@ class ChatIntegration(ChatFixture):
         self.assertIn("无法在分组内生成",result["error"])
         self.assertEqual(path.read_text(),baseline)
 
+    async def test_new_storyboard_uses_the_shared_splitter_without_writing_the_board(self):
+        path = server.board_path("test")
+        before = path.read_text()
+        setup = {"title":"开门","shots":[{"duration":20,"action":["找到钥匙","打开门"]}]}
+        repaired = {"replacements":[{"shot":1,"shots":[
+            {"duration":10,"action":["找到钥匙"],"keyframe":"桌边看见钥匙"},
+            {"duration":10,"action":["打开门"],"keyframe":"手靠近门把"},
+        ]}]}
+        llm = SimpleNamespace(chat=AsyncMock(side_effect=[json.dumps(setup),json.dumps(repaired)]))
+        self.svc.model.side_effect = [
+            call("storyboard_create_plan",{"story":"找到钥匙，打开门。","target_seconds":20,"aspect":"9:16","image_nodes":["n1"]}),
+            answer("已拟好镜头"),
+        ]
+        with patch.dict(self.app,{"llm":llm}):
+            rid = await self.send("做一个 20 秒分镜",selected=["n1"])
+            self.assertEqual((await self.wait(rid))["state"],"done")
+        result = db.one("SELECT result FROM chat_calls WHERE run_id=? AND name='storyboard_create_plan'",rid)
+        plan = json.loads(result["result"])["storyboard_create"]
+        self.assertEqual((plan["board"],plan["aspect"],plan["planned_seconds"]),("test","9:16",20))
+        self.assertEqual([shot["duration"] for shot in plan["shots"]],[10,10])
+        self.assertEqual(plan["refs"],[{"node":"n1","ref":self.source["ref"],"name":"产品"}])
+        self.assertEqual(llm.chat.await_count,2)
+        self.assertEqual(path.read_text(),before)
+        self.assertFalse(server.JOBS)
+
     async def test_storyboard_continuation_reads_pinned_reference_and_prepares_one_shot(self):
         current = image_editor.save(server.COMFY_DIR,Image.new("RGB",(60,32),"blue"),"input")
         board = self.load()

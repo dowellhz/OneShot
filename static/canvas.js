@@ -353,6 +353,13 @@ function referenceServices(n) {
 }
 function referenceService(n) { return referenceServices(n).find(service => service.id === n.data.provider); }
 function referenceDuration(n) { return canvasNodeModel(n,referenceService(n),true)?.id?.includes("2-5") ? 30 : 15; }
+function canvasVideoDurationChoices(n) {
+  const clip=videoInputs(n)[0], guide=previsInput(n);
+  if (clip?.edge.segment_edit) return [];
+  if (!guide && !clip && !audioInputs(n).length) return SCRIPT_VIDEO_DURATIONS;
+  const max=guide && !clip?.edge.extension ? 14 : referenceDuration(n);
+  return Array.from({length:max-3},(_,index)=>index+4);
+}
 function removeNodes(ids) {
   if (!canvasCanEdit()) return;
   const targets = [...new Set(ids)].map(node).filter(Boolean);
@@ -1378,8 +1385,10 @@ function showPanel() {
       else h += pill("quality", reference ? {hd:"高清",std:"720P"} : {hd:"高清 768P",std:"标准 480P"},
         reference ? (d.quality==="hd"?"高清":"720P") : (d.quality==="hd"?"768P":"480P"));
     }
-    const max = guide&&!extension ? 14 : referenceDuration(n);
-    const durations = reference ? Object.fromEntries(Array.from({length:max-3}, (_, i) => [i+4, `${i+4} 秒`])) : { 5: "5 秒", 8: "8 秒", 10: "10 秒", 14: "14 秒（最长）" };
+    const durationChoices=canvasVideoDurationChoices(n);
+    const durations=Object.fromEntries(durationChoices.map(seconds=>
+      [seconds,`${seconds} 秒${!reference && seconds===durationChoices.at(-1)?"（最长）":""}`]));
+    const max=durationChoices.at(-1);
     const range=segment ? videoReferenceRange(clips[0].edge,clips[0].version,referenceDuration(n)) : null;
     h += segment ? `<span class="pill">${range.end>range.start?`${(range.end-range.start).toFixed(2)} 秒`:"跟随修改区间"}</span>`
       : pill("duration", durations, `${ico("clock")}${Math.min(reference?max:14, Math.max(reference ? 4 : 5, d.duration))}s`);

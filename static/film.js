@@ -23,7 +23,7 @@ function saveFilmDraft(F = FILM) {
   const offset = clip ? Math.max(0, Math.min(clipLen(clip), filmClipOffset(F))) : 0;
   const spec = {...F.spec, clips:F.spec.clips.map(({src_len, ...c}) => c)};
   const state = JSON.stringify({spec, sel:F.sel, offset:Math.round(offset * 4) / 4, node:F.n?.id, target:F.target,
-    attempt:F.attempt,downloadExport:F.downloadExport,playlistBase:F.playlistBase});
+    attempt:F.attempt,downloadExport:F.downloadExport,playlistBase:F.playlistBase,storySource:F.storySource});
   if (state === F.saved) return;
   try {
     localStorage.setItem(F.key, state);
@@ -237,6 +237,158 @@ function refreshStoryClipPlans(spec, story) {
   }
 }
 
+function filmTimingShot(F,clip) {
+  const script=node(F.storySource || F.spec.story_script);
+  if (script?.type!=="script" || nodeLocked(script) || !clip.story_shot || clip.story_split) return null;
+  const index=script.data.shots.findIndex((shot,i)=>(shot.id || `index:${i}`)===clip.story_shot);
+  if (index<0 || scriptShotLinks(script)[index]?.vid!==clip.node) return null;
+  return {script,index};
+}
+
+function filmStoryTiming(F) {
+  return F.spec.clips.flatMap((clip,index)=>{
+    const wanted=clip.story_frames;
+    if (clip.kind!=="video" || !Number.isSafeInteger(wanted) || wanted<1) return [];
+    const source=node(clip.node), version=source?.versions.find(item=>item.ref===clip.ref);
+    const seconds=clip.src_len || version?.seconds;
+    const start=clip.in || 0, speed=filmSpeed(clip);
+    const known=Number.isFinite(seconds) && seconds>0;
+    const end=known ? Math.min(seconds,filmTrimBounds(clip).end) : 0;
+    const available=Math.max(0,Math.floor((end-start)/speed*FILM_FPS+1e-6));
+    const current=Math.round(clipLen(clip)*FILM_FPS);
+    const out=start+wanted*speed/FILM_FPS;
+    const protectedAudio=!!(clip.audio_ref || clip.remake_shot || F.spec.remake_audio);
+    const short=known && available<wanted;
+    const adjustable=known && !short && current!==wanted && !protectedAudio;
+    const canReplace=short && !protectedAudio && clip.node!==F.target?.id;
+    const alternatives=canReplace ? (source?.versions || []).filter(item=>
+      item.ref && item.ref!==clip.ref && storyVersionShortage(clip,item)===0) : [];
+    const preferred=alternatives.includes(curV(source)) ? curV(source) : alternatives.at(-1);
+    const status=!known ? "待核实素材时长" : short ?
+      `素材缺 ${((wanted-available)/FILM_FPS).toFixed(2)} 秒` :
+      current===wanted ? "已对齐" : protectedAudio ? "保留同步原声的剪辑点" :
+      `当前片段${current<wanted?"少":"多"} ${(Math.abs(current-wanted)/FILM_FPS).toFixed(2)} 秒`;
+    const stamp=JSON.stringify([clip.ref,clip.in,clip.out,speed,wanted,seconds,end,protectedAudio]);
+    return [{clip,index,wanted,current,status,adjustable,out,stamp,short,known,canReplace,
+      alternatives:alternatives.length,preferred:preferred?.ref}];
+  });
+}
+
+function closeFilmStoryTiming(focus=false) {
+  const dialog=$("#fmTimingDialog");
+  if (!dialog.open) return;
+  $("form",dialog).onsubmit=null;
+  if (dialog.close) dialog.close();else dialog.removeAttribute("open");
+  if (focus) $("#fmTiming").focus();
+}
+
+function openFilmStoryTiming(F) {
+  const dialog=$("#fmTimingDialog"), form=$("form",dialog), list=$("[data-timing-list]",dialog);
+  const rows=filmStoryTiming(F);
+  if (!rows.length) return;
+  const editable=()=>FILM===F && F.board===boardId && !F.busy && canvasCanEdit();
+  playAll=false;
+  const player=$("#fmV");
+  if (!player.paused) player.pause();
+  syncFilmAudio(F);
+  $("[data-timing-summary]",dialog).textContent=
+    `${rows.length} 段有镜长计划 · ${rows.filter(row=>row.short).length} 段素材不足 · ${rows.filter(row=>!row.known).length} 段待核实`;
+  list.innerHTML=rows.map(({clip,index,wanted,current,status,adjustable,known,canReplace,alternatives})=>`<li>
+    <span><strong>第 ${index+1} 段 · ${esc(clip.name || node(clip.node)?.name || "视频")}</strong>
+      <small>计划 ${(wanted/FILM_FPS).toFixed(2)} 秒 · ${known?`当前 ${(current/FILM_FPS).toFixed(2)} 秒 · `:""}${esc(status)}
+      ${canReplace ? alternatives ? ` · ${alternatives} 个备选版本原速够长` : " · 暂无够长的备选版本" : ""}</small></span>
+    ${editable()&&adjustable?`<label><input type="checkbox" data-timing-check="${index}"> 对齐出点</label>`:""}
+    ${editable()&&alternatives?`<button type="button" class="pill" data-timing-preview="${index}">预览备选</button>`:""}
+    ${editable()&&canReplace&&!alternatives&&filmTimingShot(F,clip)?
+      `<button type="button" class="pill" data-timing-retake="${index}">补拍计划</button>`:""}
+    <button type="button" class="pill" data-timing-locate="${index}" aria-label="定位第 ${index+1} 段">定位</button>
+  </li>`).join("");
+  const apply=$("button[type=submit]",form);
+  apply.hidden=!$("[data-timing-check]",list);
+  apply.disabled=true;
+  list.onchange=()=>{apply.disabled=!$("[data-timing-check]:checked",list);};
+  list.onclick=event=>{
+    const button=event.target.closest("[data-timing-locate],[data-timing-preview],[data-timing-retake]");
+    if (!button) return;
+    const preview=button.hasAttribute("data-timing-preview");
+    const retake=button.hasAttribute("data-timing-retake");
+    const row=rows.find(item=>item.index===Number(button.dataset.timingPreview ?? button.dataset.timingRetake ?? button.dataset.timingLocate));
+    if (!row || FILM!==F || F.spec.clips[row.index]!==row.clip) return closeFilmStoryTiming(true);
+    if ((preview || retake) && (!editable() || !filmStoryTiming(F).some(item=>
+        item.index===row.index && item.stamp===row.stamp && item.preferred===row.preferred))) {
+      openFilmStoryTiming(F);
+      return toast("片段或备选版本已变更，请重新选择");
+    }
+    if (retake) {
+      const shot=filmTimingShot(F,row.clip);
+      if (!shot) { openFilmStoryTiming(F);return toast("分镜关联已变更，请重新核对"); }
+      const filmReturn={key:F.key,nodeId:row.clip.node,ref:row.clip.ref,shotId:row.clip.story_shot};
+      openScriptShotRun(shot.script,shot.index,{mode:"video",requiredSeconds:row.out,filmReturn});
+      if ($("#groupRunConfirm").open) {
+        closeFilm();
+        selectOnly(row.clip.node);
+        fit([node(row.clip.node)]);
+      }
+      return;
+    }
+    closeFilmStoryTiming();
+    selectClip(row.index,0,false,preview?()=>{
+      const box=$("#fmClip"), source=node(row.clip.node), trigger=$("[data-update-version]",box);
+      if (editable() && source && trigger && !row.clip.remake_shot) {
+        openFilmVersionPicker(F,row.clip,source,box,trigger,row.preferred);
+      }
+    }:null);
+    $(`#fmTl .fc[data-i="${row.index}"]`)?.scrollIntoView?.({block:"nearest",inline:"nearest"});
+    if (!preview) $("#fmTiming").focus();
+  };
+  form.onsubmit=event=>{
+    event.preventDefault();
+    if (!editable()) return closeFilmStoryTiming(true);
+    const selected=new Set($$("[data-timing-check]:checked",list).map(input=>Number(input.dataset.timingCheck)));
+    if (!selected.size) return;
+    const latest=new Map(filmStoryTiming(F).map(row=>[row.index,row]));
+    const changes=rows.filter(row=>selected.has(row.index));
+    if (changes.some(row=>latest.get(row.index)?.clip!==row.clip || latest.get(row.index)?.stamp!==row.stamp)) {
+      openFilmStoryTiming(F);
+      return toast("片段或素材已变更，请重新核对出点");
+    }
+    const offset=filmClipOffset(F);
+    changes.forEach(row=>Object.assign(row.clip,{out:row.out,tight:true}));
+    closeFilmStoryTiming(true);
+    renderFilm();selectClip(F.sel,Math.min(offset,clipLen(F.spec.clips[F.sel])));saveFilmDraft(F);
+  };
+  if (!dialog.open) {
+    if (dialog.showModal) dialog.showModal();else dialog.setAttribute("open","");
+  }
+  $("[data-close]",dialog).focus();
+}
+
+function returnFilmTimingRetake(receipt,outputRef) {
+  if (typeof receipt.key!=="string" || !receipt.key.startsWith(filmDraftPrefix())) return false;
+  let saved;
+  try { saved=JSON.parse(localStorage.getItem(receipt.key)); } catch {}
+  if (!saved?.spec?.clips?.length) { toast("补拍对应的剪辑草稿已找不到");return false; }
+  showFilm(saved.spec,node(saved.node),receipt.key,saved.target);
+  const F=FILM;
+  if (!F || F.key!==receipt.key) return false;
+  const matches=F.spec.clips.map((clip,index)=>({clip,index})).filter(({clip})=>
+    clip.node===receipt.nodeId && clip.ref===receipt.ref && clip.story_shot===receipt.shotId && !clip.story_split);
+  if (matches.length!==1) {
+    toast("草稿里的片段已变更，请核对当前位置");
+    return true;
+  }
+  const {clip,index}=matches[0];
+  selectClip(index,0,false,()=>{
+    const source=node(clip.node), version=source?.versions.find(item=>item.ref===outputRef);
+    const box=$("#fmClip"), trigger=$("[data-update-version]",box);
+    if (canvasCanEdit() && trigger && !clip.audio_ref && !clip.remake_shot && !F.spec.remake_audio &&
+        version && version.ref!==clip.ref && storyVersionShortage(clip,version)===0) {
+      openFilmVersionPicker(F,clip,source,box,trigger,outputRef);
+    } else openFilmStoryTiming(F);
+  });
+  return true;
+}
+
 function earlierStoryDrafts(F) {
   const prefix = filmDraftPrefix()+"story:", scope = JSON.stringify(F.story.scope);
   const drafts = [];
@@ -373,6 +525,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
   if (target && !node(target.id)?.versions.some(v => v.ref === target.ref)) return toast("剪辑草稿对应的视频版本已移除");
   closeStoryDraftPicker();
   closeStorySlowdown();
+  closeFilmStoryTiming();
   stopFilmVersionPreview(FILM);
   finishFilmPlaylistPicker(false,false);
   if (FILM) { saveFilmDraft(); syncFilmAudio(FILM); }
@@ -386,7 +539,8 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
     refreshStoryClipPlans(spec,story);
   }
   const sel = Math.max(0, Math.min(spec.clips.length - 1, saved?.sel || 0));
-  FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, story, attempt:saved?.attempt,
+  FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, story,
+    storySource:story?.scope[0] || saved?.storySource,attempt:saved?.attempt,
     downloadExport:saved?.downloadExport,playlistBase};
   $("#fmStoryReuse").hidden=!(story && canvasCanEdit() && !FILM.n && story.base===storyDraftSignature(spec) && earlierStoryDrafts(FILM).length);
   $("#fmHeading").textContent = playlistBase ? n.name : "成片编辑";
@@ -404,6 +558,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
 function closeFilm() {
   closeStoryDraftPicker();
   closeStorySlowdown();
+  closeFilmStoryTiming();
   stopFilmVersionPreview(FILM);
   closePlaylistClipMenu();
   finishFilmPlaylistPicker(false,false);
@@ -426,6 +581,7 @@ function renderFilm() {
   $("#fmAll").disabled = !s.clips.length;
   $("#fmPlaylistSources").disabled = !s.clips.length;
   $("#fmTotal").textContent = filmTotalLabel(s,total);
+  $("#fmTiming").hidden=!s.clips.some(clip=>clip.kind==="video" && Number.isSafeInteger(clip.story_frames) && clip.story_frames>0);
   // timeline strip
   const tl = $("#fmTl");
   tl.innerHTML = s.clips.map((c, i) => {
@@ -734,7 +890,7 @@ function seekTimeline(t) {
   while (i + 1 < s.clips.length && clipStart(i + 1) <= t) i++;
   selectClip(i, t - clipStart(i));
 }
-function selectClip(i, offset = 0, autoplay = false) {
+function selectClip(i, offset = 0, autoplay = false, ready = null) {
   const F = FILM; if (!F) return; F.sel = i;
   stopFilmVersionPreview(F);
   if (!autoplay) { playAll = false; syncFilmAudio(F); }
@@ -788,6 +944,7 @@ function selectClip(i, offset = 0, autoplay = false) {
     vid.currentTime = Math.min(c.out ?? filmMediaLength(c), (c.in || 0) + offset * filmSpeed(c));
     F.pendingOffset = null;
     renderClipBox();
+    ready?.();
     if (autoplay) playFilmClip();
   };
   if (vid.readyState >= 1) go();
@@ -795,7 +952,9 @@ function selectClip(i, offset = 0, autoplay = false) {
     $("#fmClip").textContent = "正在加载片段…";
     vid.onloadedmetadata = () => { vid.onloadedmetadata = null; go(); };
     vid.onerror = () => {
-      if (FILM === F && F.spec.clips[F.sel] === c) $("#fmClip").textContent = "无法预览这段素材";
+      if (FILM !== F || F.spec.clips[F.sel] !== c) return;
+      if (ready) { renderClipBox();ready(); }
+      else $("#fmClip").textContent = "无法预览这段素材";
     };
   }
 }
@@ -1100,7 +1259,8 @@ function filmVersionReplacement(clip, candidate, source) {
 
 function storyVersionShortage(clip, version) {
   if(!Number.isSafeInteger(clip.story_frames) || clip.story_frames<1 || !Number.isFinite(version?.seconds) || version.seconds<=0)return null;
-  return Math.max(0,(clip.in||0)+clip.story_frames/FILM_FPS-version.seconds);
+  const shortage=(clip.in||0)+clip.story_frames/FILM_FPS-version.seconds;
+  return shortage>1e-6?shortage:0;
 }
 
 function stopFilmVersionPreview(F) {
@@ -1110,7 +1270,7 @@ function stopFilmVersionPreview(F) {
   F.versionPreview=null;
 }
 
-function openFilmVersionPicker(F,clip,source,box,button) {
+function openFilmVersionPicker(F,clip,source,box,button,preferredRef=null) {
   const open=$(".fm-version-picker",box);
   if(open){stopFilmVersionPreview(F);open.remove();button.setAttribute("aria-expanded","false");return;}
   const options=source.versions.filter(version=>version.ref&&version.ref!==clip.ref);
@@ -1132,7 +1292,12 @@ function openFilmVersionPicker(F,clip,source,box,button) {
   };
   picker.replaceChildren(...options.map((version,index)=>new Option(
     `版本 ${source.versions.indexOf(version)+1}${version===active?"（画布当前）":""}${version.seconds?` · ${version.seconds.toFixed(1)}s`:""}${planned?coverage(version):""}`,String(index))));
-  if(options.includes(active))picker.value=String(options.indexOf(active));
+  const preferred=planned && preferredRef ? options.findIndex(version=>version.ref===preferredRef &&
+    storyVersionShortage(clip,version)===0) : -1;
+  if (preferred>=0) {
+    picker.value=String(preferred);
+    fit.checked=true;
+  } else if(options.includes(active))picker.value=String(options.indexOf(active));
   const proposal=()=>{
     const live=node(clip.node);
     const requested=options[Number(picker.value)];
@@ -1200,6 +1365,8 @@ function openFilmVersionPicker(F,clip,source,box,button) {
   };
   $(".row",box).after(form);button.setAttribute("aria-expanded","true");
   picker.onchange();picker.focus();
+  if (preferred>=0) watch.click();
+  else if (preferredRef) status.textContent+=" · 推荐版本已变化，请重新选择";
 }
 
 function syncFilmOriginal() {
@@ -1553,17 +1720,22 @@ function initFilm() {
 #film.playlist-review :is(#fmSet,#fmTl .x,#fmTl .fadd,#fmTl .ft,#fmClip .trim,#fmClip .row2,#fmClip .fm-caption-actions,#fmClip button:not([data-playlist-locate])) { display:none; }
 #film .hd { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 #film .hd b { font-size: var(--fs-heading); } #film .hd .dim, #film .dim { color: var(--dim); font-size: var(--fs-small); }
-:is(#fmStoryDialog,#fmSlowdownDialog) { width:min(550px,calc(100vw - 30px)); max-height:85vh; z-index:66; margin:auto; padding:18px;
+:is(#fmStoryDialog,#fmSlowdownDialog,#fmTimingDialog) { width:min(550px,calc(100vw - 30px)); max-height:85vh; z-index:66; margin:auto; padding:18px;
   border:1px solid var(--line2); border-radius:14px; background:var(--panel); color:var(--text); }
-:is(#fmStoryDialog,#fmSlowdownDialog)::backdrop { background:#0009; }
-:is(#fmStoryDialog,#fmSlowdownDialog) h2 { font-size:var(--fs-heading); margin:0; }
-:is(#fmStoryDialog,#fmSlowdownDialog) form { display:grid; gap:12px; }
+:is(#fmStoryDialog,#fmSlowdownDialog,#fmTimingDialog)::backdrop { background:#0009; }
+:is(#fmStoryDialog,#fmSlowdownDialog,#fmTimingDialog) h2 { font-size:var(--fs-heading); margin:0; }
+:is(#fmStoryDialog,#fmSlowdownDialog,#fmTimingDialog) form { display:grid; gap:12px; }
 #fmStoryDialog label { display:grid; gap:5px; }
 #fmStoryDialog select { min-width:0; color:var(--text); background:var(--card); border:1px solid var(--line2); border-radius:7px; padding:7px; }
 #fmStoryDialog ol { margin:0; padding-left:22px; max-height:34vh; overflow:auto; line-height:1.65; }
-:is(#fmStoryDialog,#fmSlowdownDialog) p { margin:0; color:var(--dim); font-size:var(--fs-small); }
-:is(#fmStoryDialog,#fmSlowdownDialog) footer { display:flex; justify-content:flex-end; gap:8px; }
+:is(#fmStoryDialog,#fmSlowdownDialog,#fmTimingDialog) p { margin:0; color:var(--dim); font-size:var(--fs-small); }
+:is(#fmStoryDialog,#fmSlowdownDialog,#fmTimingDialog) footer { display:flex; justify-content:flex-end; gap:8px; }
 #fmSlowdownDialog video { width:100%; max-height:52vh; object-fit:contain; background:#080809; border-radius:8px; }
+#fmTimingDialog ul { max-height:48vh; overflow:auto; padding:0; margin:0; list-style:none; }
+#fmTimingDialog li { display:flex; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid var(--line); }
+#fmTimingDialog li span { min-width:0; flex:1; overflow-wrap:anywhere; }
+#fmTimingDialog li small { display:block; margin-top:4px; color:var(--dim); }
+#fmTimingDialog li label { font-size:var(--fs-small); white-space:nowrap; }
 #fmDownloadStatus:empty { display:none; }
 @media (max-width:950px) { #film .hd { flex-wrap:wrap; gap:6px; } }
 #film .main { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 16px 18px 8px; }
@@ -1680,6 +1852,7 @@ function initFilm() {
   document.body.insertAdjacentHTML("beforeend", `
 <div id="film">
   <div class="hd"><b id="fmHeading">成片编辑</b><span class="dim" id="fmTotal"></span><span class="dim" id="fmDraftState" role="status"></span><span style="flex:1"></span>
+    <button class="pill" id="fmTiming" type="button" hidden>核对镜长</button>
     <button class="pill" id="fmStoryReuse" type="button" hidden>沿用剪辑草稿</button>
     <button class="pill" id="fmSaveList" type="button" hidden>保存列表</button><button class="pill" id="fmPlaylistSources" type="button" hidden>下载原片</button>
     <button class="pill" id="fmDownloadMerged" type="button" hidden>下载合并 MP4</button><span class="dim" id="fmDownloadStatus" role="status"></span>
@@ -1712,9 +1885,20 @@ function initFilm() {
     <footer><button type="button" class="pill" data-close>取消</button><button type="submit" class="pill">应用减速</button></footer>
   </form>
 </dialog>
+<dialog id="fmTimingDialog" aria-labelledby="fmTimingTitle">
+  <form><h2 id="fmTimingTitle">核对分镜时长</h2>
+    <p data-timing-summary role="status"></p>
+    <ul data-timing-list aria-label="片段镜长清单"></ul>
+    <p>勾选后按当前入点和速度调整出点。</p>
+    <footer><button type="button" class="pill" data-close>关闭</button><button type="submit" class="pill" hidden>应用勾选的出点</button></footer>
+  </form>
+</dialog>
 <div class="menu" id="fmAdd"></div><div class="menu" id="playlistClipMenu" aria-label="片段操作"></div>
 <div id="qp"><div id="qpJobs"></div><button type="button" data-enable-notifications hidden>开启完成通知</button></div>`);
   $("#fmClose").onclick = closeFilm;
+  $("#fmTiming").onclick = () => { if (FILM) openFilmStoryTiming(FILM); };
+  $("#fmTimingDialog [data-close]").onclick = () => closeFilmStoryTiming(true);
+  $("#fmTimingDialog").oncancel = event=>{event.preventDefault();closeFilmStoryTiming(true);};
   $("#fmStoryReuse").onclick = () => { if (FILM?.story) openStoryDraftPicker(FILM); };
   $("#fmStoryDialog [data-close]").onclick = closeStoryDraftPicker;
   $("#fmSlowdownDialog [data-close]").onclick = closeStorySlowdown;
@@ -1769,6 +1953,11 @@ function initFilm() {
   document.addEventListener("keydown", e => {
     if (!FILM) return;
     if($("#light").open)return;
+    if ($("#fmTimingDialog").open) {
+      if (e.key==="Escape") { e.preventDefault();closeFilmStoryTiming(true); }
+      e.stopImmediatePropagation();
+      return;
+    }
     if ($("#fmSlowdownDialog").open) {
       if (e.key==="Escape") { e.preventDefault();closeStorySlowdown(); }
       e.stopImmediatePropagation();

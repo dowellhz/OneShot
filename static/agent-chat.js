@@ -30,6 +30,7 @@ AC_LABELS.workflow_template_search="查找工作流模板";
 AC_LABELS.workflow_template_inputs="读取模板填写项";
 AC_LABELS.workflow_template_plan="准备模板填写草稿";
 AC_LABELS.storyboard_context="读取分镜脚本";
+AC_LABELS.storyboard_create_plan="准备分镜脚本";
 AC_LABELS.storyboard_visual_review="审阅镜头衔接";
 AC_LABELS.storyboard_next_shot_plan="准备下一镜";
 AC_LABELS.storyboard_revision_plan="准备镜头修改";
@@ -496,6 +497,16 @@ function acResultCards(result){
    <div class="ac-storyboard-actions"><button type="button" data-shot-review>${p.samples?"查看切点与取样":"打开双帧对比"}</button>
     ${canvasCanEdit()?'<button type="button" data-plan-review-revision>为当前镜头拟修改</button>':""}</div><span role="status"></span></div>`;
  }
+ if(result.storyboard_create){
+  const p=result.storyboard_create;
+  return `<section class="ac-storyboard-plan" data-storyboard-create="${esc(JSON.stringify(p))}">
+   <strong>${esc(p.title || "分镜脚本")} · ${p.shots.length} 镜 · ${p.planned_seconds} 秒</strong>
+   ${p.refs.length?`<p>参考图：${esc(p.refs.map(item=>item.name).join("、"))}</p>`:""}
+   <ol>${p.shots.map(s=>`<li><details><summary>${s.duration} 秒 · ${esc(s.shot_size || s.scene || "镜头")}</summary>
+    <p>${[s.scene,s.camera,s.keyframe,...s.action,...s.dialogue].filter(Boolean).map(esc).join("<br>")}</p>
+   </details></li>`).join("")}</ol>
+   <button type="button" data-create-storyboard>${node(p.id)?"定位分镜":"加入画布"}</button><span role="status"></span></section>`;
+ }
  if(result.storyboard_plan){
   const p=result.storyboard_plan,s=p.shot;
   const fields=[["场景",s.scene],["机位",s.camera],["首帧",s.keyframe],["动作",s.action.join("\n")],
@@ -870,11 +881,11 @@ function acAppendEvent(e,replay=false){
   if(!el)return;
   if(e.run_id)el.dataset.taskRun=e.run_id;
   const result=d.result, output=$(".ac-output",el);
-  if(result.creative_directions?.length||result.previs_node||result.previs_storyboard_plan||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
+  if(result.creative_directions?.length||result.previs_node||result.previs_storyboard_plan||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_create||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
      result.preview?.completed?.length||result.video?.completed||result.gif||d.name==="video_remake_export"&&result.export_ref||
      ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length||result.memories?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
-  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.previs_storyboard_plan||result.template_fill_plan?"等待确认":"完成";
+  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||(result.storyboard_create&&!node(result.storyboard_create.id))||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.previs_storyboard_plan||result.template_fill_plan?"等待确认":"完成";
   $("summary",el).textContent=el.dataset.label+" · "+state;
   $(".ac-progress",el).textContent="";
   const detail=document.createElement("pre");
@@ -2111,6 +2122,33 @@ function initAgentChat(){
     {id:template.dataset.openWorkflowTemplate,scope:template.dataset.templateScope};
    if(AC.board!==boardId || target.board&&target.board!==boardId || !["private","catalog","presets","favorites"].includes(target.scope))return;
    await openWorkflowTemplates(false,null,target);
+   return;
+  }
+  const createStoryboard=e.target.closest("[data-create-storyboard]");
+  if(createStoryboard){
+   const card=createStoryboard.closest("[data-storyboard-create]"), p=JSON.parse(card.dataset.storyboardCreate);
+   const status=$("[role=status]",card);
+   if(p.board!==boardId || AC.board!==boardId || !canvasCanEdit())return toast("请回到对应的可编辑画布");
+   let script=node(p.id);
+   if (!script) {
+    const refs=p.refs.map(item=>({source:node(item.node),ref:item.ref}));
+    if (refs.some(({source,ref})=>source?.type!=="image" || !source.versions.some(version=>version.ref===ref))) {
+     status.textContent="部分参考图或版本已移除，请重新拟定分镜";
+     return;
+    }
+    const position=toW(innerWidth/2,innerHeight/2), spot=freeSpot(position.x,position.y,"script",{w:440,h:620});
+    checkpoint();
+    script=addNode("script",spot.x,spot.y,{prompt:p.story,title:p.title,style:p.style,aspect:p.aspect,
+     characters:p.characters,shots:p.shots.map(shot=>({...shot,id:newCanvasNodeId()}))},
+     {id:p.id,name:(p.title || "分镜脚本").slice(0,80)});
+    for (const {source,ref} of refs) link(source,script,true,{ref});
+    drawEdges();
+   }
+   createStoryboard.textContent="定位分镜";
+   status.textContent="分镜已加入画布";
+   const summary=card.closest(".ac-call")?.querySelector("summary");
+   if(summary)summary.textContent=AC_LABELS.storyboard_create_plan+" · 已加入";
+   selectOnly(script.id);fit([script]);
    return;
   }
   const revisionButton=e.target.closest("[data-apply-shot-revision],[data-run-shot-revision]");

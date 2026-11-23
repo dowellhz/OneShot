@@ -43,7 +43,7 @@ function preserveCanvasGroupRun(run) {
     if(groupRun!==run && (boardId===run.boardId || JSON.parse(sessionStorage.getItem(key)||"null")?.id!==run.id))return;
     const steps=run.steps.map(({id,name,type,count,status,error,outputRef})=>({id,name,type,count,status,error,outputRef}));
     sessionStorage.setItem(key,JSON.stringify({id:run.id,groupId:run.groupId,story:run.story,template:run.template,selection:run.selection,
-      name:run.name,stop:run.stop,refreshTails:run.refreshTails,connectTails:run.connectTails,steps}));
+      name:run.name,stop:run.stop,refreshTails:run.refreshTails,connectTails:run.connectTails,filmReturn:run.filmReturn,steps}));
   }catch{}
 }
 
@@ -225,12 +225,12 @@ function openCanvasSelectionRun(nodes){
   openCanvasRun({selection:nodes.map(n=>n.id)},{initialMode:"all"});
 }
 
-function openScriptShotRun(script,index,{mode="missing"}={}) {
+function openScriptShotRun(script,index,{mode="missing",requiredSeconds=null,filmReturn=null}={}) {
   if(node(script.id)!==script||nodeLocked(script))return;
   const pair=scriptShotLinks(script)[index];
   if(!pair)return toast("请先展开这一镜");
   openCanvasRun({story:{scriptId:script.id,shotId:script.data.shots[index]?.id||null,
-    imageId:pair.img||null,videoId:pair.vid||null}},{initialMode:mode});
+    imageId:pair.img||null,videoId:pair.vid||null}},{initialMode:mode,requiredSeconds,filmReturn});
 }
 
 function openScriptShotRangeRun(script, first, last, mode="missing", tailMode="keep") {
@@ -250,12 +250,13 @@ function openTemplateRun(name,nodes,changes) {
   openCanvasRun({template},{changed:hasChanges?changes:null});
 }
 
-function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=null,initialTailMode="keep"}={}) {
+function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=null,initialTailMode="keep",requiredSeconds=null,filmReturn=null}={}) {
   const scope=canvasRunScope(origin), {story}=origin;
   if(!canvasCanEdit() || !scope)return;
   if(groupRun?.active){$("#groupRunProgress").hidden=false;return toast("当前有运行计划正在生成");}
   const dialog=$("#groupRunConfirm"), board=B, form=$("form",dialog);
   const mode=$("[name=mode]",form), submit=$("[type=submit]",form), summary=$("[data-summary]",form), list=$("ol",form);
+  const adjustLength=$("[data-set-retake-length]",form);
   const refresh=$("[name=refresh-tails]",form);
   const connect=$("[name=connect-tails]",form);
   refresh.checked=retry?!!retry.refreshTails:["refresh","connect_and_refresh"].includes(initialTailMode);
@@ -304,14 +305,19 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
         return tail?.warning?[current.indices.length>1?`第 ${index+1} 镜：${tail.text}`:tail.text]:[];
       });
     }
-    return {steps,canRefresh,canConnect,refreshTails:canRefresh&&refresh.checked,connectTails:canConnect&&connect.checked,
+    const video=requiredSeconds>0 && mode.value==="video" ? node(story?.videoId) : null;
+    const choices=video && (!hasMediaReferences(video) || referenceService(video)) ? canvasVideoDurationChoices(video) : [];
+    const configured=video?.data.duration;
+    const suggestion=choices.find(seconds=>seconds+1e-6>=requiredSeconds);
+    const timing=video ? {configured,max:choices.at(-1),suggestion} : null;
+    return {steps,canRefresh,canConnect,refreshTails:canRefresh&&refresh.checked,connectTails:canConnect&&connect.checked,timing,
       notice:warnings.slice(0,3).join("；")+(warnings.length>3?`，另有 ${warnings.length-3} 镜待核对`:"")};
   };
   let reviewed;
   const preview=()=>{
     const previous=reviewed;
     reviewed=collect();
-    const {steps,notice}=reviewed;
+    const {steps,notice,timing}=reviewed;
     refresh.closest("label").hidden=!reviewed.canRefresh;
     connect.closest("label").hidden=!reviewed.canConnect;
     const ready=steps.filter(step=>step.status==="waiting");
@@ -321,12 +327,38 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     if(newConnections)summary.textContent+=` 将为 ${newConnections} 张分镜图连接上一镜尾帧。`;
     if(retained.length)summary.textContent+=` 已保留 ${retained.length} 个完成节点。`;
     if(notice)summary.textContent+=` ${notice}。`;
+    adjustLength.hidden=true;
+    if (timing) {
+      const {configured,max,suggestion}=timing;
+      summary.textContent+=` 按剪辑的当前入点和速度，这一镜至少需要 ${requiredSeconds.toFixed(2)} 秒素材。`;
+      if (max && !suggestion) summary.textContent+=` 当前可选档位最长 ${max} 秒，低于所需长度。`;
+      if (Number.isFinite(configured) && configured+1e-6<requiredSeconds) {
+        summary.textContent+=` 当前生成时长设为 ${configured} 秒。`;
+        if (suggestion && ready.some(step=>step.id===story.videoId)) {
+          adjustLength.hidden=false;
+          adjustLength.textContent=`将视频节点设为 ${suggestion} 秒`;
+        }
+      }
+    }
     const expanded=new Set(previous?$$("details[open]",list).map(row=>row.dataset.step):
       steps.length<=2?steps.map(step=>step.id):[]);
     list.innerHTML=groupRunRows(steps,expanded);
     submit.disabled=!ready.length;
   };
   mode.onchange=refresh.onchange=connect.onchange=preview;
+  adjustLength.onclick=()=>{
+    if (adjustLength.hidden || B!==board || !canvasCanEdit() || groupRun?.active) return;
+    const current=collect();
+    if (JSON.stringify(current)!==JSON.stringify(reviewed)) {
+      preview();summary.textContent+=" 画布已更新，请再次核对时长。";return;
+    }
+    const video=node(story.videoId), duration=current.timing.suggestion;
+    checkpoint();
+    video.data.duration=duration;
+    save();render(video);refreshDownstream(video);
+    if (sel.has(video.id)) showPanel();
+    preview();
+  };
   form.onsubmit=event=>{
     event.preventDefault();
     if(groupRun?.active || retry&&groupRun!==retry || B!==board || !canvasCanEdit())return;
@@ -336,7 +368,7 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     closeCanvasGroupRunDialog();
     const id=crypto.randomUUID?.() || "group-"+Date.now()+"-"+Math.random().toString(36).slice(2);
     void executeCanvasGroup({id,board,boardId,...origin,name:scope.name,steps:[...retained,...current.steps],
-      refreshTails:current.refreshTails,connectTails:current.connectTails,active:true,stop:false});
+      refreshTails:current.refreshTails,connectTails:current.connectTails,filmReturn:filmReturn || retry?.filmReturn,active:true,stop:false});
   };
   preview();
   if(!dialog.open){if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
@@ -360,6 +392,7 @@ function renderCanvasGroupRun() {
   $("ol",panel).innerHTML=groupRunRows(run.steps);
   $("[data-stop]",panel).hidden=!run.active || run.stop;
   $("[data-retry]",panel).hidden=run.active || !issue || !canvasCanEdit() || !scope || !groupRunRetryIds(run,scope).size;
+  $("[data-film-return]",panel).hidden=run.active || !run.filmReturn;
   $("[data-dismiss]",panel).hidden=run.active;
   panel.hidden=false;
 }
@@ -483,12 +516,12 @@ function initCanvasGroupRun() {
     <label hidden><input type="checkbox" name="refresh-tails">生成分镜图前刷新已有的上一镜尾帧</label>
     <label hidden><input type="checkbox" name="connect-tails">为未连接的分镜图连接上一镜尾帧</label>
     <p data-summary></p><ol></ol>
-    <footer><button type="button" data-close>取消</button><button type="submit">确认运行</button></footer>
+    <footer><button type="button" data-close>取消</button><button type="button" data-set-retake-length hidden></button><button type="submit">确认运行</button></footer>
     </form></dialog>
     <aside id="groupRunProgress" aria-label="生成进度" hidden>
     <header><strong data-title></strong><button type="button" data-dismiss aria-label="关闭进度">×</button></header>
     <p data-summary role="status"></p><ol></ol><footer><button type="button" data-stop>停止后续节点</button>
-    <button type="button" data-retry hidden>重试未完成节点</button></footer></aside>`);
+    <button type="button" data-retry hidden>重试未完成节点</button><button type="button" data-film-return hidden>返回剪辑核对</button></footer></aside>`);
   const dialog=$("#groupRunConfirm"), panel=$("#groupRunProgress");
   $$("[data-close]",dialog).forEach(button=>button.onclick=closeCanvasGroupRunDialog);
   dialog.oncancel=event=>{event.preventDefault();closeCanvasGroupRunDialog();};
@@ -499,6 +532,12 @@ function initCanvasGroupRun() {
     const scope=canvasRunScope(run);
     if(scope&&groupRunRetryIds(run,scope).size)openCanvasRun({groupId:run.groupId,story:run.story,
       template:run.template,selection:run.selection},{retry:run});
+  };
+  $("[data-film-return]",panel).onclick=()=>{
+    const run=groupRun;
+    if (!run?.filmReturn || run.active || run.boardId!==boardId) return;
+    const step=run.steps.find(item=>item.id===run.filmReturn.nodeId && item.status==="done");
+    if (returnFilmTimingRetake(run.filmReturn,step?.outputRef)) panel.hidden=true;
   };
   $("[data-dismiss]",panel).onclick=()=>{
     if(groupRun?.active)return;

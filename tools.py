@@ -77,6 +77,12 @@ STORYBOARD_SYS = """你是电影分镜师。把用户的剧情拆成一组连续
 - 台词只用剧情里写到的或剧情明显需要的，台词原文保留；没有台词就给空数组。
 - 全部用中文。"""
 
+STORYBOARD_SPLIT_SYS = """你是电影分镜师，负责拆分已有脚本中的超长镜头。只返回指定 replacement JSON。
+每个替换镜头包含 duration、shot_size、camera、scene、characters、action、dialogue、sound、keyframe。
+时长使用 5、8、10、14 秒。按真实动作和语速安排，完整保留原动作、台词、说话人及顺序。
+每组的最低镜头数及总时长是硬性要求。用户原先的整片时长偏好或内容看起来较短，都不能减少这两个数。
+每段从独立静态首帧开始，并衔接相邻镜头中的人物位置、道具和空间方向。"""
+
 
 def shot_seconds(action, dialogue):
     beats = sum(len(re.split(r"随后|然后|接着|紧接着|继而|[；;]", line)) for line in action)
@@ -100,7 +106,10 @@ def storyboard_shots(raw, preferred):
         required = max(duration, shot_seconds(action, dialogue))
         supported = next((value for value in STORYBOARD_DURATIONS if value >= required), None)
         if supported is None:
-            overloaded.append({"shot":index,"needed_seconds":required,"action":action,"dialogue":dialogue})
+            overloaded.append({"shot":index,"needed_seconds":required,
+                               "minimum_shots":math.ceil(required/max(STORYBOARD_DURATIONS)),
+                               "action":action,"dialogue":dialogue})
+            shots.append(None)
             continue
         shots.append({
             "duration":supported, "shot_size":str(s.get("shot_size") or ""), "camera":str(s.get("camera") or ""),
@@ -108,6 +117,62 @@ def storyboard_shots(raw, preferred):
             "action":action, "dialogue":dialogue, "sound":str(s.get("sound") or ""), "keyframe":str(s.get("keyframe") or ""),
         })
     return shots, overloaded
+
+
+def shot_text_key(text):
+    return "".join(char for char in text if char.isalnum())
+
+
+def shot_dialogue_key(lines):
+    turns = []
+    speaker = ""
+    for line in lines:
+        match = re.match(r"^([^：:\n]{1,24})[：:]\s*(.*)$", line)
+        if match:
+            name, line = match.groups()
+            speaker = shot_text_key(re.split(r"[（(]", name, maxsplit=1)[0])
+        body = shot_text_key(line)
+        if turns and turns[-1][0] == speaker:
+            turns[-1] = speaker, turns[-1][1] + body
+        elif body:
+            turns.append((speaker, body))
+    return turns
+
+
+def apply_storyboard_splits(shots, overloaded, response):
+    expected = {item["shot"]:item for item in overloaded}
+    replacements = response.get("replacements") if isinstance(response, dict) else None
+    if not isinstance(replacements, list):
+        raise ValueError("仍有镜头超过单镜 14 秒，模型没有返回逐镜拆分结果")
+    groups = {}
+    for replacement in replacements:
+        if not isinstance(replacement, dict):
+            raise ValueError("补充分镜结果格式不正确")
+        index = replacement.get("shot")
+        if type(index) is not int or index not in expected or index in groups:
+            raise ValueError("拆分结果与原镜头编号不符")
+        original = expected[index]
+        items = replacement.get("shots")
+        if not isinstance(items, list):
+            raise ValueError(f"第 {index} 镜未返回拆分后的镜头")
+        pieces, still_long = storyboard_shots(items, None)
+        if still_long:
+            raise ValueError(f"第 {index} 镜拆分后仍有片段超过单镜 14 秒")
+        if (len(pieces) < original["minimum_shots"]
+                or sum(piece["duration"] for piece in pieces) < original["needed_seconds"]):
+            raise ValueError(f"第 {index} 镜拆分后的总时长不足")
+        action = [line for piece in pieces for line in piece["action"]]
+        dialogue = [line for piece in pieces for line in piece["dialogue"]]
+        if (shot_text_key("".join(action)) != shot_text_key("".join(original["action"]))
+                or shot_dialogue_key(dialogue) != shot_dialogue_key(original["dialogue"])):
+            raise ValueError(f"第 {index} 镜拆分时改变了原动作或台词，请重新生成分镜")
+        keyframes = {shot_text_key(piece["keyframe"]) for piece in pieces}
+        if "" in keyframes or len(keyframes) != len(pieces):
+            raise ValueError(f"第 {index} 镜拆分后，每镜需要独立首帧说明")
+        groups[index] = pieces
+    if groups.keys() != expected.keys():
+        raise ValueError("部分超长镜头尚未拆分，请重新生成分镜")
+    return [piece for index, shot in enumerate(shots, 1) for piece in groups.get(index, [shot])]
 
 
 async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None) -> dict:
@@ -133,16 +198,25 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
     out = parse_json(await llm.chat(STORYBOARD_SYS, content, max_tokens=6200, temperature=.4))
     shots, overloaded = storyboard_shots(out.get("shots") or [], seconds)
     if overloaded:
-        minimum_shots = len(shots) + 2*len(overloaded)
-        revision = {"type":"text","text":"上一次草稿有超出 14 秒的镜头。逐个拆分列出的镜头，其他镜头保留。每个拆分镜头都有独立首帧，保留动作和台词原文。返回修订后完整的分镜 JSON。\n"
+        limits = "\n".join(f"第 {item['shot']} 镜：至少拆成 {item['minimum_shots']} 个镜头，"
+                           f"所有 duration 加起来至少 {item['needed_seconds']} 秒。" for item in overloaded)
+        revision = {"type":"text","text":"上一次草稿有超出 14 秒的镜头。只拆分列出的镜头，返回 "
+                    '{"replacements":[{"shot":原镜编号,"shots":[拆分后的完整镜头对象]}]}。'
+                    "每组至少达到 minimum_shots 和 needed_seconds。每镜写独立的 keyframe。"
+                    "按原顺序分配动作和台词，保留原词句和说话人。长句可分段，重述说话人时不要重复台词。\n"
+                    + limits + "\n"
                     + json.dumps({"overloaded":overloaded,"previous":out},ensure_ascii=False)}
-        out = parse_json(await llm.chat(STORYBOARD_SYS,[*content,revision],max_tokens=6200,temperature=.3))
-        shots, overloaded = storyboard_shots(out.get("shots") or [], seconds)
-        if overloaded:
-            numbers = "、".join(str(entry["shot"]) for entry in overloaded)
-            raise ValueError(f"第 {numbers} 镜仍超过单镜 14 秒，请减小单镜动作或将该段分开描述")
-        if len(shots) < minimum_shots:
-            raise ValueError("长镜头尚未拆成足够的分镜，请将该段分开描述")
+        messages = [*content,revision]
+        for attempt in range(2):
+            reply = await llm.chat(STORYBOARD_SPLIT_SYS,messages,max_tokens=6200,temperature=.3)
+            try:
+                shots = apply_storyboard_splits(shots,overloaded,parse_json(reply))
+                break
+            except ValueError as error:
+                if attempt:
+                    raise
+                messages.append({"type":"text","text":f"上一份拆分未通过校验：{error}。请修正并重新返回全部指定替换组。\n"
+                                 + limits + "\n上一份拆分：\n" + reply})
     if not shots:
         raise RuntimeError("没有拆出镜头，请把剧情写具体一些再试")
     chars = [{"name": str(c.get("name") or ""), "look": str(c.get("look") or ""), "voice": str(c.get("voice") or "")}
