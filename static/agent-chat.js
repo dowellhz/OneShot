@@ -909,7 +909,12 @@ function acAppendEvent(e,replay=false){
   else if(result.total_nodes!=null)description=`已读取画布，共 ${result.total_nodes} 个节点。`;
   else if(d.name==="image_segment")description="选区已准备好，可继续局部编辑。";
   else if(d.name==="canvas_focus")description="已向页面发送定位请求。";
-  else if(result.adopted)description="已采用："+result.adopted.map(a=>a.name).join("、");
+  else if(result.adopted){
+   const names=result.adopted.map(a=>a.name).join("、");
+   description=result.retained_explicit_ids
+    ? [result.note,names,result.retained_explicit_ids.length?"已保留用户指定的引用。":""].filter(Boolean).join("\n")
+    : "已采用："+names;
+  }
   else if(result.memories)description=result.memories.length
    ? ["找到 "+result.memories.length+" 条创作记忆",...result.memories.map(a=>`${a.name} · ${cmKind(a)}`)].join("\n")
    : "当前范围内没有匹配的资产。";

@@ -1418,7 +1418,9 @@ def register(tool, prop, node):
         "mode":prop("string",enum=["auto","semantic","keyword"]),
     }, ["query"])
     tool("memory_get", "读取记忆的设定、默认参考图、素材版本和生成历史。", {"memory_id": node}, ["memory_id"])
-    tool("memory_use", "为本轮后续图片/视频生成采用记忆；实际附加默认参考图和背景设定。不会把参考图当视频首帧，不会修改默认参考。", {"memory_ids": ids}, ["memory_ids"])
+    tool("memory_use", "为本轮后续图片/视频生成采用记忆。append（默认）追加素材；换镜头或换场景时可用 replace 替换先前由助手选的素材，memory_ids=[] 可清除这些素材。用户通过 @ 指定的素材会保留。", {
+        "memory_ids":{**ids,"minItems":0}, "mode":prop("string",enum=["append","replace"]),
+    }, ["memory_ids"])
     tool("memory_save", "保存设定或当前素材。项目内默认保存到项目资产库，独立画布默认保存到该画布的资产库。修改已有资产时保留范围和默认图。", {
         "name": prop("string", minLength=1, maxLength=80), "kind": prop("string", enum=sorted(KINDS)), "description": prop("string", maxLength=6000),
         "node_id": node, "memory_id": node, "scope": prop("string", enum=["canvas", "project", "personal"]),
@@ -1443,12 +1445,21 @@ async def execute(s, run, user, cid, name, args):
         return {**a, "history": st.history(user, a["id"], bid)}
     if name == "memory_use":
         items = [st.get(user, mid, bid) for mid in args["memory_ids"]]
-        adopted = list(dict.fromkeys(run["data"].get("memory_ids", []) + [a["id"] for a in items]))
+        data = run["data"]
+        previous = data.get("memory_ids",[])
+        explicit = data.get("explicit_memory_ids",previous)
+        replace = args.get("mode") == "replace"
+        if not replace and not items:
+            fail("请选择要追加的创作资产")
+        adopted = list(dict.fromkeys((explicit if replace else previous) + [a["id"] for a in items]))
         if len(adopted) > 8:
             fail("一次最多采用8条记忆")
-        run["data"]["memory_ids"] = adopted
+        data["memory_ids"] = adopted
         s.update(run)
-        return {"adopted": [st.summary(a) for a in items], "note": "已为本轮后续生成采用参考图和背景资料"}
+        if not replace:
+            return {"adopted":[st.summary(a) for a in items],"note":"已为本轮后续生成采用参考图和背景资料"}
+        return {"adopted":[st.summary(a) for a in items],"retained_explicit_ids":explicit,
+                "note":"已替换后续生成使用的自动参考" if items else "已清除后续生成的自动参考"}
     p = {"name": args["name"], "kind": args["kind"], "desc": args["description"]}
     if args.get("memory_id"):
         old = st.get(user, args["memory_id"], bid)

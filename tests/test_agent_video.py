@@ -20,6 +20,56 @@ from test_agent_chat import ChatFixture, answer, call
 
 
 class VideoIntegration(ChatFixture):
+    async def test_agent_can_change_automatic_assets_between_shots_and_keep_explicit_view(self):
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        hero = store.put(user,{"board":"test","kind":"character","name":"林森","character_view":"main",
+                              "ref":self.source["ref"],"source_board":"test","node_id":"n1"})
+        station = store.put(user,{"board":"test","kind":"scene","name":"车站","desc":"旧车站有蓝色顶棚"})
+        bridge = store.put(user,{"board":"test","kind":"scene","name":"小桥","desc":"桥下是浅水"})
+        seen = []
+
+        async def submit(req,payload):
+            seen.append(payload)
+            sequence = len(seen)
+            jid = f"e{sequence:012x}"
+            if payload["kind"] == "video":
+                video = self.make_video()
+                ref, meta = video["ref"], {"width":video["w"],"height":video["h"],"duration":video["seconds"]}
+            else:
+                ref = image_editor.save(server.COMFY_DIR,Image.new("RGB",(64,48),(0,sequence,0)))["ref"]
+                meta = {"width":64,"height":48}
+            server.JOBS[jid] = {"id":jid,"state":"done","created":1,"meta":{"uid":7},"outputs":[{"ref":ref,"meta":meta}]}
+            return web.json_response({"ids":[jid]})
+
+        self.svc.model.side_effect = [
+            call("memory_use",{"memory_ids":[station["id"]]},"choose-station"),
+            call("image_generate",{"prompt":"人物在站台等车","name":"车站镜头"},"make-station"),
+            call("memory_use",{"mode":"replace","memory_ids":[bridge["id"]]},"choose-bridge"),
+            call("image_generate",{"prompt":"人物来到桥上","name":"小桥镜头"},"make-bridge"),
+            call("memory_use",{"mode":"replace","memory_ids":[]},"clear-reference"),
+            call("video_generate",{"prompt":"人物向镜头挥手","name":"挥手镜头","duration":5},"make-video"),
+            answer(),
+        ]
+        explicit = "@{"+hero["id"]+"#main|林森}"
+        with patch.object(server,"_generate_request",submit):
+            rid = await self.send(text=f"用 {explicit} 做三段测试镜头")
+            row = await self.wait(rid)
+        self.assertEqual(row["state"],"done",row.get("error"))
+        self.assertEqual([item["kind"] for item in seen],["image","image","video"])
+        self.assertEqual([[a["id"] for a in item["memory_used"]] for item in seen],
+                         [[hero["id"],station["id"]],[hero["id"],bridge["id"]],[hero["id"]]])
+        self.assertTrue(all(item["memory_used"][0]["references"]==[{"view":"main","ref":hero["ref"]}] for item in seen))
+        self.assertNotIn("蓝色顶棚",seen[1]["prompt"])
+        self.assertNotIn("浅水",seen[2]["prompt"])
+        data = json.loads(row["data"])
+        self.assertEqual(data["explicit_memory_ids"],[hero["id"]])
+        self.assertEqual(data["memory_ids"],[hero["id"]])
+        versions = [node["versions"][-1] for node in self.load()["nodes"] if node["name"] in
+                    ("车站镜头","小桥镜头","挥手镜头")]
+        self.assertEqual([[asset["name"] for asset in version["memory_used"]] for version in versions],
+                         [["林森","车站"],["林森","小桥"],["林森"]])
+
     async def test_auto_reference_route_checks_canvas_audio_and_asset_audio_together(self):
         user = {"id":7,"role":"member"}
         short,long = "ep-mixed-short","ep-mixed-long"
