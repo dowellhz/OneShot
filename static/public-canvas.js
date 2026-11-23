@@ -49,6 +49,7 @@ function showSnapshot(snapshot) {
     Object.assign(card.style,{left:n.x+"px",top:n.y+"px",width:w+"px",height:h+"px"});
     text("h2",n.name || "未命名节点",card);
     if (n.type === "text") {
+      if (typeof n.text_background === "string") card.dataset.documentBackground = n.text_background;
       const content = text("div",n.text,card,"node-content");
       if (n.text_format === "markdown") acMarkdown(content,n.text,{images:false});
     }

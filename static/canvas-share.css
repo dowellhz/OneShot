@@ -60,4 +60,4 @@
 #sharePeople:not(:empty) { display: grid; gap: 6px; margin-bottom: 8px; }
 .share-account span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body.review-only :is(#addBtn,#upBtn,#assetBtn,#assetLibraryBtn,#undoBtn,#redoBtn,#selectionTools,#chatLaunch,#wizBtn,#shotListBtn,#empty,.node .plus,.node .job button,.node .rs,.elabel,.elrole,#boards [data-qnew],#boards [data-qall],#boards [data-del]) { display: none !important; }
-body.review-only #ntools button:not([data-a=prev],[data-a=next],[data-a=full],[data-a=dl],[data-a=favorite],[data-a=more],[data-a=text-document]) { display: none; }
+body.review-only #ntools button:not([data-a=prev],[data-a=next],[data-a=full],[data-a=dl],[data-a=favorite],[data-a=more],[data-a=text-document],[data-a=panorama]) { display: none; }

@@ -1595,7 +1595,7 @@ async function run(){
   published.fetch=async url=>({ok:!url.endsWith('/copy'),status:url.endsWith('/copy')?404:200,json:async()=>({
    name:'公开画布',created:1,edges:[],nodes:[{id:'t',type:'text',name:'资料',x:4,y:6,text:'<script>可见文本</script>'},
     {id:'a',type:'image',name:'预览',x:330,y:6,w:20,h:10,media:0},
-    {id:'d',type:'text',name:'剧本',x:4,y:240,text_format:'markdown',text:'# 公开剧本\n\n- 镜头一\n\n![不加载](https://example.invalid/image.png)\n\n<a href="javascript:alert(1)">链接</a>'}],
+    {id:'d',type:'text',name:'剧本',x:4,y:240,text_format:'markdown',text_background:'lilac',text:'# 公开剧本\n\n- 镜头一\n\n![不加载](https://example.invalid/image.png)\n\n<a href="javascript:alert(1)">链接</a>'}],
   })});
   for(const script of published.document.querySelectorAll('script'))
    vm.runInContext(fs.readFileSync(staticFile(script.src),'utf8'),publishedDOM.getInternalVMContext());
@@ -1604,6 +1604,7 @@ async function run(){
   assert.equal(published.document.querySelector('.snapshot-node script'),null);
   assert.equal(published.document.querySelector('.snapshot-node img').getAttribute('src'),'/api/share/'+publicToken+'/media/0');
   const sharedDocument=published.document.querySelector('.node-content.ac-markdown');
+  assert.equal(sharedDocument.closest('.snapshot-node').dataset.documentBackground,'lilac');
   assert.equal(sharedDocument.querySelector('h1').textContent,'公开剧本');
   assert.equal(sharedDocument.querySelector('li').textContent,'镜头一');
   assert.equal(sharedDocument.querySelector('img'),null);
@@ -2321,11 +2322,12 @@ async function run(){
   if(String(url)!=='/api/audio/generate')return audioFetch(url,opts);
   const p=JSON.parse(opts.body),id='audio-job-'+submittedAudio.length;
   submittedAudio.push(p);
-  const ref='output:h3studio/'+id+'.wav', recipe={mode:p.mode,prompt:p.prompt,provider:p.provider,voice:p.voice,speed:p.speed,lyrics:p.lyrics};
+  const ref='output:h3studio/'+id+'.wav', recipe={mode:p.mode,prompt:p.prompt,provider:p.provider,voice:p.voice,speed:p.speed,lyrics:p.lyrics,
+   ...(p.mode==='sfx'?{duration_seconds:p.duration_seconds,prompt_influence:p.prompt_influence,loop:p.loop}:{})};
   jobs.set(id,{state:'done',meta:{mode_name:p.mode==='tts'?'配音':'音乐生成'},outputs:[{ref,url:'/media?ref='+encodeURIComponent(ref),meta:{duration:3}}]});
   return {ok:true,text:async()=>JSON.stringify({ids:[id],recipe})};
  };
- evaluate(`CAPS_LIST.audio_generation={tts:[{id:"tts-test",name:"配音服务",voices:[{id:"zf_001",name:"自然女声"},{id:"zm_010",name:"自然男声"}]}],music:[{id:"music-test",name:"音乐服务",voices:[]}]};
+ evaluate(`CAPS_LIST.audio_generation={tts:[{id:"tts-test",name:"配音服务",voices:[{id:"zf_001",name:"自然女声"},{id:"zm_010",name:"自然男声"}]}],music:[{id:"music-test",name:"音乐服务",voices:[]}],sfx:[{id:"sfx-test",name:"音效服务",voices:[]}]};
    openAddMenu(80,90,{at:{x:170,y:430}});$("#addMenu [data-add=audio]").click();const generatedAudio=node([...sel][0]);
    const writePrompt=value=>{$("#prompt").value=value;$("#prompt").dispatchEvent(new Event("input"));};writePrompt("欢迎登车");
    const voice=$("#ctl [data-audio-field=voice]");voice.value="zm_010";voice.dispatchEvent(new Event("change"));
@@ -2334,10 +2336,17 @@ async function run(){
  equal([submittedAudio[0].prompt,submittedAudio[0].voice,submittedAudio[0].provider],['欢迎登车','zm_010','tts-test'],'speech includes the chosen voice');
  evaluate(`$("[data-audio-mode=music]").click();writePrompt("蓝调爵士");$("#audioLyrics").value="列车来了";$("#audioLyrics").dispatchEvent(new Event("input"));$("#send").click();`);
  await ready('generatedAudio.versions.length===2','music appends to the same audio node',300);
+ evaluate(`$("[data-audio-mode=sfx]").click();writePrompt("雨落玻璃");
+   $("[data-audio-field=duration_seconds]").value=8;$("[data-audio-field=duration_seconds]").dispatchEvent(new Event("change"));
+   $("[data-audio-field=loop]").click();$("#send").click();`);
+ await ready('generatedAudio.versions.length===3','sound effects append to the same node',300);
+ equal([submittedAudio[2].mode,submittedAudio[2].duration_seconds,submittedAudio[2].prompt_influence,submittedAudio[2].loop],['sfx',8,.3,true]);
  w.fetch=audioFetch;
  equal([submittedAudio[1].node,submittedAudio[1].lyrics,submittedAudio[1].provider],[submittedAudio[0].node,'列车来了','music-test'],'music tracks the same node');
  evaluate('switchVersion(generatedAudio,0)');
  equal(evaluate('[$("#prompt").value,$("[data-audio-field=voice]").value,curV(generatedAudio).source]'),['欢迎登车','zm_010','audio_gen'],'the audio tab restores its original controls');
+ evaluate('switchVersion(generatedAudio,2)');
+ equal(evaluate('[$("#prompt").value,$("[data-audio-field=duration_seconds]").value,$("[data-audio-field=loop]").checked]'),['雨落玻璃','8',true]);
  assert.match(evaluate('acResultCards({nodes:[{id:generatedAudio.id,type:"audio",ref:curV(generatedAudio).ref}]})'),/<audio controls/);
  console.log('Audio generation DOM passed: node creation, configuration, speech/music, job output, chat player and version restore.');
  console.log('Previs DOM passed: scene editing, render tabs, pinned motion reference, guide replacement, existing video and split source handling.');
@@ -2938,6 +2947,15 @@ async function run(){
  w.document.querySelector('[data-document-format=heading]').click();
  assert.equal(docSource.value,'# 开场\n码头');
  assert.equal(docPreview.querySelector('h1').textContent,'开场');
+ w.document.querySelector('[data-document-format=subsection]').click();
+ assert.equal(docPreview.querySelector('h3').textContent,'开场');
+ w.document.querySelector('[data-document-format=body]').click();
+ assert.equal(docSource.value,'开场\n码头');
+ w.document.querySelector('[data-document-format=heading]').click();
+ const docBackground=w.document.querySelector('#textDocumentBackground');
+ docBackground.value='lilac';
+ docBackground.dispatchEvent(new w.Event('change',{bubbles:true}));
+ assert.equal(docPreview.dataset.documentBackground,'lilac');
  docSource.setSelectionRange(docSource.value.length-2,docSource.value.length);
  w.document.querySelector('[data-document-format=table]').click();
  assert.match(docSource.value,/码头\n\n\| 镜头/,'inserting a table preserves the selected text');
@@ -2949,8 +2967,10 @@ async function run(){
  assert.equal(docPreview.querySelector('a').hasAttribute('href'),false);
  docSave.click();
  equal(evaluate('[node("n2").data.text,node("n2").data.text_format,$(".node-document h1",els.get("n2")).textContent]'),[savedDocument,'markdown','开场']);
+ equal(evaluate('[node("n2").data.text_background,$(".card",els.get("n2")).dataset.documentBackground]'),['lilac','lilac']);
  evaluate('undo()');
  assert.equal(evaluate('$("textarea",els.get("n2")).value'),originalDocument);
+ assert.equal(evaluate('$(".card",els.get("n2")).dataset.documentBackground'),'');
  evaluate('redo();$(".node-document h1",els.get("n2")).dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
  docSource.value='未保存的本地修改';
  docSource.dispatchEvent(new w.Event('input',{bubbles:true}));

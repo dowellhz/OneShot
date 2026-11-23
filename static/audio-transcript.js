@@ -47,16 +47,27 @@ function transcriptCuts(captions, selected) {
   return ranges;
 }
 
-function addTranscriptNode(source, version, text, result, at) {
+function addTranscriptNode(source, version, text, result, at, extra={}) {
   const n = addNode("text",at.x,at.y,{text,transcript:{source_node:source.id,source_ref:version.ref,
-    start:result.start,end:result.end,cues:result.captions}},{name:source.name+" · 转写"});
+    start:result.start,end:result.end,cues:result.captions}},{name:source.name+" · 转写",...extra});
   B.edges.push({from:source.id,to:n.id,relation:"transcript",source_ref:version.ref});
   return n;
+}
+
+function addGeneratedAudioSubtitle(source,version) {
+  const saved=version.audio_transcript;
+  if (!saved?.cues?.length) return;
+  const id="nsub_"+version.ref.split("/").at(-1).replace(/\.[^.]+$/,"").replace(/[^A-Za-z0-9_-]/g,"_").slice(0,35);
+  if (node(id)) return;
+  const at=freeSpot(source.x+size(source).w+110,source.y,"text");
+  const text=saved.cues.map(cue=>cue.text).join("\n");
+  addTranscriptNode(source,version,text,{...saved,captions:structuredClone(saved.cues)},at,{id,name:source.name+" · 字幕"});
 }
 
 function openAudioTranscript(source,saved,version = saved ? source.versions.find(v=>v.ref===saved.source_ref) : curV(source)) {
   const dialog = $("#audioTranscript");
   if (!canvasCanEdit() || !version?.ref || !source.versions.includes(version) || dialog.open) return;
+  saved ||= version.audio_transcript;
   const player = $("audio",dialog), form = $("form",dialog), resultBox = $("[data-transcript-result]",dialog);
   const start = form.elements.namedItem("in"), end = form.elements.namedItem("out");
   const status = $("[role=status]",dialog), identify = $("[data-transcript-source]",dialog);

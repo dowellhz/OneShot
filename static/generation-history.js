@@ -193,6 +193,10 @@ function ghApply(items) {
       version.audio_recipe = item.audio_recipe;
       Object.assign(data,item.audio_recipe);
     }
+    if (item.audio_transcript) {
+      version.audio_transcript=item.audio_transcript;
+      version.seconds ??= item.audio_transcript.end;
+    }
     if (Number.isSafeInteger(item.seed)) data.seed = version.seed = item.seed;
     return {type:item.type,name:item.label,data,versions:[version],cur:0};
   });

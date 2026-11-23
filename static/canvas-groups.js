@@ -254,6 +254,8 @@ function ctCloseGroupGallery() {
   const dialog=$("#groupGallery");
   if(!dialog?.open)return;
   if(dialog.close)dialog.close();else dialog.removeAttribute("open");
+  dialog.classList.remove("is-dragging");
+  $("[data-group-drag-label]",dialog).hidden=true;
   $("#groupGalleryItems").replaceChildren();
   $("#groupGalleryImport").replaceChildren();
 }
@@ -268,6 +270,66 @@ function ctGroupPreview(n) {
   return ico(icon);
 }
 
+function ctExtractGroupMember(group,n,position=null) {
+  if (!canvasCanEdit() || !(B.groups||[]).includes(group) || node(n.id)!==n || !group.nodes.includes(n.id)) return;
+  if (position && nodeLocked(n)) return toast("解锁节点后可拖到新位置");
+  checkpoint();
+  const box=CT_FOLD_BOXES.get(group.id);
+  if (!nodeLocked(n)) {
+    if (position) Object.assign(n,{x:Math.round(position.x),y:Math.round(position.y)});
+    else if (box) Object.assign(n,freeSpot(box.x+box.w+90,box.y,n.type,size(n)));
+  }
+  group.nodes=group.nodes.filter(id=>id!==n.id);
+  if (group.nodes.filter(id=>node(id)).length<2) B.groups=B.groups.filter(candidate=>candidate!==group);
+  ctCloseGroupGallery();
+  render(n);
+  drawEdges();
+  selectOnly(n.id);
+  if (!position) fit([n]);
+  save();
+}
+
+function ctPointInRect(event,rect) {
+  return event.clientX>=rect.left && event.clientX<=rect.right && event.clientY>=rect.top && event.clientY<=rect.bottom;
+}
+
+function ctDragGalleryMember(group,n,handle,event) {
+  if (event.button!==0 || !canvasCanEdit() || nodeLocked(n)) return;
+  const dialog=$("#groupGallery");
+  if ($(".al-group-import[aria-busy=true]",dialog)) return;
+  event.preventDefault();
+  handle.setPointerCapture(event.pointerId);
+  const label=$("[data-group-drag-label]",dialog);
+  const onCanvas=point=>ctPointInRect(point,vp.getBoundingClientRect())&&!ctPointInRect(point,dialog.getBoundingClientRect());
+  let dragging=false;
+  const move=point=>{
+    if (point.pointerId!==event.pointerId) return;
+    if (!dragging && Math.hypot(point.clientX-event.clientX,point.clientY-event.clientY)<5) return;
+    dragging=true;
+    dialog.classList.add("is-dragging");
+    const valid=onCanvas(point);
+    label.hidden=false;
+    label.textContent=valid ? n.name : "拖到画布上";
+    label.classList.toggle("can-drop",valid);
+    label.style.left=Math.max(8,Math.min(point.clientX+14,innerWidth-label.offsetWidth-8))+"px";
+    label.style.top=Math.max(8,Math.min(point.clientY+14,innerHeight-label.offsetHeight-8))+"px";
+  };
+  const end=point=>{
+    if (point.pointerId!==event.pointerId) return;
+    handle.removeEventListener("pointermove",move);
+    handle.removeEventListener("pointerup",end);
+    handle.removeEventListener("lostpointercapture",end);
+    dialog.classList.remove("is-dragging");
+    label.hidden=true;
+    if (dragging && point.type==="pointerup" && dialog.open && onCanvas(point)) {
+      ctExtractGroupMember(group,n,toW(point.clientX,point.clientY));
+    }
+  };
+  handle.addEventListener("pointermove",move);
+  handle.addEventListener("pointerup",end);
+  handle.addEventListener("lostpointercapture",end);
+}
+
 function ctOpenGroupGallery(group) {
   const dialog=$("#groupGallery"), members=group.nodes.map(node).filter(Boolean);
   if (!members.length) return;
@@ -276,8 +338,11 @@ function ctOpenGroupGallery(group) {
   grid.replaceChildren();
   for (const n of members) {
     const item=document.createElement("article");
+    const drag=canvasCanEdit()&&!nodeLocked(n);
     item.innerHTML=`<div class="cg-preview">${ctGroupPreview(n)}</div>
-      <strong>${esc(n.name)}</strong><div><button type="button" data-member-open>展开并定位</button>
+      <div class="cg-member-title"><strong>${esc(n.name)}</strong>
+      ${drag?`<span class="cg-member-grip" data-member-drag title="拖到画布移出分组" aria-hidden="true">${ico("grip")}</span>`:""}</div>
+      <div><button type="button" data-member-open>展开并定位</button>
       ${canvasCanEdit()?'<button type="button" data-member-extract>移出分组</button>':""}</div>`;
     $("[data-member-open]",item).onclick=()=>{
       const target=node(n.id);
@@ -285,15 +350,9 @@ function ctOpenGroupGallery(group) {
       ctCloseGroupGallery();selectOnly(target.id);fit([target]);
     };
     const extract=$("[data-member-extract]",item);
-    if(extract)extract.onclick=()=>{
-      if(!canvasCanEdit()||!(B.groups||[]).includes(group)||node(n.id)!==n||!group.nodes.includes(n.id))return;
-      checkpoint();
-      const box=CT_FOLD_BOXES.get(group.id);
-      if(box)Object.assign(n,freeSpot(box.x+box.w+90,box.y,n.type));
-      group.nodes=group.nodes.filter(id=>id!==n.id);
-      if(group.nodes.filter(id=>node(id)).length<2)B.groups=B.groups.filter(candidate=>candidate!==group);
-      ctCloseGroupGallery();render(n);drawEdges();selectOnly(n.id);fit([n]);save();
-    };
+    if(extract)extract.onclick=()=>ctExtractGroupMember(group,n);
+    const handle=$("[data-member-drag]",item);
+    if(handle)handle.onpointerdown=event=>ctDragGalleryMember(group,n,handle,event);
     grid.append(item);
   }
   const download=$("[data-group-download]",dialog);
@@ -331,11 +390,21 @@ function initCanvasGroups() {
   document.body.insertAdjacentHTML("beforeend",`<dialog id="groupGallery" aria-labelledby="groupGalleryTitle">
     <header><strong id="groupGalleryTitle"></strong><button type="button" data-group-close aria-label="关闭">×</button></header>
     <div id="groupGalleryItems"></div><div id="groupGalleryImport"></div>
+    <span class="cg-member-drag-label" data-group-drag-label hidden></span>
     <footer><button type="button" data-group-chat>引用到创作助手</button><button type="button" data-group-collect>收录到资产库</button><button type="button" data-group-download>下载组内素材</button></footer></dialog>`);
   const dialog=$("#groupGallery");
   $("[data-group-close]",dialog).onclick=ctCloseGroupGallery;
   dialog.addEventListener("click",event=>{
     if($(".al-group-import[aria-busy=true]",dialog)){event.preventDefault();event.stopImmediatePropagation();}
   },true);
+  let pressedBackdrop=false;
+  dialog.addEventListener("pointerdown",event=>{
+    pressedBackdrop=event.target===dialog&&!ctPointInRect(event,dialog.getBoundingClientRect());
+  });
+  dialog.addEventListener("pointerup",event=>{
+    if (pressedBackdrop && event.target===dialog && !ctPointInRect(event,dialog.getBoundingClientRect()) &&
+        !$(".al-group-import[aria-busy=true]",dialog)) ctCloseGroupGallery();
+    pressedBackdrop=false;
+  });
   dialog.oncancel=event=>{event.preventDefault();if(!$(".al-group-import[aria-busy=true]",dialog))ctCloseGroupGallery();};
 }

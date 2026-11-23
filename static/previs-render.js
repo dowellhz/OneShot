@@ -3,6 +3,7 @@
 const PV_FPS = 24;
 const PV_SIZE = {"16:9":[720,405],"9:16":[405,720],"1:1":[540,540]};
 const PV_SHAPES = {box:"方块", column:"圆柱", figure:"人物"};
+const PV_TRIANGLE_LIMIT = 2000;
 const PV_NEAR = .12;
 
 function pvSample(track, tick) {
@@ -39,6 +40,24 @@ const PV_MESH = {
     ...pvBox(-.17,0,0,.24,.42,.50,.91),...pvBox(.17,0,0,.24,.42,.50,.91),
     ...pvBox(-.40,.36,0,.16,.39,.45,.96),...pvBox(.40,.36,0,.16,.39,.45,.96)],
 };
+
+const pvMeshFaces=new WeakMap();
+function pvFaces(item) {
+  if (item.shape!=="mesh") return PV_MESH[item.shape];
+  let faces=pvMeshFaces.get(item.triangles);
+  if (faces) return faces;
+  const {triangles}=item;
+  faces=[];
+  for (const triangle of triangles) {
+    const a=triangle.slice(0,3),b=triangle.slice(3,6),c=triangle.slice(6,9);
+    const u=b.map((value,axis)=>value-a[axis]),v=c.map((value,axis)=>value-a[axis]);
+    const normal=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+    const length=Math.hypot(...normal);
+    if (length>0) faces.push([[a,b,c],.63+.34*Math.abs((normal[0]*.36+normal[1]*.8+normal[2]*.48)/length)]);
+  }
+  pvMeshFaces.set(triangles,faces);
+  return faces;
+}
 
 function pvCameraBasis(camera) {
   const unit=(a,fallback)=>{const m=Math.hypot(...a);return m>1e-6?a.map(x=>x/m):fallback;};
@@ -105,7 +124,7 @@ function pvPaint(cameraCanvas,scene,tick,active) {
   const faces=[];
   for (const item of scene.objects) {
     const pose=pvSample(item.keys,tick),a=pose.yaw*Math.PI/180,c=Math.cos(a),s=Math.sin(a);
-    for (const [verts,light] of PV_MESH[item.shape]) {
+    for (const [verts,light] of pvFaces(item)) {
       const points=pvClip(verts.map(([x,y,z])=>toCamera([pose.x+x*item.width*c-z*item.depth*s,
         pose.y+y*item.height,pose.z+x*item.width*s+z*item.depth*c])));
       if (points.length>=3) {

@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -28,6 +29,8 @@ CAPS = {
     "video": "生视频",
     "tts": "配音",
     "music": "配乐",
+    "sfx": "音效",
+    "seed_audio": "参考音频生成",
     "asr": "语音转写（创作助手）",
     "search": "公开网页搜索",
 }
@@ -75,6 +78,16 @@ CATALOG: dict[str, dict] = {
                    "fields": [{"k": "base_url", "t": "接口地址", "hint": "例如 https://api.openai.com/v1"},
                               {"k": "api_key", "t": "API Key", "secret": True, "optional": True}],
                    "desc": "兼容 /v1/audio/transcriptions 的本地或云端语音转写服务"},
+    "elevenlabs": {"label": "ElevenLabs 语音与音效", "group": "audio", "caps": ["tts","sfx"],
+                   "models": {"tts": ["eleven_multilingual_v2","eleven_v3","eleven_v4"],
+                              "sfx": ["eleven_text_to_sound_v3"]},
+                   "fields": [{"k": "api_key", "t": "API Key", "secret": True},
+                              {"k": "voices", "t": "配音音色（可选）", "hint": "音色ID=名称，多个用逗号分隔"}],
+                   "desc": "生成旁白、对白、环境音和拟音。填写音色 ID 后启用配音。"},
+    "volc_seed_audio": {"label": "火山 Seed Audio", "group": "audio", "caps": ["seed_audio"],
+                        "models":{"seed_audio":["seed-audio-1.0"]},
+                        "fields":[{"k":"api_key","t":"豆包语音 API Key","secret":True}],
+                        "desc":"支持文本配音、参考音频和参考图，使用豆包语音控制台的 API Key。"},
     "kling": {"label": "可灵 Kling", "group": "video", "caps": ["video"],
               "models": {"video": ["kling-4.0", "kling-4.0-flash", "kling-3.0-turbo", "kling-3.0", "kling-2.6"]},
               "fields": [{"k": "region", "t": "地域", "options": {"cn": "中国 api-beijing", "intl": "国际 api-singapore"}, "default": "cn"},
@@ -160,7 +173,25 @@ def caps_of(r: dict) -> list[str]:
     caps = list(cat.get("caps", []))
     if r["kind"] == "openai_compat" and (r.get("config") or {}).get("vision") != "yes":
         caps = [c for c in caps if c != "vision"]
+    if r["kind"] == "elevenlabs" and not (r.get("config") or {}).get("voices"):
+        caps.remove("tts")
     return caps
+
+
+def elevenlabs_voices(value):
+    entries = re.split(r"[,，\n]+", value)
+    voices = {}
+    for entry in entries:
+        if not entry.strip():
+            continue
+        voice_id, _, label = entry.partition("=")
+        voice_id = voice_id.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", voice_id) or voice_id in voices:
+            raise ProviderError("请填写有效且不重复的 ElevenLabs 音色 ID")
+        voices[voice_id] = (label.strip() or voice_id)[:60]
+    if len(voices) > 30:
+        raise ProviderError("每个 ElevenLabs 服务最多配置 30 个音色")
+    return [{"id":voice_id,"name":label} for voice_id,label in voices.items()]
 
 
 def all_providers() -> list[dict]:
@@ -191,6 +222,8 @@ def save(pid: str | None, kind: str, name: str, config: dict, secrets: dict, ena
             conf["motion_origin"] = public_origin(conf.get("motion_origin"))
         except ValueError as e:
             raise ProviderError(str(e)) from None
+    if kind == "elevenlabs":
+        conf["voices"] = ",".join(f"{voice['id']}={voice['name']}" for voice in elevenlabs_voices(conf.get("voices", "")))
     old = get(pid) if pid else None
     sec = dict(old["secrets"]) if old else {}
     for f in cat["fields"]:

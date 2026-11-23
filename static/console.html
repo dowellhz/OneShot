@@ -155,7 +155,7 @@ async function api(path, body, method) {
 const ago = t => { if (!t) return ""; const s = Date.now() / 1000 - t; return s < 60 ? "刚刚" : s < 3600 ? Math.round(s / 60) + " 分钟前" : s < 86400 ? Math.round(s / 3600) + " 小时前" : new Date(t * 1000).toLocaleDateString(); };
 const fmtS = s => s == null ? "" : s >= 90 ? (s / 60).toFixed(1) + " 分钟" : Math.round(s) + " 秒";
 const gb = b => (b / 1e9).toFixed(b > 1e11 ? 0 : 1) + " GB";
-const CAPN = { text: "文本", vision: "看图", image: "生图", video: "视频", tts: "配音", music: "配乐", asr: "语音转写", audio_separation: "人声分离", search: "网页搜索" };
+const CAPN = { text: "文本", vision: "看图", image: "生图", video: "视频", tts: "配音", music: "配乐", sfx: "音效", seed_audio: "参考音频生成", asr: "语音转写", audio_separation: "人声分离", search: "网页搜索" };
 const modal = html => { $("#mbox").innerHTML = html; $("#modal").classList.add("on"); return $("#mbox"); };
 const closeModal = () => $("#modal").classList.remove("on");
 $("#modal").addEventListener("pointerdown", e => { if (e.target.id === "modal") closeModal(); });

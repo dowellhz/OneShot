@@ -321,6 +321,10 @@ async function poll() {
           if(restoreVersion)switchVersion(n,n.versions.length-1,{recordUndo:false});
           else n.cur=n.versions.length-1;
         }
+        if (n.type==="audio" && canvasCanEdit()) {
+          versions.forEach(version=>addGeneratedAudioSubtitle(n,version));
+          if (versions.some(version=>version.audio_recipe?.subtitles && !version.audio_transcript)) toast("配音已保存，服务未返回字幕时间码");
+        }
         save(); render(n); refreshDownstream(n); drawEdges();
         if (actualSource === "previs") pvFinished(n,errs.join("\n"));
         if (sel.has(n.id)) showPanel();

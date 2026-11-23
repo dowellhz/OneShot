@@ -29,6 +29,10 @@
   background: var(--card); color: var(--text); font-family: inherit;
 }
 #textDocumentPreview.document-plain { white-space: pre-wrap; }
+:is(.node.text .card, #textDocumentPreview, .snapshot-node)[data-document-background="blue"] { background: #202933; }
+:is(.node.text .card, #textDocumentPreview, .snapshot-node)[data-document-background="lilac"] { background: #2a2433; }
+:is(.node.text .card, #textDocumentPreview, .snapshot-node)[data-document-background="sand"] { background: #302a25; }
+:is(.node.text .card, #textDocumentPreview, .snapshot-node)[data-document-background="rose"] { background: #32252b; }
 .node-document { position: absolute; inset: 0; overflow: auto; padding: 16px; overflow-wrap: anywhere; line-height: 1.6; }
 @media (max-width: 650px) {
   .document-panes { grid-template-columns: 1fr; grid-template-rows: minmax(0,1fr) minmax(0,1fr); }

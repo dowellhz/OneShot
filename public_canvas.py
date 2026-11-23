@@ -3,11 +3,13 @@ import json
 import math
 from urllib.parse import quote
 
+from board_store import seed_audio_edges
 from tools import AUDIO_EXT, VIDEO_EXT, ref_path
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+TEXT_BACKGROUNDS = ("blue", "lilac", "sand", "rose")
 SOURCE_RELATIONS = {"trim", "capture", "transcript", "audio_cut"}
-PINNED_RELATIONS = SOURCE_RELATIONS | {"audio_ref", "video_ref"}
+PINNED_RELATIONS = SOURCE_RELATIONS | {"audio_ref", "video_ref", "seed_audio_ref"}
 HEADERS = {"Cache-Control":"no-store", "Referrer-Policy":"no-referrer", "X-Robots-Tag":"noindex, nofollow",
            "X-Content-Type-Options":"nosniff"}
 
@@ -50,6 +52,8 @@ def capture(board, root):
             item["text"] = string(data.get("text"),20_000)
             if data.get("text_format") == "markdown":
                 item["text_format"] = "markdown"
+            if data.get("text_background") in TEXT_BACKGROUNDS:
+                item["text_background"] = data["text_background"]
         elif kind == "script":
             shots = []
             for shot in data.get("shots") or []:
@@ -77,9 +81,9 @@ def capture(board, root):
         nodes.append(item)
 
     ids = {n["id"] for n in nodes}
-    current_media = {n["id"]:n.get("media") for n in nodes if n["type"] in ("audio","video")}
+    current_media = {n["id"]:n.get("media") for n in nodes if n["type"] in ("audio","video","image")}
     edges = []
-    for edge in board.get("edges", []):
+    for edge in seed_audio_edges(board):
         if not isinstance(edge,dict) or not all(isinstance(edge.get(k),str) and edge[k] in ids for k in ("from","to")):
             continue
         kept = {key:string(edge[key],80) for key in ("from","to","role","relation") if key in edge}
@@ -145,6 +149,8 @@ def copy_board(snapshot, user_id):
             data["text"] = raw["text"]
             if raw.get("text_format") == "markdown":
                 data["text_format"] = "markdown"
+            if raw.get("text_background") in TEXT_BACKGROUNDS:
+                data["text_background"] = raw["text_background"]
         elif kind == "script":
             script = raw["script"]
             data = {**script, "shots":[]}
@@ -163,11 +169,17 @@ def copy_board(snapshot, user_id):
         nodes.append({**n,"data":data,"versions":versions,"cur":0 if versions else -1,"job":None})
     seq = 1 + max((int(n["id"][1:]) for n in nodes if n["id"].startswith("n") and n["id"][1:].isascii() and n["id"][1:].isdigit()), default=0)
     edges = []
+    by_id = {n["id"]:n for n in nodes}
     for edge in snapshot["edges"]:
         copied = dict(edge)
         if "media_ref" in copied:
             ref_key = "source_ref" if copied.get("relation") in SOURCE_RELATIONS else "ref"
             copied[ref_key] = media[copied.pop("media_ref")]
+        if copied.get("relation") == "seed_audio_ref" and (ref := copied.get("ref")):
+            source, target = by_id.get(copied["from"]), by_id.get(copied["to"])
+            if source and target and target["type"]=="audio" and source["type"] in ("image","audio"):
+                target["data"]["mode"] = "seed_audio"
+                target["data"].setdefault("references",[]).append({"node_id":source["id"],"ref":ref,"kind":source["type"]})
         edges.append(copied)
     return {"name":snapshot["name"]+"（副本）","nodes":nodes,"edges":edges,"owner":user_id,
             "shared":False,"rev":1,"groups":[],"view":{"x":100,"y":76,"k":1},"seq":seq}

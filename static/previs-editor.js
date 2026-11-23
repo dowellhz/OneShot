@@ -36,9 +36,17 @@ function pvValidNode(E) { return E && E.board===boardId && node(E.n.id)===E.n &&
 function pvUsableScene(scene) {
   const trackValid=(list, props)=>Array.isArray(list) && list.length>0 && list.length<=32 && list.every((key,i)=>
     key && Number.isInteger(key.t) && key.t>(list[i-1]?.t ?? -1) && props.every(([p])=>Number.isFinite(key[p])));
+  let triangleCount=0;
+  const validShape=o=>{
+    if (o.shape!=="mesh") return Object.hasOwn(PV_MESH,o.shape);
+    if (!Array.isArray(o.triangles) || !o.triangles.length) return false;
+    triangleCount+=o.triangles.length;
+    return triangleCount<=PV_TRIANGLE_LIMIT && o.triangles.every(face=>
+      Array.isArray(face)&&face.length===9&&face.every(v=>Number.isFinite(v)&&Math.abs(v)<=1));
+  };
   return !!scene && Number.isInteger(scene.duration) && scene.duration>=2 && scene.duration<=14 && !!PV_SIZE[scene.aspect] &&
     trackValid(scene.camera,PV_PARAMS.camera) && Array.isArray(scene.objects) && scene.objects.every(o=>
-      o && o.id!=="camera" && Object.hasOwn(PV_MESH,o.shape) && PV_PARAMS.size.every(([p])=>Number.isFinite(o[p])) && trackValid(o.keys,PV_PARAMS.object));
+      o && o.id!=="camera" && validShape(o) && PV_PARAMS.size.every(([p])=>Number.isFinite(o[p])) && trackValid(o.keys,PV_PARAMS.object));
 }
 
 function pvUpdateRenderState(n) {
@@ -139,7 +147,7 @@ function pvRefreshFields(E) {
     const value=owner==="size"?item?.[key]:pose[key];
     if (Number.isFinite(value) && document.activeElement!==field) field.value=Number(value.toFixed(2));
   }
-  pvElement("[data-pv-shape]").hidden=!item;
+  pvElement("[data-pv-shape]").hidden=!item||item.shape==="mesh";
   pvElement("[data-pv-delete-object]").hidden=!item;
   pvElement("[data-pv-name]").closest("label").hidden=!item;
   if (item && document.activeElement!==pvElement("[data-pv-name]")) pvElement("[data-pv-name]").value=item.label;
@@ -251,6 +259,7 @@ function openPrevis(n) {
   pvElement("[data-pv-view]").value="camera";
   pvElement("[data-pv-heading]").textContent=n.name;
   pvElement("[data-pv-discard]").hidden=true;
+  pvElement("[data-pv-import-model]").textContent="导入 3D 模型";
   pvStatus("");
   pvRefreshTrack(E);
   pvUpdateRenderState(n);
@@ -273,6 +282,48 @@ function pvDownloadScene(E) {
     pvStatus("已开始下载场景 GLB");
   } catch(error) {
     pvStatus(error.message);
+  }
+}
+
+async function pvImportModel(E,picked) {
+  if (!picked.length || !pvValidNode(E)) return;
+  if (E.scene.objects.length>=24) return pvStatus("一个场景最多包含 24 个物体");
+  const main=picked.filter(file=>/\.(glb|gltf)$/i.test(file.name));
+  if (main.length>1) return pvStatus("每次请选择一个 GLB 或 glTF 模型");
+  const file=main[0] || E.modelImport?.file;
+  if (!file || file.size>PV_MODEL_SIZE) return pvStatus("请选择 12 MiB 以内的 GLB 或 glTF 模型");
+  const files=new Map(main.length?[]:E.modelImport.files);
+  const selected=picked.filter(part=>part!==file);
+  if (new Set(selected.map(part=>part.name)).size!==selected.length) return pvStatus("所选的配套文件有重名，请检查文件名");
+  selected.forEach(part=>files.set(part.name,part));
+  const button=pvElement("[data-pv-import-model]");
+  E.modelImport=null;
+  button.textContent="导入 3D 模型";
+  pvPause(E);
+  E.sending=true;
+  pvUpdateRenderState(E.n);
+  try {
+    const used=E.scene.objects.reduce((total,item)=>total+(item.shape==="mesh"?item.triangles.length:0),0);
+    const available=PV_TRIANGLE_LIMIT-used;
+    const {triangles,dimensions:[width,height,depth]}=/\.gltf$/i.test(file.name) ?
+      await pvReadGltf(file,files,available) : pvReadGlb(await file.arrayBuffer(),available);
+    if (!pvValidNode(E)) return;
+    if (!pvFaces({shape:"mesh",triangles}).length) throw new Error("模型没有可显示的三角面");
+    const id=newCanvasNodeId(), label=file.name.replace(/\.(gltf|glb)$/i,"").trim().slice(0,40)||"导入模型";
+    E.scene.objects.push({id,label,shape:"mesh",triangles,width,height,depth,
+      keys:[{t:0,x:0,y:0,z:0,yaw:0,ease:"linear"}]});
+    E.active=id;
+    pvRefreshTrack(E);
+    pvStatus(`已导入 ${label} · ${triangles.length} 个三角面`);
+  } catch(error) {
+    if (error.missingBuffers) {
+      E.modelImport={file,files};
+      button.textContent="补选模型文件";
+    }
+    pvStatus(error.message);
+  } finally {
+    E.sending=false;
+    pvUpdateRenderState(E.n);
   }
 }
 
@@ -425,7 +476,8 @@ function initPrevis() {
       <section class="pv-inspector">
         <label class="pv-wide">轨道<select data-pv-track></select></label>
         <div class="pv-controls"><select data-pv-add-kind aria-label="新增物体类型">${Object.entries(PV_SHAPES).map(([shape,label])=>`<option value="${shape}">${label}</option>`).join("")}</select>
-          <button type="button" data-pv-add-object>添加物体</button><button type="button" data-pv-delete-object hidden>移除物体</button></div>
+          <button type="button" data-pv-add-object>添加物体</button><button type="button" data-pv-import-model>导入 3D 模型</button>
+          <input type="file" data-pv-model-file accept=".glb,.gltf,.bin,application/octet-stream" multiple hidden><button type="button" data-pv-delete-object hidden>移除物体</button></div>
         <label class="pv-wide" hidden>物体名<input maxlength="40" data-pv-name></label>
         <label class="pv-wide" data-pv-shape hidden>形状<select data-pv-kind>${Object.entries(PV_SHAPES).map(([shape,label])=>`<option value="${shape}">${label}</option>`).join("")}</select></label>
         <div class="pv-fields">${params}</div>
@@ -446,6 +498,12 @@ function initPrevis() {
   on("[data-pv-frame-canvas]","onclick",E=>pvExportFrame(E,false));
   on("[data-pv-frame-download]","onclick",E=>pvExportFrame(E,true));
   on("[data-pv-scene-download]","onclick",pvDownloadScene);
+  on("[data-pv-import-model]","onclick",()=>pvElement("[data-pv-model-file]").click());
+  on("[data-pv-model-file]","onchange",(E,ev)=>{
+    const files=[...ev.target.files];
+    ev.target.value="";
+    void pvImportModel(E,files);
+  });
   on("[data-pv-scrub]","oninput",(E,ev)=>{pvPause(E);E.tick=Number(ev.target.value);pvRefreshFields(E);pvFrame(E);});
   on("[data-pv-track]","onchange",(E,ev)=>{pvPause(E);E.active=ev.target.value;pvRefreshTrack(E);});
   on("[data-pv-view]","onchange",(E,ev)=>{E.view=ev.target.value;pvFrame(E);});
@@ -484,7 +542,7 @@ function initPrevis() {
   });
   on("[data-pv-name]","onchange",(E,ev)=>{
     const item=pvActive(E);
-    if (item) item.label=ev.target.value.trim() || PV_SHAPES[item.shape];
+    if (item) item.label=ev.target.value.trim() || PV_SHAPES[item.shape] || "导入模型";
     pvRefreshTrack(E);
   });
   on("[data-pv-kind]","onchange",(E,ev)=>{

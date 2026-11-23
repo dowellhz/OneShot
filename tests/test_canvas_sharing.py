@@ -382,7 +382,7 @@ class CanvasSharing(ChatFixture):
         changed = self.load()
         changed["nodes"][0]["versions"].append(v)
         changed["nodes"][0].update(cur=1, data={"prompt":"内部生成参数", "asset":{"id":"internal"}})
-        changed["nodes"][1]["data"].update(text="# 公开文案\n\n- 镜头说明", text_format="markdown")
+        changed["nodes"][1]["data"].update(text="# 公开文案\n\n- 镜头说明", text_format="markdown", text_background="lilac")
         changed["edges"] = [{"from":"n2","to":"n1","role":"reference","source_ref":self.source["ref"]}]
         self.assertEqual((await self.client.put(board, json=changed)).status, 200)
         self.assertEqual((await self.client.put(board+"/snapshot", headers=guest)).status, 404)
@@ -395,13 +395,14 @@ class CanvasSharing(ChatFixture):
         self.assertIn("no-referrer", page.headers["Referrer-Policy"])
         self.assertEqual((await (await self.client.put(board+"/snapshot")).json())["token"], token)
         current = self.load()
-        current["nodes"][1]["data"]["text"] = "发布后的改动"
+        current["nodes"][1]["data"].update(text="发布后的改动", text_background="sand")
         self.assertEqual((await self.client.put(board,json=current)).status, 200)
         response = await self.client.get(public, headers=guest)
         self.assertEqual(response.status, 200, await response.text())
         data = await response.json()
         self.assertEqual(data["nodes"][1]["text"], "# 公开文案\n\n- 镜头说明")
         self.assertEqual(data["nodes"][1]["text_format"], "markdown")
+        self.assertEqual(data["nodes"][1]["text_background"], "lilac")
         self.assertEqual(data["nodes"][0]["media"], 0)
         self.assertNotIn("media", data)
         self.assertNotIn("data", data["nodes"][0])
@@ -423,7 +424,8 @@ class CanvasSharing(ChatFixture):
         self.assertEqual(owned["owner"],8)
         self.assertFalse(owned["shared"])
         self.assertEqual([item["ref"] for item in owned["nodes"][0]["versions"]],[v["ref"]])
-        self.assertEqual(owned["nodes"][1]["data"],{"text":"# 公开文案\n\n- 镜头说明","text_format":"markdown"})
+        self.assertEqual(owned["nodes"][1]["data"],
+                         {"text":"# 公开文案\n\n- 镜头说明","text_format":"markdown","text_background":"lilac"})
 
         self.assertEqual((await self.client.delete(board+"/snapshot")).status,200)
         for url in ("/share/"+token,public,public+"/media/0"):

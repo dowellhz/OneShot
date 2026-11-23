@@ -111,6 +111,9 @@ def queued_node(s, run, user, cid, pending):
                             n["data"].pop(prop, None)
                     connect_inputs(b, nid, recipe)
             elif pending.get("audio_recipe"):
+                for field in ("subtitles","audio_format","sample_rate","pitch_semitones","gain","references"):
+                    if field not in pending["audio_recipe"]:
+                        n["data"].pop(field,None)
                 n["data"].update(pending["audio_recipe"])
         elif n:
             return {"node_id": nid}
@@ -250,7 +253,7 @@ def register(tool, prop, node, prompt):
                  "objects":prop("array", items=item, maxItems=24)},
                  required=["duration","aspect","camera","objects"], additionalProperties=False)
     tool("video_previs_get", "读取白模当前可编辑场景、场景版本校验码和已渲染的 Tab。", {"node_id":node}, ["node_id"])
-    tool("video_previs_save", "保存可编辑的白模场景。创建时省略 node_id。修改时先读取原场景，保留无关物体和关键帧，并传 node_id 与 scene_revision。坐标 X 左右、Y 向上、Z 前后。t 为 24 FPS 帧号，含 0 并按升序排列。", {
+    tool("video_previs_save", "保存可编辑的白模场景。创建时省略 node_id。修改时先读取原场景，保留无关物体和关键帧，并传 node_id 与 scene_revision。已导入的 mesh 通过原物体 ID 保留。坐标 X 左右、Y 向上、Z 前后。t 为 24 FPS 帧号，含 0 并按升序排列。", {
         "node_id":node, "scene_revision":prop("string", maxLength=64), "name":node, "scene":scene}, ["scene"])
     tool("video_previs_render", "把已保存的白模场景渲染为无声 MP4，追加在同一节点的版本 Tab。等待可播放结果后返回。", {"node_id":node}, ["node_id"])
     shot_number = prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS)
@@ -322,31 +325,42 @@ def previs_scene(n):
 
 def get_previs(n):
     scene = previs_scene(n)
-    return {"node_id":n["id"], "name":n.get("name"), "scene":scene, "scene_revision":scene_revision(scene),
+    return {"node_id":n["id"], "name":n.get("name"), "scene":editable_previs_tracks(scene), "scene_revision":scene_revision(scene),
             "versions":[{"number":i, "ref":v.get("ref"), "seconds":v.get("seconds"), "current":i - 1 == n.get("cur")}
                         for i, v in enumerate(n.get("versions", []), 1) if v.get("source") == "previs"]}
 
 
+def editable_previs_tracks(scene):
+    return {**scene, "objects":[{key:value for key,value in item.items() if key != "triangles"}
+                                for item in scene["objects"]]}
+
+
 def save_previs(s, run, user, cid, args):
-    scene = previs.validate(args["scene"])
     nid = args.get("node_id") or result_id(cid)
     def change(b):
         n = next((n for n in b["nodes"] if n["id"] == nid), None)
+        meshes = {}
         if args.get("node_id"):
-            if not n or n.get("type") != "video" or scene_revision(previs_scene(n)) != args.get("scene_revision"):
+            original = previs_scene(n) if n and n.get("type") == "video" else None
+            if original is None or scene_revision(original) != args.get("scene_revision"):
                 raise ValueError("白模场景已更新，请重新读取后再保存")
             if n.get("job"):
                 raise ValueError("请等待白模渲染完成后再编辑")
+            meshes = {item["id"]:item["triangles"] for item in original["objects"] if item["shape"] == "mesh"}
             remember_version(s, b, n)
         else:
             x = max((item.get("x", 0) + s.dimensions(item)[0] for item in b["nodes"]), default=20) + 100
             y = min((item.get("y", 100) for item in b["nodes"]), default=100)
             n = {"id":nid, "type":"video", "name":"白模预演", "x":x, "y":y, "data":node_data({}), "versions":[], "cur":-1}
             b["nodes"].append(n)
+        scene = previs.validate({**args["scene"], "objects":[
+            {**item, "triangles":meshes.get(item["id"])} if item["shape"] == "mesh" else item
+            for item in args["scene"]["objects"]
+        ]})
         if args.get("name", "").strip():
             n["name"] = args["name"].strip()
         n["data"].update(previs=scene, aspect=scene["aspect"], duration=scene["duration"])
-        return {"node_id":nid, "name":n["name"], "scene_revision":scene_revision(scene), "scene":scene}
+        return {"node_id":nid, "name":n["name"], "scene_revision":scene_revision(scene), "scene":editable_previs_tracks(scene)}
     result = s.commit(run, user, cid, change)
     return {**result, "previs_node":nid, "text":"白模已保存，可打开编辑器调整，或渲染预演。"}
 

@@ -9,7 +9,8 @@ import render
 
 ASPECTS = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (720, 720)}
 MAX_SECONDS = 14
-SHAPES = {"box", "column", "figure"}
+SHAPES = {"box", "column", "figure", "mesh"}
+MAX_TRIANGLES = 2000
 POSE_FIELDS = ("x", "y", "z", "yaw")
 CAMERA_FIELDS = ("x", "y", "z", "tx", "ty", "tz", "fov")
 NEAR = .12
@@ -48,7 +49,7 @@ def validate(value):
     objects = value.get("objects")
     if not isinstance(objects, list) or len(objects) > 24:
         raise ValueError("一个白模场景最多包含 24 个物体")
-    result, seen = [], set()
+    result, seen, total_triangles = [], set(), 0
     for item in objects:
         if not isinstance(item, dict):
             raise ValueError("物体格式不正确")
@@ -57,9 +58,20 @@ def validate(value):
                 or not isinstance(shape, str) or shape not in SHAPES or not isinstance(label, str) or not label.strip()):
             raise ValueError("物体编号、名称或形状不正确")
         seen.add(ident)
-        result.append({"id":ident, "shape":shape, "label":label.strip()[:40],
-                       **{field:bounded(item.get(field), .1, 20) for field in ("width","height","depth")},
-                       "keys":keys(item.get("keys"), POSE_FIELDS, frames)})
+        entry = {"id":ident, "shape":shape, "label":label.strip()[:40],
+                 **{field:bounded(item.get(field), .1, 20) for field in ("width","height","depth")},
+                 "keys":keys(item.get("keys"), POSE_FIELDS, frames)}
+        if shape == "mesh":
+            triangles = item.get("triangles")
+            if not isinstance(triangles, list) or not triangles:
+                raise ValueError("导入模型的三角网格无效")
+            total_triangles += len(triangles)
+            if total_triangles > MAX_TRIANGLES:
+                raise ValueError("场景最多支持 2000 个导入三角面")
+            if any(not isinstance(face, list) or len(face) != 9 for face in triangles):
+                raise ValueError("导入模型的三角网格无效")
+            entry["triangles"] = [[bounded(value, -1, 1) for value in face] for face in triangles]
+        result.append(entry)
     return {"duration":value["duration"], "aspect":aspect, "camera":camera, "objects":result}
 
 
@@ -116,6 +128,18 @@ def cross(a, b):
     return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 
 
+def mesh_faces(triangles):
+    faces = []
+    for face in triangles:
+        a, b, c = face[:3], face[3:6], face[6:]
+        normal = cross(tuple(v-u for v,u in zip(b,a)), tuple(v-u for v,u in zip(c,a)))
+        length = sqrt(sum(value*value for value in normal))
+        if length:
+            light = .63 + .34 * abs(sum(value*axis for value,axis in zip(normal,(.36,.8,.48))) / length)
+            faces.append(((a,b,c),light))
+    return faces
+
+
 def view(camera):
     position = tuple(camera[k] for k in ("x","y","z"))
     forward = unit(tuple(camera[k] - x for k,x in zip(("tx","ty","tz"), position)), (0,0,-1))
@@ -143,7 +167,9 @@ def clip(points):
     return result
 
 
-def paint(scene, tick, width, height):
+def paint(scene, tick, width, height, meshes=None):
+    if meshes is None:
+        meshes = {item["id"]:mesh_faces(item["triangles"]) for item in scene["objects"] if item["shape"] == "mesh"}
     image = Image.new("RGB", (width, height), "#24262b")
     draw = ImageDraw.Draw(image)
     camera = sample(scene["camera"], tick, CAMERA_FIELDS)
@@ -170,7 +196,8 @@ def paint(scene, tick, width, height):
         pose = sample(item["keys"], tick, POSE_FIELDS)
         a = radians(pose["yaw"])
         c, s = cos(a), sin(a)
-        for vertices, light in MESHES[item["shape"]]:
+        geometry = meshes[item["id"]] if item["shape"] == "mesh" else MESHES[item["shape"]]
+        for vertices, light in geometry:
             points = clip([transform((pose["x"] + x*item["width"]*c - z*item["depth"]*s,
                                       pose["y"] + y*item["height"],
                                       pose["z"] + x*item["width"]*s + z*item["depth"]*c))
@@ -188,7 +215,8 @@ def export(comfy_dir, scene, progress, cancelled):
     total = scene["duration"] * render.FPS
     path, ref = render._new(comfy_dir, "output", "previs", ".mp4")
     try:
-        frames = (paint(scene, tick, width, height) for tick in range(total))
+        meshes = {item["id"]:mesh_faces(item["triangles"]) for item in scene["objects"] if item["shape"] == "mesh"}
+        frames = (paint(scene, tick, width, height, meshes) for tick in range(total))
         count = render.encode_silent(path, frames, width, height, render.FPS, cancelled,
                                      lambda n:progress(n,total))
         if cancelled():

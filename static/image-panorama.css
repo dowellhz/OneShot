@@ -1,0 +1,20 @@
+#imagePanorama {
+  width: min(1080px,calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 12px;
+  border: 1px solid var(--line2); border-radius: 14px; background: var(--panel); color: var(--text);
+}
+#imagePanorama::backdrop { background: #000b; }
+#imagePanorama header, #imagePanorama footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+#imagePanorama header button { margin-left: auto; }
+#imagePanorama [data-panorama-name] { color: var(--dim); overflow-wrap: anywhere; }
+#imagePanorama canvas {
+  display: block; margin: 12px auto; max-width: 100%; width: auto; height: auto;
+  max-height: calc(100dvh - 180px); border-radius: 8px; cursor: grab; touch-action: none;
+}
+#imagePanorama canvas[hidden] { display: none; }
+#imagePanorama canvas:active { cursor: grabbing; }
+#imagePanorama canvas:focus-visible { outline: 2px solid var(--dim); }
+#imagePanorama footer [role=status] { margin-right: auto; color: var(--dim); }
+#imagePanorama :is(button,select) {
+  color: var(--text); background: var(--card-hi); border: 1px solid var(--line2); border-radius: 7px; padding: 6px 9px;
+}
+#imagePanorama button:disabled { opacity: .45; }

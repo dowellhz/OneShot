@@ -182,10 +182,17 @@ tool("canvas_arrange", "对齐或排列指定节点。horizontal/vertical按传�
     "gap": prop("number", minimum=0, maximum=600)}, ["node_ids", "operation"])
 tool("canvas_focus", "在已连接的页面定位并选中节点，可打开图片编辑器。", {"node_ids": IDS, "open_editor": prop("boolean")}, ["node_ids"])
 tool("media_describe", "通过配置的视觉模型理解图片，返回描述。", {"node_id": NODE}, ["node_id"])
-tool("audio_services", "读取当前可用的配音与音乐服务和音色编号。指定音色时先查询，默认音色可省略。", {})
-tool("audio_generate", "使用配音或音乐服务生成可播放的音频。配音的prompt是要完整朗读的文案，音乐的prompt描述风格，可选lyrics。提供node_id时追加到原音频节点的版本Tab，省略参数可沿用节点设置。", {
-    "mode":prop("string",enum=["tts","music"]), "node_id":NODE, "prompt":PROMPT, "provider":STR, "voice":STR,
-    "speed":prop("number",minimum=.5,maximum=2), "lyrics":STR, "name":NODE})
+tool("audio_services", "读取当前可用的配音、音乐与音效服务、音色编号和配音语速范围。指定音色或语速时先查询，默认设置可省略。", {})
+tool("audio_generate", "生成配音、音乐或音效。tts 的 prompt 是朗读文案，music 可提供歌词，sfx 可指定时长和循环。seed_audio 可引用最多三段音频或一张图片。提供 node_id 时追加到原音频节点的版本 Tab，省略参数可沿用节点设置。", {
+    "mode":prop("string",enum=["tts","music","sfx","seed_audio"]), "node_id":NODE, "prompt":PROMPT, "provider":STR, "voice":STR,
+    "speed":prop("number",minimum=.5,maximum=2), "lyrics":STR, "name":NODE,
+    "duration_seconds":prop("number",minimum=.5,maximum=30), "prompt_influence":prop("number",minimum=0,maximum=1),
+    "loop":prop("boolean"), "subtitles":prop("boolean",description="配音时同时生成可编辑的同步字幕"),
+    "audio_format":prop("string",enum=["source","wav","mp3","ogg"],description="生成后转换的音频格式，source 保留原格式"),
+    "sample_rate":prop("integer",enum=[8000,16000,24000,32000,44100,48000],description="音频采样率 Hz，OGG Opus 使用 48000"),
+    "pitch_semitones":prop("integer",minimum=-12,maximum=12,description="后处理音高，单位半音，0 保持原音高"),
+    "gain":prop("number",minimum=.5,maximum=2,description="后处理音量倍率，1 保持原音量"),
+    "reference_ids":prop("array",items=NODE,maxItems=3,description="seed_audio 的画布参考节点，音频引用按顺序为 @音频1、@音频2、@音频3")})
 tool("audio_separate", "将已引用的音频或视频原声拆为人声和伴奏与环境声，结果放入两个关联的音频节点。时间采用原素材秒数，每次最多10分钟。", {
     "node_id":NODE,"start":prop("number",minimum=0,maximum=604800),
     "end":prop("number",minimum=0,maximum=604800)},["node_id"])
@@ -241,7 +248,7 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 续拍或补拍用video_extend。用户指定本地时传method=frame，由本地H3使用原片接点帧和可选图片参考。自动模式可从连续画面切换为接点帧；不要把接点帧说成原片运动参考。每条用户指令最多提交一段视频，已有成片时请说明下一段可作为新消息入队。
 用户要制作机位、构图或走位白模时用video_previs_save。修改现有白模先用video_previs_get，保留未要求修改的轨道，再保存到同一节点。需要可播放预演时调用video_previs_render。只有用户要求生成正式视频，才在video_generate或video_regenerate中用previs指定已渲染的白模版本；它是动作参考，角色图和场景图提供外观。
 用户要求用某段音频参考声音或节奏时，在video_generate或video_regenerate的audio_refs中传入画布音频节点和所选版本。音频参考由模型重新生成声音，用户明确要求保留原音频时，应在剪辑台采用该音频。
-用户要求配音或生成音乐时，调用audio_generate。用户指定音色时先用audio_services查实际音色编号。重新配音在原音频节点增加版本。生成后的音频可在剪辑台加入时间线或作为视频声音参考。
+用户要求配音、音乐或音效时，调用audio_generate。用户指定音色时先用audio_services查实际音色编号。用户要求用音频或图片参考生成声音时，选择seed_audio并传入reference_ids。重新生成在原音频节点增加版本。生成后的音频可在剪辑台加入时间线或作为视频声音参考。
 用户要求分离人声或把原声中的人声与伴奏拆成独立音轨时，调用 audio_separate。指定的时间为原素材秒数，未指定区间时用完整素材。只获取台词时使用已有转写流程。
 用户明确要求先生成原生样片时，在相应视频生成工具传 draft=true。要求把已有样片做成定稿时，先用video_draft_status确认版本和有效期，再用video_draft_finalize；默认1080p，用户指定4K时用4k。定稿在原节点追加版本。用户只是查询样片或分辨率时只读取状态，不提交生成。
 用户要求给已有视频加片头文字、地名条等画面标题时，用video_titles_edit，在原节点追加剪辑版。查询、调整或删除已有标题时，先用video_titles_get读取同一版本的标题编号与时长。修改时只传用户要更新的字段，保留其他标题和轨道。标题时间按成片秒数；新增时默认从开头显示2.5秒，左下角地名条可用lower_left和label。用户只问标题内容或要求草拟标题时不提交渲染。
@@ -522,6 +529,21 @@ class AgentService:
     def add_results(self, run, user, cid, versions, name, prompt="", kind="image", target_id=None, *, variants=None):
         def change(b):
             nodes = b.setdefault("nodes", [])
+            def add_subtitle(source, version):
+                transcript = version.get("audio_transcript")
+                if kind != "audio" or not transcript or not transcript.get("cues"):
+                    return
+                nid = "nsub_" + re.sub(r"[^A-Za-z0-9_-]", "_", Path(version["ref"]).stem)[:35]
+                if any(item["id"] == nid for item in nodes):
+                    return
+                x = max(item.get("x",0) + self.dimensions(item)[0] for item in nodes) + 110
+                ref = version["ref"]
+                text = "\n".join(cue["text"] for cue in transcript["cues"])
+                nodes.append({"id":nid,"type":"text","name":source["name"]+" · 字幕","x":x,"y":source["y"],
+                              "data":{"text":text,"transcript":{**transcript,"source_node":source["id"],"source_ref":ref}},
+                              "versions":[],"cur":-1,"job":None})
+                b.setdefault("edges",[]).append({"from":source["id"],"to":nid,"relation":"transcript","source_ref":ref})
+
             if target_id:
                 target = next((n for n in nodes if n["id"] == target_id), None)
                 if not target:
@@ -538,6 +560,7 @@ class AgentService:
                 for version in versions:
                     target.setdefault("versions", []).append({**version, "label": name[:80]})
                     target["cur"] = len(target["versions"]) - 1
+                    add_subtitle(target,version)
                     made.append({"id": target_id, "type": kind, "name": target["name"], "ref": version["ref"],
                                  "url": version["url"], "version_index": target["cur"]})
                 if (target.get("job") or {}).get("agent_call") == cid:
@@ -575,6 +598,7 @@ class AgentService:
                             agent_video.connect_inputs(b, nid, v.get("video_recipe") or {})
                 else:
                     nodes.append(node)
+                add_subtitle(node,v)
                 made.append({"id": nid, "type": kind, "name": node["name"], "ref": v["ref"], "url": v["url"]})
                 x += self.dimensions(node)[0] + 60
             return {"nodes": made, "media_type": kind}
@@ -694,6 +718,9 @@ class AgentService:
                 result = self.add_results(run, user, cid, versions, pending["name"], pending["prompt"], pending.get("kind", "image"), pending.get("target_id")) if versions else {"nodes": []}
                 if pending.get("approval_overrides"):
                     result["approval_overrides"] = pending["approval_overrides"]
+                if versions and pending.get("audio_recipe",{}).get("subtitles"):
+                    result["text"] = ("配音和同步字幕已放入画布。" if any(v.get("audio_transcript") for v in versions)
+                                      else "配音已保存，服务未返回字幕时间码。")
                 if pending.get("previs_render") and result["nodes"]:
                     result.update(previs_node=pending["target_id"], text="白模预演已渲染，并保存到原节点的新版本。")
                 if pending.get("broll_source") and result["nodes"]:
@@ -779,8 +806,7 @@ class AgentService:
         if name == "web_save_references":
             return await web_research.save_references(self,run,user,cid,args)
         if name == "audio_services":
-            return {cap:[{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"voices":r["voices"]}
-                         for r in h.audio_routes(cap)] for cap in ("tts","music")}
+            return {cap:h.audio_service_options(cap) for cap in ("tts","music","sfx","seed_audio")}
         if name == "audio_generate":
             return await self.submit_audio(run,user,cid,args)
         if name == "audio_separate":
@@ -1180,17 +1206,36 @@ class AgentService:
         target=next((n for n in board["nodes"] if n["id"]==nid and n["type"]=="audio"),None) if nid else None
         if nid and (not target or target.get("job")):
             raise ToolError("请选择存在且没有生成任务的音频节点")
-        keys=("mode","prompt","provider","voice","speed","lyrics")
+        keys=("mode","prompt","provider","voice","speed","lyrics","duration_seconds","prompt_influence","loop",
+              "subtitles","audio_format","sample_rate","pitch_semitones","gain")
         data=target.get("data",{}) if target else {}
         payload={key:args.get(key,data.get(key)) for key in keys if key in args or key in data}
         if "mode" in args and args["mode"]!=data.get("mode"):
             for key in ("provider","voice"):
                 if key not in args:
                     payload.pop(key,None)
+        if "provider" in args and args["provider"]!=data.get("provider") and "subtitles" not in args:
+            payload.pop("subtitles",None)
+        if "audio_format" in args and args["audio_format"]!=data.get("audio_format") and "sample_rate" not in args:
+            payload.pop("sample_rate",None)
         payload.setdefault("mode","tts")
+        if payload["mode"]=="seed_audio":
+            refs = data.get("references") or []
+            if "reference_ids" in args:
+                refs = []
+                for ident in args["reference_ids"]:
+                    source = next((n for n in board["nodes"] if n["id"]==ident and n.get("type") in ("image","audio")),None)
+                    pinned = run["data"].get("bindings",{}).get(ident)
+                    version = (next((v for v in source["versions"] if v.get("ref")==pinned),None) if pinned
+                               else self.current(source)) if source else None
+                    if not version or not version.get("ref"):
+                        raise ToolError("参考素材或所选版本已不存在")
+                    refs.append({"node_id":ident,"ref":version["ref"]})
+            payload["references"] = refs
         if not (payload.get("prompt") or "").strip():
-            raise ToolError("请提供配音文案或音乐描述")
-        label=args.get("name") or (target["name"] if target else "助手配音" if payload["mode"]=="tts" else "助手音乐")
+            raise ToolError("请提供配音文案或声音描述")
+        label=args.get("name") or (target["name"] if target else {"tts":"助手配音","music":"助手音乐","sfx":"助手音效",
+                                                                "seed_audio":"助手参考音频"}[payload["mode"]])
         changes = await self.begin_generation(run,cid,"audio",1,{**payload,"label":label,"node":nid},target_id=nid,edit_prompt=True)
         payload.update(changes)
         request=InternalRequest(self,user,{**payload,"label":label,"board":run["board_id"],"node":nid,"request_key":cid})
@@ -1201,7 +1246,8 @@ class AgentService:
             **({"approval_overrides":changes} if changes else {}),
             "source":"audio_gen","audio_recipe":recipe,"retry_snapshot":{"audio_model":request.get("generation_model")},
             "generation_record":{"mode":recipe["mode"],"prompt":recipe["prompt"],
-            "settings":{k:recipe[k] for k in ("provider","voice","speed","lyrics") if k in recipe},"inputs":[]}})
+            "settings":{k:v for k,v in recipe.items() if k not in ("mode","prompt","references")},
+            "inputs":[{"node_id":item["node_id"],"ref":item["ref"],"role":"reference"} for item in recipe.get("references",[])]}})
 
     async def submit_generation(self, run, user, cid, payload, name, fn, target_id=None, target_data=None):
         if run["data"].get("uncertain"):

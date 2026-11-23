@@ -21,6 +21,10 @@ SETTINGS = {
     "ar":"宽高比", "duration":"生成时长", "seed":"随机种子", "strength":"生成强度", "steps":"步数",
     "denoise":"去噪强度", "feather":"羽化", "padding":"扩图边距", "count":"结果数量",
     "voice":"音色", "speed":"配音语速", "lyrics":"歌词", "extension":"续拍方向", "resolution":"定稿分辨率",
+    "duration_seconds":"音效时长", "prompt_influence":"提示词影响", "loop":"循环音效",
+    "subtitles":"生成同步字幕",
+    "audio_format":"音频输出格式", "sample_rate":"音频采样率",
+    "pitch_semitones":"音高（半音）", "gain":"音量倍率",
 }
 PROMPT_FIELDS = {"style":"风格","scene":"场景","people":"人物","camera":"镜头",
                  "action":"动作","dialogue":"对白","sound":"声音","music":"配乐"}

@@ -2,12 +2,15 @@
 
 const canvasDocumentDrafts = new Map();
 let canvasDocument = null;
+const documentBackgrounds = new Set(["blue","lilac","sand","rose"]);
+const documentBackground = value => documentBackgrounds.has(value) ? value : "";
 
 function documentText(n) {
-  return {text:String(n.data.text ?? ""),format:n.data.text_format === "markdown" ? "markdown" : "plain"};
+  return {text:String(n.data.text ?? ""),format:n.data.text_format === "markdown" ? "markdown" : "plain",
+    background:documentBackground(n.data.text_background)};
 }
 
-function equalDocument(a,b) { return a.text === b.text && a.format === b.format; }
+function equalDocument(a,b) { return a.text === b.text && a.format === b.format && a.background === b.background; }
 
 function documentAssetPreset(name, value) {
   return {name:name.replace(/@/g,"＠"), document:{name,text:value.text,format:value.format}};
@@ -26,11 +29,14 @@ function closeTextDocument() {
   canvasDocument = null;
 }
 
+const documentBlockText = text => text.replace(/^ {0,3}(?:#{1,6}|[-+*]|\d{1,9}[.)])(?:[ \t]+|$)/, "");
 const documentFormats = {
-  heading:{line:(text)=>"# " + (text.replace(/^#{1,6}\s+/, "") || "标题")},
-  subheading:{line:(text)=>"## " + (text.replace(/^#{1,6}\s+/, "") || "小标题")},
-  bullets:{line:(text)=>"- " + (text || "列表项")},
-  ordered:{line:(text,index)=>`${index + 1}. ${text || "列表项"}`},
+  heading:{line:text=>"# " + (documentBlockText(text) || "标题")},
+  subheading:{line:text=>"## " + (documentBlockText(text) || "小标题")},
+  subsection:{line:text=>"### " + (documentBlockText(text) || "三级标题")},
+  body:{line:documentBlockText},
+  bullets:{line:text=>"- " + (documentBlockText(text) || "列表项")},
+  ordered:{line:(text,index)=>`${index + 1}. ${documentBlockText(text) || "列表项"}`},
   bold:{wrap:"**"},
   italic:{wrap:"*"},
   divider:{insert:"---"},
@@ -61,6 +67,7 @@ function formatTextDocument(source, action) {
 function openTextDocument(n, passage) {
   if (n?.type !== "text" || node(n.id) !== n) return;
   const dialog = $("#textDocument"), source = $("textarea",dialog), format = $("#textDocumentFormat");
+  const background = $("#textDocumentBackground");
   const preview = $("#textDocumentPreview"), controls = $("#documentFormatting"), status = $("[role=status]",dialog);
   const apply = $("[data-document-save]",dialog), reload = $("[data-document-reload]",dialog);
   const collect = $("[data-document-asset]",dialog), annotate = $("[data-document-annotate]",dialog);
@@ -70,7 +77,7 @@ function openTextDocument(n, passage) {
   if (passage) {
     const [start,end]=passage.location;
     const points=Array.from(current.text);
-    if ((draft && !equalDocument(draft.value,current)) || points.slice(start,end).join("") !== passage.quote) {
+    if ((draft && draft.value.text !== current.text) || points.slice(start,end).join("") !== passage.quote) {
       toast("当前正文或草稿与批注不一致，可在评论中查看批注原文");
       return;
     }
@@ -80,9 +87,10 @@ function openTextDocument(n, passage) {
   canvasDocument = session;
   source.value = (draft?.value || current).text;
   format.value = (draft?.value || current).format;
+  background.value = (draft?.value || current).background;
   source.readOnly = apply.hidden = controls.hidden = format.disabled = !editable;
   $("#textDocumentTitle").textContent = n.name;
-  const value = () => ({text:source.value,format:format.value});
+  const value = () => ({text:source.value,format:format.value,background:documentBackground(background.value)});
   function updateAnnotation() {
     const selected=source.value.slice(source.selectionStart,source.selectionEnd);
     annotate.disabled=!selected.trim();
@@ -93,12 +101,15 @@ function openTextDocument(n, passage) {
     const liveNode = boardId === session.board ? node(session.id) : null;
     const stale = !liveNode || !equalDocument(documentText(liveNode),session.base);
     const writable = editable && canvasCanEdit();
+    preview.dataset.documentBackground = changes.background;
     renderDocumentPreview(preview,changes);
     if (editable) {
       if (changed) canvasDocumentDrafts.set(key,{base:session.base,value:changes});
       else canvasDocumentDrafts.delete(key);
     }
     source.readOnly = controls.hidden = format.disabled = !writable;
+    background.closest("label").hidden = !writable;
+    background.disabled = !writable;
     collect.hidden = !writable;
     collect.disabled = !changes.text.trim();
     apply.disabled = !writable || !changed || stale;
@@ -106,7 +117,7 @@ function openTextDocument(n, passage) {
     status.textContent = stale ? "画布上的文档已更新，草稿仍可复制。" : changed ? "有未保存的改动" : "";
     updateAnnotation();
   }
-  source.oninput = format.onchange = update;
+  source.oninput = format.onchange = background.onchange = update;
   source.onselect = updateAnnotation;
   annotate.onclick = () => {
     const target=boardId===session.board?node(session.id):null;
@@ -134,6 +145,8 @@ function openTextDocument(n, passage) {
     target.data.text = changes.text;
     if (changes.format === "markdown") target.data.text_format = "markdown";
     else delete target.data.text_format;
+    if (changes.background) target.data.text_background = changes.background;
+    else delete target.data.text_background;
     canvasDocumentDrafts.delete(key);
     render(target);
     refreshDownstream(target);

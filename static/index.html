@@ -6,12 +6,13 @@
 <title>OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
 <link rel="stylesheet" href="/static/type.css?v=1">
-<link rel="stylesheet" href="/static/canvas.css?v=47">
+<link rel="stylesheet" href="/static/canvas.css?v=48">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
   <symbol id="i-text" viewBox="0 0 24 24"><path d="M5 6h14M9 6v13M15 6v13M7 19h4M13 19h4"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="m20 16-4.5-4.5L7 20"/></symbol>
+  <symbol id="i-panorama" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="3.5" ry="8"/><path d="M4 12h16"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5M14.5 5.5l4 4M10 18l-4 1 1-4L17 5a2.8 2.8 0 0 1 4 4Z"/></symbol>
   <symbol id="i-video" viewBox="0 0 24 24"><rect x="3" y="5.5" width="13.5" height="13" rx="3"/><path d="m16.5 10.5 4.5-2.5v8l-4.5-2.5"/></symbol>
   <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 10v4m4-7v10m4-14v18m4-14v10m4-7v4"/></symbol>
@@ -256,6 +257,15 @@
     <footer><button type="submit">生成裁剪视频</button></footer>
   </form>
 </dialog>
+<dialog id="imagePanorama" aria-labelledby="imagePanoramaTitle">
+  <header><strong id="imagePanoramaTitle">360° 全景预览</strong><span data-panorama-name></span>
+    <button type="button" data-panorama-close aria-label="关闭全景">×</button></header>
+  <canvas tabindex="0" aria-label="全景视图"></canvas>
+  <footer><span role="status"></span>
+    <label>画幅 <select data-panorama-aspect><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
+    <button type="button" data-panorama-reset>重置视角</button>
+    <button type="button" data-panorama-capture>视角放入画布</button></footer>
+</dialog>
 <dialog id="frameCapture" aria-labelledby="frameCaptureTitle">
   <header><strong id="frameCaptureTitle">视频截帧</strong><button type="button" data-capture-close aria-label="关闭">×</button></header>
   <p data-capture-source></p>
@@ -353,10 +363,12 @@
     <label>格式 <select id="textDocumentFormat"><option value="plain">纯文本</option><option value="markdown">Markdown</option></select></label>
     <div id="documentFormatting" role="group" aria-label="文档格式工具">
       <button type="button" data-document-format="heading">标题</button><button type="button" data-document-format="subheading">小标题</button>
+      <button type="button" data-document-format="subsection">三级标题</button><button type="button" data-document-format="body">正文</button>
       <button type="button" data-document-format="bold">加粗</button><button type="button" data-document-format="italic">斜体</button>
       <button type="button" data-document-format="bullets">项目列表</button><button type="button" data-document-format="ordered">编号列表</button>
       <button type="button" data-document-format="table">表格</button><button type="button" data-document-format="divider">分隔线</button>
     </div>
+    <label>背景 <select id="textDocumentBackground"><option value="">默认</option><option value="blue">雾蓝</option><option value="lilac">淡紫</option><option value="sand">暖灰</option><option value="rose">灰粉</option></select></label>
   </div>
   <div class="document-panes"><textarea aria-label="文档正文" maxlength="20000" spellcheck="false"></textarea>
     <article id="textDocumentPreview" aria-label="文档预览"></article></div>
@@ -431,7 +443,7 @@
   <progress aria-label="文件传输进度"></progress>
 </section>
 <iframe name="assetTransferDownload" title="素材下载" hidden></iframe>
-<script src="/static/canvas-groups.js?v=11"></script>
+<script src="/static/canvas-groups.js?v=12"></script>
 <script src="/static/canvas-tools.js?v=13"></script>
 <script src="/static/video-tabs.js?v=22"></script>
 <link rel="stylesheet" href="/static/agent-chat.css?v=26">
@@ -444,8 +456,8 @@
 <script src="/static/creative-profile.js?v=1"></script>
 <script src="/static/agent-chat.js?v=68"></script>
 <script src="/static/canvas-conflicts.js?v=3"></script>
-<link rel="stylesheet" href="/static/canvas-document.css?v=1">
-<script src="/static/canvas-document.js?v=3"></script>
+<link rel="stylesheet" href="/static/canvas-document.css?v=3">
+<script src="/static/canvas-document.js?v=4"></script>
 <script src="/static/agent-editing.js?v=4"></script>
 <script src="/static/tools.js?v=19"></script>
 <link rel="stylesheet" href="/static/creative-memory.css?v=8">
@@ -468,12 +480,14 @@
 <script src="/static/node-search.js?v=4"></script>
 <link rel="stylesheet" href="/static/canvas-comments.css?v=3">
 <script src="/static/canvas-comments.js?v=8"></script>
-<link rel="stylesheet" href="/static/canvas-share.css?v=10">
+<link rel="stylesheet" href="/static/canvas-share.css?v=11">
 <script src="/static/canvas-share.js?v=8"></script>
 <script src="/static/canvas-live.js?v=3"></script>
 <script src="/static/canvas-review-region.js?v=1"></script>
-<script src="/static/canvas.js?v=76"></script>
-<script src="/static/canvas-generation.js?v=24"></script>
+<link rel="stylesheet" href="/static/image-panorama.css?v=1">
+<script src="/static/canvas.js?v=85"></script>
+<script src="/static/image-panorama.js?v=1"></script>
+<script src="/static/canvas-generation.js?v=25"></script>
 <script src="/static/canvas-group-run.js?v=2"></script>
 <script src="/static/video-extension.js?v=3"></script>
 <script src="/static/video-object.js?v=2"></script>
@@ -481,19 +495,19 @@
 <script src="/static/video-compare.js?v=2"></script>
 <script src="/static/video-segment.js?v=7"></script>
 <script src="/static/video-trim.js?v=1"></script>
-<script src="/static/audio-node.js?v=3"></script>
-<script src="/static/audio-transcript.js?v=3"></script>
+<script src="/static/audio-node.js?v=10"></script>
+<script src="/static/audio-transcript.js?v=4"></script>
 <script src="/static/audio-separation.js?v=2"></script>
 <link rel="stylesheet" href="/static/workflow-templates.css?v=3">
 <script src="/static/workflow-templates.js?v=3"></script>
 <link rel="stylesheet" href="/static/workflow-review.css?v=1">
 <script src="/static/workflow-review.js?v=3"></script>
 <link rel="stylesheet" href="/static/previs-editor.css?v=1">
-<script src="/static/previs-render.js?v=2"></script>
-<script src="/static/previs-glb.js?v=1"></script>
-<script src="/static/previs-editor.js?v=5"></script>
+<script src="/static/previs-render.js?v=3"></script>
+<script src="/static/previs-glb.js?v=3"></script>
+<script src="/static/previs-editor.js?v=7"></script>
 <script src="/static/canvas-projects.js?v=36"></script>
-<script src="/static/generation-history.js?v=5"></script>
+<script src="/static/generation-history.js?v=6"></script>
 <script src="/static/broll.js?v=1"></script>
 <script src="/static/creative-apps.js?v=1"></script>
 </body>

@@ -212,7 +212,8 @@ function fit(nodes = B.nodes, persist = true) {
 const node = id => B.nodes.find(n => n.id === id);
 const curV = n => (n && n.versions[n.cur]) || null;
 function defaults(type) {
-  if (type === "audio") return {prompt:"",mode:"tts",provider:"",voice:"",speed:1,lyrics:""};
+  if (type === "audio") return {prompt:"",mode:"tts",provider:"",voice:"",speed:1,lyrics:"",duration_seconds:null,
+    prompt_influence:.3,loop:false,subtitles:false,audio_format:"source",sample_rate:null,pitch_semitones:0,gain:1,references:[]};
   if (type === "text") return { text: "" };
   if (type === "script") return { prompt: "", nshots: "auto", shotlen: "auto", aspect: "16:9", quality: "hd", title: "", style: "", characters: [], shots: [], made: [] };
   if (type === "image") return { prompt: "", model: "h3img", expand: false, aspect: "3:4", quality: "4mp", count: 1, turbo: true, seed: -1, caption: "" };
@@ -244,6 +245,7 @@ function size(n) {
 function canLink(a, b) {
   if (!a || !b || a.id === b.id) return false;
   if (b.data?.previs) return false;
+  if (isSeedAudio(b)) return canSeedAudioReference(b,a,curV(a));
   if (B.edges.some(e => (e.from === a.id && e.to === b.id) || (e.from === b.id && e.to === a.id))) return false;
   if (a.type === "audio") return b.type === "video" && !b.data?.film && !!curV(a);
   if (a.type === "video") return b.type === "video" && !b.data?.film && curV(a)?.source !== "previs" && !!curV(a);
@@ -251,12 +253,19 @@ function canLink(a, b) {
 }
 function why(a, b) {
   if (b.data?.previs) return "白模的素材在场景编辑器中添加";
+  if (isSeedAudio(b)) return "参考生成可连入最多 3 段不同的音频版本或 1 张图片";
   if (a.type === "video") return "参考视频可连到普通视频节点，每个来源只连一次";
   if (a.type === "audio") return "音频可连接到支持全模态参考的视频节点";
   if (b.type === "text") return "文本节点不接收输入";
   return "这两个节点不能这样连接";
 }
 function link(a, b, quiet, binding) {
+  if (isSeedAudio(b)) {
+    const version=binding?.ref?a?.versions.find(v=>v.ref===binding.ref):curV(a);
+    if (addSeedAudioReference(b,a,version,!quiet)) return true;
+    if (!quiet && a && a!==b) toast(why(a,b));
+    return false;
+  }
   if (!canLink(a, b)) { if (!quiet && a && b && a.id !== b.id) toast(why(a, b)); return false; }
   if (!quiet) checkpoint();   // quiet callers checkpoint before creating the node
   const e = { from: a.id, to: b.id, ...binding };
@@ -426,6 +435,7 @@ function render(n) {
   el.classList.toggle("ac-voice-reference",!!acVoicePointing() && acVoiceActive.refs.has(n.id));
   el.style.left = n.x + "px"; el.style.top = n.y + "px";
   card.style.width = s.w + "px"; card.style.height = s.h + "px";
+  if (n.type === "text") card.dataset.documentBackground = documentBackground(n.data.text_background);
   $(".nm", el).textContent = n.name; $(".nm", el).title = n.name;
   const pinGroup=$(".node-pins",el),colors=nodePins(n),colorKey=colors.join(",");
   if(pinGroup.dataset.colors!==colorKey){
@@ -540,7 +550,10 @@ function switchVersion(n, i, {recordUndo = true} = {}) {
     }
     if (v.node_data) n.data = JSON.parse(JSON.stringify(v.node_data));
   }
-  if (n.type === "audio" && v.audio_recipe) Object.assign(n.data,{...defaults("audio"),...v.audio_recipe});
+  if (n.type === "audio") {
+    if (v.audio_recipe) Object.assign(n.data,{...defaults("audio"),...v.audio_recipe});
+    else if (isSeedAudio(n)) n.data.references=[];
+  }
   n.cur = i; save(); render(n); refreshDownstream(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges();
   if (AC.open) acRenderRefs();
   return true;
@@ -686,6 +699,7 @@ function wire(n, el) {
 function refreshDownstream(n) { B.edges.filter(e => e.from === n.id).forEach(e => refresh(node(e.to))); }
 
 function dragLink(a, e, onClick) {
+  e.currentTarget.setPointerCapture(e.pointerId);
   const tmp = document.createElementNS("http://www.w3.org/2000/svg", "path"); tmp.setAttribute("class", "tmp"); svg.appendChild(tmp);
   const p0 = port(a, "out"), sx = e.clientX, sy = e.clientY; let moved = false;
   const targets = B.nodes.filter(m => m.id !== a.id && !ctFolded(m.id));
@@ -697,15 +711,19 @@ function dragLink(a, e, onClick) {
     ap.move(ev);
     tmp.setAttribute("d", curve(p0, toW(ev.clientX, ev.clientY)));
   };
-  const up = ev => {
+  const stop = () => {
     ap.stop(); removeEventListener("pointermove", mv); removeEventListener("pointerup", up); tmp.remove();
+    removeEventListener("pointercancel", stop);
     targets.forEach(m => els.get(m.id)?.classList.remove("ok-target", "bad-target"));
+  };
+  const up = ev => {
+    stop();
     if (!moved) { onClick && onClick(); return; }
     const t = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".node");
     if (t) link(a, node(t.dataset.id));
     else { const w = toW(ev.clientX, ev.clientY); openAddMenu(ev.clientX, ev.clientY, { from: a, at: w }); }
   };
-  addEventListener("pointermove", mv); addEventListener("pointerup", up);
+  addEventListener("pointermove", mv); addEventListener("pointerup", up); addEventListener("pointercancel", stop);
 }
 
 // ================================================================= edges
@@ -716,6 +734,7 @@ function port(n, side) {
 }
 function curve(a, b) { const dx = Math.max(50, Math.abs(b.x - a.x) * 0.45); return `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`; }
 function drawEdges() {
+  syncSeedAudioEdges();
   ctRenderGroups();
   drawMini();
   $$("g", svg).forEach(g => g.remove());
@@ -733,15 +752,19 @@ function drawEdges() {
       return;
     }
     const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const d = curve(port(a, "out"), port(b, "in"));
+    const pa=port(a,"out"),pb=port(b,"in");
+    if (e.relation==="seed_audio_ref") { pa.y+=(e.slot-2)*26; pb.y+=(e.slot-2)*26; }
+    const d = curve(pa,pb);
     g.innerHTML = `<path class="hit" d="${d}"></path><path class="vis" d="${d}"></path>`;
     if (selEdge === e) g.classList.add("sel");
-    if (["remake","previs","audio_ref","video_ref","trim","capture","transcript","audio_cut","broll"].includes(e.relation)) {
+    if (["remake","previs","audio_ref","video_ref","trim","capture","transcript","audio_cut","broll","seed_audio_ref"].includes(e.relation)) {
       g.classList.add("remake-edge");
-      const pa = port(a, "out"), pb = port(b, "in"), label = document.createElement("div");
+      const label = document.createElement("div");
       label.className = "elabel remake-label";
       label.style.left = (pa.x + pb.x) / 2 + "px"; label.style.top = (pa.y + pb.y) / 2 + "px";
-      label.textContent = e.segment_edit ? "修改片段" : e.extension ? extensionLabel(e.extension) : {previs:"白模动作参考",audio_ref:"音频参考",video_ref:"视频参考",remake:"原片",trim:"裁剪自原片",capture:"视频截帧",transcript:"音频转写",audio_cut:"台词剪辑",broll:"B-roll 来源"}[e.relation];
+      const seedLabel = e.relation==="seed_audio_ref" ? (a.type==="image"?"参考图":`@音频${e.slot}`) +
+        ` · 版本 ${a.versions.findIndex(v=>v.ref===e.ref)+1}` : "";
+      label.textContent = seedLabel || (e.segment_edit ? "修改片段" : e.extension ? extensionLabel(e.extension) : {previs:"白模动作参考",audio_ref:"音频参考",video_ref:"视频参考",remake:"原片",trim:"裁剪自原片",capture:"视频截帧",transcript:"音频转写",audio_cut:"台词剪辑",broll:"B-roll 来源"}[e.relation]);
       world.appendChild(label);
     } else if (a.type === "image" && b.type === "video") {
       const p = plans[b.id] || (plans[b.id] = plan(b)), k = p.es.indexOf(e);
@@ -769,7 +792,15 @@ function drawEdges() {
     }
   }
 }
-function cutEdge(e) { if (!canvasCanEdit()) return; checkpoint(); B.edges = B.edges.filter(x => x !== e); if (selEdge === e) selEdge = null; drawEdges(); refresh(node(e.to)); save(); }
+function cutEdge(e) {
+  if (!canvasCanEdit()) return;
+  if (e.relation==="seed_audio_ref") {
+    const target=node(e.to);
+    if (target) removeSeedAudioReference(target,seedAudioRefs(target).findIndex(ref=>ref.node_id===e.from&&ref.ref===e.ref));
+    return;
+  }
+  checkpoint(); B.edges = B.edges.filter(x => x !== e); if (selEdge === e) selEdge = null; drawEdges(); refresh(node(e.to)); save();
+}
 
 // ================================================================= selection, overlays
 function updateSel() {
@@ -853,6 +884,7 @@ function showPanel() {
   if (v) {
     if (n.type === "image") b.push(tool("edit", "edit", "编辑图片", "编辑图片 · 局部重绘、扩图、裁剪与调色") + tool("tovideo", "video", "生成视频") + tool("hd", "hd", "高清重绘") + tool("describe", "text", "反推提示词"));
     if (n.type==="image" && v.image_grid && canvasCanEdit()) b.push(tool("split3x3","assets","拆成九张机位图"));
+    if (n.type==="image" && panoramaVersion(v)) b.push(tool("panorama","panorama","360° 全景预览"));
     if (n.type === "video" && n.data.film && !n.data.playlist) b.push(tool("film", "scissors", "编辑成片"));
     else if (n.type === "video" && !n.data.film) b.push(tool("cont", "next", "续拍") + tool("film", "scissors", "剪辑视频", "剪辑视频 · 导出为原节点的新版本") + tool("analyze", "script", "拉片", "拉片 · 拆分镜头并分析"));
     if (n.type === "video" && canvasCanEdit()) b.push(tool("capture", "image", "视频截帧", "截取首帧、当前帧或末帧") + tool("trim-video", "scissors", "裁剪视频", "裁剪视频 · 保留区间、手动分割或智能切镜头"));
@@ -1189,6 +1221,7 @@ document.addEventListener("pointerdown", e => { if (!e.target.closest("#more, #m
 
 function nodeAction(n, a) {
   if (a === "text-document") return openTextDocument(n);
+  if (a === "panorama") return openPanorama(n);
   if (!canvasCanEdit() && !["prev","next","full","compare-video","dl","playlist-open"].includes(a)) return;
   const v = curV(n);
   if (a === "prev" || a === "next") { switchVersion(n, (n.cur + (a === "next" ? 1 : -1) + n.versions.length) % n.versions.length); }
@@ -1771,6 +1804,7 @@ function ctxMenu(e) {
       add("edit", "image", "编辑图片（局部重绘 / 扩图 / 裁剪）");
       add("relight", "edit", "调整图片布光");
       add("image-camera", "video", "图片换机位");
+      if (panoramaVersion(v)) add("panorama","panorama","360° 全景预览");
       add("image-pixels", "fit", "调整像素尺寸");
       add("tovideo", "video", "生成视频"); add("hd", "full", "高清重绘"); add("describe", "text", "反推提示词");
       add("film", "scissors", "用图片开始剪辑");
@@ -1832,7 +1866,7 @@ function ctxMenu(e) {
   it.push(`<div class="sep"></div>`);
   if (canvasCanEdit() && selected.some(m=>!nodeLocked(m))) add("del","trash",selected.some(nodeLocked) ? "删除未锁定节点" : "删除","Del");
   const m = $("#ctxMenu"); m.innerHTML = it.join(""); m.classList.add("on");
-  if (!canvasCanEdit()) $$("button[data-a]",m).filter(b=>!["comment","full","compare-video","dl","focus","workflow-review","playlist-open","text-document"].includes(b.dataset.a)).forEach(b=>b.remove());
+  if (!canvasCanEdit()) $$("button[data-a]",m).filter(b=>!["comment","full","compare-video","dl","focus","workflow-review","playlist-open","text-document","panorama"].includes(b.dataset.a)).forEach(b=>b.remove());
   m.style.left = Math.min(e.clientX, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.min(e.clientY, innerHeight - m.offsetHeight - 8) + "px";
   $$("button", m).forEach(b => b.onclick = () => {
     closeMenus(); const a = b.dataset.a;
@@ -2098,10 +2132,15 @@ function paste(items, dx = 40, dy = 40, fragment = null) {
     for(const clip of data?.film?.clips || []) if(clip.node) clip.node=map[clip.node]||"";
     for(const clip of data?.film?.cutaways || []) if(clip.node) clip.node=map[clip.node]||"";
   };
+  const remapSeedRefs=data=>{
+    if (data?.mode==="seed_audio") data.references=seedAudioRefs({data}).map(ref=>({...ref,node_id:map[ref.node_id]||ref.node_id}));
+  };
   for (const id of made) {
+    remapSeedRefs(node(id).data);
     if(fragment)remapData(node(id).data);
     else for (const clip of node(id).data?.film?.cutaways || []) if(map[clip.node]) clip.node=map[clip.node];
     for(const v of node(id).versions) {
+      remapSeedRefs(v.audio_recipe);
       if(v.input_edges) v.input_edges = v.input_edges.filter(e=>!fragment||map[e.from]).map(e=>({...e,from:map[e.from]||e.from,to:id}));
       if(v.copied_from?.node) {
         const origin=map[v.copied_from.node];

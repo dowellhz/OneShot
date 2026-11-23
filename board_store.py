@@ -35,6 +35,32 @@ _URL_KEYS = {"url", "cover_url"}
 _NUM_KEYS = {"seed", "w", "h", "seconds", "duration", "x", "y", "k", "cur", "count", "start", "volume", "in", "out", "sub_size", "speed", "seq"}
 
 
+def seed_audio_edges(board):
+    nodes = {n["id"]:n for n in board.get("nodes",[]) if isinstance(n,dict) and isinstance(n.get("id"),str)}
+    edges = [e for e in board.get("edges",[]) if isinstance(e,dict) and e.get("relation")!="seed_audio_ref"]
+    for target in nodes.values():
+        data = target.get("data")
+        if target.get("type")!="audio" or not isinstance(data,dict) or data.get("mode")!="seed_audio":
+            continue
+        refs = data.get("references")
+        if not isinstance(refs,list):
+            continue
+        seen = set()
+        valid_refs = [item for item in refs if isinstance(item,dict) and isinstance(item.get("node_id"),str)
+                      and isinstance(item.get("ref"),str) and item.get("kind") in ("image","audio")]
+        for slot,item in enumerate(valid_refs[:3],1):
+            ref = item["ref"]
+            source = nodes.get(item["node_id"])
+            if not ref or ref in seen or not source or source is target or source.get("type")!=item["kind"]:
+                continue
+            versions = source.get("versions")
+            if not isinstance(versions,list) or not any(isinstance(v,dict) and v.get("ref")==ref for v in versions):
+                continue
+            seen.add(ref)
+            edges.append({"from":source["id"],"to":target["id"],"relation":"seed_audio_ref","ref":ref,"slot":slot})
+    return edges
+
+
 def clean_board(v, media_root: Path):
     """Board JSON comes from browsers (any teammate, for shared boards): links may only point at this site's media,
     ids must be plain, numbers must be numbers — so nothing in a board can inject markup into someone else's page."""

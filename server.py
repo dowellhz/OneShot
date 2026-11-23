@@ -692,7 +692,10 @@ def board_path(bid: str) -> Path:
 
 
 def clean_board(v):
-    return board_store.clean_board(v, COMFY_DIR)
+    board = board_store.clean_board(v, COMFY_DIR)
+    if isinstance(board,dict) and isinstance(board.get("nodes"),list) and isinstance(board.get("edges"),list):
+        board["edges"] = board_store.seed_audio_edges(board)
+    return board
 
 
 def write_board(path: Path, data: dict):
@@ -1979,7 +1982,10 @@ AUDIO_MEDIA_EXT = tools.AUDIO_EXT
 CANVAS_MEDIA_EXT = MEDIA_EXT = creative_memory.IMAGE_EXT | tools.VIDEO_EXT | AUDIO_MEDIA_EXT
 
 
-HISTORY_CAPABILITIES = {"image": ("image",), "video": ("video","render"), "audio": ("tts", "music")}
+AUDIO_GENERATION_MODES = {"tts":"配音", "music":"音乐生成", "sfx":"音效生成", "seed_audio":"参考音频生成"}
+AUDIO_SETTINGS = ("voice","speed","lyrics","provider","duration_seconds","prompt_influence","loop","subtitles",
+                  "audio_format","sample_rate","pitch_semitones","gain","references")
+HISTORY_CAPABILITIES = {"image": ("image",), "video": ("video","render"), "audio": tuple(AUDIO_GENERATION_MODES)}
 HISTORY_EXTENSIONS = {"image": creative_memory.IMAGE_EXT, "video": tools.VIDEO_EXT, "audio": AUDIO_MEDIA_EXT}
 
 
@@ -1992,6 +1998,15 @@ def task_settings(serialized):
 
 
 def generation_history_metadata(job):
+    if job["state"] == "done" and job.get("kind") == "audio":
+        transcript = next((out["extra"]["audio_transcript"] for out in job.get("outputs",[])
+                           if out.get("extra",{}).get("audio_transcript")),None)
+        task = db.one("SELECT request FROM tasks WHERE id=?", job["id"]) if transcript else None
+        if task:
+            request = task_settings(task["request"])
+            request["audio_transcript"] = transcript
+            return {"request":json.dumps(request,ensure_ascii=False)}
+        return {}
     if job["state"] != "done" or job.get("kind") not in ("image", "video"):
         return {}
     meta = job.get("meta") or {}
@@ -2054,9 +2069,9 @@ async def generation_history(req):
         graphics_prompt = (graphics.get("title") or "\n".join(graphics.get("lines",[]))) if graphics else ""
         prompt = clean(graphics_prompt or history.get("prompt") or recipe.get("prompt") or request.get("prompt") or request.get("text"))[:2000]
         item_kind = next(kind for kind,caps in HISTORY_CAPABILITIES.items() if task["capability"] in caps)
-        audio = {key: recipe[key] for key in ("voice", "speed", "lyrics", "provider") if key in recipe}
+        audio = {key: recipe[key] for key in AUDIO_SETTINGS if key in recipe}
         if item_kind == "audio":
-            audio.update(mode=task["capability"], prompt=prompt)
+            audio.update(mode=task["capability"], prompt=clean(recipe.get("prompt"))[:3000] or prompt)
         ext = HISTORY_EXTENSIONS[item_kind]
         for index, ref in enumerate(refs):
             if not isinstance(ref, str):
@@ -2074,6 +2089,8 @@ async def generation_history(req):
                           "created": task["finished"] or task["created"],
                           **({"source":"broll","broll_recipe":graphics} if graphics else {}),
                           **({"audio_recipe": audio} if item_kind == "audio" else {}),
+                          **({"audio_transcript":request["audio_transcript"]}
+                             if item_kind == "audio" and isinstance(request.get("audio_transcript"),dict) else {}),
                           **{key: history[key] for key in ("seed", "width", "height") if type(history.get(key)) is int}})
     if items:
         saved = {row["ref"] for row in db.q("SELECT ref FROM media_favorites WHERE user_id=? AND ref IN (SELECT value FROM json_each(?))",
@@ -2148,9 +2165,29 @@ async def update_media_favorite(req):
         data["audio_recipe"] = {key:clean(recipe.get(key))[:120] for key in ("voice","provider")}
         if isinstance(recipe.get("lyrics"),str):
             data["audio_recipe"]["lyrics"] = recipe["lyrics"][:3000]
-        data["audio_recipe"].update(mode="music" if recipe.get("mode")=="music" else "tts",prompt=data["prompt"])
+        mode = recipe.get("mode")
+        data["audio_recipe"].update(mode=mode if isinstance(mode,str) and mode in AUDIO_GENERATION_MODES else "tts",
+                                   prompt=clean(recipe.get("prompt"))[:3000] or data["prompt"])
         if type(recipe.get("speed")) in (int,float) and .5 <= recipe["speed"] <= 2:
             data["audio_recipe"]["speed"] = recipe["speed"]
+        if mode in ("tts","seed_audio") and recipe.get("subtitles") is True:
+            data["audio_recipe"]["subtitles"] = True
+        output = recipe.get("audio_format")
+        rate = recipe.get("sample_rate")
+        if isinstance(output,str) and output in film.AUDIO_OUTPUT_RATES and type(rate) is int and rate in film.AUDIO_OUTPUT_RATES[output]:
+            data["audio_recipe"].update(audio_format=output,sample_rate=rate)
+        pitch, gain = recipe.get("pitch_semitones"), recipe.get("gain")
+        if type(pitch) is int and -12 <= pitch <= 12:
+            data["audio_recipe"]["pitch_semitones"] = pitch
+        if type(gain) in (int,float) and .5 <= gain <= 2:
+            data["audio_recipe"]["gain"] = gain
+        if mode == "sfx":
+            if type(recipe.get("duration_seconds")) in (int,float) and .5 <= recipe["duration_seconds"] <= 30:
+                data["audio_recipe"]["duration_seconds"] = recipe["duration_seconds"]
+            if type(recipe.get("prompt_influence")) in (int,float) and 0 <= recipe["prompt_influence"] <= 1:
+                data["audio_recipe"]["prompt_influence"] = recipe["prompt_influence"]
+            if type(recipe.get("loop")) is bool:
+                data["audio_recipe"]["loop"] = recipe["loop"]
     label = clean(payload.get("label"))[:120] or path.stem
     db.run("INSERT OR IGNORE INTO media_favorites(user_id,ref,kind,label,data,created) VALUES(?,?,?,?,?,?)",
            user["id"],ref,kind,label,json.dumps(data,ensure_ascii=False),time.time())
@@ -3680,16 +3717,91 @@ def audio_routes(cap):
             if cap == "tts" and tts.available():
                 result.append({**route, "voices":tts.VOICES})
         elif (p["kind"], cap) in remote.ADAPTERS and p.get("secrets", {}).get("api_key"):
-            voices = [{"id":v,"name":name} for v,name in remote.MM_VOICES] if cap == "tts" else []
-            result.append({**route, "voices":voices})
+            if p["kind"] == "elevenlabs" and cap == "tts":
+                voices = providers.elevenlabs_voices(p["config"].get("voices", ""))
+                if not voices:
+                    continue
+                speed = [1,1] if route["model"] == "eleven_v3" else [.7,1.2]
+                result.append({**route,"voices":voices,"speed_range":speed,"subtitles":True})
+            elif cap == "seed_audio":
+                result.append({**route,"voices":[],"subtitles":True})
+            else:
+                voices = [{"id":v,"name":name} for v,name in remote.MM_VOICES] if cap == "tts" else []
+                result.append({**route, "voices":voices})
     return result
+
+
+def audio_service_options(cap):
+    return [{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"voices":r["voices"],
+             **{key:r[key] for key in ("speed_range","subtitles") if key in r}} for r in audio_routes(cap)]
+
+
+def seed_audio_bindings(board, user, raw, target_id):
+    if not isinstance(raw,list) or len(raw)>3:
+        raise bad("请选择最多 3 段参考音频或 1 张参考图")
+    assets, kinds = [], set()
+    nodes = {n["id"]:n for n in board.get("nodes",[])}
+    seen = set()
+    for item in raw:
+        if not isinstance(item,dict) or not all(isinstance(item.get(k),str) for k in ("node_id","ref")):
+            raise bad("参考素材格式无效")
+        ident, ref = item["node_id"], item["ref"]
+        source = nodes.get(ident)
+        if (not source or ident==target_id or source.get("type") not in ("audio","image") or
+                not any(v.get("ref")==ref for v in source.get("versions",[])) or ref in seen):
+            raise bad("参考素材已移除、重复或不是画布上的可用版本")
+        kind = source["type"]
+        seen.add(ref)
+        kinds.add(kind)
+        assets.append({"node_id":ident,"ref":ref,"kind":kind})
+    if len(kinds)>1 or kinds=={"image"} and len(assets)>1:
+        raise bad("参考音频和参考图不能混用，最多选择 1 张图")
+    require_media(user,seen)
+    return assets
+
+
+def seed_audio_reference_bytes(entries):
+    resolved = []
+    for entry in entries:
+        kind, ref = entry["kind"], entry["ref"]
+        path = tools.ref_path(COMFY_DIR,ref)
+        if not path.is_file() or path.stat().st_size>10_000_000:
+            raise ValueError("参考素材不存在或超过 10 MB")
+        ext = path.suffix.lower()
+        if kind == "image":
+            if ext not in (".jpg",".jpeg",".png",".webp"):
+                raise ValueError("参考图片须为 JPEG、PNG 或 WebP")
+            data = path.read_bytes()
+        else:
+            if ext not in tools.AUDIO_EXT or film.audio_duration(path)>30.001:
+                raise ValueError("单段参考音频须在 30 秒以内")
+            if ext in (".wav",".mp3"):
+                data = path.read_bytes()
+            else:
+                data, _, _ = film.transcription_wav(COMFY_DIR,{"ref":ref},audio_only=True)
+        if not data or len(data)>10_000_000:
+            raise ValueError("参考素材为空或超过 10 MB")
+        resolved.append({"kind":kind,"data":data})
+    return resolved
+
+
+def seed_audio_prompt(text, references):
+    count = sum(x["kind"]=="audio" for x in references)
+    tokens = {int(m) for m in re.findall(r"@音频(\d{1,4})(?!\d)",text)}
+    if any(i<1 or i>count for i in tokens):
+        raise bad("提示词引用了不存在的参考音频")
+    missing = [f"@音频{i}" for i in range(1,count+1) if i not in tokens]
+    effective = text + ("\n声音参考：" + "、".join(missing) if missing else "")
+    if len(effective)>3000:
+        raise bad("提示词加参考编号后不能超过 3000 字")
+    return effective
 
 
 @routes.post("/api/audio/generate")
 async def generate_audio(req):
     raw = await req.json()
-    if not isinstance(raw, dict) or raw.get("mode") not in ("tts","music"):
-        raise bad("请选择配音或音乐")
+    if not isinstance(raw, dict) or not isinstance(raw.get("mode"),str) or raw["mode"] not in AUDIO_GENERATION_MODES:
+        raise bad("请选择配音、音乐或音效")
     cap, bid, nid, attempt = (raw.get(k) for k in ("mode","board","node","request_key"))
     board = board_meta(board_path(bid))
     user = req["user"]
@@ -3701,7 +3813,7 @@ async def generate_audio(req):
         raise bad("音频任务编号格式无效")
     text = raw.get("prompt")
     if not isinstance(text, str) or not 1 <= len(text.strip()) <= 3000:
-        raise bad("请填写 1 到 3000 字的配音文案或音乐描述")
+        raise bad("请填写 1 到 3000 字的配音文案或声音描述")
     route = next((r for r in audio_routes(cap) if not raw.get("provider") or r["provider"]["id"] == raw["provider"]), None)
     if not route:
         return auth.err(503, "所选音频服务不可用，请检查控制台配置")
@@ -3716,15 +3828,57 @@ async def generate_audio(req):
         if not any(v["id"] == voice for v in route["voices"]):
             raise bad("请选择所选服务提供的音色")
         try:
-            speed = image_editor.number(raw.get("speed"), .5, 2, "语速", 1)
+            low, high = route.get("speed_range", (.5,2))
+            speed = image_editor.number(raw.get("speed"), low, high, "语速", 1)
         except ValueError as exc:
             raise bad(str(exc)) from None
         recipe.update(voice=voice,speed=speed)
-    else:
+        subtitles = raw.get("subtitles",False)
+        if type(subtitles) is not bool or subtitles and not route.get("subtitles"):
+            raise bad("所选配音服务不支持生成同步字幕")
+        if route.get("subtitles"):
+            recipe["subtitles"] = subtitles
+    elif cap == "music":
         lyrics = raw.get("lyrics","")
         if not isinstance(lyrics, str) or len(lyrics.strip()) > 3000:
             raise bad("歌词最多 3000 字")
         recipe["lyrics"] = lyrics.strip()
+    elif cap == "seed_audio":
+        recipe["references"] = seed_audio_bindings(board,user,raw.get("references",[]),nid)
+        seed_audio_prompt(recipe["prompt"],recipe["references"])
+        subtitles = raw.get("subtitles",False)
+        if type(subtitles) is not bool:
+            raise bad("字幕选项格式无效")
+        recipe["subtitles"] = subtitles
+    else:
+        duration, influence, loop = raw.get("duration_seconds"), raw.get("prompt_influence", .3), raw.get("loop", False)
+        if duration is not None and (type(duration) not in (int,float) or not .5 <= duration <= 30):
+            raise bad("音效时长须在 0.5–30 秒之间")
+        if type(influence) not in (int,float) or not 0 <= influence <= 1:
+            raise bad("提示词影响须在 0–1 之间")
+        if type(loop) is not bool:
+            raise bad("音效循环参数无效")
+        recipe.update(duration_seconds=duration,prompt_influence=influence,loop=loop)
+    output = raw.get("audio_format","source")
+    if not isinstance(output,str) or (output != "source" and output not in film.AUDIO_OUTPUT_RATES):
+        raise bad("请选择支持的音频输出格式")
+    if output != "source":
+        rates = film.AUDIO_OUTPUT_RATES[output]
+        rate = raw.get("sample_rate")
+        if rate is None:
+            rate = 44100 if 44100 in rates else rates[0]
+        if type(rate) is not int or rate not in rates:
+            raise bad("所选格式不支持这个采样率")
+        recipe.update(audio_format=output,sample_rate=rate)
+    pitch, gain = raw.get("pitch_semitones",0), raw.get("gain",1)
+    if type(pitch) is not int or not -12 <= pitch <= 12:
+        raise bad("音高须在 -12 至 +12 半音之间，并使用整数")
+    if type(gain) not in (int,float) or not .5 <= gain <= 2:
+        raise bad("音量须在 0.5 至 2 倍之间")
+    if pitch:
+        recipe["pitch_semitones"] = pitch
+    if gain != 1:
+        recipe["gain"] = gain
     jid = "t" + hashlib.sha256(f"{user['id']}:{bid}:{nid}:{attempt}".encode()).hexdigest()[:12]
     fingerprint = hashlib.sha256(json.dumps([recipe,model], sort_keys=True).encode()).hexdigest()
     if prior := db.one("SELECT request FROM tasks WHERE id=? AND user_id=?", jid, user["id"]):
@@ -3734,7 +3888,7 @@ async def generate_audio(req):
     if nid and any(j["state"] in ("queued","running") and (info:=j.get("meta",{})).get("board") == bid and
                    info.get("audio_node") == nid for j in JOBS.values()):
         return auth.err(409, "此音频节点已有任务")
-    mode = "配音" if cap == "tts" else "音乐生成"
+    mode = AUDIO_GENERATION_MODES[cap]
     label = clean(raw.get("label"))[:60] or mode
     meta = {"uid":user["id"],"board":bid,"audio_node":nid,"label":label,"provider":provider["name"],
             "model":model,"mode_name":mode,"est":10 if cap=="tts" else 60}
@@ -3758,19 +3912,48 @@ async def run_audio(app, job, provider, model, recipe):
                 result = await tts.say(COMFY_DIR,recipe["prompt"],recipe["voice"],recipe["speed"])
                 ref = result["ref"]
             else:
-                request = ({"text":recipe["prompt"],"voice":recipe["voice"],"speed":recipe["speed"]} if cap=="tts"
-                           else {"prompt":recipe["prompt"],"lyrics":recipe["lyrics"]})
+                if cap == "tts":
+                    request = {"text":recipe["prompt"],"voice":recipe["voice"],"speed":recipe["speed"]}
+                    if recipe.get("subtitles"):
+                        request["subtitles"] = True
+                elif cap == "seed_audio":
+                    refs = recipe["references"]
+                    request = {"prompt":seed_audio_prompt(recipe["prompt"],refs),"subtitles":recipe["subtitles"],
+                               "references":await asyncio.to_thread(seed_audio_reference_bytes,refs)}
+                else:
+                    keys = ("lyrics",) if cap == "music" else ("duration_seconds","prompt_influence","loop")
+                    request = {key:recipe[key] for key in ("prompt",*keys)}
                 result = await remote.run(app["http"],COMFY_DIR,provider,model,cap,request)
                 ref = result["files"][0]["ref"]
                 usage = {key:result[key] for key in ("cost","units") if result.get(key) is not None}
             if job.get("cancel"):
                 return
             path = tools.ref_path(COMFY_DIR,ref)
+            output = recipe.get("audio_format")
+            pitch, gain = recipe.get("pitch_semitones",0), recipe.get("gain",1)
+            if output or pitch or gain != 1:
+                original = path.suffix.lower().lstrip(".")
+                output = output or (original if original in film.AUDIO_OUTPUT_RATES else "wav")
+                target, ref = film._new(COMFY_DIR,"output","audio_export","."+output)
+                job["phase"] = "compositing"
+                await asyncio.to_thread(film.encode_audio_delivery,path,target,output,recipe.get("sample_rate"),
+                                        lambda:bool(job.get("cancel")),pitch=pitch,gain=gain)
+                path = target
             duration = await asyncio.to_thread(film.audio_duration,path)
-            if path.suffix.lower() not in tools.AUDIO_EXT or not math.isfinite(duration):
+            if path.suffix.lower() not in tools.AUDIO_EXT or not math.isfinite(duration) or duration <= 0:
                 raise ValueError("服务未返回可播放音频")
+            extra = {"audio_recipe":recipe}
+            if recipe.get("subtitles"):
+                cues = []
+                for cue in (result.get("captions") or [])[:film.CAPTION_LIMIT]:
+                    start = max(round(cue["start"],3),cues[-1]["end"] if cues else 0)
+                    end = min(round(duration,3),round(cue["end"],3))
+                    if end > start:
+                        cues.append({"start":start,"end":end,"text":cue["text"]})
+                if cues:
+                    extra["audio_transcript"] = {"start":0,"end":round(duration,3),"cues":cues}
             await complete_outputs(job,[{"ref":ref,"url":"/media?ref="+quote(ref,safe=""),"meta":{"duration":duration},
-                                        "extra":{"audio_recipe":recipe}}])
+                                        "extra":extra}])
             db.task_update(jid,**usage)
         except Exception as error:
             if not job.get("cancel"):
@@ -4105,7 +4288,8 @@ _following = False
 
 
 def job_from_log(row):
-    kind = {"tts":"audio","music":"audio","audio_separation":"audio","image":"image"}.get(row.get("capability"),"video")
+    cap = row.get("capability")
+    kind = "audio" if cap in AUDIO_GENERATION_MODES or cap == "audio_separation" else "image" if cap == "image" else "video"
     return {"id":row["id"], "kind":kind, "state":row["state"], "created":row.get("created") or time.time(),
             "meta":{"label":row.get("label"), "uid":row.get("user_id"), "board":row.get("board_id"),
                     "mode_name":(row.get("model") or "").replace("MiniMax-H3 ", "")}}
@@ -4120,6 +4304,7 @@ def restore_logged_job(app, row):
         except (ValueError, TypeError):
             refs = []
         outputs = []
+        request = task_settings(row.get("request"))
         for index, ref in enumerate(refs if isinstance(refs,list) else []):
             if not isinstance(ref, str):
                 continue
@@ -4135,6 +4320,11 @@ def restore_logged_job(app, row):
                 stem = stems[index]
             outputs.append({"ref":ref, "url":"/media?ref=" + quote(ref, safe=""),
                             "meta":media_info(path, job["kind"])})
+            if row.get("capability") in AUDIO_GENERATION_MODES:
+                extra = {key:request[source] for key,source in (("audio_recipe","recipe"),("audio_transcript","audio_transcript"))
+                         if isinstance(request.get(source),dict)}
+                if extra:
+                    outputs[-1]["extra"] = extra
             if stem:
                 outputs[-1]["extra"] = {"stem":stem}
             if draft := db.one("SELECT expires FROM video_drafts WHERE ref=? AND job_id=?", ref, jid):
@@ -4719,8 +4909,9 @@ async def capabilities(req):
                               for r in reference_routes()]
     out["segment_edit"] = [{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"draft":remote.supports_video_draft(r["provider"],r["model"])}
                            for r in reference_routes(segment_edit=True)]
-    out["audio_generation"] = {cap:[{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"voices":r["voices"]}
-                                   for r in audio_routes(cap)] for cap in ("tts","music")}
+    out["audio_generation"] = {cap:audio_service_options(cap) for cap in AUDIO_GENERATION_MODES}
+    out["audio_output"] = film.AUDIO_OUTPUT_RATES
+    out["audio_effects"] = True
     return web.json_response(out)
 
 

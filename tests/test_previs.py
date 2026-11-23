@@ -41,16 +41,23 @@ class PrevisIntegration(ChatFixture):
         self.assertIsNone(guide_node["job"])
         first_ref = guide["ref"]
 
-        revised = {**scene, "camera":[{**scene["camera"][0],"y":3}]}
+        imported = {"id":"prop","label":"导入道具","shape":"mesh","width":1,"height":1,"depth":1,
+                    "triangles":[[-.5,0,0,.5,0,0,0,1,0]],"keys":[{"t":0,"x":0,"y":0,"z":1,"yaw":0}]}
+        guide_node["data"]["previs"]["objects"].append(imported)
+        server.write_board(server.board_path("test"), board)
+
         async def edit(messages, _):
             recent = messages[max(i for i, m in enumerate(messages) if m["role"] == "user"):]
             results = {m["tool_call_id"]:json.loads(m["content"]) for m in recent if m["role"] == "tool"}
             if "stale" not in results:
-                return call("video_previs_save", {"node_id":nid,"scene_revision":"stale","scene":revised}, "stale")
+                return call("video_previs_save", {"node_id":nid,"scene_revision":"stale","scene":scene}, "stale")
             if "inspect" not in results:
                 return call("video_previs_get", {"node_id":nid}, "inspect")
             if "edit" not in results:
-                return call("video_previs_save", {"node_id":nid,"scene_revision":results["inspect"]["scene_revision"],"scene":revised}, "edit")
+                editable = results["inspect"]["scene"]
+                self.assertNotIn("triangles", editable["objects"][1])
+                editable["camera"][0]["y"] = 3
+                return call("video_previs_save", {"node_id":nid,"scene_revision":results["inspect"]["scene_revision"],"scene":editable}, "edit")
             if "render" not in results:
                 return call("video_previs_render", {"node_id":nid}, "render")
             return answer()
@@ -64,6 +71,7 @@ class PrevisIntegration(ChatFixture):
         self.assertEqual(guide_node["id"], nid)
         self.assertEqual([v["previs_recipe"]["camera"][0]["y"] for v in guide_node["versions"]], [2,3])
         self.assertNotEqual(guide_node["versions"][1]["ref"], first_ref)
+        self.assertEqual(guide_node["versions"][1]["previs_recipe"]["objects"][1]["triangles"], imported["triangles"])
 
         route = {"provider":{"id":"ark-assistant", "name":"方舟", "enabled":True, "kind":"ark",
                              "config":{"motion_origin":"https://studio.example"}, "secrets":{"api_key":"fixture"}},
@@ -105,9 +113,19 @@ class PrevisIntegration(ChatFixture):
             "camera":[{"t":0,"x":3,"y":2,"z":6,"tx":0,"ty":.8,"tz":0,"fov":38}],
             "objects":[{"id":"actor","label":"角色","shape":"figure","width":.8,"height":1.7,"depth":.6,
                         "keys":[{"t":0,"x":-1.5,"y":0,"z":0,"yaw":0},
-                                {"t":48,"x":1.5,"y":0,"z":0,"yaw":20,"ease":"smooth"}]}],
+                                {"t":48,"x":1.5,"y":0,"z":0,"yaw":20,"ease":"smooth"}]},
+                       {"id":"prop","label":"导入道具","shape":"mesh","width":2,"height":1.6,"depth":1,
+                        "triangles":[[-.5,0,0,.5,0,0,0,1,0]],
+                        "keys":[{"t":0,"x":0,"y":0,"z":1,"yaw":25}]}],
         }
         original = previs.validate(scene)
+        self.assertEqual(original["objects"][1]["triangles"], scene["objects"][1]["triangles"])
+        without_mesh = {**original, "objects":original["objects"][:1]}
+        self.assertNotEqual(previs.paint(original, 0, 200, 200).tobytes(),
+                            previs.paint(without_mesh, 0, 200, 200).tobytes())
+        too_large = {**scene["objects"][1], "triangles":scene["objects"][1]["triangles"] * 2001}
+        with self.assertRaisesRegex(ValueError, "2000"):
+            previs.validate({**scene, "objects":[too_large]})
         self.assertEqual(previs.sample(original["objects"][0]["keys"], 24, previs.POSE_FIELDS)["x"], 0)
         self.board["collaborators"] = {"8":"reviewer"}
         self.board["nodes"].append({"id":"n3","type":"video","name":"机位样片","data":{"previs":scene},"versions":[],"cur":-1})
