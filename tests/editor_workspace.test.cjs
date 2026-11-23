@@ -1283,6 +1283,25 @@ async function run(){
  vp.dispatchEvent(uploadDrop);`);
  await ready('B.nodes.some(n=>n.name==="dropped" && n.type==="video" && curV(n)?.ref.endsWith(".m4v"))',
   'dropping a generic binary M4V uploads it as a video');
+ const countBeforePaste=evaluate('B.nodes.length');
+ evaluate(`const makePaste=()=>{const event=new Event("paste",{bubbles:true,cancelable:true});
+  Object.defineProperty(event,"clipboardData",{value:{files:[
+    new File(["outline"],"现场记录.md",{type:"text/markdown"}),new File(["sound"],"对白",{type:"audio/wav"}),
+    new File(["video"],"剪辑.MKV"),new File(["ignored"],"unsupported.zip")]}});
+  return event;};
+ $("#prompt").dispatchEvent(makePaste());`);
+ equal(evaluate('B.nodes.length'),countBeforePaste,'paste in an editor preserves native behavior');
+ evaluate('vp.dispatchEvent(makePaste())');
+ await ready('B.nodes.some(n=>n.name==="剪辑" && n.type==="video" && curV(n)?.ref.endsWith(".mkv"))','mixed paste finishes');
+ equal(evaluate('B.nodes.slice(-3).map(n=>[n.type,n.name,n.data.text_format||null])'),
+  [['text','现场记录','markdown'],['audio','对白',null],['video','剪辑',null]],'supported files import in order');
+ equal(evaluate('B.nodes.at(-3).data.text'),'<b>吊车入镜</b>','document imports editable text');
+ equal(evaluate('$("#toast").textContent.includes("unsupported.zip")'),true,'mixed import identifies the unsupported file');
+ evaluate('undo()');
+ equal(evaluate('B.nodes.length'),countBeforePaste,'the entire import can be undone once');
+ evaluate('redo()');
+ equal(evaluate('B.nodes.length'),countBeforePaste+3,'redo restores all imported content');
+ evaluate('undo()');
  evaluate('ctxMenu({target:els.get(B.nodes.find(n=>n.name==="dropped").id),clientX:140,clientY:120})');
  equal(evaluate('!!$("#ctxMenu [data-a=remake]")'),true,'uploaded video exposes the remake entry point');
  const projectFetch=w.fetch, projectBoards=new Map([['btest',JSON.parse(JSON.stringify(evaluate('B')))]]), projectMembership=new Map();
@@ -1719,6 +1738,39 @@ async function run(){
  evaluate('$("#fmV").pause=$("#fmOriginal").pause=()=>{};closeFilm();openVideoExtension(clipSource);$("#videoExtension form").dispatchEvent(new Event("submit",{cancelable:true}));const nextScene=node([...sel][0]);');
  equal(evaluate('[nextScene.x>clipSource.x,videoReq(nextScene,"").extension,videoReq(nextScene,"").video_refs[0].start,videoReq(nextScene,"").video_refs[0].end]'),
    [true,'after',8,12],'the sequel uses the tail boundary and is placed after the original');
+ evaluate(`const tailAnchor=addNode("image",600,500,{}, {name:"本地续拍接点",versions:[
+   {ref:"output:h3studio/local-tail.png",capture:{source_node:clipSource.id,source_ref:sourceAtCreation,position:"last"}},
+   {ref:"output:h3studio/local-older-anchor.png",capture:{source_node:clipSource.id,source_ref:curV(clipSource).ref,position:"last"}}],cur:1});
+   const localTail=addNode("video",1000,500,{}, {name:"本地续拍结果",versions:[
+   {ref:"output:h3studio/local-sequel.mp4",url:"/media?ref=output%3Ah3studio%2Flocal-sequel.mp4",seconds:5.17,
+    video_recipe:{images:[{node_id:tailAnchor.id,ref:tailAnchor.versions[0].ref,time:0,role:"frame"}]}},
+   {ref:"output:h3studio/local-other.mp4",seconds:6}],cur:0});
+   ctxMenu({target:els.get(localTail.id),clientX:140,clientY:120});
+   $("#ctxMenu [data-a=extension-film]").click();`);
+ equal(evaluate('FILM.spec.clips.map(c=>c.ref)'),
+   [evaluate('sourceAtCreation'),'output:h3studio/local-sequel.mp4'],'local continuation uses the capture referenced by the recipe, not the current frame');
+ evaluate(`closeFilm();AC.board=boardId;
+   $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({nodes:[{id:localTail.id,type:"video",ref:curV(localTail).ref}]}));
+   switchVersion(localTail,1);
+   const continuationButton=$("#acMessages [data-extension-clip]");continuationButton.click();`);
+ equal(evaluate('[localTail.cur,FILM.spec.clips[1].ref]'),[1,'output:h3studio/local-sequel.mp4'],
+   'the assistant result opens that result version without changing the selected canvas Tab');
+ evaluate(`selectClip(1);$("#fmV").onloadedmetadata?.();
+   const editAt=(key,time)=>{$("#fmV").currentTime=time;
+    $("#fmTime").dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true}));};
+   editAt("q",1);editAt("e",4);editAt("c",2);`);
+ equal(evaluate('FILM.spec.clips.slice(1).map(c=>[c.in,c.out])'),[[1,2],[2,4]],
+   'trim and split shortcuts work in a continuation timeline from the focused playhead control');
+ evaluate(`closeFilm();continuationButton.closest(".ac-results").remove();
+   const prologueInput={source_node:clipSource.id,source_ref:sourceAtCreation,position:"first"};
+   tailAnchor.versions[0].capture=prologueInput;
+   const localPrologue={video_recipe:{planned:true,duration:124/24,images:[
+      {node_id:tailAnchor.id,ref:tailAnchor.versions[0].ref,time:5,role:"frame"}]}};
+ `);
+ equal(evaluate('extensionInput(localPrologue)?.direction'),'before','a locally generated tail anchor is recognized as a prologue');
+ equal(evaluate('extensionInput({video_recipe:{images:[{...localPrologue.video_recipe.images[0],role:"subject"}]}})'),
+   null,'a captured image used as an appearance reference does not create a continuation');
+ evaluate('B.nodes=B.nodes.filter(n=>n!==localTail&&n!==tailAnchor);rebuild();updateSel();');
  console.log('Extension DOM passed: head/tail mode, pinned boundary, directional placement and ordered timeline.');
  evaluate(`CAPS_LIST.segment_edit=[{id:"fixture-edit",name:"片段编辑服务",model:"doubao-seedance-2-5-fixture"}];
    openSegmentEditor(clipSource);const segForm=$("#videoSegment form");
@@ -2180,6 +2232,21 @@ async function run(){
    'playlist downloads deduplicate originals in timeline order');
  assert.match(archiveNames[0],/原片\.zip$/);
  w.fetch=playlistFetch;w.URL.createObjectURL=archiveUrl;w.URL.revokeObjectURL=archiveRevoke;w.HTMLAnchorElement.prototype.click=archiveClick;
+ const directDownloads=[], savedPlaylistBefore=evaluate('JSON.stringify(savedPlaylist)');
+ const rendersBeforeDownload=timelineRequests.length;
+ w.HTMLAnchorElement.prototype.click=function(){directDownloads.push([this.download,this.getAttribute("href")]);};
+ evaluate('$("#fmDownloadMerged").click()');
+ await ready('$("#fmDownloadStatus").textContent.includes("浏览器下载")','playlist download starts');
+ evaluate('closeFilm();nodeAction(savedPlaylist,"playlist-open");$("#fmDownloadMerged").click()');
+ await ready('$("#fmDownloadStatus").textContent.includes("浏览器下载")','playlist download can be repeated from its saved task');
+ equal(timelineRequests.length,rendersBeforeDownload+1,'identical download requests reuse the finished render');
+ equal(timelineRequests.at(-1).spec.clips.map(({in:from,out})=>[from,out]),[[0,2],[2,4],[0,null]],
+   'the downloaded render uses the edited timeline ranges');
+ equal(directDownloads.length,2,'both download requests hand off an MP4');
+ assert.match(directDownloads[0][0],/\.mp4$/);
+ assert.match(directDownloads[0][1],/timeline-edit\.mp4$/);
+ equal(evaluate('JSON.stringify(savedPlaylist)'),savedPlaylistBefore,'direct download leaves the playlist node and versions untouched');
+ w.HTMLAnchorElement.prototype.click=archiveClick;
  evaluate(`closeFilm();B.access="reviewer";nodeAction(savedPlaylist,"playlist-open");`);
  equal(evaluate('[$("#film").classList.contains("playlist-review"),$("#fmSaveList").hidden,$("#fmGo").disabled]'),
    [true,true,true],'reviewers can preview saved playlists without modification controls');
@@ -2485,6 +2552,20 @@ async function run(){
  const mentionNodeId=evaluate('exactMentionNode.id');
  assert.ok(evaluate('mentionInput.value').includes(`「对齐引用首帧」（${mentionNodeId}）`));
  assert.match(evaluate('$("#acRefs").textContent'),/版本 1 · 已指定/);
+ assert.match(evaluate('$("#acRefs img").src'),/mention-v1\.png$/);
+ evaluate(`const setReferenceVersion=value=>{
+  const picker=$("#acRefs [data-reference-version]");picker.focus();picker.value=value;
+  picker.dispatchEvent(new Event("change",{bubbles:true}));
+ };setReferenceVersion("");`);
+ equal(evaluate('[AC.referencePins.has(exactMentionNode.id),$("#acRefs [data-reference-version]").value]'),
+  [false,''],'version selector can return to the current canvas version');
+ assert.match(evaluate('$("#acRefs img").src'),/mention-v2\.png$/);
+ evaluate('switchVersion(exactMentionNode,0)');
+ assert.match(evaluate('$("#acRefs img").src'),/mention-v1\.png$/,'following the canvas refreshes the thumbnail immediately');
+ evaluate('switchVersion(exactMentionNode,1)');
+ evaluate('setReferenceVersion("0")');
+ equal(evaluate('[exactMentionNode.cur,document.activeElement.dataset.referenceVersion]'),
+  [1,mentionNodeId],'explicit reference changes preserve the canvas version and picker focus');
  evaluate('$("#acSend").click()');
  await ready('!AC.sending && !AC.referencePins.size','the sent draft clears its pinned version');
  equal(pinnedReferenceMessage.selected,[mentionNodeId],'same-name nodes remain unambiguous');

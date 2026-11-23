@@ -22,6 +22,10 @@
 #assetLibrary #alFolders button { white-space: nowrap; flex: none; }
 #assetLibrary [aria-pressed=true]#alFileMode, #assetLibrary #alFolders [aria-pressed=true] { background: #424249; color: #fff; border-color: #666673; }
 #alFolderEditor:not(:empty), #alFileActions:not([hidden]) { width: 100%; }
+#alFileActions { flex-wrap:wrap; }
+#assetLibrary #assetTransferPanel { left:clamp(16px,8vw,86px); }
 #alFolderEditor input { padding: 6px; min-width: 0; border: 1px solid var(--line2); border-radius: 7px; background: var(--card); color: var(--text); }
 .al-card { position: relative; }
+#assetLibrary.al-dragging { opacity:0; pointer-events:none; }
+.al-card[draggable=true] .al-cover { cursor:grab; }
 .al-file-check { position: absolute; z-index: 1; right: 7px; bottom: 40px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--card-hi); border: 1px solid var(--line2); }

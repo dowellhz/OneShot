@@ -189,8 +189,9 @@ def register(tool, prop, node, prompt):
                      "replacement":replacement},additionalProperties=False)
     tool("video_generate", "生成真正的视频（MP4）。frames 支持首尾帧、关键帧和人物设定；提供已渲染的 previs 时，图片作为外观参考，白模控制运镜和走位。", {
         **options, "frames": prop("array", items=frame, maxItems=30), "previs":guide, "audio_refs":sounds, "video_refs":clips}, ["prompt"])
-    tool("video_extend", "生成接在现有视频之前或之后的新镜头，使用原片的连续画面。node_id 指原视频；version 省略时使用本轮选择的视频版本。direction 为 before 补拍片头或 after 续拍片尾。可加入角色图、音频等辅助素材。", {
+    tool("video_extend", "生成接在现有视频之前或之后的新镜头。method 默认 auto，有支持的连续参考服务时使用原片连续画面，否则在本地 H3 以接点帧接拍。method=frame 指定本地接拍，method=motion 指定连续画面参考。node_id 指原视频，version 省略时使用本轮所选版本；before 补拍片头，after 续拍片尾。", {
         **options, **guide["properties"], "direction":prop("string", enum=["before","after"]),
+        "method":prop("string", enum=["auto","frame","motion"]),
         "frames":prop("array", items=frame, maxItems=30), "audio_refs":sounds, "video_refs":clips}, ["node_id","direction","prompt"])
     tool("video_edit_segment", "编辑原片的指定范围（4 到 30 秒），结果放在相连的新节点。普通修改提供 prompt；重拍提供 camera_plan；框选物体用 object_edit，须有明确的原片秒数 at 和归一化框 [左,上,右,下]。替换参考用 replacement 的图片节点或资产ID。", {
         "node_id":node,"version":guide["properties"]["version"],"prompt":prompt,"provider":options["provider"],"name":node,"draft":options["draft"],
@@ -229,8 +230,9 @@ def register(tool, prop, node, prompt):
     tool("video_capture_frame", "把视频的首帧、末帧或指定时间的画面保存成相连的图片节点。position 为 first、last 或 time；仅 time 需要 at（原视频秒数）。返回真实图片节点，可以在后续生成用作首帧或参考图。", {
         **guide["properties"], "position":prop("string", enum=["first","last","time"]),
         "at":prop("number", minimum=0), "name":node}, ["node_id","position"])
-    tool("video_regenerate", "在同一节点重新生成并追加版本。可选 version 指定旧版，默认沿用当前引用。可用 replacements 替换关键帧，或传入 object_edit 中需要更新的字段，其他框选和参考沿用所选版本。", {
+    tool("video_regenerate", "在同一节点重新生成并追加版本。可选 version 指定旧版。省略 frames 时沿用所选版本的图片；只换个别输入用 replacements，重新指定整组图片用 frames，两者不可同传。物体框选等其他设置仍沿用所选版本。", {
         **options, **guide["properties"], "previs":guide, "audio_refs":sounds, "video_refs":clips, "camera_plan":camera, "object_edit":object_plan,
+        "frames":prop("array",items=frame,maxItems=30),
         "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
     def track(fields):
@@ -772,6 +774,31 @@ async def capture_video_frame(s, run, user, cid, args):
     return result
 
 
+async def local_extension_inputs(s, run, user, cid, args, source, frames):
+    if args.get("audio_refs") or args.get("video_refs") or args.get("draft"):
+        raise ValueError("本地接点续拍支持图片参考。请移除音视频参考与样片模式，或选择连续画面服务。")
+    direction = args["direction"]
+    role = "last" if direction == "before" else "first"
+    if any(frame.get("role") == role for frame in frames):
+        raise ValueError("该接点会自动采用原片画面，请移除重复的首帧或尾帧")
+    duration = args.get("duration", 5)
+    if not 2 <= duration <= 15 or len(frames) >= 12:
+        raise ValueError("本地接点续拍支持 2–15 秒，最多 11 张附加参考图")
+    provider = next((p for p in s.host.providers.all_providers() if p["kind"] == "local_h3" and p["enabled"]
+                     and (not args.get("provider") or args["provider"] == p["id"])), None)
+    if not provider:
+        raise ValueError("本地接点续拍需要启用本地 H3 视频服务")
+    s.check_generation_budget(run,"video",1)
+    s.validate_external_task(run)
+    for frame in frames:
+        s.source(run,user,frame["node_id"])
+    capture = await capture_video_frame(s, run, user, cid+"_anchor", {
+        "node_id":source["node_id"], "version":source["version"], "position":"first" if direction=="before" else "last"})
+    image = capture["nodes"][0]
+    anchor = {"node_id":image["id"], "role":role, "ref":image["ref"]}
+    return [*frames, anchor], provider["id"]
+
+
 def resolve_canvas_prompt(prompt, images, sounds=(), clips=(), *, guide=False, special=False):
     slots = {}
     for tag, inputs in (("图",images),("音",sounds),("视频",clips)):
@@ -877,10 +904,19 @@ async def execute(s, run, user, cid, name, args):
     frames, data, original, guide_edge = args.get("frames", []), {}, None, None
     sound_edges, clip_edges, extension, segment = [], [], None, False
     prompt = args.get("prompt", "")
-    if name=="video_extend":
-        extension=args["direction"]
-        first={key:args[key] for key in ("node_id","version") if key in args}
-        args={**args,"video_refs":[first, *args.get("video_refs",[])]}
+    if name == "video_extend":
+        first = {key:args[key] for key in ("node_id","version") if key in args}
+        method = args.get("method","auto")
+        source, _ = reference_version(s,run,user,first,kind="clip")
+        if not prompt.strip():
+            raise ValueError("请提供续拍的动作要求")
+        if method == "frame" or (method == "auto" and not args.get("provider") and
+                not s.host.reference_routes(require_motion=True)):
+            frames, provider = await local_extension_inputs(s,run,user,cid,args,source,frames)
+            args = {**args,"provider":provider,"duration":s.host.engine_video_frames(args.get("duration",5))/24}
+        else:
+            extension = args["direction"]
+            args = {**args,"video_refs":[{**first,"version":source["version"]}, *args.get("video_refs",[])]}
     if name=="video_edit_segment":
         segment=True
         first={key:args[key] for key in ("node_id","version","start","end") if key in args}
@@ -916,6 +952,12 @@ async def execute(s, run, user, cid, name, args):
             if recipe.get("ar") and not guide_edge and not args.get("previs"):
                 data["aspect"] = str(recipe["ar"]) + ":1"
         replacements = args.get("replacements", [])
+        if "frames" in args:
+            if replacements:
+                raise ValueError("请任选一种图片调整方式：用 frames 指定整组参考，或用 replacements 替换个别输入")
+            slots={frame["node_id"]:frame["prompt_slot"] for frame in frames if frame.get("prompt_slot")}
+            frames=[{**frame,**({"prompt_slot":slots[frame["node_id"]]} if frame["node_id"] in slots else {})}
+                    for frame in args["frames"]]
         if len({r["from_node_id"] for r in replacements}) != len(replacements):
             raise ValueError("同一关键帧不能重复替换")
         mapping = {r["from_node_id"]: r["to_node_id"] for r in replacements}
@@ -1025,7 +1067,10 @@ async def execute(s, run, user, cid, name, args):
                 target_data.pop(prop, None)
         if args.get("prompt"):
             target_data.update(prompt=args["prompt"], pmode="free")
-    return await s.submit_generation(run, user, cid, payload, args.get("name") or (original.get("name", "视频") + " · 重生成" if original else "助手视频"),
+    label = original.get("name", "视频") + " · 重生成" if original else "助手视频"
+    if name == "video_extend":
+        label = (source.get("name") or "视频") + (" · 补拍片头" if args["direction"] == "before" else " · 续拍片尾")
+    return await s.submit_generation(run, user, cid, payload, args.get("name") or label[:80],
                                      s.host.generate_request, target_id=original["id"] if original else None, target_data=target_data)
 
 

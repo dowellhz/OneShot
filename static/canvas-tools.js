@@ -131,10 +131,10 @@ function ctDownloadable(nodes) {
     .map(n=>curV(n)?.ref).filter(Boolean))];
 }
 
-function ctTransferPanel() {
+function ctTransferPanel(host) {
   const panel=$("#assetTransferPanel");
   const activeDialog=document.querySelector("dialog[open]:focus-within");
-  const parent=activeDialog||document.body;
+  const parent=host||activeDialog||document.body;
   if(panel.parentNode!==parent)parent.appendChild(panel);
   if(activeDialog&&!activeDialog._assetTransferClose){
     activeDialog._assetTransferClose=true;
@@ -146,10 +146,10 @@ function ctTransferPanel() {
   return panel;
 }
 
-async function downloadAssetRefs(refs, filename, {prepare}={}) {
+async function downloadAssetRefs(refs, filename, {prepare,host}={}) {
   if(ctDownloading)throw new Error("已有一项素材正在打包或下载");
   ctDownloading=true;ctRenderSelectionTools();
-  const panel=ctTransferPanel(), state=$("[data-transfer-state]",panel), name=$("[data-transfer-name]",panel);
+  const panel=ctTransferPanel(host), state=$("[data-transfer-state]",panel), name=$("[data-transfer-name]",panel);
   const progress=$("progress",panel), close=$("[data-transfer-close]",panel);
   close.hidden=true;
   state.textContent="正在准备素材";

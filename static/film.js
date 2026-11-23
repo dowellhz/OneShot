@@ -20,7 +20,8 @@ function saveFilmDraft(F = FILM) {
   const clip = F.spec.clips[F.sel];
   const offset = clip ? Math.max(0, Math.min(clipLen(clip), filmClipOffset(F))) : 0;
   const spec = {...F.spec, clips:F.spec.clips.map(({src_len, ...c}) => c)};
-  const state = JSON.stringify({spec, sel:F.sel, offset:Math.round(offset * 4) / 4, node:F.n?.id, target:F.target, attempt:F.attempt,playlistBase:F.playlistBase});
+  const state = JSON.stringify({spec, sel:F.sel, offset:Math.round(offset * 4) / 4, node:F.n?.id, target:F.target,
+    attempt:F.attempt,downloadExport:F.downloadExport,playlistBase:F.playlistBase});
   if (state === F.saved) return;
   try {
     localStorage.setItem(F.key, state);
@@ -122,11 +123,14 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
   if (playlistBase && (saved?.playlistBase !== playlistBase || !canvasCanEdit())) saved = null;
   if (saved?.spec?.clips?.length || playlistBase && Array.isArray(saved?.spec?.clips)) spec = saved.spec;
   const sel = Math.max(0, Math.min(spec.clips.length - 1, saved?.sel || 0));
-  FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, attempt:saved?.attempt,playlistBase};
+  FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, attempt:saved?.attempt,
+    downloadExport:saved?.downloadExport,playlistBase};
   $("#fmHeading").textContent = playlistBase ? n.name : "成片编辑";
   $("#film").classList.toggle("playlist-review",!!playlistBase && !canvasCanEdit());
   $("#fmSaveList").hidden = !playlistBase || !canvasCanEdit();
   $("#fmPlaylistSources").hidden = !playlistBase;
+  $("#fmDownloadMerged").hidden = !playlistBase || !canvasCanEdit();
+  $("#fmDownloadStatus").textContent = "";
   $("#fmGo").textContent = target ? "导出为新版本" : "导出成片";
   $("#fmGo").disabled = !canvasCanEdit();
   $("#film").classList.add("on");
@@ -148,6 +152,7 @@ function renderFilm() {
   const F = FILM, s = F.spec, total = filmTotal(s);
   const playlist = !!F.n?.data.playlist, editable = canvasCanEdit();
   if (playlist) $("#fmGo").disabled = !editable || F.busy || !s.clips.length;
+  $("#fmDownloadMerged").disabled = !editable || F.busy || !s.clips.length;
   $("#fmAll").disabled = !s.clips.length;
   $("#fmPlaylistSources").disabled = !s.clips.length;
   $("#fmTotal").textContent = `${s.clips.length} 段 · ${total.toFixed(1)} 秒`;
@@ -162,12 +167,14 @@ function renderFilm() {
         ${preview || ""}
         <div class="fl"><b>${i + 1}</b> ${esc(c.name || m?.name || "已删除")}<span>${L.toFixed(1)}s</span></div>
         ${lines.length && s.subtitles ? `<div class="fs">${esc(lines[0])}${lines.length > 1 ? " …" : ""}</div>` : ""}
+        ${editable&&c.kind!=="image"?'<span class="fm-trim-edge" data-trim-edge="in" title="拖动入点" aria-hidden="true"></span><span class="fm-trim-edge" data-trim-edge="out" title="拖动出点" aria-hidden="true"></span>':""}
         <button class="x" title="从成片中移除">×</button></div>` +
       (i + 1 < s.clips.length ? `<button class="ft" data-i="${i}" title="点击切换转场">${TRANS_CN[c.trans] || "硬切"}</button>` : "");
   }).join("") + `<button class="fadd" title="添加画布上的图片或视频">＋ 添加片段</button>`;
   $$(".fc", tl).forEach(el => {
     const i = +el.dataset.i;
-    el.onclick = e => { if (e.target.closest(".x")) return; selectClip(i); };
+    el.onclick = e => { if (e.target.closest(".x,[data-trim-edge]")) return; selectClip(i); };
+    for(const handle of $$("[data-trim-edge]",el))bindFilmTrimEdge(F,i,handle);
     $(".x", el).onclick = () => { if (s.clips.length <= 1 && !playlist) return toast("至少保留一段"); s.clips.splice(i, 1); F.sel = Math.max(0,Math.min(F.sel,s.clips.length-1)); renderFilm(); selectClip(F.sel); saveFilmDraft(F); };
     el.addEventListener("dragstart", e => { e.dataTransfer.setData("text/x-clip", String(i)); el.classList.add("drag"); });
     el.addEventListener("dragend", () => el.classList.remove("drag"));
@@ -512,6 +519,58 @@ function filmSubtitleCues(lines, length) {
     return cue;
   });
 }
+function filmTrimBounds(c) {
+  const length=filmMediaLength(c);
+  const start=c.remake_shot?c.remake_shot.start-c.audio_start:0;
+  const end=c.remake_shot?Math.min(length,c.remake_shot.end-c.audio_start):
+    c.audio_ref?Math.min(length,c.audio_seconds-c.audio_start):length;
+  const minimum=Math.min(c.remake_shot||c.tight?1/RM_FPS:.5,Math.max(0,end-start));
+  return {start,end,minimum,length};
+}
+function filmTrimPoint(c,side,value,bounds=filmTrimBounds(c)) {
+  const point=c.remake_shot||c.tight?Math.round(value*RM_FPS)/RM_FPS:+value.toFixed(2);
+  return side==="in"?Math.max(bounds.start,Math.min(point,(c.out??bounds.end)-bounds.minimum)):
+    Math.min(bounds.end,Math.max(point,(c.in||0)+bounds.minimum));
+}
+function setFilmTrim(c,side,point,bounds=filmTrimBounds(c)) {
+  c[side]=side==="out"&&!c.remake_shot&&!c.tight&&point>=bounds.length-.05?null:point;
+}
+function bindFilmTrimEdge(F,index,handle) {
+  const side=handle.dataset.trimEdge,clip=F.spec.clips[index];
+  let drag;
+  handle.onpointerdown=event=>{
+    if(event.button!==0 || drag || FILM!==F || F.busy || !canvasCanEdit())return;
+    const width=handle.parentElement.getBoundingClientRect().width;
+    const seconds=clipLen(clip)*filmSpeed(clip);
+    if(!(width>0 && seconds>0))return;
+    const bounds=filmTrimBounds(clip),point=side==="in"?clip.in||0:clip.out??bounds.end;
+    event.preventDefault();event.stopPropagation();
+    handle.setPointerCapture(event.pointerId);
+    drag={id:event.pointerId,x:event.clientX,point,scale:seconds/width,width,bounds};
+    playAll=false;
+    const player=$("#fmV");
+    if(!player.paused)player.pause();
+  };
+  const pointAt=event=>filmTrimPoint(clip,side,drag.point+(event.clientX-drag.x)*drag.scale,drag.bounds);
+  handle.onpointermove=event=>{
+    if(event.pointerId!==drag?.id)return;
+    const point=pointAt(event),dx=(point-drag.point)/drag.scale;
+    handle.style.translate=Math.max(-drag.width,Math.min(dx,drag.width))+"px";
+    handle.dataset.trimTime=point.toFixed(2)+" 秒";
+  };
+  const finish=event=>{
+    if(event.pointerId!==drag?.id)return;
+    const point=pointAt(event), bounds=drag.bounds;
+    const moved=Math.abs(point-drag.point)>.0001;
+    drag=null;
+    handle.style.translate="";
+    delete handle.dataset.trimTime;
+    if(event.type!=="pointerup" || !moved || FILM!==F || F.spec.clips[index]!==clip || !canvasCanEdit())return;
+    setFilmTrim(clip,side,point,bounds);
+    renderFilm();selectClip(index,side==="in"?0:Math.max(0,clipLen(clip)-1/FILM_FPS));saveFilmDraft(F);
+  };
+  handle.onpointerup=handle.onpointercancel=handle.onlostpointercapture=finish;
+}
 function splitFilmClip(F, clip, position) {
   const start = clip.in || 0, end = clip.out ?? filmMediaLength(clip), speed = filmSpeed(clip);
   // Snap to the rendered timeline so splitting a retimed clip keeps its export length.
@@ -586,14 +645,11 @@ async function transcribeFilmClip(F, clip, button) {
 function renderClipBox() {
   const F = FILM, c = F.spec.clips[F.sel], box = $("#fmClip"), L = filmMediaLength(c), out = c.out ?? L;
   const isStill = c.kind === "image";
-  const baseIn = c.remake_shot ? c.remake_shot.start - c.audio_start : 0;
-  const baseOut = c.remake_shot ? Math.min(L, c.remake_shot.end - c.audio_start)
-    : c.audio_ref ? Math.min(L, c.audio_seconds - c.audio_start) : L;
-  const minLength = Math.min(c.remake_shot || c.tight ? 1 / RM_FPS : .5, Math.max(0, baseOut - baseIn));
+  const bounds=filmTrimBounds(c),{start:baseIn,end:baseOut}=bounds;
   const volumeLabel = c.audio_ref ? "原片音量" : "原声音量";
   const seekStep = c.remake_shot || c.tight ? 1 / RM_FPS : .1;
   const updateLabel = c.remake_shot ? "更新这一镜" : "更新素材版本";
-  const trimControls = isStill ? "" : '<button class="pill" data-a="in">从这里开始</button><button class="pill" data-a="out">到这里结束</button><button class="pill" data-a="reset">恢复完整</button><button class="pill" data-split-clip>在播放头分割</button>' +
+  const trimControls = isStill ? "" : '<button class="pill" data-a="in" title="从这里开始 (Q)" aria-keyshortcuts="Q">从这里开始</button><button class="pill" data-a="out" title="到这里结束 (E)" aria-keyshortcuts="E">到这里结束</button><button class="pill" data-a="reset">恢复完整</button><button class="pill" data-split-clip title="在播放头分割 (C)" aria-keyshortcuts="C">在播放头分割</button>' +
     (canvasCanEdit() ? '<button class="pill" data-film-capture>截帧到画布</button>' : "");
   const captionBusy = F.captionRequests?.has(c);
   const captions = c.captions ? `<div class="fm-captions" aria-label="时间码字幕">
@@ -677,14 +733,7 @@ function renderClipBox() {
     };
     return;
   }
-  const trim = (k, value) => {
-    const time = c.remake_shot || c.tight ? Math.round(value * RM_FPS) / RM_FPS : +value.toFixed(2);
-    if (k === "in") c.in = Math.max(baseIn, Math.min(time, (c.out ?? baseOut) - minLength));
-    else {
-      c.out = Math.min(baseOut, Math.max(time, (c.in || 0) + minLength));
-      if (!c.remake_shot && !c.tight && c.out >= L - .05) c.out = null;
-    }
-  };
+  const trim = (k,value) => setFilmTrim(c,k,filmTrimPoint(c,k,value,bounds),bounds);
   $$("input[data-t]", box).forEach(r => r.oninput = () => {
     const k = r.dataset.t;
     trim(k, +r.value);
@@ -694,7 +743,7 @@ function renderClipBox() {
     const a = b.dataset.a;
     if (a === "reset") { c.in = baseIn; c.out = c.remake_shot || c.audio_ref ? baseOut : null; }
     else trim(a, vid.currentTime);
-    renderClipBox(); refreshTimelineLabels();
+    renderClipBox(); refreshTimelineLabels();saveFilmDraft(F);
   });
   const vr = $(".vol input", box); vr.oninput = () => { c.volume = +vr.value; vr.nextElementSibling.textContent = Math.round(c.volume * 100) + "%"; vid.volume = Math.min(1, c.volume); syncFilmOriginal(); };
   const speed = $("[data-clip-speed]", box);
@@ -840,23 +889,67 @@ function addClipMenu(e) {
 }
 
 // ---- export: create / update the film node and render it as a job
-async function exportFilm() {
+async function exportFilm(downloadOnly=false) {
   const F = FILM;
   if (!F || F.busy || !canvasCanEdit()) return;
   if (!F.spec.clips.length) return toast("先添加视频片段");
   if (F.captionRequests?.size) return toast("请等待字幕识别完成后再导出");
-  if (F.n?.job) return toast("此成片仍在导出，请稍候");
+  if (!downloadOnly && F.n?.job) return toast("此成片仍在导出，请稍候");
   F.busy = true;
-  $("#fmGo").disabled = true;
-  try { await submitFilm(F); }
-  catch (error) { toast("导出失败：" + error.message, 5000); }
+  $("#fmGo").disabled = $("#fmDownloadMerged").disabled = true;
+  if(downloadOnly)$("#fmDownloadStatus").textContent="正在检查剪辑内容…";
+  try { await submitFilm(F,downloadOnly); }
+  catch (error) {
+    if(FILM!==F)return;
+    if(downloadOnly)$("#fmDownloadStatus").textContent=error.message;
+    toast("导出失败：" + error.message, 5000);
+  }
   finally {
     F.busy = false;
-    if (!FILM || FILM === F) $("#fmGo").disabled = !canvasCanEdit();
+    if (FILM === F) $("#fmGo").disabled = $("#fmDownloadMerged").disabled = !canvasCanEdit() || !F.spec.clips.length;
   }
 }
 
-async function submitFilm(F) {
+function filmExportKey() {
+  return crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,"0")).join("");
+}
+
+async function downloadFilmRender(F,spec) {
+  const label=F.n.name;
+  const active=()=>FILM===F && F.board===boardId && canvasCanEdit();
+  const status=$("#fmDownloadStatus"), fingerprint=JSON.stringify(spec);
+  if(F.downloadExport?.fingerprint!==fingerprint)F.downloadExport={fingerprint,key:filmExportKey()};
+  const pending=F.downloadExport;
+  saveFilmDraft(F);
+  if(!pending.id){
+    const response=await api("/api/render",{spec,board:F.board,label:label+" · 下载",request_key:pending.key});
+    if(!active())return;
+    pending.id=response.ids[0];
+    saveFilmDraft(F);
+  }
+  while(active()){
+    const job=(await boardRequest("/api/jobs?ids="+encodeURIComponent(pending.id)))[pending.id];
+    if(!active())return;
+    if(!job || job.state==="error" || job.state==="done"&&!job.outputs?.[0]?.ref){
+      F.downloadExport=null;
+      saveFilmDraft(F);
+      throw new Error(job?.error || "成片文件不可用，请重新下载");
+    }
+    if(job.state==="done"){
+      const ref=job.outputs?.[0]?.ref;
+      const anchor=document.createElement("a");
+      anchor.href=ewRefUrl(ref);
+      anchor.download=label+".mp4";
+      document.body.append(anchor);anchor.click();anchor.remove();
+      status.textContent="成片已发送到浏览器下载";
+      return;
+    }
+    status.textContent=job.state==="running"&&job.max>0?`正在合成 · ${Math.min(100,Math.round((job.value||0)*100/job.max))}%`:"等待合成…";
+    await sleep(750);
+  }
+}
+
+async function submitFilm(F,downloadOnly=false) {
   const s = vtClone(F.spec);
   const clips = s.clips.map(c => ({ c, v: filmVersion(c) }));
   const missing = clips.findIndex(x => !x.v);
@@ -897,6 +990,7 @@ async function submitFilm(F) {
     if (FILM !== F || F.board !== boardId) return;
   }
   spec.narration = narration();
+  if(downloadOnly)return downloadFilmRender(F,spec);
   const target = F.target;
   let n = target ? node(target.id) : F.n && node(F.n.id);
   const versionIndex = target ? n?.versions.findIndex(v => v.ref === target.ref) : -1;
@@ -918,8 +1012,7 @@ async function submitFilm(F) {
   } else if (!target) n.data.film = keep;
   const fingerprint = JSON.stringify(spec);
   if (F.attempt?.fingerprint !== fingerprint) {
-    const key = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,"0")).join("");
-    F.attempt = {key, fingerprint};
+    F.attempt = {key:filmExportKey(), fingerprint};
   }
   saveFilmDraft(F);
   const filmNodeId = n.id;
@@ -1016,6 +1109,8 @@ function initFilm() {
 #film.playlist-review :is(#fmSet,#fmTl .x,#fmTl .fadd,#fmTl .ft,#fmClip .trim,#fmClip .row2,#fmClip .fm-caption-actions,#fmClip button:not([data-playlist-locate])) { display:none; }
 #film .hd { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 #film .hd b { font-size: var(--fs-heading); } #film .hd .dim, #film .dim { color: var(--dim); font-size: var(--fs-small); }
+#fmDownloadStatus:empty { display:none; }
+@media (max-width:950px) { #film .hd { flex-wrap:wrap; gap:6px; } }
 #film .main { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 16px 18px 8px; }
 #film .pv { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 #film .scr { position: relative; flex: 1; min-height: 0; background: #000; border-radius: 12px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
@@ -1064,6 +1159,14 @@ function initFilm() {
 #fmTl .fc { position: relative; flex: none; height: 104px; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid transparent; cursor: pointer; }
 #fmTl .fc.on { border-color: var(--c-video); } #fmTl .fc.over { border-color: var(--blue); } #fmTl .fc.drag { opacity: .4; }
 #fmTl .fc :is(video, img) { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+#fmTl .fm-trim-edge { position:absolute; top:25px; bottom:25px; width:16px; z-index:1; display:grid; place-items:center; cursor:ew-resize; touch-action:none; }
+#fmTl .fm-trim-edge[data-trim-edge=in] { left:0; }
+#fmTl .fm-trim-edge[data-trim-edge=out] { right:0; }
+#fmTl .fm-trim-edge::after { content:""; width:4px; height:24px; border-radius:2px; background:#fff; box-shadow:0 1px 4px #000; opacity:.45; }
+#fmTl .fm-trim-edge[data-trim-time]::before { content:attr(data-trim-time); position:absolute; top:0; left:12px; padding:2px 5px; border-radius:4px; background:#16161a; color:#fff; font-size:var(--fs-caption); white-space:nowrap; }
+#fmTl .fm-trim-edge[data-trim-edge=out][data-trim-time]::before { left:auto; right:12px; }
+#fmTl .fc:hover .fm-trim-edge::after, #fmTl .fc.on .fm-trim-edge::after { opacity:1; }
+#fmTl .fc .x { z-index:2; }
 #fmTl .fl { position: absolute; left: 0; right: 0; top: 0; padding: 4px 7px; font-size: var(--fs-caption); background: linear-gradient(#000c, #0000); display: flex; gap: 4px; white-space: nowrap; overflow: hidden; }
 #fmTl .fl span { margin-left: auto; color: #ddd; }
 #fmTl .fs { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 7px; font-size: var(--fs-caption); background: #000a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1107,6 +1210,7 @@ function initFilm() {
 <div id="film">
   <div class="hd"><b id="fmHeading">成片编辑</b><span class="dim" id="fmTotal"></span><span class="dim" id="fmDraftState" role="status"></span><span style="flex:1"></span>
     <button class="pill" id="fmSaveList" type="button" hidden>保存列表</button><button class="pill" id="fmPlaylistSources" type="button" hidden>下载原片</button>
+    <button class="pill" id="fmDownloadMerged" type="button" hidden>下载合并 MP4</button><span class="dim" id="fmDownloadStatus" role="status"></span>
     <button class="pill" id="fmAll" title="从头顺序播放片段与字幕">▶ 预览全片</button>
     <button class="pill" id="fmClose">关闭</button><button class="pill" id="fmGo">导出成片</button></div>
   <div class="main">
@@ -1127,7 +1231,8 @@ function initFilm() {
   $("#fmSaveList").onclick = () => { if (FILM) saveFilmPlaylist(FILM); };
   $("#fmPlaylistSources").onclick = () => { if (FILM) downloadFilmPlaylistSources(FILM); };
   if (typeof ResizeObserver === "function") new ResizeObserver(sizeFilmTitleLayer).observe($("#fmTitleLayer").parentElement);
-  $("#fmGo").onclick = exportFilm;
+  $("#fmGo").onclick = () => void exportFilm();
+  $("#fmDownloadMerged").onclick = () => void exportFilm(true);
   $("#fmMainPlay").onclick = () => {
     if (!FILM) return;
     const video = $("#fmV");
@@ -1169,10 +1274,13 @@ function initFilm() {
   document.addEventListener("keydown", e => {
     if (!FILM) return;
     if (e.key === "Escape") { e.stopPropagation(); closeFilm(); return; }
-    if (!FILM.n?.data.playlist || !canvasCanEdit() || e.ctrlKey || e.metaKey || e.altKey ||
-        e.target.closest?.("input,textarea,select,button,[contenteditable=true]")) return;
+    if (!canvasCanEdit() || FILM.busy || e.defaultPrevented || e.isComposing || e.repeat ||
+        e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || $("dialog[open]")) return;
+    if (e.target!==document && e.target!==document.body && !e.target.closest?.("#film"))return;
+    if (e.target.closest?.("input:not(#fmTime),textarea,select,[contenteditable]:not([contenteditable=false])")) return;
     const action = {c:"[data-split-clip]",q:"[data-a=in]",e:"[data-a=out]"}[e.key.toLowerCase()];
-    if (action) { e.preventDefault(); $(action,$("#fmClip"))?.click(); }
+    const button=action&&$(action,$("#fmClip"));
+    if (button) { e.preventDefault();e.stopPropagation();button.click(); }
   }, true);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && doneCount) { doneCount = 0; document.title = "OneShot"; } });
   if (window.Notification && Notification.permission === "default") document.addEventListener("pointerdown", () => { try { Notification.requestPermission(); } catch {} }, { once: true });

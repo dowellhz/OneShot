@@ -152,6 +152,12 @@
 
 .ac-ref-selection a { display: flex; align-items: center; }
 .ac-ref-selection img { width: 26px; height: 26px; object-fit: cover; border-radius: 4px; }
+.ac-node-ref { min-width:0; max-width:100%; color:var(--text); }
+.ac-node-ref > img { width:25px; height:25px; border-radius:4px; object-fit:cover; flex:none; }
+.ac-node-ref > svg { width:15px; height:15px; color:var(--dim); flex:none; }
+.ac-node-ref .ac-reference-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ac-node-ref .ac-reference-version { color:var(--dim); white-space:nowrap; }
+#agentChat .ac-node-ref select { max-width:56%; padding:2px 4px; font-size:inherit; color:var(--dim); }
 .ac-review-ref { min-width: 0; }
 .ac-review-ref [data-open-review] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .ac-sent-review { margin-top: 6px; padding: 5px 8px; border-left: 2px solid var(--line2); font-size: var(--fs-caption); }

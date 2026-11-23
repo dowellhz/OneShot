@@ -760,6 +760,23 @@ async def saving(req):
     return web.json_response(store(req).put(req["user"], await req.json()))
 
 
+@routes.post("/api/memory/resolve")
+async def resolve_assets(req):
+    payload = await req.json()
+    ids = payload.get("ids") if isinstance(payload,dict) else None
+    board = payload.get("board") if isinstance(payload,dict) else None
+    if (not isinstance(ids,list) or not 1<=len(ids)<=100 or
+            not all(isinstance(mid,str) and 1<=len(mid)<=120 for mid in ids) or not board):
+        fail("请选择画布和 1–100 个资产")
+    s,user = store(req),req["user"]
+    fields = ("id","kind","name","desc","constraints","document","media","ref","w","h")
+    assets = []
+    for mid in dict.fromkeys(ids):
+        asset = s.get(user,mid,board)
+        assets.append({key:asset[key] for key in fields if key in asset})
+    return web.json_response(assets,headers={"Cache-Control":"no-store"})
+
+
 @routes.post("/api/memory/{mid}/duplicate")
 async def duplicate_asset(req):
     payload = await req.json()

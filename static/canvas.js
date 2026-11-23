@@ -513,6 +513,7 @@ function switchVersion(n, i, {recordUndo = true} = {}) {
   }
   if (n.type === "audio" && v.audio_recipe) Object.assign(n.data,{...defaults("audio"),...v.audio_recipe});
   n.cur = i; save(); render(n); refreshDownstream(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges();
+  if (AC.open) acRenderRefs();
   return true;
 }
 function renderVTabs(n, el) {
@@ -636,11 +637,14 @@ function wire(n, el) {
     el.addEventListener("dragover", e => { e.preventDefault(); e.stopPropagation(); el.classList.add("ok-target"); });
     el.addEventListener("dragleave", () => el.classList.remove("ok-target"));
     el.addEventListener("drop", e => {
-      e.preventDefault(); e.stopPropagation(); el.classList.remove("ok-target");
+      el.classList.remove("ok-target");
       if (!canvasCanEdit()) return;
       const a = e.dataTransfer.getData("application/x-h3-asset");
-      if (a) { const asset=JSON.parse(a); if (asset.type===n.type) addVersion(n, asset); return; }
-      const f = [...e.dataTransfer.files].find(f => canvasUploadKind(f)===n.type); if (f) uploadInto(n, f);
+      if (a) { e.preventDefault();e.stopPropagation();const asset=JSON.parse(a); if (asset.type===n.type) addVersion(n, asset); return; }
+      const files=e.dataTransfer.files;
+      if (files.length===1 && canvasUploadKind(files[0])===n.type) {
+        e.preventDefault();e.stopPropagation();void uploadInto(n,files[0]);
+      }
     });
   }
 }
@@ -1722,7 +1726,7 @@ function ctxMenu(e) {
       if (n.data.camera_plan && videoInputs(n)[0]?.edge.segment_edit) add("retake-settings","edit","调整当前重拍设置");
     }
     if (n.type === "video" && (v.segment_review || collectSegmentVersions({node:n,index:n.cur}).length)) add("segment-review","scissors","审核修改片段");
-    if (v.video_recipe?.extension) add("extension-film","scissors","原片与续拍一起剪辑");
+    if (n.type === "video" && extensionInput(v)) add("extension-film","scissors","原片与续拍一起剪辑");
     if (v.video_recipe?.segment_edit) {
       add("segment-film","scissors","在原片中核对这一段");
       add("segment-review-parent","scissors","审核原片的各段修改");
@@ -1919,20 +1923,8 @@ function addFromMenu(type) {
   if (type === "previs") return addPrevisNode(at);
   if (type === "playlist") return createFilmPlaylist([],at);
   if (type === "upload") {
-    pickFiles(files => {
-      const media = files.map(file => ({file, kind:canvasUploadKind(file)})).filter(item => item.kind);
-      if (!media.length) return toast("请选择支持的图片、视频或音频文件");
-      checkpoint();
-      media.forEach(async ({file, kind}, i) => {
-        const n = addNode(kind, at.x, at.y + i * 420);
-        const loading=uploadInto(n, file);
-        if (ctx.to && kind === "image") link(n, ctx.to, true);
-        if (ctx.to && ["audio","video"].includes(kind)) {
-          await loading;
-          if (node(n.id)===n && node(ctx.to.id)===ctx.to && curV(n)) link(n,ctx.to,true);
-        }
-      });
-    });
+    const board=B;
+    pickFiles(files => {if(B===board)void importCanvasFiles(files,at,ctx.to);});
     return;
   }
   checkpoint();
@@ -1980,7 +1972,7 @@ addEventListener("keydown", e => {
   if (e.code === "Space" && !e.target.closest("input, textarea, select, button, [contenteditable=true]")) { if (!spaceDown) { spaceDown = true; vp.classList.add("space"); } e.preventDefault(); return; }
   if (e.target.closest("input, textarea, select, [contenteditable=true]")) return;
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
-  if (!canvasCanEdit() && (mod || !["h","v","m","f","c","?","=","+","-","_","0","escape"].includes(k))) return;
+  if (!canvasCanEdit() && (mod || !["h","v","m","f","c","l","?","=","+","-","_","0","escape"].includes(k))) return;
   if (mod && k === "g" && sel.size) { e.preventDefault(); e.shiftKey ? ctUngroup() : ctGroup(); return; }
   if (!mod && !e.altKey) {
     const ar = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
@@ -1996,6 +1988,7 @@ addEventListener("keydown", e => {
     if (k === "h") { setTool("pan"); toast("抓手：拖空白处移动画布", 1200); return; }
     if (k === "v") { setTool("select"); toast("框选：拖空白处框选", 1200); return; }
     if (k === "m") { setMini(!mmOn); return; }
+    if (k === "l" && !e.repeat) { e.preventDefault(); if(AL.open)alClose();else void alOpen(); return; }
     if (k === "c" && B && !e.repeat) { e.preventDefault(); ccShortcut(); return; }
     if (k === "f") { fit(sel.size ? [...sel].map(node).filter(Boolean) : B.nodes); return; }
     if (e.key === "?" ) { $("#help").classList.toggle("on"); return; }

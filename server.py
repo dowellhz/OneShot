@@ -86,6 +86,10 @@ def frames_for(seconds: float) -> int:
     return n + (5 - n % 17) % 17   # H3's 17k+5 frame grid
 
 
+def engine_video_frames(seconds: float) -> int:
+    return min(345, max(124, frames_for(seconds)))
+
+
 def load_name(ref: str) -> str:
     """'input:sub/x.png' -> 'sub/x.png'; 'output:sub/x.png' -> 'sub/x.png [output]' (LoadImage's annotated names)."""
     try:
@@ -4074,7 +4078,7 @@ def engine_body(p: dict):
     meta["width"], meta["height"] = (long_, short) if ar >= 1 else (short, long_)
     imgs = p.get("images") or []
     paths = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs]
-    body = {"kind": "video", "prompt": meta["full_prompt"], "frames": min(345, max(124, meta["frames"])), "height": meta["height"],
+    body = {"kind": "video", "prompt": meta["full_prompt"], "frames": engine_video_frames(float(p.get("duration") or 5)), "height": meta["height"],
             "width": meta["width"], "steps": meta["steps"], "turbo": bool(p.get("turbo", True))}
     mode = meta["mode"]
     nframes = body["frames"]

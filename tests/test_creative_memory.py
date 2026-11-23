@@ -12,6 +12,26 @@ from test_agent_chat import ChatFixture, call, answer
 
 
 class MemoryIntegration(ChatFixture):
+    async def test_batch_resolution_returns_full_ordered_assets_and_requires_access_to_all(self):
+        private = await self.create(name="相机",board="")
+        document = await self.create(name="拍摄说明",board="",kind="document",shared=True,ref="",
+                                     document={"name":"拍摄说明.md","format":"markdown","text":"# 镜头要求\n完整保留这段文字"})
+        route = "/api/memory/resolve"
+        ids = [document["id"],private["id"],document["id"]]
+        owner = await self.client.post(route,json={"board":"test","ids":ids})
+        self.assertEqual(owner.status,200,await owner.text())
+        items = await owner.json()
+        self.assertEqual([item["id"] for item in items],ids[:2])
+        self.assertEqual(items[0]["document"]["text"],"# 镜头要求\n完整保留这段文字")
+        self.assertEqual(items[1]["ref"],self.source["ref"])
+        guest = {"X-Uid":"8"}
+        await self.client.put("/api/board/b-guest",headers=guest,json={"name":"独立画布","nodes":[]})
+        response = await self.client.post(route,json={"board":"b-guest","ids":ids},headers=guest)
+        self.assertEqual(response.status,404)
+        response = await self.client.post(route,json={"board":"b-guest","ids":ids[:1]},headers=guest)
+        self.assertEqual(response.status,200)
+        self.assertEqual([item["id"] for item in await response.json()],ids[:1])
+
     async def test_folder_references_preserve_exact_asset_and_recheck_team_access(self):
         base, guest = "/api/asset-folders", {"X-Uid":"8"}
         team = (await (await self.client.post("/api/canvas-teams",json={"name":"选片组"})).json())["id"]

@@ -72,14 +72,36 @@ function closeVideoExtension(dialog=$("#videoExtension")) {
   if (dialog.close) dialog.close(); else dialog.removeAttribute("open");
 }
 
-function openExtensionTimeline(result) {
-  const saved = curV(result)?.video_recipe;
-  const clip = saved?.video_refs?.[0];
-  if (!saved?.extension || !clip) return;
-  const source = vtResolve(clip.node_id,clip.ref);
-  if (!source) return toast("续拍对应的原视频版本已移除");
+function extensionInput(version) {
+  const recipe=version?.video_recipe;
+  if(!recipe)return null;
+  if(recipe.extension && recipe.video_refs?.[0]){
+    const {node_id,ref}=recipe.video_refs[0];
+    return {node_id,ref,direction:recipe.extension};
+  }
+  if(recipe.video_refs?.length || recipe.previs_guide)return null;
+  const images=(recipe.images||[]).filter(im=>im.role!=="subject");
+  const end=Number.isFinite(recipe.duration)?(vidFrames(recipe.duration)-4)/24:Infinity;
+  const inputs=images.flatMap((image,i)=>{
+    const capture=node(image.node_id)?.versions.find(v=>v.ref===image.ref)?.capture;
+    if(!capture?.source_node || !capture.source_ref)return [];
+    const first=recipe.planned?image.time<=.01:i===0;
+    const last=recipe.planned?image.time>=end-.05:i>0&&i===images.length-1;
+    if(!(capture.position==="first"&&last || capture.position==="last"&&first))return [];
+    return [{node_id:capture.source_node,ref:capture.source_ref,direction:capture.position==="first"?"before":"after"}];
+  });
+  return inputs.length===1?inputs[0]:null;
+}
+
+function openExtensionTimeline(result,version=curV(result)) {
+  if(!version?.ref || !result.versions.includes(version))return toast("续拍结果版本已移除");
+  const input=extensionInput(version);
+  if(!input)return toast("找不到唯一的续拍接点");
+  const source=vtResolve(input.node_id,input.ref);
+  if(!source || source.node.type!=="video")return toast("续拍对应的原视频版本已移除");
   const original = {...source.node,cur:source.index};
-  const spec = newSpec(saved.extension==="before"?[result,original]:[original,result]);
+  const continuation={...result,cur:result.versions.indexOf(version)};
+  const spec = newSpec(input.direction==="before"?[continuation,original]:[original,continuation]);
   const key=filmDraftPrefix()+"extension:"+JSON.stringify(spec.clips.map(item=>[item.node,item.ref]));
   showFilm(spec,null,key);
 }

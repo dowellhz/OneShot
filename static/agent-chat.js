@@ -202,20 +202,32 @@ function acPickPlacement(active) {
  vp.classList.toggle("ac-placement-picking",active);
  $("#acPickPlacement").setAttribute("aria-pressed",String(active));
 }
+function acNodeReferenceMarkup(n,selection,reviews){
+ const pin=AC.referencePins.get(n.id);
+ const fixedRef=selection?.node_id===n.id?selection.source_ref:acReviewVersion(n,reviews);
+ const ref=pin?.ref||fixedRef;
+ const index=ref?n.versions.findIndex(v=>v.ref===ref):n.cur;
+ const version=n.versions[index];
+ const preview=n.type==="image"&&version?.ref
+  ? `<img src="${esc(ewRefUrl(version.ref))}" alt="" loading="lazy" draggable="false">`
+  : ico(n.type);
+ const label=index>=0?"版本 "+(index+1)+(pin||fixedRef?" · 已指定":""):ref?"版本已移除":TYPE_CN[n.type];
+ const options=n.versions.map((entry,i)=>entry.ref
+  ? `<option value="${i}" ${pin&&version===entry?"selected":""}>版本 ${i+1}${pin&&version===entry?" · 已指定":""}</option>`:"").join("");
+ const choices=!fixedRef&&options&&(n.versions.length>1||pin&&!version)
+  ? `<select data-reference-version="${esc(n.id)}" aria-label="${esc(n.name)}的引用版本" ${AC.sending?"disabled":""}>
+    <option value="" ${!pin?"selected":""}>${n.cur>=0?`跟随画布 · 版本 ${n.cur+1}`:"跟随画布"}</option>
+    ${pin&&!version?'<option value="missing" disabled selected>版本已移除</option>':""}${options}</select>`
+  : `<span class="ac-reference-version">${esc(label)}</span>`;
+ return `<span class="ac-ref ac-node-ref" title="${esc(n.name)} · ${esc(label)}">${preview}<span class="ac-reference-name">${esc(n.name)}</span>${choices}<button type="button" data-remove="${esc(n.id)}" aria-label="移除引用">×</button></span>`;
+}
 function acRenderRefs(){
  const box=$("#acRefs");if(!box||!B)return;
  acRenderPlacement();
  const selection=AC.board===boardId?AC.selection:null;
  const reviews=AC.board===boardId?AC.reviews:[];
  const refs=acRefs();
- const refsMarkup=refs.map(n=>{
-  const pin=AC.referencePins.get(n.id);
-  const reviewRef=acReviewVersion(n,reviews);
-  const ref=pin?.ref || (selection?.node_id===n.id?selection.source_ref:reviewRef);
-  const version=ref?n.versions.findIndex(v=>v.ref===ref):n.cur;
-  const label=version>=0?"版本 "+(version+1)+(pin||reviewRef?" · 已指定":""):pin?"版本已移除":TYPE_CN[n.type];
-  return `<span class="ac-ref" title="${esc(n.id)}">${esc(n.name)} · ${label}<button type="button" data-remove="${esc(n.id)}" aria-label="移除引用">×</button></span>`;
- }).join("");
+ const refsMarkup=refs.map(n=>acNodeReferenceMarkup(n,selection,reviews)).join("");
  const missing=[...AC.referencePins].filter(([id])=>AC.refs?.includes(id)&&!node(id)).map(([id,pin])=>
   `<span class="ac-ref">${esc(pin.name)} · 节点已移除<button type="button" data-remove="${esc(id)}" aria-label="移除已失效引用">×</button></span>`).join("");
  const selectionMarkup=selection?`<span class="ac-ref ac-ref-selection"><a href="${esc(ewRefUrl(selection.preview_ref))}" target="_blank" rel="noopener" aria-label="查看选区预览"><img src="${esc(ewRefUrl(selection.preview_ref))}" alt=""></a>${refs.some(n=>n.id===selection.node_id&&n.versions.some(v=>v.ref===selection.source_ref))?"已圈选区域":"选区源图已失效"}<button type="button" data-remove-selection aria-label="移除圈选区域">×</button></span>`:"";
@@ -223,7 +235,18 @@ function acRenderRefs(){
  const placementMarkup=AC.board===boardId&&AC.placement?'<span class="ac-ref"><button type="button" data-locate-placement title="定位到标记">已指定放置位置</button><button type="button" data-remove-placement aria-label="清除放置位置">×</button></span>':"";
  const markup=refsMarkup+missing+selectionMarkup+reviewMarkup+placementMarkup;
  if(box._refMarkup===markup)return;
+ const focus=box.contains(document.activeElement)?document.activeElement.dataset.referenceVersion:null;
  box._refMarkup=markup;box.innerHTML=markup;
+ for(const picker of $$("[data-reference-version]",box)){
+  const id=picker.dataset.referenceVersion;
+  if(id===focus)picker.focus({preventScroll:true});
+  picker.onchange=()=>{
+   const n=node(id),ref=picker.value===""?null:n?.versions[Number(picker.value)]?.ref;
+   if(ref===undefined||!acAttachNodeReference(n,ref)){
+    box._refMarkup=null;acRenderRefs();
+   }
+  };
+ }
  $$("[data-remove]",box).forEach(b=>b.onclick=()=>{
   AC.refs=acRefs().map(n=>n.id).filter(id=>id!==b.dataset.remove);
   AC.referencePins.delete(b.dataset.remove);
@@ -363,7 +386,9 @@ function acResultCards(result){
   if(kind==="video"||kind==="audio"){
    const player=kind==="video"?`<video controls playsinline preload="metadata" src="${media}" aria-label="${editor?"白模预演视频":"生成的视频"}"></video>`
     :`<audio controls preload="metadata" src="${media}" aria-label="生成的音频"></audio>`;
-   return `<div class="ac-result ac-${kind}">${player}<button type="button" ${focus}>${kind==="video"?"定位视频":"定位音频"}</button></div>`;
+   const cut=kind==="video"&&extensionInput(v)
+    ?`<button type="button" data-extension-clip="${esc(item.id)}" data-version-ref="${esc(v.ref)}">与原片一起剪辑</button>`:"";
+   return `<div class="ac-result ac-${kind}">${player}<button type="button" ${focus}>${kind==="video"?"定位视频":"定位音频"}</button>${cut}</div>`;
   }
   return `<button type="button" class="ac-result" ${focus}>${media?`<img loading="lazy" alt="生成结果" src="${media}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;
  });
@@ -670,7 +695,7 @@ function acAppendEvent(e,replay=false){
   const result=d.result, output=$(".ac-output",el);
   if(result.previs_node||result.playlist_node||result.workflow||result.remake_plan||result.review_versions?.length||
      result.preview?.completed?.length||result.video?.completed||d.name==="video_remake_export"&&result.export_ref||
-     d.name==="video_broll_generate"&&result.nodes?.length||result.sources?.length)el.open=true;
+     ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
   const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion?"等待确认":"完成";
   $("summary",el).textContent=el.dataset.label+" · "+state;
@@ -811,6 +836,7 @@ function acRenderQuestions(){
 }
 
 function acRenderState(){
+ if(AC.open)acRenderRefs();
  acRenderDocuments();
  acRenderApprovals();
  acRenderQuestions();
@@ -1240,6 +1266,14 @@ function initAgentChat(){
    if(!resolved?.node.data.previs){toast("白模节点或版本已移除");return;}
    if(ref&&resolved.node.cur!==resolved.index&&!switchVersion(resolved.node,resolved.index))return;
    closeLightbox();acFocus([resolved.node.id]);openPrevis(resolved.node);return;
+  }
+  const cut=e.target.closest("[data-extension-clip]");
+  if(cut&&AC.board===boardId){
+   const result=vtResolve(cut.dataset.extensionClip,cut.dataset.versionRef);
+   if(!result || result.node.type!=="video")return toast("续拍结果版本已移除");
+   closeLightbox();
+   openExtensionTimeline(result.node,result.node.versions[result.index]);
+   return;
   }
   const b=e.target.closest("[data-focus]");if(b){const resolved=vtResolve(b.dataset.focus,b.dataset.versionRef);if(resolved){closeLightbox();switchVersion(resolved.node,resolved.index);acFocus([resolved.node.id]);}}};
  pane.addEventListener("keydown",e=>{

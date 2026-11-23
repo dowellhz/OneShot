@@ -64,6 +64,57 @@ class VideoIntegration(ChatFixture):
         self.assertEqual(self.load()["edges"], [])
         self.assertEqual(len(self.load()["nodes"]), 2)
 
+    async def test_local_extension_captures_the_selected_source_version_and_preserves_the_anchor(self):
+        old, latest = self.make_video(), self.make_video()
+        b = self.load()
+        b["nodes"].append({"id":"n3","type":"video","name":"原片","x":500,"y":0,"data":{},
+                           "versions":[old,latest],"cur":1})
+        server.write_board(server.board_path("test"),b)
+        received = []
+
+        async def submit(req, raw):
+            received.append(raw)
+            job = f"e{len(received):012d}"
+            server.JOBS[job] = {"state":"done","created":1,"meta":{"uid":7},
+                "outputs":[{"ref":latest["ref"],"meta":{"width":64,"height":64,"duration":2}}]}
+            return web.json_response({"ids":[job]})
+
+        local = {"kind":"local_h3","id":"local-test","enabled":True}
+        with patch.object(server,"reference_routes",return_value=[]), patch.object(server.providers,"all_providers",return_value=[local]), \
+                patch.object(server,"generate_request",side_effect=submit):
+            for direction, position, role in (("after","last","first"),("before","first","last")):
+                self.svc.model.side_effect = [
+                    call("video_extend",{"node_id":"n3","version":1,"direction":direction,"duration":2.4,"prompt":"列车靠站"}),
+                    call("video_extend",{"node_id":"n3","version":1,"direction":direction,"method":"frame","prompt":"再次接拍"},"extension-extra"),
+                    answer(),
+                ]
+                rid = await self.send("用本地服务接拍",f"local-extension-{direction}",["n3"])
+                await self.wait(rid)
+                saved = self.load()
+                image, result = saved["nodes"][-2:]
+                self.assertEqual(image["versions"][0]["capture"]["source_ref"],old["ref"])
+                self.assertEqual(image["versions"][0]["capture"]["position"],position)
+                self.assertIn({"from":"n3","to":image["id"],"relation":"capture","source_ref":old["ref"],
+                               "at":image["versions"][0]["capture"]["at"]},saved["edges"])
+                self.assertEqual(result["versions"][0]["input_edges"][0]["role"],role)
+                payload = received[-1]
+                self.assertNotIn("video_refs",payload)
+                self.assertEqual(payload["provider"],local["id"])
+                self.assertEqual(payload["images"][0]["time"] == 0,direction=="after")
+                engine, _ = server.engine_body(payload)
+                self.assertEqual(engine["frames"],124)
+                if direction=="before":
+                    self.assertEqual(engine["keyframes"][0]["frame"],engine["frames"]-4)
+                rejected = agent_chat.db.one("SELECT result FROM chat_calls WHERE run_id=? ORDER BY updated DESC LIMIT 1",rid)
+                self.assertIn("新消息会加入队列",json.loads(rejected["result"])["error"])
+            self.assertEqual(len(received),2)
+            self.svc.model.side_effect = [call("video_regenerate",{"node_id":result["id"],"prompt":"更慢地靠站"}),answer()]
+            await self.wait(await self.send("修改续拍", "local-extension-regenerate", [result["id"]]))
+            final = self.load()["nodes"][-1]
+            self.assertEqual(final["id"],result["id"])
+            self.assertEqual(len(final["versions"]),2)
+            self.assertEqual(received[-1]["images"][0]["ref"],image["versions"][0]["ref"])
+
     async def test_video_regenerate_preserves_keyframe_roles_and_replacements(self):
         b = self.load()
         second = image_editor.save(server.COMFY_DIR, Image.new("RGB", (128, 96), "blue"))
@@ -136,6 +187,30 @@ class VideoIntegration(ChatFixture):
         self.assertEqual(response.status, 200, await response.text())
         self.assertEqual(self.load()["nodes"], b["nodes"])
         self.assertCountEqual(self.load()["edges"], original_edges)
+
+    async def test_video_regeneration_accepts_an_explicit_first_frame_and_subjects(self):
+        board = self.load()
+        expected = [self.source["ref"]]
+        frames = [{"node_id":"n1","role":"first"}]
+        for index,color in enumerate(("blue","white"),3):
+            asset = image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),color))
+            nid = f"n{index}"
+            board["nodes"].append({"id":nid,"type":"image","name":color,"x":0,"y":0,"data":{},"versions":[asset],"cur":0})
+            frames.append({"node_id":nid,"role":"subject"})
+            expected.append(asset["ref"])
+        board["nodes"].append({"id":"video","type":"video","name":"原视频","x":800,"y":0,
+                               "data":{"prompt":"original","quality":"std"},"versions":[self.make_video()],"cur":0})
+        board["edges"] = [{"from":"n4","to":"video","role":"last"}]
+        server.write_board(server.board_path("test"),board)
+        self.svc.model.side_effect = [call("video_regenerate",{
+            "node_id":"video","frames":frames,"duration":5,"prompt":"camera moves","name":"原视频"}),answer()]
+        with patch.object(self.svc,"submit_generation",AsyncMock(return_value={"media_type":"video","nodes":[]})) as submit:
+            rid = await self.send("重新生成",selected=["video","n1","n3","n4"])
+            self.assertEqual((await self.wait(rid))["state"],"done")
+        payload = submit.await_args.args[3]
+        self.assertEqual([item["ref"] for item in payload["images"]],expected)
+        self.assertEqual([item["role"] for item in payload["images"]],["frame","subject","subject"])
+        self.assertEqual((payload["duration"],payload["quality"],submit.await_args.kwargs["target_id"]),(5,"std","video"))
 
     async def test_failed_regeneration_keeps_old_video_and_restores_inputs(self):
         b = self.load(); old = self.make_video()
