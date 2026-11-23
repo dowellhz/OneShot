@@ -1,6 +1,6 @@
 """Deterministic CPU output for the canvas blockout editor."""
 from bisect import bisect_left
-from math import cos, isfinite, pi, radians, sin, sqrt, tan
+from math import ceil, cos, hypot, isfinite, pi, radians, sin, sqrt, tan
 import re
 
 from PIL import Image, ImageDraw
@@ -13,7 +13,9 @@ SHAPES = {"box", "column", "figure", "mesh"}
 MAX_TRIANGLES = 2000
 POSE_FIELDS = ("x", "y", "z", "yaw")
 CAMERA_FIELDS = ("x", "y", "z", "tx", "ty", "tz", "fov")
+CAMERA_TRANSITIONS = ("linear","smooth","cut")
 NEAR = .12
+CAMERA_MOVES = ("push", "pull", "slide_left", "slide_right", "orbit_left", "orbit_right", "follow")
 
 
 def bounded(value, low, high):
@@ -30,7 +32,9 @@ def keys(entries, fields, frames):
         if not isinstance(key, dict) or type(key.get("t")) is not int or not previous < key["t"] <= frames:
             raise ValueError("关键帧必须按时间排列")
         previous = key["t"]
-        pose = {"t":previous, "ease":"smooth" if key.get("ease") == "smooth" else "linear"}
+        allowed = CAMERA_TRANSITIONS if fields==CAMERA_FIELDS else ("linear","smooth")
+        ease = key.get("ease")
+        pose = {"t":previous, "ease":ease if ease in allowed else "linear"}
         for field in fields:
             limits = (18, 95) if field == "fov" else (-360, 360) if field == "yaw" else (-50, 50)
             pose[field] = bounded(key.get(field), *limits)
@@ -80,10 +84,130 @@ def sample(track, t, fields):
     if right == 0 or right == len(track):
         return track[0] if not right else track[-1]
     a, b = track[right - 1], track[right]
+    if b["ease"] == "cut":
+        return a if t<b["t"] else b
     factor = (t - a["t"]) / (b["t"] - a["t"])
     if b["ease"] == "smooth":
         factor = factor * factor * (3 - 2 * factor)
     return {k:a[k] + (b[k] - a[k]) * factor for k in fields}
+
+
+def camera_motion(scene, plan):
+    if not isinstance(plan,dict) or plan.get("mode") not in CAMERA_MOVES:
+        raise ValueError("请选择运镜方式")
+    mode = plan["mode"]
+    start, end = plan.get("start"), plan.get("end")
+    limit = scene["duration"] * render.FPS
+    if type(start) is not int or type(end) is not int or not 0 <= start < end <= limit:
+        raise ValueError("请选择有效的运镜时间区间")
+    track = scene["camera"]
+    current = sample(track,start,CAMERA_FIELDS)
+    pose = {key:current[key] for key in CAMERA_FIELDS}
+    keys_before = [key for key in track if key["t"] < start]
+    keys_after = [key for key in track if key["t"] > end]
+    incoming = next((key for key in track if key["t"] >= start),None)
+    ease_in = incoming["ease"] if incoming and (incoming["ease"]!="cut" or incoming["t"]==start) else "linear"
+    if mode == "follow":
+        actor = next((item for item in scene["objects"] if item["id"] == plan.get("target")),None)
+        if actor is None:
+            raise ValueError("请选择要跟拍的物体")
+        generated = follow_camera(pose,actor,start,end,ease_in)
+    else:
+        generated = move_camera(pose,mode,plan.get("amount"),start,end,ease_in)
+    combined = keys_before + generated + keys_after
+    if len(combined) > 32:
+        raise ValueError("运镜后的机位超过 32 个关键帧，请缩小区间或精简机位轨道")
+    return keys(combined, CAMERA_FIELDS, limit)
+
+
+def follow_camera(pose, actor, start, end, ease_in):
+    track = actor["keys"]
+    base = sample(track,start,POSE_FIELDS)
+    target_height = actor["height"] * .6
+    ticks = [start, *(key["t"] for key in track if start < key["t"] < end), end]
+    result = []
+    for tick in ticks:
+        position = sample(track,tick,POSE_FIELDS)
+        ease = ease_in if tick == start else next((key["ease"] for key in track if key["t"] >= tick),"linear")
+        result.append({**pose,"t":tick,"ease":ease,
+                       **{axis:pose[axis]+position[axis]-base[axis] for axis in ("x","y","z")},
+                       "tx":position["x"],"ty":position["y"]+target_height,"tz":position["z"]})
+    return result
+
+
+def object_motion(scene, plan):
+    if not isinstance(plan,dict):
+        raise ValueError("请选择物体及路线")
+    target = next((item for item in scene["objects"] if item["id"] == plan.get("target")),None)
+    if target is None:
+        raise ValueError("请选择要设置路线的物体")
+    start, end = plan.get("start"), plan.get("end")
+    limit = scene["duration"] * render.FPS
+    if type(start) is not int or type(end) is not int or not 0 <= start < end <= limit:
+        raise ValueError("请选择有效的起止时间")
+    points = plan.get("points")
+    if not isinstance(points,list) or not 1 <= len(points) <= min(31,end-start):
+        raise ValueError("请添加路线点，且每段至少占一帧")
+    track = target["keys"]
+    initial = sample(track,start,POSE_FIELDS)
+    x, z = initial["x"], initial["z"]
+    distances, route = [], []
+    for point in points:
+        if not isinstance(point,dict):
+            raise ValueError("路线点格式无效")
+        next_x, next_z = bounded(point.get("x"),-50,50), bounded(point.get("z"),-50,50)
+        distance = hypot(next_x-x,next_z-z)
+        if distance < .01:
+            raise ValueError("相邻路线点重合，请拉开距离")
+        distances.append(distance)
+        route.append((next_x,next_z))
+        x, z = next_x, next_z
+    combined = [key for key in track if key["t"] < start]
+    ease_in = next((key["ease"] for key in track if key["t"] >= start),"linear")
+    combined.append({"t":start,"ease":ease_in,**{field:initial[field] for field in POSE_FIELDS}})
+    distance_sum, covered, tick = sum(distances), 0, start
+    for index, ((x,z),distance) in enumerate(zip(route,distances)):
+        covered += distance
+        remaining = len(route) - index - 1
+        tick = end if not remaining else min(end-remaining,max(tick+1,start+round((end-start)*covered/distance_sum)))
+        pose = sample(track,tick,POSE_FIELDS)
+        combined.append({"t":tick,"ease":"linear","x":x,"z":z,"y":pose["y"],"yaw":pose["yaw"]})
+    combined.extend(key for key in track if key["t"] > end)
+    if len(combined) > 32:
+        raise ValueError("路线超过 32 个关键帧，请删除部分路点或精简原轨道")
+    return keys(combined,POSE_FIELDS,limit)
+
+
+def move_camera(pose, mode, amount, start, end, ease_in):
+    dx, dz = pose["x"]-pose["tx"], pose["z"]-pose["tz"]
+    distance = hypot(dx,dz)
+    if distance < .2:
+        raise ValueError("机位和目标在俯视图中重合，请先拉开距离")
+    if mode.startswith("orbit"):
+        angle = bounded(amount,5,180)
+        steps = min(end-start,ceil(angle/12))
+        angle = radians(angle) * (1 if mode=="orbit_left" else -1)
+        result = [{**pose,"t":start,"ease":ease_in}]
+        for index in range(1,steps+1):
+            fraction = index/steps
+            theta = angle * fraction * fraction * (3-2*fraction)
+            result.append({**pose,"t":round(start+fraction*(end-start)),"ease":"linear",
+                           "x":pose["tx"]+dx*cos(theta)-dz*sin(theta),
+                           "z":pose["tz"]+dx*sin(theta)+dz*cos(theta)})
+        return result
+    length = bounded(amount,.1,20)
+    if mode == "push" and length >= distance-.15:
+        raise ValueError("推进距离超过机位与目标之间的距离")
+    if mode.startswith("slide"):
+        direction = -1 if mode=="slide_left" else 1
+        shift_x, shift_z = direction*dz*length/distance, -direction*dx*length/distance
+        finish = {**pose,"x":pose["x"]+shift_x,"z":pose["z"]+shift_z,
+                  "tx":pose["tx"]+shift_x,"tz":pose["tz"]+shift_z}
+    else:
+        direction = -1 if mode=="push" else 1
+        finish = {**pose,"x":pose["x"]+direction*dx*length/distance,
+                  "z":pose["z"]+direction*dz*length/distance}
+    return [{**pose,"t":start,"ease":ease_in},{**finish,"t":end,"ease":"smooth"}]
 
 
 def box(cx=0, bottom=0, cz=0, width=1, height=1, depth=1, shade=1):

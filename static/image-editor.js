@@ -231,6 +231,8 @@ function ieMode(mode, force=false) {
   $$("[data-section]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.section===section));
   const camera=mode==="camera", structured=camera||modelLight;
   $("#ieSaveLight").hidden=modelLight;
+  $("#ieExportLight").hidden=modelLight;
+  $("#ieLocateLight").hidden=modelLight || !E.lightExportId || !node(E.lightExportId);
   $("#ieRelightAI").textContent=modelLight?"返回手动布光":"交给模型重打光";
   $("#ieAI").hidden=["local","layers","relight"].includes(mode); $("#ieBlend").hidden=mode==="outpaint"||structured;
   $("#iePresets").hidden=$("#ieBackend").hidden=$('label[for="ieBackend"]').hidden=structured;
@@ -355,7 +357,9 @@ function ieSync() {
   const busy=E.busy || E.restoring || !!E.n.job || !E.image || !!E.agentSelection;
   if(typeof aeEditorControls==="function")aeEditorControls();
   for (const id of ["ieGenerate","ieSaveLocal"]) $("#"+id).disabled=busy || !!E.agentSelection;
-  for (const id of [...relightInputIds,"ieSaveLight","ieResetLight","ieRelightAI"]) $("#"+id).disabled=busy || !canvasCanEdit();
+  for (const id of [...relightInputIds,"ieSaveLight","ieExportLight","ieResetLight","ieRelightAI"]) $("#"+id).disabled=busy || !canvasCanEdit();
+  $("#ieLocateLight").hidden=E.mode!=="relight" || !E.lightExportId || !node(E.lightExportId);
+  $("#ieLocateLight").disabled=busy;
   for (const id of imageCameraDraftIds) $("#"+id).disabled=busy || !canvasCanEdit();
   if(E.image)updatePixelPreview(E);
   $$("[data-camera-preset]").forEach(button=>button.disabled=busy || !canvasCanEdit());

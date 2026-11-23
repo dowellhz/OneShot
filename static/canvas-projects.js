@@ -68,6 +68,7 @@ async function openBoard(id, savedConflictDraft) {
   closeSegmentEditor();
   closeSegmentReview();
   closeVideoTrim();
+  closeVideoGif();
   closeFrameCapture();
   closeAudioTranscript();
   closeAudioSeparation();

@@ -125,6 +125,12 @@ CREATE TABLE IF NOT EXISTS showcase_entries (
  snapshot TEXT, UNIQUE(board_id,node_id,video_ref));
 CREATE INDEX IF NOT EXISTS showcase_state ON showcase_entries(state,published);
 CREATE INDEX IF NOT EXISTS showcase_owner_state ON showcase_entries(owner,state,published);
+CREATE TABLE IF NOT EXISTS showcase_prompts (
+ token TEXT PRIMARY KEY, prompt TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS showcase_prompt_unlink AFTER DELETE ON showcase_entries
+BEGIN
+  DELETE FROM showcase_prompts WHERE token=OLD.token;
+END;
 CREATE TABLE IF NOT EXISTS creative_events (
  id TEXT PRIMARY KEY, title TEXT NOT NULL, brief TEXT NOT NULL, rules TEXT NOT NULL,
  starts REAL NOT NULL, closes REAL NOT NULL, slots INTEGER NOT NULL,

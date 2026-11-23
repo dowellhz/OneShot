@@ -149,12 +149,16 @@ function drawShowcase(entries) {
     <span>${esc(entry.title)} · ${states[entry.state] || ""}</span>
     ${entry.reason ? `<p>${esc(entry.reason)}</p>` : ""}
     ${entry.state === "approved" ? `<a href="/showcase/${encodeURIComponent(entry.token)}" target="_blank" rel="noopener">查看作品</a>` : ""}
+    ${entry.has_prompt && entry.can_link_template ? `<button type="button" data-revoke-prompt="${esc(entry.token)}">撤下提示词</button>` : ""}
     <button type="button" data-withdraw="${esc(entry.token)}">撤回</button>
     ${entry.state==="approved" && entry.can_link_template ? `<details data-showcase-template-editor="${esc(entry.token)}">
       <summary>${entry.template_name ? (entry.template_published ? "工作流 · "+esc(entry.template_name) : "工作流 · 已取消共享") : "关联工作流"}</summary>
       <form class="share-form"><select aria-label="已共享的工作流模板" disabled></select><button type="submit" disabled>保存链接</button></form>
     </details>` : ""}
   </li>`).join("");
+  for (const button of $$("[data-revoke-prompt]",$("#shareShowcaseEntries"))) {
+    button.onclick = () => changeShowcase("DELETE",button.dataset.revokePrompt,null,{},"prompt");
+  }
   for(const details of $$("[data-showcase-template-editor]",$("#shareShowcaseEntries"))){
     const token=details.dataset.showcaseTemplateEditor, entry=entries.find(item=>item.token===token);
     const form=$("form",details), select=$("select",form), saveLink=$("button",form), bid=boardId;
@@ -190,7 +194,18 @@ async function populateShowcaseTemplates(select, linked=null) {
   select.disabled=select.options.length<2;
 }
 
-function setupShowcaseForm() {
+function showcaseCanPublish() {
+  return !!B && (B.access === "owner" || !B.access && B.owner === ME_USER?.id);
+}
+
+async function openGifShowcase(gif) {
+  if (!showcaseCanPublish()) return;
+  const bid=boardId;
+  await shareOpen();
+  if (boardId===bid && !$("#canvasShare").hidden && !$("#shareShowcase").disabled) setupShowcaseForm(gif);
+}
+
+function setupShowcaseForm(gif = null) {
   const videos = showcaseChoices("video"), images = showcaseChoices("image");
   const match = videos.findIndex(v=>v.current && sel.has(v.node));
   const selected = match >= 0 ? match : videos.findIndex(v=>v.current);
@@ -198,20 +213,41 @@ function setupShowcaseForm() {
   const video = $("#shareShowcaseVideo");
   const cover = $("#shareShowcaseCover");
   const template = $("#shareShowcaseTemplate");
+  const attachPrompt = $("#shareShowcaseAttachPrompt"), prompt = $("#shareShowcasePrompt");
   const videoInput = $("#shareShowcaseVideoFile"), coverInput = $("#shareShowcaseCoverFile");
   const upload = '<option value="upload">从本地上传</option>';
-  video.innerHTML = options(videos) + upload;
-  video.value = videos.length ? String(Math.max(0,selected)) : "upload";
-  cover.innerHTML = '<option value="">使用视频首帧</option>' + options(images) + upload;
+  video.innerHTML = (gif?'<option value="gif-export">已生成的 GIF</option>':"") + options(videos) + upload;
+  video.value = gif ? "gif-export" : videos.length ? String(Math.max(0,selected)) : "upload";
+  cover.innerHTML = '<option value="">使用作品首帧</option>' + options(images) + upload;
   videoInput.value = coverInput.value = "";
   const syncInput = (select,input)=>{
     input.required = select.value === "upload";
     input.closest("label").hidden = !input.required;
   };
-  video.onchange = ()=>syncInput(video,videoInput);
+  function syncPrompt() {
+    prompt.closest("label").hidden = !attachPrompt.checked;
+    prompt.required = attachPrompt.checked;
+  }
+  attachPrompt.onchange = () => {
+    if (attachPrompt.checked && !prompt.value) {
+      const selection=video.value==="gif-export"?gif?.source:videos[Number(video.value)];
+      const version=node(selection?.node)?.versions.find(item=>item.ref===selection?.ref);
+      const original=[version?.generation_record?.prompt,version?.prompt]
+        .find(value=>typeof value==="string" && value.trim());
+      if (original && original.length<=prompt.maxLength) prompt.value=original;
+    }
+    syncPrompt();
+    if (attachPrompt.checked) prompt.focus();
+  };
+  video.onchange = () => {
+    syncInput(video,videoInput);
+    attachPrompt.checked=false;
+    prompt.value="";
+    syncPrompt();
+  };
   cover.onchange = ()=>syncInput(cover,coverInput);
   video.onchange(); cover.onchange();
-  $("#shareShowcaseTitle").value = B.name.slice(0,80);
+  $("#shareShowcaseTitle").value = (gif?.name || B.name).slice(0,80);
   $("#shareShowcaseDescription").value = "";
   $("#shareShowcaseAttach").checked = false;
   $("#shareShowcaseForm").hidden = false;
@@ -221,17 +257,27 @@ function setupShowcaseForm() {
   $("#shareShowcaseForm").onsubmit = e=>{
     e.preventDefault();
     const choice = values => ({node:values.node,ref:values.ref});
+    const gifRef = video.value==="gif-export" ? gif.ref : null;
     const videoFile = video.value === "upload" ? videoInput.files[0] : null;
     const coverFile = cover.value === "upload" ? coverInput.files[0] : null;
+    if (video.value==="upload" && !videoFile || cover.value==="upload" && !coverFile) {
+      $("#shareStatus").textContent = "请选择要上传的文件"; return;
+    }
     if (videoFile?.size > 300000000 || coverFile?.size > 20000000) {
       $("#shareStatus").textContent = "成片最多 300 MB，封面最多 20 MB";
       return;
     }
+    const publicPrompt = attachPrompt.checked ? prompt.value.trim() : null;
+    if (attachPrompt.checked && !publicPrompt) {
+      $("#shareStatus").textContent="请填写要公开的提示词";
+      prompt.focus(); return;
+    }
     changeShowcase("POST","",{
-      video:videoFile ? null : choice(videos[Number(video.value)]),
+      video:videoFile || gifRef ? null : choice(videos[Number(video.value)]),
+      ...(gifRef ? {gif_ref:gifRef} : {}),
       cover:coverFile || cover.value === "" ? null : choice(images[Number(cover.value)]),
       title:$("#shareShowcaseTitle").value,description:$("#shareShowcaseDescription").value,
-      attach_canvas:$("#shareShowcaseAttach").checked,template:template.value || null,confirmed:true
+      attach_canvas:$("#shareShowcaseAttach").checked,template:template.value || null,public_prompt:publicPrompt,confirmed:true
     },{video:videoFile,cover:coverFile});
   };
   $("#shareShowcaseTitle").focus();
@@ -255,7 +301,7 @@ function sendShowcaseFiles(url,payload,files,onProgress) {
   });
 }
 
-async function changeShowcase(method, token, payload, files={}) {
+async function changeShowcase(method, token, payload, files={}, resource=method==="PUT"?"template":"") {
   const bid = boardId, fieldset = $("#shareShowcase"), url = showcasePath();
   const progress = $("#shareShowcaseProgress");
   if (fieldset.disabled) return;
@@ -277,14 +323,15 @@ async function changeShowcase(method, token, payload, files={}) {
       });
     } else {
       const target=token?url+"/"+encodeURIComponent(token):url;
-      await boardRequest(method==="PUT"?target+"/template":target,method,body);
+      await boardRequest(resource?target+"/"+resource:target,method,body);
     }
     const entries = await boardRequest(url);
     if (bid !== boardId || $("#canvasShare").hidden) return;
     drawShowcase(entries);
     if (method === "POST") $("#shareShowcaseForm").hidden = true;
     if(method==="PUT")$("[data-showcase-template-editor='"+token+"'] summary")?.focus();
-    $("#shareStatus").textContent = method === "PUT" ? "工作流链接已更新" : method === "DELETE" ? "作品已撤回" : "作品已提交审核";
+    $("#shareStatus").textContent = resource==="prompt" ? "提示词已撤下" :
+      method === "PUT" ? "工作流链接已更新" : method === "DELETE" ? "作品已撤回" : "作品已提交审核";
   } catch (error) {
     if (bid === boardId) $("#shareStatus").textContent = error.message;
   } finally {
@@ -411,7 +458,7 @@ async function shareOpen() {
   link.value = new URL("/?board="+encodeURIComponent(bid),location.origin).href;
   $("#shareStatus").textContent = "";
   $("#shareMode").textContent = B.access === "reviewer" ? "你可以查看画布并参与评论。" : "使用已获授权的 OneShot 账号登录后打开链接。";
-  const editable = B.access === "owner" || !B.access && B.owner === ME_USER?.id;
+  const editable = showcaseCanPublish();
   const connector = $("#shareConnector");
   connector.hidden = !editable || B.owner !== ME_USER?.id;
   connector.href = "/connect-agents?board="+encodeURIComponent(bid);
@@ -496,17 +543,19 @@ function initCanvasShare() {
     </fieldset>
     <fieldset id="shareShowcase" hidden>
       <legend>成片展映</legend>
-      <button type="button" id="shareShowcaseOpen">发布成片</button>
+      <button type="button" id="shareShowcaseOpen">发布作品</button>
       <form id="shareShowcaseForm" hidden>
-        <label>成片<select id="shareShowcaseVideo" required></select></label>
-        <label hidden>视频文件（最多 300 MB）<input type="file" id="shareShowcaseVideoFile" accept=".mp4,.mov,.webm"></label>
+        <label>作品<select id="shareShowcaseVideo" required></select></label>
+        <label hidden>视频或 GIF（最多 300 MB）<input type="file" id="shareShowcaseVideoFile" accept=".mp4,.mov,.webm,.gif"></label>
         <label>封面<select id="shareShowcaseCover"></select></label>
         <label hidden>封面文件（最多 20 MB）<input type="file" id="shareShowcaseCoverFile" accept=".png,.jpg,.jpeg,.webp"></label>
         <label>标题<input id="shareShowcaseTitle" maxlength="80" required></label>
         <label>简介<textarea id="shareShowcaseDescription" maxlength="500" rows="3"></textarea></label>
         <label class="share-team"><input type="checkbox" id="shareShowcaseAttach">附上可公开查看和复制的画布</label>
+        <label class="share-team"><input type="checkbox" id="shareShowcaseAttachPrompt">公开一段可复用的提示词</label>
+        <label hidden>访客可查看和复制以下文字<textarea id="shareShowcasePrompt" maxlength="5000" rows="4"></textarea></label>
         <label>已共享的工作流模板<select id="shareShowcaseTemplate"></select></label>
-        <p>审核通过后，访客可观看视频。勾选附上画布时，访客也能查看画布中的文本和当前素材。</p>
+        <p>审核通过后，访客可观看作品。勾选附上画布时，访客也能查看画布中的文本和当前素材。</p>
         <progress id="shareShowcaseProgress" max="100" value="0" aria-label="上传进度" hidden></progress>
         <div class="share-form"><button type="submit" id="shareShowcasePublish">提交审核</button>
           <button type="button" id="shareShowcaseCancel">取消</button></div>
@@ -523,7 +572,7 @@ function initCanvasShare() {
   $("#publicCopy").onclick = ()=>copyShareURL($("#publicURL"));
   $("#publicPublish").onclick = ()=>changePublicSnapshot("PUT");
   $("#publicRevoke").onclick = ()=>changePublicSnapshot("DELETE");
-  $("#shareShowcaseOpen").onclick = setupShowcaseForm;
+  $("#shareShowcaseOpen").onclick = () => setupShowcaseForm();
   $("#shareShowcaseCancel").onclick = ()=>{$("#shareShowcaseForm").hidden=true;$("#shareShowcaseOpen").focus();};
   $("#shareShowcaseEntries").onclick = e=>{
     const button=e.target.closest("[data-withdraw]");

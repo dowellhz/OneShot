@@ -85,7 +85,7 @@ class ReferenceVideo(ChatFixture):
                 self.svc.model.side_effect=[call("video_extend",{"node_id":"n3","direction":direction,"prompt":"列车靠站",
                     "video_optics":{"lens":35,"aperture":"4"}}),answer()]
                 run_id=await self.send("续拍",f"extension-{direction}",["n3"])
-                await self.wait(run_id)
+                await self.wait(run_id, timeout=10)
                 saved=self.load()
                 result=saved["nodes"][-1]
                 self.assertEqual(result["versions"][0]["video_recipe"]["extension"],direction)
@@ -94,7 +94,7 @@ class ReferenceVideo(ChatFixture):
                 self.assertEqual(edge["extension"],direction)
                 self.assertEqual(saved["nodes"][2],source)
             self.svc.model.side_effect=[call("video_regenerate",{"node_id":result["id"],"prompt":"加上夜景"}),answer()]
-            await self.wait(await self.send("重新生成", "extension-regenerate",[result["id"]]))
+            await self.wait(await self.send("重新生成", "extension-regenerate",[result["id"]]), timeout=10)
             final=self.load()["nodes"][-1]
             self.assertEqual(final["id"],result["id"])
             self.assertEqual([v["video_recipe"]["extension"] for v in final["versions"]],["before","before"])
@@ -162,7 +162,7 @@ class ReferenceVideo(ChatFixture):
             self.assertEqual((await self.client.post("/api/generate", json={**payload,"video_refs":[{**refs[0],"node_id":"n4"}]})).status, 400)
             self.svc.model.side_effect = [call("video_generate", {"prompt":payload["prompt"], "video_refs":[
                 {k:v for k,v in item.items() if k!="ref"} for item in refs]}), answer()]
-            await self.wait(await self.send("按这两个参考片段生成", selected=["n3","n4"]))
+            await self.wait(await self.send("按这两个参考片段生成", selected=["n3","n4"]), timeout=10)
         self.assertEqual(checked, ["blue","red"])
         for lease in leases:
             self.assertEqual((await self.client.get(lease)).status, 404)

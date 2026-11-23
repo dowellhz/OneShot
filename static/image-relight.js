@@ -16,7 +16,9 @@ function relightHTML() {
     ${relightControls.map(([id,label,min,max,value])=>`<label class="ie-label" for="ie${id}">${label}<output id="ie${id}Value">${value}</output></label>
       <input id="ie${id}" type="range" min="${min}" max="${max}" value="${value}">`).join("")}
     <div class="ie-row"><button type="button" id="ieResetLight">重置</button><button type="button" id="ieRelightAI">交给模型重打光</button></div>
-    <button type="button" id="ieSaveLight" class="ie-primary">保存布光为新版本</button></div>`;
+    <div class="ie-row"><button type="button" id="ieSaveLight" class="ie-primary">保存布光为新版本</button>
+    <button type="button" id="ieExportLight">导出到画布</button></div>
+    <button type="button" id="ieLocateLight" hidden>在画布定位导出图</button></div>`;
 }
 
 function relightSettings() {
@@ -115,9 +117,10 @@ function relightPointer(E, event, phase, p) {
   if (phase === "up") { E.movingLight=false;ewScheduleDraft(); }
 }
 
-async function saveRelight() {
+async function saveRelight(asNode = false) {
   const E=IMAGE_EDITOR;
-  if (!E?.image || E.busy || E.n.job || !canvasCanEdit() || E.agentSelection) return;
+  if (!E?.image || E.mode!=="relight" || E.busy || E.loading || E.restoring ||
+      !vtCanCopyVersion(E.n,E.n.cur) || E.agentSelection) return;
   const board=B, ref=E.ref, light=relightSettings();
   E.busy=true;ieSync();ieStatus("正在按原图尺寸保存…");
   try {
@@ -126,12 +129,23 @@ async function saveRelight() {
     const blob=await new Promise(resolve=>output.toBlob(resolve,"image/png"));
     if (!blob) throw new Error("浏览器无法导出这张图，请尝试较小的图片");
     const asset=await ewUpload(blob,"relight.png");
-    if(IMAGE_EDITOR!==E || B!==board || !canvasCanEdit() || node(E.n.id)!==E.n || curV(E.n)?.ref!==ref) {
+    if(IMAGE_EDITOR!==E || B!==board || !vtCanCopyVersion(E.n,E.n.cur) || curV(E.n)?.ref!==ref) {
       throw new Error("画布或来源版本已更新，请重新选择图片");
     }
-    addVersion(E.n,mediaVersion({...asset,w:output.width,h:output.height},{source:"edit",mode:"手动布光",edit:{source:ref,mode:"relight",light}}));
-    ieMode("local",true);ieLoad(curV(E.n));ieHistory();loadAssets();
-    ieStatus("已保存布光版本，可在版本栏切回原图");
+    const version=mediaVersion({...asset,w:output.width,h:output.height},{source:"edit",mode:"手动布光",edit:{source:ref,mode:"relight",light}});
+    if (asNode) {
+      const dimensions=size({...E.n,versions:[version],cur:0});
+      const spot=freeSpot(E.n.x+size(E.n).w+CT_LAYOUT_GAP.x,E.n.y,"image",dimensions);
+      checkpoint();
+      const image=addNode("image",spot.x,spot.y,{}, {name:E.n.name+" · 布光",versions:[version],cur:0});
+      E.lightExportId=image.id;
+      ieStatus("布光图片已导出到画布");
+    } else {
+      addVersion(E.n,version);
+      ieMode("local",true);ieLoad(curV(E.n));ieHistory();
+      ieStatus("已保存布光版本，可在版本栏切回原图");
+    }
+    loadAssets();
   }catch(error){ if(IMAGE_EDITOR===E)ieStatus(error.message,true); }
   finally{ E.busy=false;ieSync(); }
 }
@@ -139,7 +153,14 @@ async function saveRelight() {
 function initRelightControls() {
   for(const id of relightInputIds) $("#"+id).oninput=()=>{relightRefresh();ieDraw();};
   $("#ieResetLight").onclick=()=>{relightSet();ieDraw();ewScheduleDraft();};
-  $("#ieSaveLight").onclick=saveRelight;
+  $("#ieSaveLight").onclick=()=>saveRelight();
+  $("#ieExportLight").onclick=()=>saveRelight(true);
+  $("#ieLocateLight").onclick=()=>{
+    const E=IMAGE_EDITOR, image=E?.lightExportId && node(E.lightExportId);
+    if (!image || E.busy) return;
+    closeImageEditor(false);
+    selectOnly(image.id);fit([image]);
+  };
   $("#ieRelightAI").onclick=()=>{
     const E=IMAGE_EDITOR;if(!E || E.busy || E.n.job || !canvasCanEdit())return;
     if(E.mode==="relight_ai"){ieMode("relight");ewScheduleDraft();return;}

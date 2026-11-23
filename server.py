@@ -10,6 +10,7 @@ from contextlib import ExitStack
 
 import aiohttp
 from urllib.parse import quote, unquote
+from PIL.Image import DecompressionBombError
 
 import rewriter
 import fields as pfields
@@ -1189,8 +1190,10 @@ async def copy_public_snapshot(req):
 
 
 SHOWCASE_FIELDS = """s.token,s.title,s.description,s.published,s.snapshot IS NOT NULL AS has_canvas,
+                     CASE WHEN s.video_ref LIKE '%.gif' THEN 'gif' ELSE 'video' END AS media_kind,
                      COALESCE(NULLIF(u.name,''),'OneShot 创作者') AS author"""
 SHOWCASE_PAGE_SIZE = 24
+SHOWCASE_PROMPT_LIMIT = 5000
 
 
 @routes.get("/showcase")
@@ -1211,12 +1214,16 @@ def showcase_offset(req):
 
 def showcase_public_items(req, creator=None):
     search = req.query.get("q","").strip()[:80]
+    kind = req.query.get("kind","")
+    if kind not in ("","video","gif"):
+        raise bad("作品类型无效")
+    filter_kind = {"":"", "video":"AND s.video_ref NOT LIKE '%.gif'", "gif":"AND s.video_ref LIKE '%.gif'"}[kind]
     filter_creator = "AND c.slug=?" if creator else ""
     args = [search,creator] if creator else [search]
     rows = db.q(f"""SELECT {SHOWCASE_FIELDS},c.slug AS creator FROM showcase_entries s
                     JOIN users u ON u.id=s.owner JOIN showcase_creators c ON c.owner=s.owner
                     WHERE s.state='approved' AND instr(lower(s.title||' '||s.description||' '||
-                      COALESCE(u.name,'')),lower(?)) > 0 {filter_creator}
+                      COALESCE(u.name,'')),lower(?)) > 0 {filter_creator} {filter_kind}
                     ORDER BY s.published DESC,s.token LIMIT ? OFFSET ?""",
                 *args,SHOWCASE_PAGE_SIZE+1,showcase_offset(req))
     return {"items":rows[:SHOWCASE_PAGE_SIZE],"more":len(rows)>SHOWCASE_PAGE_SIZE}
@@ -1263,24 +1270,57 @@ async def showcase_detail(req):
                          JOIN canvas_template_publications p ON p.template_id=t.id WHERE l.token=?""",row["token"])
     if template:
         row["template"] = template
+    if prompt := db.one("SELECT prompt FROM showcase_prompts WHERE token=?", row["token"]):
+        row["prompt"] = prompt["prompt"]
     return web.json_response(row, headers=public_canvas.HEADERS)
 
 
+@routes.post(r"/api/showcase/{token:[A-Za-z0-9_-]{43}}/use-prompt")
+async def use_showcase_prompt(req):
+    try:
+        data = await req.json()
+    except (ValueError, UnicodeError):
+        raise bad("请求格式不正确") from None
+    key = data.get("request_key") if isinstance(data,dict) else None
+    if not isinstance(key,str) or not re.fullmatch(r"[\w-]{16,80}",key,re.ASCII):
+        raise bad("创作草稿编号无效")
+    uid, token = req["user"]["id"], req.match_info["token"]
+    source = db.one("""SELECT s.title,p.prompt FROM showcase_entries s JOIN showcase_prompts p ON p.token=s.token
+                       WHERE s.token=? AND s.state='approved'""",token)
+    if not source:
+        return auth.err(404,"此作品的提示词已撤回或尚未公开")
+    digest = hashlib.sha256(f"showcase-prompt:{uid}:{token}:{key}".encode()).hexdigest()
+    bid = "b" + digest[:20]
+    path = board_path(bid)
+    if path.is_file():
+        if board_meta(path).get("owner") != uid:
+            raise web.HTTPConflict()
+        return web.json_response({"id":bid},headers=public_canvas.HEADERS)
+    draft = {"name":("新作 · "+source["title"])[:80],"owner":uid,"rev":1,"seq":2,
+             "nodes":[{"id":"n1","type":"video","name":"视频草稿","x":80,"y":90,
+                       "versions":[],"cur":-1,"job":None,"data":{"prompt":source["prompt"],"pmode":"free"}}],
+             "edges":[],"groups":[],"view":{"x":0,"y":0,"k":1}}
+    write_board(path, draft)
+    return web.json_response({"id":bid},status=201,headers=public_canvas.HEADERS)
+
+
 def showcase_media(req, state):
-    cover = req.match_info["asset"] == "cover"
+    asset = req.match_info["asset"]
+    cover = asset == "cover"
     column = "cover" if cover else "video_ref"
     row = db.one(f"SELECT {column} FROM showcase_entries WHERE token=? AND state=?",
                  req.match_info["token"], state)
     if row:
         if cover:
             return web.Response(body=row["cover"], content_type="image/jpeg", headers=public_canvas.HEADERS)
-        path = showcase.video_path(COMFY_DIR,row["video_ref"])
+        ref = row["video_ref"]
+        path = showcase.work_path(COMFY_DIR,ref) if ref.endswith(".gif") == (asset=="gif") else None
         if path:
             return web.FileResponse(path, headers=public_canvas.HEADERS)
     raise web.HTTPNotFound(headers=public_canvas.HEADERS)
 
 
-@routes.get(r"/api/showcase/{token:[A-Za-z0-9_-]{43}}/{asset:cover|video}")
+@routes.get(r"/api/showcase/{token:[A-Za-z0-9_-]{43}}/{asset:cover|video|gif}")
 async def showcase_public_media(req):
     return showcase_media(req,"approved")
 
@@ -1289,6 +1329,7 @@ async def showcase_public_media(req):
 async def board_showcase(req):
     path, _ = board_to_share(req)
     rows = db.q("""SELECT s.token,s.title,s.state,s.reason,s.owner=? AS can_link_template,
+                          EXISTS(SELECT 1 FROM showcase_prompts q WHERE q.token=s.token) AS has_prompt,
                           l.template_id,t.name AS template_name,p.published AS template_published
                    FROM showcase_entries s LEFT JOIN showcase_template_links l ON l.token=s.token
                    LEFT JOIN canvas_templates t ON t.id=l.template_id
@@ -1318,17 +1359,23 @@ async def store_showcase(req, path, board, payload, files):
     if not isinstance(payload,dict):
         raise bad("请填写作品信息")
     title, description = payload.get("title"), payload.get("description","")
+    prompt = payload.get("public_prompt")
     attach = payload.get("attach_canvas",False)
     source, cover = payload.get("video"), payload.get("cover")
     video_file, cover_file = files.get("video"), files.get("cover")
-    if (video_file and source is not None) or (cover_file and cover is not None) or (not video_file and source is None):
-        raise bad("请选择一个视频来源和一个封面来源")
+    gif_ref = payload.get("gif_ref")
+    if gif_ref is not None and (not isinstance(gif_ref,str) or not showcase.EXPORTED_GIF.fullmatch(gif_ref)):
+        raise bad("请选择已生成的 GIF")
+    if sum(value is not None for value in (video_file,source,gif_ref)) != 1 or cover_file and cover is not None:
+        raise bad("请选择一个作品来源和一个封面来源")
     if (not isinstance(title,str) or not 1 <= len(title.strip()) <= 80
             or not isinstance(description,str) or len(description.strip()) > 500
             or type(attach) is not bool or payload.get("confirmed") is not True
             or not all(isinstance(asset,dict) and isinstance(asset.get("node"),str)
                        and isinstance(asset.get("ref"),str) for asset in (source,cover) if asset is not None)):
         raise bad("请确认发布，并填写有效的作品标题、简介与素材")
+    if prompt is not None and (not isinstance(prompt,str) or not 1 <= len(prompt.strip()) <= SHOWCASE_PROMPT_LIMIT):
+        raise bad("公开提示词应为 1–5000 字")
     if payload.get("revision") != board.get("rev"):
         return auth.err(409,"画布已更新，请重新选择要发布的版本")
     uid = req["user"]["id"]
@@ -1345,11 +1392,18 @@ async def store_showcase(req, path, board, payload, files):
             showcase.find_version(board,"image",cover["node"],cover["ref"])
     except ValueError as error:
         raise bad(str(error)) from None
-    video_ref, node_id = (video_file[1],"") if video_file else (source["ref"],source["node"])
-    video_path = video_file[0] if video_file else public_canvas.media_path(COMFY_DIR,video_ref,"video")
+    node_id = ""
+    if video_file:
+        video_path, video_ref = video_file
+    elif gif_ref:
+        video_ref = gif_ref
+        video_path = showcase.work_path(COMFY_DIR,gif_ref)
+    else:
+        video_ref, node_id = source["ref"],source["node"]
+        video_path = public_canvas.media_path(COMFY_DIR,video_ref,"video")
     cover_path = cover_file[0] if cover_file else public_canvas.media_path(COMFY_DIR,cover["ref"],"image") if cover else None
     if not video_path or video_path.stat().st_size > showcase.VIDEO_LIMIT or cover and not cover_path:
-        raise bad("请使用可读取的视频（最多 300 MB）和封面")
+        raise bad("请使用可读取的作品文件（最多 300 MB）和封面")
     snapshot = showcase.capture(board,COMFY_DIR,node_id,index) if attach else None
     refs = set(snapshot["media"]) if snapshot else set()
     if not video_file:
@@ -1358,11 +1412,13 @@ async def store_showcase(req, path, board, payload, files):
         refs.add(cover["ref"])
     require_media(req["user"],refs)
     if event:
+        if video_ref.endswith(".gif"):
+            raise bad("创作活动投稿需要视频作品")
         await creative_events.validate_video(event,video_path)
     try:
         jpg = await asyncio.to_thread(showcase.cover_jpeg,video_path,cover_path,check_video=bool(video_file))
-    except (OSError,ValueError,IndexError) as error:
-        raise bad("无法读取封面，请检查视频或改用一张图片") from error
+    except (OSError,ValueError,IndexError,DecompressionBombError) as error:
+        raise bad("无法读取作品或封面，请检查文件格式") from error
     _, current = board_to_share(req)
     if current.get("rev") != board.get("rev"):
         return auth.err(409,"画布已更新，请重新选择要发布的版本")
@@ -1372,7 +1428,8 @@ async def store_showcase(req, path, board, payload, files):
     try:
         with db.transaction():
             validate_showcase_template(template,uid)
-            row = insert_showcase(path.stem,uid,node_id,video_ref,title.strip(),description.strip(),jpg,snapshot,template)
+            row = insert_showcase(path.stem,uid,node_id,video_ref,title.strip(),description.strip(),jpg,snapshot,template,
+                                  prompt=prompt.strip() if prompt else None)
             if event:
                 row["event_entry"], _ = creative_events.store_entry(event,uid,row["token"],track)
     except Exception:
@@ -1381,7 +1438,7 @@ async def store_showcase(req, path, board, payload, files):
     return web.json_response(row, status=201, headers=public_canvas.HEADERS)
 
 
-def insert_showcase(bid,uid,node_id,video_ref,title,description,jpg,snapshot,template=None):
+def insert_showcase(bid,uid,node_id,video_ref,title,description,jpg,snapshot,template=None,*,prompt=None):
     token = secrets.token_urlsafe(32)
     changed = db.one("""INSERT INTO showcase_entries
               (token,board_id,owner,node_id,video_ref,cover,title,description,state,submitted,snapshot)
@@ -1394,6 +1451,11 @@ def insert_showcase(bid,uid,node_id,video_ref,title,description,jpg,snapshot,tem
            json.dumps(snapshot,ensure_ascii=False) if snapshot else None)
     if changed:
         set_showcase_template(changed["token"],template)
+        if prompt:
+            db.run("""INSERT INTO showcase_prompts VALUES(?,?) ON CONFLICT(token)
+                      DO UPDATE SET prompt=excluded.prompt""", changed["token"],prompt)
+        else:
+            db.run("DELETE FROM showcase_prompts WHERE token=?",changed["token"])
         return changed
     return db.one("SELECT token,title,state,reason FROM showcase_entries WHERE board_id=? AND node_id=? AND video_ref=?",
                   bid,node_id,video_ref)
@@ -1454,6 +1516,16 @@ async def update_showcase_template(req):
     return web.json_response({"ok":True},headers=public_canvas.HEADERS)
 
 
+@routes.delete(r"/api/board/{bid}/showcase/{token:[A-Za-z0-9_-]{43}}/prompt")
+async def revoke_showcase_prompt(req):
+    path, _ = board_to_share(req)
+    token = req.match_info["token"]
+    db.run("""DELETE FROM showcase_prompts WHERE token=? AND EXISTS (
+              SELECT 1 FROM showcase_entries s WHERE s.token=? AND s.board_id=? AND s.owner=?)""",
+           token,token,path.stem,req["user"]["id"])
+    return web.json_response({"ok":True},headers=public_canvas.HEADERS)
+
+
 def require_showcase_admin(req):
     if req["user"]["role"] != "admin":
         raise web.HTTPForbidden()
@@ -1462,12 +1534,13 @@ def require_showcase_admin(req):
 @routes.get("/api/admin/showcase")
 async def showcase_pending(req):
     require_showcase_admin(req)
-    rows = db.q(f"""SELECT {SHOWCASE_FIELDS} FROM showcase_entries s JOIN users u ON u.id=s.owner
+    rows = db.q(f"""SELECT {SHOWCASE_FIELDS},q.prompt FROM showcase_entries s JOIN users u ON u.id=s.owner
+                    LEFT JOIN showcase_prompts q ON q.token=s.token
                     WHERE s.state='pending' ORDER BY s.submitted,s.token LIMIT 50""")
     return web.json_response(rows, headers=public_canvas.HEADERS)
 
 
-@routes.get(r"/api/admin/showcase/{token:[A-Za-z0-9_-]{43}}/{asset:cover|video}")
+@routes.get(r"/api/admin/showcase/{token:[A-Za-z0-9_-]{43}}/{asset:cover|video|gif}")
 async def showcase_pending_media(req):
     require_showcase_admin(req)
     return showcase_media(req,"pending")
@@ -2280,7 +2353,8 @@ async def media(req):
         f = tools.ref_path(COMFY_DIR, ref)
     except ValueError:
         raise web.HTTPBadRequest()
-    if f.suffix.lower() not in MEDIA_EXT or not f.is_file():
+    gif = f.suffix == ".gif" and bool(showcase.EXPORTED_GIF.fullmatch(ref))
+    if (f.suffix.lower() not in MEDIA_EXT and not gif) or not f.is_file():
         raise web.HTTPNotFound()
     if not can_read_media(req["user"], ref):
         raise web.HTTPNotFound()
@@ -3344,6 +3418,63 @@ async def trim_video(req):
     return web.json_response(result)
 
 
+@routes.post("/api/video/gif")
+async def video_gif(req):
+    data, options = await read_gif_request(req, fps_default=12)
+    ref = data["ref"]
+    start, end = data.get("start", 0), data.get("end")
+    if (type(start) not in (int,float) or not 0 <= start < math.inf or
+            end is not None and (type(end) not in (int,float) or not 0 < end < math.inf)):
+        raise bad("GIF 区间无效")
+    try:
+        path = tools.ref_path(COMFY_DIR, ref)
+    except ValueError:
+        raise bad("找不到所选视频版本") from None
+    if path.suffix.lower() not in tools.VIDEO_EXT or not path.is_file():
+        raise bad("找不到所选视频版本")
+    return await make_gif(req, film.export_gif, path, start=start, end=end, **options)
+
+
+@routes.post("/api/image/gif")
+async def image_gif(req):
+    data, options = await read_gif_request(req, fps_default=8)
+    rows, cols = data.get("rows"), data.get("cols")
+    if any(type(value) is not int or not 1 <= value <= 6 for value in (rows,cols)):
+        raise bad("宫格行列数要在 1–6 之间")
+    first, last = data.get("first",1), data.get("last",rows*cols)
+    if type(first) is not int or type(last) is not int or not 1 <= first < last <= rows*cols:
+        raise bad("请选择至少两格连续画面")
+    return await make_gif(req,film.export_grid_gif,data["ref"],rows=rows,cols=cols,first=first,last=last,**options)
+
+
+async def read_gif_request(req, *, fps_default):
+    try:
+        data = await req.json()
+    except (ValueError, UnicodeError):
+        raise bad("请求格式不正确") from None
+    if not isinstance(data, dict) or not isinstance(data.get("ref"), str):
+        raise bad("请选择素材版本")
+    fps, size, ping_pong = data.get("fps", fps_default), data.get("size", 360), data.get("ping_pong", False)
+    if (type(fps) is not int or fps not in film.GIF_FPS or type(size) is not int or size not in film.GIF_SIZES or
+            type(ping_pong) is not bool):
+        raise bad("GIF 尺寸、帧率或循环设置无效")
+    require_media(req["user"], {data["ref"]})
+    return data, {"fps":fps,"size":size,"ping_pong":ping_pong}
+
+
+async def make_gif(req, render_gif, source, **options):
+    try:
+        async with RENDER_LOCK:
+            result = await asyncio.to_thread(render_gif,COMFY_DIR,source,**options)
+    except ValueError as error:
+        raise bad(str(error)) from None
+    except (OSError, IndexError, DecompressionBombError):
+        raise bad("无法读取所选素材") from None
+    grant_media(req["user"], result["ref"])
+    result["url"] = "/media?ref=" + quote(result["ref"], safe="")
+    return web.json_response(result)
+
+
 @routes.get("/api/video-remake/{board}/{node}")
 @routes.post("/api/video-remake/{board}/{node}")
 async def remake(req):
@@ -3712,6 +3843,28 @@ def enqueue_render(req, render_clip, *, seconds, label=None, board=None, jid=Non
             record(j)
     asyncio.create_task(run())
     return web.json_response({"ids": [jid], "meta": j["meta"]})
+
+
+@routes.post("/api/previs/camera-motion")
+async def previs_camera_motion(req):
+    return await previs_motion_plan(req,previs.camera_motion,"camera")
+
+
+@routes.post("/api/previs/object-motion")
+async def previs_object_motion(req):
+    return await previs_motion_plan(req,previs.object_motion,"keys")
+
+
+async def previs_motion_plan(req, motion, result_name):
+    try:
+        data = await req.json()
+        if not isinstance(data,dict):
+            raise ValueError("请选择白模场景及运镜设置")
+        scene = previs.validate(data.get("scene"))
+        track = motion(scene,data.get("plan"))
+    except (ValueError,UnicodeError) as error:
+        raise bad(str(error)) from None
+    return web.json_response({result_name:track})
 
 
 @routes.post("/api/previs/render")
@@ -4714,6 +4867,8 @@ def job_from_log(row):
 
 def restore_logged_job(app, row):
     jid = row["id"]
+    if jid in JOBS:
+        return JOBS[jid]
     job = job_from_log(row)
     if row["state"] in ("done", "error"):
         try:
@@ -4757,10 +4912,8 @@ def restore_logged_job(app, row):
         job.update(error=row.get("error"), outputs=outputs, _logged=True)
         JOBS[jid] = job
         return job
-    try:
-        receipt = json.loads(row.get("request") or "{}").get("engine") or {}
-    except (AttributeError, TypeError, ValueError):
-        receipt = {}
+    request = task_settings(row.get("request"))
+    receipt = request.get("engine") or {}
     if not isinstance(receipt, dict):
         receipt = {}
     if not receipt and len(jid) == 13 and jid[0] == "e" and row.get("provider_kind") == "local_h3":
@@ -4772,9 +4925,26 @@ def restore_logged_job(app, row):
         restore_image_edit(job)
         asyncio.create_task(follow_engine(app))
         return job
-    if len(jid) != 13 or jid[0] not in "epxrt":
+    receipt = request.get("remote_video")
+    if row.get("capability") == "video" and isinstance(receipt, dict):
+        JOBS[jid] = job
+        provider = providers.get(row["provider_id"])
+        if not provider or not provider["enabled"] or provider["kind"] != row.get("provider_kind"):
+            job.update(state="error", error="原视频服务已停用或变更，无法查询任务")
+            log_end(job)
+        else:
+            job["started"] = row.get("started") or job["created"]
+            job["meta"].update(provider=provider["name"], model=row.get("model"),
+                               prompt=request.get("prompt"), mode_name=request.get("mode_name") or job["meta"]["mode_name"])
+            start_remote(app, job, provider, row["model"], "video", {}, receipt=receipt)
+        return job
+    remote_final = len(jid) == 25 and jid.startswith("r") and row.get("provider_kind") == "ark" and row.get("capability") == "video"
+    if not remote_final and (len(jid) != 13 or jid[0] not in "epxrt"):
         return None
-    job.update(state="error", error="OneShot 已重启，此任务无法恢复，请重试")
+    message = ("OneShot 已重启，未保存第三方任务号。请先到视频服务查询提交记录"
+               if remote_final or (jid.startswith("x") and row.get("capability") == "video")
+               else "OneShot 已重启，此任务无法恢复，请重试")
+    job.update(state="error", error=message)
     JOBS[jid] = job
     log_end(job)
     return job
@@ -5154,7 +5324,8 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
     for _ in range(count):
         jid = "x" + uuid.uuid4().hex[:12]
         meta = {"label": clean(raw.get("label"))[:60] or p["name"], "cls": cls, "units": 1, "est": estimate(cls, 1, 40 if cap == "image" else 150),
-                "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "model":model, "prompt": prompt}
+                "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "model":model,
+                "prompt": prompt, "board":clean(raw.get("board"))}
         if raw.get("segment_edit"):
             operation = object_edit.ACTIONS[object_plan["action"]] if object_plan else "镜头重拍" if raw.get("camera_plan") else "片段修改"
             meta["mode_name"]=operation+" · "+meta["mode_name"]
@@ -5179,9 +5350,9 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
             request_data["object_edit"] = object_plan
         if draft:
             request_data["draft"] = True
-        db.task_start(id=jid, user_id=u["id"], board_id=clean(raw.get("board")), label=meta["label"], capability=cap, provider_id=p["id"],
+        db.task_start(id=jid, user_id=u["id"], board_id=meta["board"], label=meta["label"], capability=cap, provider_id=p["id"],
                       provider_kind=p["kind"], model=model, state="queued", request=request_data)
-        asyncio.create_task(run_remote(req.app, j, p, model, cap, nreq, motion=motion, video_refs=video_refs))
+        start_remote(req.app, j, p, model, cap, nreq, motion=motion, video_refs=video_refs)
         ids.append(jid)
     return web.json_response({"ids": ids, "meta": JOBS[ids[0]]["meta"]})
 
@@ -5215,7 +5386,8 @@ async def finalize_video_draft(req):
     jid = "r" + hashlib.sha256(f"draft-final:{user['id']}:{key}".encode()).hexdigest()[:24]
     fingerprint = {"board":bid,"node":nid,"ref":ref,"resolution":resolution}
     if existing := db.one("SELECT request FROM tasks WHERE id=?", jid):
-        if json.loads(existing["request"] or "{}") != fingerprint:
+        saved = task_settings(existing["request"])
+        if any(saved.get(field) != value for field, value in fingerprint.items()):
             raise bad("该定稿请求已经用于另一项任务")
         return web.json_response({"ids":[jid],"meta":JOBS.get(jid, {}).get("meta", {})})
     if source["expires"] <= time.time():
@@ -5231,15 +5403,34 @@ async def finalize_video_draft(req):
     db.task_start(id=jid,user_id=user["id"],board_id=bid,label=label,capability="video",provider_id=provider["id"],
                   provider_kind="ark",model=model,request=fingerprint)
     job = JOBS[jid] = {"id":jid,"kind":"video","state":"queued","created":time.time(),"meta":meta}
-    asyncio.create_task(run_remote(req.app,job,provider,model,"video",
-                                  {"draft_task":source["provider_task"],"resolution":resolution}))
+    start_remote(req.app,job,provider,model,"video",
+                 {"draft_task":source["provider_task"],"resolution":resolution})
     return web.json_response({"ids":[jid],"meta":meta})
 
 
 REMOTE_SEM: dict = {}
 
 
-async def run_with_motion(app, j, p, model, nreq, motion, video_refs=()):
+def start_remote(app, *args, **kwargs):
+    task = asyncio.create_task(run_remote(app, *args, **kwargs))
+    tasks = app.get("remote_tasks")
+    if tasks is not None:
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+    return task
+
+
+def record_remote_video(job, receipt):
+    row = db.one("SELECT request FROM tasks WHERE id=?", job["id"])
+    request = task_settings(row["request"])
+    request.update(remote_video=receipt, mode_name=job["meta"].get("mode_name"))
+    fields = {"request":json.dumps(request, ensure_ascii=False)}
+    if not job.get("cancel"):
+        fields.update(state="running", started=job["started"])
+    db.task_update(job["id"], **fields)
+
+
+async def run_with_motion(app, j, p, model, nreq, motion, video_refs=(), *, on_submitted=None):
     origin = motion_reference.public_origin(p["config"].get("motion_origin"))
     with tempfile.TemporaryDirectory(prefix="oneshot-motion-") as temp, ExitStack() as leases:
         j["phase"] = "encoding"
@@ -5269,7 +5460,7 @@ async def run_with_motion(app, j, p, model, nreq, motion, video_refs=()):
                     request["refs"].append(replacement)
                 if cancelled():
                     return None
-            return await remote.run(app["http"], COMFY_DIR, p, model, "video", request)
+            return await remote.run(app["http"], COMFY_DIR, p, model, "video", request, on_submitted=on_submitted)
         except Exception as exc:
             message = str(exc)
             for url in urls:
@@ -5277,15 +5468,25 @@ async def run_with_motion(app, j, p, model, nreq, motion, video_refs=()):
             raise providers.ProviderError(message) from None
 
 
-async def run_remote(app, j: dict, p: dict, model: str, cap: str, nreq: dict, *, motion=None, video_refs=()):
+async def run_remote(app, j: dict, p: dict, model: str, cap: str, nreq: dict, *, motion=None, video_refs=(), receipt=None):
     sem = REMOTE_SEM.setdefault(p["id"], asyncio.Semaphore(3))       # be polite to each provider
     async with sem:
         if j.get("cancel"):
             return
-        j["state"] = "running"; j["started"] = time.time()
+        j["state"] = "running"
+        j.setdefault("started", time.time())
         try:
-            r = await (run_with_motion(app, j, p, model, nreq, motion, video_refs) if motion or video_refs else
-                       remote.run(app["http"], COMFY_DIR, p, model, cap, nreq))
+            if receipt is not None:
+                r = await remote.resume_video(app["http"], COMFY_DIR, p, receipt)
+            elif cap == "video":
+                def submitted(value):
+                    record_remote_video(j, value)
+                if motion or video_refs:
+                    r = await run_with_motion(app, j, p, model, nreq, motion, video_refs, on_submitted=submitted)
+                else:
+                    r = await remote.run(app["http"], COMFY_DIR, p, model, cap, nreq, on_submitted=submitted)
+            else:
+                r = await remote.run(app["http"], COMFY_DIR, p, model, cap, nreq)
             if r is None or j.get("cancel"):
                 return
             outs = []
@@ -5293,17 +5494,21 @@ async def run_remote(app, j: dict, p: dict, model: str, cap: str, nreq: dict, *,
                 outs.append({"ref": f["ref"], "url": "/media?ref=" + quote(f["ref"], safe=""), "meta": media_info(f["path"], f["kind"])})
             if j.get("cancel"):
                 return
-            if nreq.get("draft"):
+            if r.get("draft_task"):
                 expires = r["draft_created"] + 14 * 86400
                 for output in outs:
                     db.run("INSERT INTO video_drafts VALUES (?,?,?,?)",
                            output["ref"], j["id"], r["draft_task"], expires)
                     output["extra"] = {"draft_expires":expires}
-            await complete_outputs(j, outs)
             db.task_update(j["id"], cost=r.get("cost"), units=r.get("units"))
+            await complete_outputs(j, outs)
         except Exception as e:
             if j["state"] != "error":
-                j["state"] = "error"; j["error"] = str(e)[:500] or e.__class__.__name__
+                message = str(e)
+                if receipt is not None:
+                    message = re.sub(r"""(?:https?://[^\s"'<>/]*)?""" + motion_reference.LEASE_PATH.pattern,
+                                     "视频参考链接", message)
+                j.update(state="error", error=message[:500] or e.__class__.__name__)
         log_end(j)
 
 
@@ -5526,6 +5731,16 @@ async def on_start(app):
     app["llm"] = rewriter.LLM(COMFY, lambda: app["http"])
     app["llm_task"] = asyncio.create_task(app["llm"].reaper())
     app["tts_task"] = asyncio.create_task(tts.reaper())
+    app["remote_tasks"] = set()
+    recover_remote_videos(app)
+
+
+def recover_remote_videos(app):
+    rows = db.q("""SELECT * FROM tasks WHERE capability='video' AND state IN ('queued','running')
+                  AND CASE WHEN json_valid(request) THEN json_type(request,'$.remote_video')='object' ELSE 0 END
+                  ORDER BY created""")
+    for row in rows:
+        restore_logged_job(app, row)
 
 
 async def on_stop(app):
@@ -5534,6 +5749,10 @@ async def on_stop(app):
     app["llm"].stop()
     app["tts_task"].cancel()
     tts.stop()
+    tasks = tuple(app["remote_tasks"])
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
     await app["http"].close()
 
 

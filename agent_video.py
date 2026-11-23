@@ -20,13 +20,14 @@ import object_edit
 import workflow_review
 import broll
 import creative_memory
-from render import CUTAWAY_LIMIT, TITLE_LIMIT, TITLE_POSITIONS, TITLE_STYLES
+from render import CUTAWAY_LIMIT, FPS, GIF_FPS, GIF_SIZES, TITLE_LIMIT, TITLE_POSITIONS, TITLE_STYLES
 
 NAMES = {"video_generate", "video_regenerate", "video_extend", "video_edit_segment", "video_object_settings", "video_capture_frame", "video_remake_status", "video_remake_analyze", "video_remake_plan",
          "video_draft_status", "video_draft_finalize", "video_titles_get", "video_titles_edit",
-         "video_cutaways_get", "video_cutaways_edit", "video_broll_generate",
+         "video_cutaways_get", "video_cutaways_edit", "video_broll_generate", "video_export_gif",
          "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate",
-         "video_remake_review", "video_remake_export", "video_previs_get", "video_previs_save", "video_previs_render"}
+         "video_remake_review", "video_remake_export", "video_previs_get", "video_previs_save", "video_previs_render",
+         "video_previs_camera_motion", "video_previs_object_motion"}
 
 
 def result_id(cid):
@@ -241,6 +242,10 @@ def register(tool, prop, node, prompt):
     tool("video_capture_frame", "把视频的首帧、末帧或指定时间的画面保存成相连的图片节点。position 为 first、last 或 time；仅 time 需要 at（原视频秒数）。返回真实图片节点，可以在后续生成用作首帧或参考图。", {
         **guide["properties"], "position":prop("string", enum=["first","last","time"]),
         "at":prop("number", minimum=0), "name":node}, ["node_id","position"])
+    tool("video_export_gif", "把已完成的视频版本导出为可下载的无声循环 GIF。start/end 是原片秒数，区间须在 0.25–8 秒内；默认导出开头最多 3 秒。ping_pong=true 时往返循环，适合动作首尾不相接。", {
+        **guide["properties"],"start":prop("number",minimum=0),"end":prop("number",exclusiveMinimum=0),
+        "fps":prop("integer",enum=list(GIF_FPS)),"size":prop("integer",enum=list(GIF_SIZES)),
+        "ping_pong":prop("boolean")},["node_id"])
     tool("video_regenerate", "在同一节点重新生成并追加版本。可选 version 指定旧版。省略 frames 时沿用所选版本的图片；只换个别输入用 replacements，重新指定整组图片用 frames，两者不可同传。物体框选等其他设置仍沿用所选版本。", {
         **options, **guide["properties"], "previs":guide, "audio_refs":sounds, "video_refs":clips, "camera_plan":camera, "object_edit":object_plan,
         "reuse_asset_references":prop("boolean",description="用户要求复用原参考图或复现旧版时为 true，按原生成记录采用资产旧图"),
@@ -248,23 +253,38 @@ def register(tool, prop, node, prompt):
         "frames":prop("array",items=frame,maxItems=30),
         "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
-    def track(fields):
+    def track(fields, transitions=("linear","smooth")):
         pose = {field:prop("number", minimum=18 if field == "fov" else -360 if field == "yaw" else -50,
                            maximum=95 if field == "fov" else 360 if field == "yaw" else 50) for field in fields}
         key = prop("object", properties={**pose, "t":prop("integer", minimum=0, maximum=24 * previs.MAX_SECONDS),
-                   "ease":prop("string", enum=["linear","smooth"])}, required=["t", *fields], additionalProperties=False)
+                   "ease":prop("string", enum=list(transitions))}, required=["t", *fields], additionalProperties=False)
         return prop("array", items=key, minItems=1, maxItems=32)
     dimensions = {key:prop("number", minimum=.1, maximum=20) for key in ("width","height","depth")}
     item = prop("object", properties={"id":node, "label":node, "shape":prop("string", enum=sorted(previs.SHAPES)), **dimensions,
                                     "keys":track(previs.POSE_FIELDS)},
                 required=["id","label","shape",*dimensions,"keys"], additionalProperties=False)
     scene = prop("object", properties={"duration":prop("integer", minimum=2, maximum=previs.MAX_SECONDS),
-                 "aspect":prop("string", enum=list(previs.ASPECTS)), "camera":track(previs.CAMERA_FIELDS),
+                 "aspect":prop("string", enum=list(previs.ASPECTS)), "camera":track(previs.CAMERA_FIELDS,previs.CAMERA_TRANSITIONS),
                  "objects":prop("array", items=item, maxItems=24)},
                  required=["duration","aspect","camera","objects"], additionalProperties=False)
     tool("video_previs_get", "读取白模当前可编辑场景、场景版本校验码和已渲染的 Tab。", {"node_id":node}, ["node_id"])
     tool("video_previs_save", "保存可编辑的白模场景。创建时省略 node_id。修改时先读取原场景，保留无关物体和关键帧，并传 node_id 与 scene_revision。已导入的 mesh 通过原物体 ID 保留。坐标 X 左右、Y 向上、Z 前后。t 为 24 FPS 帧号，含 0 并按升序排列。", {
         "node_id":node, "scene_revision":prop("string", maxLength=64), "name":node, "scene":scene}, ["scene"])
+    tool("video_previs_camera_motion", "为现有白模在指定区间写入可编辑运镜关键帧。先用 video_previs_get 获取校验码和物体编号。start/end 为秒。推进、拉远和横移的 amount 为米，环绕的 amount 为度，跟拍则提供 target 物体编号。", {
+        "node_id":node,"scene_revision":prop("string",minLength=64,maxLength=64),
+        "mode":prop("string",enum=list(previs.CAMERA_MOVES)),
+        "start":prop("number",minimum=0,maximum=previs.MAX_SECONDS),
+        "end":prop("number",minimum=0,maximum=previs.MAX_SECONDS),
+        "amount":prop("number",minimum=.1,maximum=180),"target":node},
+        ["node_id","scene_revision","mode","start","end"])
+    route_point = prop("object",properties={"x":prop("number",minimum=-50,maximum=50),
+        "z":prop("number",minimum=-50,maximum=50)},required=["x","z"],additionalProperties=False)
+    tool("video_previs_object_motion", "给现有白模的一个物体设置按距离分配时间的走位路线。先读取场景，提供版本校验码和目标物体编号。start/end 为秒，起点自动取该物体在 start 的位置。points 按经过顺序填写 X/Z 坐标，最后一个为终点。", {
+        "node_id":node,"scene_revision":prop("string",minLength=64,maxLength=64),"target":node,
+        "start":prop("number",minimum=0,maximum=previs.MAX_SECONDS),
+        "end":prop("number",minimum=0,maximum=previs.MAX_SECONDS),
+        "points":prop("array",items=route_point,minItems=1,maxItems=31)},
+        ["node_id","scene_revision","target","start","end","points"])
     tool("video_previs_render", "把已保存的白模场景渲染为无声 MP4，追加在同一节点的版本 Tab。等待可播放结果后返回。", {"node_id":node}, ["node_id"])
     shot_number = prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS)
     tool("video_remake_status", "读取原片视频版本的角色替换进度。指定shot可查看该镜头的已完成视频版本和任务编号。", {
@@ -345,7 +365,7 @@ def editable_previs_tracks(scene):
                                 for item in scene["objects"]]}
 
 
-def save_previs(s, run, user, cid, args):
+def save_previs(s, run, user, cid, args, *, motion=None, route=None):
     nid = args.get("node_id") or result_id(cid)
     def change(b):
         n = next((n for n in b["nodes"] if n["id"] == nid), None)
@@ -363,10 +383,17 @@ def save_previs(s, run, user, cid, args):
             y = min((item.get("y", 100) for item in b["nodes"]), default=100)
             n = {"id":nid, "type":"video", "name":"白模预演", "x":x, "y":y, "data":node_data({}), "versions":[], "cur":-1}
             b["nodes"].append(n)
-        scene = previs.validate({**args["scene"], "objects":[
-            {**item, "triangles":meshes.get(item["id"])} if item["shape"] == "mesh" else item
-            for item in args["scene"]["objects"]
-        ]})
+        if motion is not None:
+            scene = {**original,"camera":previs.camera_motion(original,motion)}
+        elif route is not None:
+            track = previs.object_motion(original,route)
+            scene = {**original,"objects":[{**item,"keys":track} if item["id"]==route["target"] else item
+                                          for item in original["objects"]]}
+        else:
+            scene = previs.validate({**args["scene"],"objects":[
+                {**item,"triangles":meshes.get(item["id"])} if item["shape"] == "mesh" else item
+                for item in args["scene"]["objects"]
+            ]})
         if args.get("name", "").strip():
             n["name"] = args["name"].strip()
         n["data"].update(previs=scene, aspect=scene["aspect"], duration=scene["duration"])
@@ -900,6 +927,11 @@ async def execute(s, run, user, cid, name, args):
         return await edit_video_timeline(s,run,user,cid,name,args)
     if name == "video_capture_frame":
         return await capture_video_frame(s, run, user, cid, args)
+    if name == "video_export_gif":
+        source, _ = reference_version(s, run, user, args, kind="clip")
+        options = {key:args[key] for key in ("start","end","fps","size","ping_pong") if key in args}
+        result = await s.response(s.host.video_gif, user, {"ref":source["ref"],**options})
+        return {"gif":result,"text":f"已导出「{source['name']}」版本 {source['version']} 的循环 GIF。"}
     if name == "video_object_settings":
         return read_object_settings(s,run,user,args)
     if name == "video_previs_get":
@@ -907,6 +939,16 @@ async def execute(s, run, user, cid, name, args):
         return {**result, "previs_node":result["node_id"], "text":"已读取当前白模场景。"}
     if name == "video_previs_save":
         return save_previs(s, run, user, cid, args)
+    if name == "video_previs_camera_motion":
+        motion = {"mode":args["mode"],"start":round(args["start"]*FPS),"end":round(args["end"]*FPS),
+                  "amount":args.get("amount"),"target":args.get("target")}
+        result = save_previs(s,run,user,cid,args,motion=motion)
+        return {**result,"text":"运镜关键帧已保存，可打开白模进行预览。"}
+    if name == "video_previs_object_motion":
+        route = {"target":args["target"],"start":round(args["start"]*FPS),"end":round(args["end"]*FPS),
+                 "points":args["points"]}
+        result = save_previs(s,run,user,cid,args,route=route)
+        return {**result,"text":"走位关键帧已保存，可打开白模查看路线。"}
     if name == "video_previs_render":
         return await render_previs(s, run, user, cid, args["node_id"])
     if run["data"].get("remake_plan_pending") and name in ("video_remake_map", "video_remake_locate",

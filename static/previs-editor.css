@@ -21,9 +21,17 @@
 .pv-timeline input{flex:1;min-width:0}
 .pv-timeline output{min-width:52px;color:var(--dim);white-space:nowrap}
 .pv-keys{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.pv-keys button[data-pv-cut]{border-color:var(--c-video)!important}
+.pv-cut-tools:not([hidden]){margin-top:8px}
+.pv-cut-tools[hidden]{display:none}
 .pv-inspector .pv-wide:not([hidden]){display:grid;grid-template-columns:68px minmax(0,1fr);align-items:center;gap:5px;margin:0 0 8px}
 .pv-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 12px}
 .pv-fields label:not([hidden]){display:grid;gap:4px}
+[data-pv-motion],.pv-route{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+[data-pv-motion] summary{cursor:pointer;margin-bottom:8px}
+[data-pv-motion] p{margin:0 0 8px;color:var(--dim)}
+[data-pv-motion-segment]:empty{display:none}
+[data-pv-route-info]{margin:8px 0;color:var(--dim)}
 [data-pv-status]{padding-top:7px;color:var(--dim)}
 [data-pv-status]:empty{display:none}
 @media(max-width:760px){.pv-layout{grid-template-columns:1fr}.pv-stage>canvas{max-height:42dvh}.pv-head button{padding:5px 7px}}

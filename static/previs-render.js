@@ -10,6 +10,7 @@ function pvSample(track, tick) {
   const right = track.findIndex(pose => pose.t >= tick);
   if (right <= 0) return {...track[right < 0 ? track.length - 1 : 0]};
   const a = track[right-1], b = track[right];
+  if (b.ease === "cut") return {...(tick<b.t ? a : b)};
   let x = (tick-a.t) / (b.t-a.t);
   if (b.ease === "smooth") x = x*x*(3-2*x);
   const pose = {...b};
@@ -140,17 +141,18 @@ function pvPaint(cameraCanvas,scene,tick,active) {
   }
 }
 
-function pvPlan(scene,tick,width,height) {
+function pvPlan(scene,tick,width,height,active="camera") {
   const camera=pvSample(scene.camera,tick);
   const objects=scene.objects.map(item=>({...item,...pvSample(item.keys,tick)}));
+  const track=scene.objects.find(item=>item.id===active)?.keys || scene.camera;
   const extent=Math.max(6,...objects.map(o=>Math.max(Math.abs(o.x)+o.width,Math.abs(o.z)+o.depth)),
-    Math.abs(camera.x)+1,Math.abs(camera.z)+1);
+    Math.abs(camera.x)+1,Math.abs(camera.z)+1,...track.map(key=>Math.max(Math.abs(key.x),Math.abs(key.z))+1));
   const scale=Math.min(width,height)/(2*extent+1);
   return {camera,objects,extent,scale,point:(x,z)=>[width/2+x*scale,height/2+z*scale],
     world:(x,y)=>[(x-width/2)/scale,(y-height/2)/scale]};
 }
 
-function pvPaintPlan(canvas,scene,tick,active,layout=pvPlan(scene,tick,canvas.width,canvas.height)) {
+function pvPaintPlan(canvas,scene,tick,active,layout=pvPlan(scene,tick,canvas.width,canvas.height,active),route=null) {
   const {width,height}=canvas,ctx=canvas.getContext("2d");
   ctx.fillStyle="#24262b";
   ctx.fillRect(0,0,width,height);
@@ -160,6 +162,14 @@ function pvPaintPlan(canvas,scene,tick,active,layout=pvPlan(scene,tick,canvas.wi
     const color=i?"#3c3e44":"#64666c";
     pvLine(ctx,point(i,-bounds),point(i,bounds),color);
     pvLine(ctx,point(-bounds,i),point(bounds,i),color);
+  }
+  const item=scene.objects.find(o=>o.id===(route?.id ?? active));
+  const track=item?.keys || scene.camera;
+  const points=route && item ? [pvSample(track,route.start),...route.points] : track;
+  for (let i=1;i<points.length;i++) {
+    const a=points[i-1],b=points[i];
+    if (!route && b.ease==="cut") continue;
+    pvLine(ctx,point(a.x,a.z),point(b.x,b.z),route?"#bdd2ee":"#7388a7");
   }
   pvLine(ctx,point(camera.x,camera.z),point(camera.tx,camera.tz),"#8b9bbb");
   for (const item of scene.objects) {
@@ -177,4 +187,10 @@ function pvPaintPlan(canvas,scene,tick,active,layout=pvPlan(scene,tick,canvas.wi
   ctx.fillStyle="#ebedf2";
   ctx.font="13px system-ui";
   ctx.fillText("机位",x+8,y+5);
+  if (route) points.forEach((key,i)=>{
+    const [x,z]=point(key.x,key.z);
+    ctx.fillStyle="#e7edf8";
+    ctx.fillRect(x-3,z-3,6,6);
+    ctx.fillText(String(i),x+5,z-5);
+  });
 }

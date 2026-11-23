@@ -3,7 +3,7 @@
 body { margin: 0; }
 a { color: inherit; }
 a:hover { color: #fff; }
-button, input, textarea { border: 1px solid #404047; border-radius: 8px; background: #242429; color: inherit; padding: 8px 12px; font: inherit; }
+button, input, textarea, select { border: 1px solid #404047; border-radius: 8px; background: #242429; color: inherit; padding: 8px 12px; font: inherit; }
 button { cursor: pointer; }
 button:disabled { opacity: .55; cursor: default; }
 button:hover:not(:disabled) { background: #38383e; }
@@ -14,7 +14,7 @@ button:hover:not(:disabled) { background: #38383e; }
 main { max-width: 1180px; margin: 0 auto; padding: clamp(16px,4vw,52px); }
 h1 { font-size: clamp(23px,3vw,32px); margin: 0 0 18px; overflow-wrap: anywhere; }
 h2 { font-size: 17px; margin: 0; }
-#showcaseSearch:not([hidden]) { display: flex; gap: 8px; margin: 0 0 20px; }
+#showcaseSearch:not([hidden]) { display: flex; flex-wrap:wrap; gap: 8px; margin: 0 0 20px; }
 #showcaseSearch input { min-width: 0; width: min(100%,340px); }
 #showcaseStatus { color: #b5b5bf; }
 #showcaseStatus:empty { display: none; }
@@ -32,6 +32,12 @@ h2 { font-size: 17px; margin: 0; }
 .showcase-copy form { display: grid; gap: 8px; margin-top: 12px; }
 .showcase-copy form div { display: flex; flex-wrap: wrap; gap: 6px; }
 .showcase-watch > video { display: block; width: 100%; max-height: 72dvh; border: 1px solid #38383e; border-radius: 12px; background: #09090a; }
+.showcase-watch > img { display:block; max-width:100%; max-height:72dvh; margin:0 auto 8px; object-fit:contain; border-radius:12px; }
 .showcase-watch p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .showcase-watch a { display: inline-block; padding: 8px 12px; border: 1px solid #404047; border-radius: 8px; text-decoration: none; }
+.showcase-prompt { margin:18px 0; padding:14px; border:1px solid #38383e; border-radius:12px; display:grid; gap:10px; }
+.showcase-prompt textarea { width:100%; resize:vertical; overflow-wrap:anywhere; }
+.showcase-prompt .showcase-entry-actions { margin:0; }
+.showcase-prompt [role=status]:empty { display:none; }
+.showcase-review-prompt { margin-top:10px; }
 #showcaseMore { margin-top: 16px; }

@@ -319,11 +319,12 @@ function attachPromptMedia(ta,source,ref) {
   }
   return bindPromptMedia(source,target,ref);
 }
-function bindPromptMedia(source,target,ref) {
+function bindPromptMedia(source,target,ref,recordUndo=true) {
   const list=promptMediaInputs(source.type,target), prior=list.find(input=>input.source===source)?.edge;
   const sequence=source.type+"_ref_seq";
   const slot=promptSlot(prior?.prompt_slot) || 1+Math.max(promptSlot(target.data[sequence]),...list.map(input=>promptSlot(input.edge.prompt_slot)));
-  checkpoint();rememberVideoVersion(target);
+  if (recordUndo) checkpoint();
+  rememberVideoVersion(target);
   target.data[sequence]=Math.max(promptSlot(target.data[sequence]),slot);
   if(prior){
     if(source.type==="video"&&prior.ref!==ref){delete prior.start;delete prior.end;}
@@ -1267,7 +1268,7 @@ document.addEventListener("pointerdown", e => { if (!e.target.closest("#more, #m
 function nodeAction(n, a) {
   if (a === "text-document") return openTextDocument(n);
   if (a === "panorama") return openPanorama(n);
-  if (!canvasCanEdit() && !["prev","next","full","compare-video","dl","playlist-open"].includes(a)) return;
+  if (!canvasCanEdit() && !["prev","next","full","compare-video","dl","gif-export","playlist-open"].includes(a)) return;
   const v = curV(n);
   if (a === "prev" || a === "next") { switchVersion(n, (n.cur + (a === "next" ? 1 : -1) + n.versions.length) % n.versions.length); }
   else if (a === "dl") { const x = document.createElement("a"); x.href = v.url; x.download = v.ref.split("/").pop(); x.click(); }
@@ -1290,6 +1291,7 @@ function nodeAction(n, a) {
   else if (a === "segment-review") openSegmentReview(n);
   else if (a === "segment-review-parent") openSegmentReview(n,true);
   else if (a === "trim-video") openVideoTrim(n);
+  else if (a === "gif-export") openGifExport(n,v);
   else if (a === "capture") openFrameCapture(n);
   else if (["frame","firstframe","currentframe"].includes(a)) {
     const video = els.get(n.id)?.querySelector("video");
@@ -1866,6 +1868,7 @@ function ctxMenu(e) {
       add("image-pixels", "fit", "调整像素尺寸");
       add("tovideo", "video", "生成视频"); add("hd", "full", "高清重绘"); add("describe", "text", "反推提示词");
       add("film", "scissors", "用图片开始剪辑");
+      if (v.ref) add("gif-export", "motion", "宫格生成 GIF");
       it.push(`<div class="sep"></div>`);
       add("split2x2", "assets", "拆分宫格 2×2"); add("split3x3", "assets", "拆分宫格 3×3"); add("split4x4", "assets", "拆分宫格 4×4"); add("split5x5", "assets", "拆分宫格 5×5");
       it.push(`<div class="sep"></div>`);
@@ -1895,6 +1898,7 @@ function ctxMenu(e) {
     }
     add("full", "full", "全屏查看");
     add("dl", "dl", "下载");
+    if (n.type === "video" && v.ref) add("gif-export","motion","导出循环 GIF");
     if (canvasCanEdit() && v.ref && ["image","video"].includes(n.type)) add("broll","motion","B-roll 动态画面");
     it.push(`<div class="sep"></div>`);
   }
@@ -1924,7 +1928,7 @@ function ctxMenu(e) {
   it.push(`<div class="sep"></div>`);
   if (canvasCanEdit() && selected.some(m=>!nodeLocked(m))) add("del","trash",selected.some(nodeLocked) ? "删除未锁定节点" : "删除","Del");
   const m = $("#ctxMenu"); m.innerHTML = it.join(""); m.classList.add("on");
-  if (!canvasCanEdit()) $$("button[data-a]",m).filter(b=>!["comment","full","compare-video","dl","focus","workflow-review","playlist-open","text-document","panorama"].includes(b.dataset.a)).forEach(b=>b.remove());
+  if (!canvasCanEdit()) $$("button[data-a]",m).filter(b=>!["comment","full","compare-video","dl","gif-export","focus","workflow-review","playlist-open","text-document","panorama"].includes(b.dataset.a)).forEach(b=>b.remove());
   m.style.left = Math.min(e.clientX, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.min(e.clientY, innerHeight - m.offsetHeight - 8) + "px";
   $$("button", m).forEach(b => b.onclick = () => {
     closeMenus(); const a = b.dataset.a;
@@ -2023,6 +2027,7 @@ function openAddMenu(x, y, ctx) {
   $("[data-previs-menu]",m)?.remove();
   $("[data-audio-menu]",m)?.remove();
   $("[data-video-menu]",m)?.remove();
+  $("[data-reference-library-menu]",m)?.remove();
   if (ctx.to?.type === "video" && !ctx.to.data.previs && !ctx.to.data.film && !ctx.to.job && !prepping.has(ctx.to.id)) {
     const sources = B.nodes.filter(n => n.id !== ctx.to.id && n.type === "video" && curV(n)?.source === "previs");
     if (sources.length) {
@@ -2057,6 +2062,18 @@ function openAddMenu(x, y, ctx) {
       }
       m.append(list);
     }
+    const library=document.createElement("div");
+    library.dataset.referenceLibraryMenu="";
+    library.innerHTML='<div class="sep"></div>';
+    for (const kind of ["video","audio"]) {
+      const button=document.createElement("button");
+      button.dataset.libraryReference=kind;
+      button.innerHTML=ico(kind);
+      button.append("从资产库选用"+TYPE_CN[kind]);
+      button.onclick=()=>{closeMenus();openReferenceLibrary(ctx.to,kind);};
+      library.append(button);
+    }
+    m.append(library);
   }
   $(".mt", m).textContent = ctx.from ? "连接到新节点" : ctx.to ? "添加上游输入" : "添加到画布";
   m.classList.add("on");
@@ -2121,7 +2138,7 @@ addEventListener("keydown", e => {
   if (e.key === "Escape" && $("#canvasLayoutMenu.on")) {
     e.preventDefault(); closeMenus(); $("#canvasLayoutBtn").focus(); return;
   }
-  if ($("#groupRunConfirm")?.open || $("#groupGallery")?.open || $("#alCanvasImport")?.open || $("#videoExtension").open || $("#videoSegment").open || $("#segmentReview").open || $("#videoTrim").open || $("#frameCapture").open || $("#videoDraftFinal").open || $("#videoCompare").open) return;
+  if ($("#groupRunConfirm")?.open || $("#groupGallery")?.open || $("#alCanvasImport")?.open || $("#videoExtension").open || $("#videoSegment").open || $("#segmentReview").open || $("#videoTrim").open || $("#videoGif").open || $("#frameCapture").open || $("#videoDraftFinal").open || $("#videoCompare").open) return;
   if (lightState) {
     const dialog = e.target.closest?.("dialog");
     if (dialog && dialog.id !== "light") return;

@@ -180,7 +180,7 @@ class SegmentEdit(ChatFixture):
             self.assertEqual(posts,[])
 
             self.svc.model.side_effect=[call("video_edit_segment",{**first,"object_edit":plan}),answer()]
-            await self.wait(await self.send("移除框选的物体",key="request002",selected=["n3"]))
+            await self.wait(await self.send("移除框选的物体",key="request002",selected=["n3"]),timeout=10)
             saved=self.load()
             target=saved["nodes"][-1]
             nid=target["id"]
@@ -197,7 +197,7 @@ class SegmentEdit(ChatFixture):
             await self.wait(run)
             self.svc.model.side_effect=[call("video_regenerate",{"node_id":nid,
                 "object_edit":{"replacement":{"memory_id":asset["id"]}}},"use-asset"),answer()]
-            await self.wait(await self.send("改用资产库的蓝色道具",key="request004",selected=[nid]))
+            await self.wait(await self.send("改用资产库的蓝色道具",key="request004",selected=[nid]),timeout=10)
         results=[json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",run)]
         self.assertEqual(results[0]["object_edit"],plan)
         self.assertEqual((results[0]["source"]["start"],results[0]["source"]["end"]),(0,4))
@@ -609,7 +609,7 @@ class SegmentEdit(ChatFixture):
             self.assertEqual((await self.client.post("/api/generate",json=valid)).status,400)
             route["model"]="doubao-seedance-2-5-test"
             self.svc.model.side_effect=[call("video_edit_segment",{"node_id":"n3","start":.25,"end":4.25,"prompt":"改成夜景"}),answer()]
-            await self.wait(await self.send("修改这四秒",selected=["n3"]))
+            await self.wait(await self.send("修改这四秒",selected=["n3"]),timeout=10)
         self.assertEqual(len(submitted),1)
         self.assertEqual((await self.client.get(submitted[0])).status,404)
         saved=self.load()

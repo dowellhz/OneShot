@@ -148,6 +148,21 @@ class EventIntegration(ChatFixture):
             self.assertEqual((await (await client.get(url)).json())["entries"][0]["token"],uploaded_token)
             self.assertEqual((await client.post(publish,headers=owner,json=canvas)).status,409)
             self.assertEqual(db.one("SELECT state FROM event_entries WHERE event_id=? AND token=?",eid,token)["state"],"rejected")
+            gif_path, gif_ref = server.film._new(server.COMFY_DIR,"output","gif",".gif")
+            Image.new("RGB",(32,32),"red").save(gif_path)
+            server.grant_media({"id":7},gif_ref)
+            gif = {**metadata,"gif_ref":gif_ref}
+            unsupported = await client.post(publish,headers=owner,json=gif)
+            self.assertEqual(unsupported.status,400,await unsupported.text())
+            standalone = await client.post(publish,headers=owner,json={
+                k:v for k,v in gif.items() if k not in ("event","track")})
+            self.assertEqual(standalone.status,201,await standalone.text())
+            gif_token = (await standalone.json())["token"]
+            self.assertEqual((await client.patch(gallery+gif_token,headers=admin,json=decision)).status,200)
+            personal = await (await client.get(url+"/me",headers=owner)).json()
+            self.assertNotIn(gif_token,{row["token"] for row in personal["works"]})
+            self.assertEqual((await client.post(url+"/entries",headers=owner,json={
+                "token":gif_token,"track":"动画"})).status,400)
 
     async def test_approved_registration_submission_limits_and_public_results(self):
         app = web.Application(middlewares=[auth.middleware])

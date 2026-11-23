@@ -112,7 +112,7 @@ async def personal(req):
     entries = db.q("""SELECT e.state,e.reason,e.track,e.token,s.title,s.state AS publication_state,
         CASE WHEN s.state='rejected' THEN s.reason END AS publication_reason FROM event_entries e
         JOIN showcase_entries s ON s.token=e.token WHERE e.event_id=? AND e.owner=? ORDER BY e.submitted DESC""",event["id"],owner)
-    works = db.q("""SELECT token,title FROM showcase_entries WHERE owner=? AND state='approved'
+    works = db.q("""SELECT token,title FROM showcase_entries WHERE owner=? AND state='approved' AND video_ref NOT LIKE '%.gif'
                  ORDER BY published DESC,token LIMIT 100""",owner)
     return response({"registration":registration,"entries":entries,"works":works})
 
@@ -185,6 +185,8 @@ async def submit(req):
     work = db.one("SELECT video_ref FROM showcase_entries WHERE token=? AND owner=? AND state='approved'",token,owner)
     if not work:
         error("请选择自己已发布的作品",404)
+    if work["video_ref"].endswith(".gif"):
+        error("创作活动投稿需要视频作品",400)
     validate_submission(event,owner,track)
     await validate_video(event,showcase.video_path(req.app["creative_events_media"],work["video_ref"]))
     with db.transaction():

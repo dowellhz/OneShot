@@ -258,12 +258,12 @@ function pvGlb(scene,tick,name) {
   const animation={name:"白模预演",samplers:[],channels:[]};
   const ticks=Array.from({length:scene.duration*PV_FPS+1},(_,index)=>index);
   const time=accessor(ticks.map(frame=>frame/PV_FPS),"SCALAR",{bounds:true});
-  function channel(target,type,values) {
+  function channel(target,type,values,interpolation="LINEAR") {
     const output=accessor(values.flat(),type);
-    const sampler=animation.samplers.push({input:time,output,interpolation:"LINEAR"})-1;
+    const sampler=animation.samplers.push({input:time,output,interpolation})-1;
     animation.channels.push({sampler,target});
   }
-  function motion(track,index,rotation) {
+  function motion(track,index,rotation,interpolation) {
     const poses=ticks.map(frame=>pvSample(track,frame));
     const rotations=poses.map(rotation);
     for (let i=1;i<rotations.length;i++) {
@@ -271,16 +271,17 @@ function pvGlb(scene,tick,name) {
         rotations[i]=rotations[i].map(value=>-value);
       }
     }
-    channel({node:index,path:"translation"},"VEC3",poses.map(translation));
-    channel({node:index,path:"rotation"},"VEC4",rotations);
+    channel({node:index,path:"translation"},"VEC3",poses.map(translation),interpolation);
+    channel({node:index,path:"rotation"},"VEC4",rotations,interpolation);
     return poses;
   }
-  const cameraPoses=motion(scene.camera,0,pvCameraRotation);
+  const cameraInterpolation=scene.camera.some(key=>key.t>0 && key.ease==="cut")?"STEP":"LINEAR";
+  const cameraPoses=motion(scene.camera,0,pvCameraRotation,cameraInterpolation);
   scene.objects.forEach((item,index)=>motion(item.keys,index+1,objectRotation));
   if (cameraPoses.some(pose=>pose.fov!==cameraPoses[0].fov)) {
     extensions.push("KHR_animation_pointer");
     channel({path:"pointer",extensions:{KHR_animation_pointer:{pointer:"/cameras/0/perspective/yfov"}}},
-      "SCALAR",cameraPoses.map(verticalFov));
+      "SCALAR",cameraPoses.map(verticalFov),cameraInterpolation);
   }
   gltf.animations=[animation];
   if (extensions.length) gltf.extensionsUsed=extensions;

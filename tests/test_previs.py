@@ -14,6 +14,109 @@ from test_agent_chat import ChatFixture, answer, call
 
 
 class PrevisIntegration(ChatFixture):
+    async def test_camera_cut_holds_until_the_exact_frame_in_saved_and_rendered_scene(self):
+        scene = self.motion_scene()
+        scene.update(duration=2,aspect="1:1")
+        scene["camera"] = [scene["camera"][0], {**scene["camera"][0],"t":24,"z":2,"fov":55,"ease":"cut"}]
+        scene["objects"][0]["keys"] = scene["objects"][0]["keys"][:1]
+        self.svc.model.side_effect = [call("video_previs_save",{"scene":scene},"cut"),answer()]
+        rid = await self.send("在第 1 秒切到近机位",selected=[])
+        self.assertEqual((await self.wait(rid,timeout=9))["state"],"done")
+        saved = self.load()["nodes"][-1]["data"]["previs"]
+        self.assertEqual(saved["camera"][1]["ease"],"cut")
+        self.assertEqual(previs.sample(saved["camera"],23,previs.CAMERA_FIELDS)["z"],6)
+        self.assertEqual(previs.sample(saved["camera"],24,previs.CAMERA_FIELDS)["z"],2)
+        ramp = previs.camera_motion(saved,{"mode":"pull","start":6,"end":12,"amount":1})
+        self.assertEqual([(key["t"],key["ease"]) for key in ramp],[(0,"linear"),(6,"linear"),(12,"smooth"),(24,"cut")])
+        exported = await asyncio.to_thread(previs.export,server.COMFY_DIR,saved,lambda *_:None,lambda:False)
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR,exported["ref"]))) as video:
+            frames = {index:frame.to_ndarray(format="rgb24").astype(np.int16)
+                      for index,frame in enumerate(video.decode(video=0)) if index in (22,23,24,25)}
+        self.assertLess(np.abs(frames[22]-frames[23]).mean(),1.5)
+        self.assertGreater(np.abs(frames[23]-frames[24]).mean(),3)
+        self.assertLess(np.abs(frames[24]-frames[25]).mean(),1.5)
+
+    def motion_scene(self):
+        return {"duration":4,"aspect":"16:9","camera":[
+            {"t":t,"x":0,"y":2,"z":6,"tx":0,"ty":1,"tz":0,"fov":42} for t in (0,48,96)],
+            "objects":[{"id":"walker","label":"人物","shape":"figure","width":.8,"height":2,"depth":.6,
+                        "keys":[{"t":0,"x":0,"y":0,"z":0,"yaw":0},
+                                {"t":48,"x":2,"y":0,"z":1,"yaw":0,"ease":"smooth"},
+                                {"t":96,"x":4,"y":0,"z":2,"yaw":0}]}]}
+
+    async def test_camera_move_api_range_geometry_and_bounds(self):
+        scene = previs.validate(self.motion_scene())
+        path = "/api/previs/camera-motion"
+        for mode, value, x, z in (("push",2,0,4),("pull",2,0,8),("slide_left",1,-1,6),
+                                  ("slide_right",1,1,6),("orbit_left",90,-6,0),("orbit_right",90,6,0)):
+            with self.subTest(mode=mode):
+                response = await self.client.post(path,json={"scene":scene,"plan":{"mode":mode,"start":12,"end":72,"amount":value}})
+                self.assertEqual(response.status,200,await response.text())
+                track = (await response.json())["camera"]
+                self.assertEqual((track[0],track[-1]),(scene["camera"][0],scene["camera"][-1]))
+                self.assertEqual((track[1]["t"],track[-2]["t"]),(12,72))
+                self.assertAlmostEqual(track[-2]["x"],x)
+                self.assertAlmostEqual(track[-2]["z"],z)
+                if mode.startswith("orbit"):
+                    for key in track[1:-1]:
+                        self.assertAlmostEqual(key["x"]**2+key["z"]**2,36)
+        for plan in ({"mode":"push","start":0,"end":36,"amount":6},
+                     {"mode":"follow","start":0,"end":97,"target":"walker"},
+                     {"mode":"follow","start":0,"end":48,"target":"absent"}):
+            self.assertEqual((await self.client.post(path,json={"scene":scene,"plan":plan})).status,400)
+
+    async def test_object_motion_uses_distance_and_keeps_other_tracks(self):
+        scene = previs.validate(self.motion_scene())
+        path = "/api/previs/object-motion"
+        plan = {"target":"walker","start":0,"end":72,"points":[{"x":1,"z":0},{"x":1,"z":3}]}
+        response = await self.client.post(path,json={"scene":scene,"plan":plan})
+        self.assertEqual(response.status,200,await response.text())
+        track = (await response.json())["keys"]
+        self.assertEqual([[key["t"],key["x"],key["z"]] for key in track],
+                         [[0,0,0],[18,1,0],[72,1,3],[96,4,2]])
+        for invalid in ({**plan,"end":1},{**plan,"points":[{"x":0,"z":0}]},
+                        {**plan,"points":[{"x":51,"z":0}]},{**plan,"target":"absent"}):
+            self.assertEqual((await self.client.post(path,json={"scene":scene,"plan":invalid})).status,400)
+
+        node = {"id":"n3","type":"video","name":"白模走位","x":10,"y":20,"data":{"previs":scene},"versions":[],"cur":-1}
+        self.board["nodes"].append(node)
+        server.write_board(server.board_path("test"),self.board)
+        args = {**plan,"end":3,"node_id":"n3","scene_revision":server.agent_chat.agent_video.scene_revision(scene)}
+        self.svc.model.side_effect = [call("video_previs_object_motion",args,"path"),answer()]
+        rid = await self.send("在前三秒走过两个路点",selected=["n3"])
+        self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
+        saved = self.load()["nodes"][-1]["data"]["previs"]
+        self.assertEqual(saved["objects"][0]["keys"],track)
+        self.assertEqual(saved["camera"],scene["camera"])
+
+    async def test_assistant_follows_actor_with_revision_protection(self):
+        scene = previs.validate(self.motion_scene())
+        node = {"id":"n3","type":"video","name":"白模走位","x":10,"y":20,"data":{"previs":scene},"versions":[],"cur":-1}
+        self.board["nodes"].append(node)
+        server.write_board(server.board_path("test"),self.board)
+        args = {"node_id":"n3","mode":"follow","target":"walker","start":0,"end":4}
+        self.svc.model.side_effect = [
+            call("video_previs_camera_motion",{**args,"scene_revision":"0"*64},"stale-camera"),
+            call("video_previs_camera_motion",{**args,"scene_revision":server.agent_chat.agent_video.scene_revision(scene)},"follow-camera"),
+            call("video_previs_render",{"node_id":"n3"},"render-motion"),
+            answer(),
+        ]
+        rid = await self.send("整段跟拍人物",selected=["n3"])
+        self.assertEqual((await self.wait(rid,timeout=18))["state"],"done")
+        calls = db.q("SELECT state,result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)
+        self.assertIn("重新读取",json.loads(calls[0]["result"])["error"])
+        self.assertEqual(json.loads(calls[1]["result"])["previs_node"],"n3")
+        saved = self.load()["nodes"][-1]
+        track = saved["data"]["previs"]["camera"]
+        self.assertEqual([[key[field] for field in ("t","x","z","tx","ty","tz")] for key in track],
+                         [[0,0,6,0,1.2,0],[48,2,7,2,1.2,1],[96,4,8,4,1.2,2]])
+        self.assertEqual(track[1]["ease"],"smooth")
+        self.assertEqual(saved["data"]["previs"]["objects"],scene["objects"])
+        version, = saved["versions"]
+        self.assertEqual(version["previs_recipe"]["camera"],track)
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR,version["ref"]))) as video:
+            self.assertEqual((video.streams.video[0].frames,len(video.streams.audio)),(96,0))
+
     async def test_assistant_authors_renders_and_reuses_a_pinned_guide(self):
         scene = {"duration":2, "aspect":"9:16",
                  "camera":[{"t":0,"x":4,"y":2,"z":6,"tx":0,"ty":.8,"tz":0,"fov":38}],
@@ -78,7 +181,7 @@ class PrevisIntegration(ChatFixture):
                  "model":"ep-configured"}
         submitted = []
 
-        async def provider(_http, root, _provider, model, kind, request):
+        async def provider(_http, root, _provider, model, kind, request, *, on_submitted=None):
             self.assertEqual((kind,model), ("video","ep-configured"))
             submitted.append(request)
             path, ref = server.film._new(root, "output", "formal", ".mp4")

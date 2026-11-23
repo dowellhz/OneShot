@@ -83,8 +83,10 @@ function renderSeedAudioRefs(n,prompt) {
       <span>${esc(title)}</span><button type="button" data-seed-remove="${index}" aria-label="移除${esc(title)}">×</button></span>`;
   }).join("")+`<span class="pill">添加参考<select data-seed-pick aria-label="添加参考音频或图片" ${choices.length?"":"disabled"}>
     <option value="">选择画布版本</option>${choices.map(({source,index},i)=>
-      `<option value="${i}">${esc(source.name)} · ${source.type==="audio"?"音频":"图片"} · 版本 ${index+1}</option>`).join("")}</select></span>`;
+      `<option value="${i}">${esc(source.name)} · ${source.type==="audio"?"音频":"图片"} · 版本 ${index+1}</option>`).join("")}</select></span>
+    <button type="button" data-seed-library ${canvasCanEdit()&&refs.length<3&&refs.every(ref=>ref.kind==="audio")?"":"disabled"}>从资产库添加音频</button>`;
   host.style.display="";
+  $("[data-seed-library]",host).onclick=()=>openReferenceLibrary(n,"audio");
   $("[data-seed-pick]",host).onchange=event=>{
     if (event.target.value==="" || !canvasCanEdit()) return;
     const choice=choices[Number(event.target.value)];

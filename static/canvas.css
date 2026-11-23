@@ -84,10 +84,23 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #segmentReview legend { color:var(--dim); padding:0 4px; }
 #segmentReview select { flex:1 1 210px; min-width:0; max-width:100%; }
 #segmentReview video:not([hidden]) { display:block; width:100%; max-height:28vh; background:#111; border-radius:8px; }
-#videoTrim { width:min(580px,calc(100vw - 26px)); }
-#videoTrim video { display:block; width:100%; max-height:40vh; background:#111; border-radius:8px; }
-#videoTrim .trim-points { display:grid; grid-template-columns:1fr auto; align-items:center; gap:8px; margin:10px 0; }
-#videoTrim .trim-points input { width:6em; }
+:is(#videoTrim,#videoGif) { width:min(580px,calc(100vw - 26px)); max-height:calc(100dvh - 26px); overflow:auto; }
+:is(#videoTrim,#videoGif) video { display:block; width:100%; max-height:40vh; background:#111; border-radius:8px; }
+:is(#videoTrim,#videoGif) .trim-points { display:grid; grid-template-columns:1fr auto; align-items:center; gap:8px; margin:10px 0; }
+:is(#videoTrim,#videoGif) .trim-points input { width:6em; }
+#videoGif .gif-options { display:flex; flex-wrap:wrap; gap:8px 14px; }
+#videoGif .gif-options label { display:inline-flex; align-items:center; gap:6px; }
+#videoGif video[hidden], #videoGif .trim-points[hidden] { display:none; }
+#videoGif .gif-grid-options:not([hidden]) { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:10px 0; }
+#videoGif .gif-grid-options input { width:4em; }
+#videoGif [data-gif-grid-preview]:not([hidden]) { position:relative; width:fit-content; max-width:100%; margin:auto; }
+#videoGif [data-gif-grid-preview] img { display:block; max-width:100%; max-height:40vh; }
+#videoGif [data-gif-cells] { position:absolute; inset:0; display:grid; pointer-events:none; }
+#videoGif [data-gif-cells] span { display:grid; place-items:start; border:1px solid #ffffff60; color:#fff; font-size:var(--fs-caption); text-shadow:0 1px 3px #000; padding:2px; }
+#videoGif [data-gif-cells] span:not([data-selected]) { background:#0008; }
+#videoGif .gif-preview:not([hidden]), .ac-gif-result { display:grid; justify-items:start; gap:8px; }
+#videoGif .gif-preview img, .ac-gif-result img { max-width:100%; max-height:180px; border-radius:8px; }
+#videoGif .gif-preview a, .ac-gif-result a { color:inherit; text-decoration:underline; }
 #videoTrim :is(.trim-actions,[data-trim-cuts]) { display:flex; flex-wrap:wrap; gap:8px; }
 #videoTrim [data-trim-cuts]:not(:empty) { margin-top:10px; }
 #videoTrim [data-trim-cuts] button { font-variant-numeric:tabular-nums; }
@@ -646,9 +659,15 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .al-group-import label{display:flex;align-items:center;gap:5px}
 .al-group-import select{color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:5px}
 .al-group-import [role=status]{color:var(--dim);font-size:var(--fs-caption);flex:1 1 120px}
-#groupRunConfirm,#groupRunProgress,#versionRefUpdate{padding:12px;color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:12px}
-#groupRunConfirm,#versionRefUpdate{width:min(490px,calc(100vw - 28px));max-height:calc(100dvh - 28px)}
-:is(#groupRunConfirm,#versionRefUpdate)::backdrop{background:#0009}
+#groupRunConfirm,#groupRunProgress,#versionRefUpdate,#seedAudioLibrary{padding:12px;color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:12px}
+#groupRunConfirm,#versionRefUpdate,#seedAudioLibrary{width:min(490px,calc(100vw - 28px));max-height:calc(100dvh - 28px)}
+:is(#groupRunConfirm,#versionRefUpdate,#seedAudioLibrary)::backdrop{background:#0009}
+#seedAudioLibrary form{display:grid;gap:10px}
+#seedAudioLibrary :is(input,select){min-width:0;background:var(--card);color:var(--text);border:1px solid var(--line2);border-radius:6px;padding:8px}
+#seedAudioLibrary audio{width:100%}
+#seedAudioLibrary [role=status]{color:var(--dim);font-size:var(--fs-small)}
+#seedAudioLibrary [role=status]:empty{display:none}
+#seedAudioLibrary footer{display:flex;justify-content:flex-end;gap:8px}
 #groupRunProgress{position:fixed;left:14px;bottom:62px;width:min(340px,calc(100vw - 28px));z-index:38;box-shadow:0 8px 28px #0006}
 :is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) :is(header,footer){display:flex;justify-content:space-between;align-items:center;gap:8px}
 :is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) footer{justify-content:flex-end}

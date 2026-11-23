@@ -20,7 +20,7 @@ PUBLIC = ("/login", "/api/auth/", "/static/", "/favicon")
 PUBLIC_SNAPSHOT_READ = re.compile(r"/(?:share/[A-Za-z0-9_-]{43}|api/share/[A-Za-z0-9_-]{43}(?:/media/[0-9]{1,6})?)")
 PUBLIC_SHOWCASE_READ = re.compile(
     r"/(?:showcase(?:/[A-Za-z0-9_-]{43}|/creator/[a-f0-9]{32})?"
-    r"|api/showcase(?:/[A-Za-z0-9_-]{43}(?:/(?:cover|video))?|/creator/[a-f0-9]{32})?)")
+    r"|api/showcase(?:/[A-Za-z0-9_-]{43}(?:/(?:cover|video|gif))?|/creator/[a-f0-9]{32})?)")
 PUBLIC_EVENTS_READ = re.compile(r"/(?:api/)?events(?:/e[a-f0-9]{20})?")
 PUBLIC_ITEM_READ = re.compile(r"/(?:shared-item/[A-Za-z0-9_-]{43}|api/shared-item/[A-Za-z0-9_-]{43}(?:/media)?)")
 PUBLIC_CONNECTOR = frozenset(("/mcp","/.well-known/oauth-protected-resource/mcp",

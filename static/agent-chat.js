@@ -58,13 +58,15 @@ function acWebSources(items) {
  }).join("")}</ol>`;
 }
 Object.assign(AC_LABELS,{video_generate:"生成视频",video_regenerate:"重新生成视频",
- video_extend:"续拍视频",video_edit_segment:"修改视频片段",video_object_settings:"读取物体编辑设置",video_capture_frame:"截取视频帧",
+ video_extend:"续拍视频",video_edit_segment:"修改视频片段",video_object_settings:"读取物体编辑设置",video_capture_frame:"截取视频帧",video_export_gif:"导出循环 GIF",
+ image_export_gif:"宫格生成 GIF",
  video_draft_status:"查询样片版本",video_draft_finalize:"生成样片定稿",
  video_titles_get:"读取画面标题",video_titles_edit:"编辑画面标题",
  video_cutaways_get:"读取补画面",video_cutaways_edit:"编辑补画面",
  video_broll_generate:"制作 B-roll 动态画面",
  video_playlist_create:"创建播放列表",video_playlist_read:"读取播放列表",video_playlist_edit:"调整播放列表",video_playlist_export:"导出播放列表",
  video_previs_get:"读取白模场景",video_previs_save:"保存白模场景",video_previs_render:"渲染白模预演",
+ video_previs_camera_motion:"应用白模运镜",video_previs_object_motion:"设置白模走位",
  audio_services:"读取配音与音乐服务",audio_generate:"生成音频"});
 const acClone=v=>JSON.parse(JSON.stringify(v));
 function acActive(){return AC.runs.find(r=>!["done","error","stopped"].includes(r.state));}
@@ -386,6 +388,13 @@ async function acFocus(ids,editor=false){
 }
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
 function acResultCards(result){
+ if(result.gif?.ref && /^output:h3studio\/gif_[\w-]+\.gif$/.test(result.gif.ref)){
+  const gif=result.gif,url="/media?ref="+encodeURIComponent(gif.ref);
+  return `<div class="ac-gif-result"><img src="${url}" loading="lazy" alt="GIF 动图预览">
+    <div>${esc(gif.width)}×${esc(gif.height)} · ${esc(gif.seconds)} 秒</div>
+    <a href="${url}" download="${esc(gif.ref.split("/").pop())}">下载 GIF</a>
+    ${showcaseCanPublish()?`<button type="button" data-gif-showcase="${esc(gif.ref)}">发布到展映</button>`:""}</div>`;
+ }
  if(result.creative_directions?.length){
   return result.creative_directions.map(direction=>`<section class="ac-storyboard-plan ac-direction" data-creative-direction="${esc(JSON.stringify(direction))}">
     <strong>${esc(direction.title)}</strong><p>${esc(direction.premise)}</p>
@@ -808,7 +817,7 @@ function acAppendEvent(e,replay=false){
   if(!el)return;
   const result=d.result, output=$(".ac-output",el);
   if(result.creative_directions?.length||result.previs_node||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
-     result.preview?.completed?.length||result.video?.completed||d.name==="video_remake_export"&&result.export_ref||
+     result.preview?.completed?.length||result.video?.completed||result.gif||d.name==="video_remake_export"&&result.export_ref||
      ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length||result.memories?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
   const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.template_fill_plan?"等待确认":"完成";
@@ -1457,6 +1466,8 @@ function initAgentChat(){
  $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{const rid=AC.runs[0]?.id;if(!rid)return;try{await flushSave();await acApi(`/api/chat/runs/${rid}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=async e=>{
+  const gif=e.target.closest("[data-gif-showcase]");
+  if(gif){if(AC.board===boardId)await openGifShowcase({ref:gif.dataset.gifShowcase});return;}
   const follow=e.target.closest("[data-explore-direction],[data-plan-direction]");
   if(follow){
    if(AC.board!==boardId||!AC.session||AC.sending||AC.loadingSessions)return;

@@ -29,6 +29,7 @@ import document_import
 import document_review
 import image_camera
 import image_relight
+from render import GIF_FPS, GIF_SIZES
 import workflow_review
 import web_research
 
@@ -269,6 +270,12 @@ tool("image_generate", "通过已配置的默认生图服务生成图片。可�
     "prompt": PROMPT, "reference_ids": prop("array", items=NODE, maxItems=4), "count": prop("integer", minimum=1, maximum=4),
     "memory_views":creative_memory.view_selection_schema(prop),
     "aspect": prop("string", enum=["auto", "1:1", "3:4", "4:3", "9:16", "16:9"]), "name": NODE}, ["prompt"])
+tool("image_export_gif", "从一张宫格序列帧图生成可下载的循环 GIF。画面按行从左到右、从上到下。rows/cols 为准确行列，first/last 从 1 开始且包含两端，至少两格。省略 version 时用本轮绑定版本。", {
+    "node_id":NODE,"version":prop("integer",minimum=1,maximum=5000),
+    "rows":prop("integer",minimum=1,maximum=6),"cols":prop("integer",minimum=1,maximum=6),
+    "first":prop("integer",minimum=1,maximum=36),"last":prop("integer",minimum=2,maximum=36),
+    "fps":prop("integer",enum=list(GIF_FPS)),"size":prop("integer",enum=list(GIF_SIZES)),
+    "ping_pong":prop("boolean")},["node_id","rows","cols"])
 IMAGE_ASPECT = prop("string", enum=["auto", "1:1", "3:4", "4:3", "9:16", "16:9"])
 IMAGE_SET_ITEMS = prop("array",minItems=2,maxItems=4,items=prop("object",properties={
     "name":prop("string",minLength=1,maxLength=40),
@@ -336,6 +343,9 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 生成新视频用video_generate；重生成现有视频用video_regenerate。沿用图片时省略frames；只替换个别关键帧或人物图用replacements；重新指定整组参考图片用frames，两者不可同传。image_generate只会生成静态图片，不能用于视频，也不能把图片结果叫视频或归咎服务配置。以返回的media_type和文件类型为准。media_describe支持视频抽帧分析。
 续拍或补拍用video_extend。用户指定本地时传method=frame，由本地H3使用原片接点帧和可选图片参考。自动模式可从连续画面切换为接点帧；不要把接点帧说成原片运动参考。每条用户指令最多提交一段视频，已有成片时请说明下一段可作为新消息入队。
 用户要制作机位、构图或走位白模时用video_previs_save。修改现有白模先用video_previs_get，保留未要求修改的轨道，再保存到同一节点。需要可播放预演时调用video_previs_render。只有用户要求生成正式视频，才在video_generate或video_regenerate中用previs指定已渲染的白模版本；它是动作参考，角色图和场景图提供外观。
+用户明确要给已有白模加推进、拉远、横移、环绕或跟拍时，先用video_previs_get核对时长、目标物体及场景版本，再用video_previs_camera_motion写入指定区间。只在用户需要视频预览时渲染。
+用户明确要已有白模的物体经过指定位置时，先用video_previs_get确认物体和时间，再用video_previs_object_motion写入走位路线。起点由该时刻的现有位置确定。如果用户只提供相对方位，按已有场景坐标落点。
+用户要求在特定时刻从一个构图硬切到另一个构图时，先读取白模场景，再通过video_previs_save把新机位与镜头参数放在对应的机位关键帧，并设置ease为cut。关键帧之前保持上一机位，切点使用新机位。此过渡仅用于机位。
 用户要求用某段音频参考声音或节奏时，在video_generate或video_regenerate的audio_refs中传入画布音频节点和所选版本。音频参考由模型重新生成声音，用户明确要求保留原音频时，应在剪辑台采用该音频。
 用户要求配音、音乐或音效时，调用audio_generate。用户指定音色时先用audio_services查实际音色编号。用户要求用音频或图片参考生成声音时，选择seed_audio并传入reference_ids。重新生成在原音频节点增加版本。生成后的音频可在剪辑台加入时间线或作为视频声音参考。
 用户要求分离人声或把原声中的人声与伴奏拆成独立音轨时，调用 audio_separate。指定的时间为原素材秒数，未指定区间时用完整素材。只获取台词时使用已有转写流程。
@@ -351,6 +361,7 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 用户要求重拍指定区间的机位、景别或运镜时也用video_edit_segment，填写camera_plan。固定机位只填start；切换机位或连续运镜需填写start和end。调整已生成的重拍结果时，用video_regenerate传入更新的camera_plan并在原节点保留版本。机位方案是给生成模型的指令，具体画面须查看生成结果。
 用户要继续调整已有的视频物体编辑时，先用video_object_settings读所选节点和版本，再用video_regenerate更新用户指定的object_edit字段。只换参考图时传replacement的画布图片节点或资产ID，沿用已有框和标注帧。新建框选物体编辑，只有用户给出明确选区和标注帧时才使用video_edit_segment的object_edit；否则请用户在画布框选，不能虚构坐标。明确要求整段按文字描述修改时可用普通片段编辑。
 用户要求截取视频首帧、末帧或指定秒数的画面时调用video_capture_frame。用户只说当前帧且没有指定原片秒数时，请先确认秒数，或请用户在画布、剪辑台的播放头直接截帧。只有用户明确要求接着生成时才继续调用生成工具。
+用户要 GIF 时，已有宫格序列帧就用image_export_gif，已有视频就用video_export_gif，交付实际工具返回的下载卡。用户想做表情或像素动图时可先用image_generate生成一张规格明确的宫格，默认 4×4 方形，固定主体位置、大小、背景及机位，动作按行推进，无文字、编号或额外边框，结尾接回起始姿势。需要自然连续影像时先生成短视频再导出。来源是宫格且行列不明确时，先核对图片或询问。可按用户要求用往返循环。
 询问已上传原片的角色替换进度、待审核镜头或成片可否导出时，用video_remake_status读取原片版本；其中的时间是原片时间，镜头从1编号。
 用户明确要为角色替换拆镜或分析原片时调用video_remake_analyze，分析结果会保存到对应视频版本。用户要求重试或补充缺失镜头分析时设置retry=true。根据missing_analysis_shots说明仍缺少分析的镜头。模型识别的人物与镜头是供用户核对的建议。
 用户提出跨镜头换角或要先看执行方案时，先分析原片，再用video_remake_plan生成可勾选的确认卡。等用户在卡片上确认，同一轮不要另行提交生成。明确要求直接生成一个已审核镜头时，继续使用对应工具。
@@ -1455,6 +1466,14 @@ class AgentService:
             return await self.submit_generation(run,user,cid,self.image_request(args,images),
                                                 args.get("name") or "助手生成",h.generate_request)
         n, v = self.source(run, user, args["node_id"])
+        if name == "image_export_gif":
+            if "version" in args:
+                if args["version"] > len(n["versions"]):
+                    raise ToolError("所选图片版本已移除，请重新选择")
+                v = n["versions"][args["version"]-1]
+            options = {key:args[key] for key in ("rows","cols","first","last","fps","size","ping_pong") if key in args}
+            result = await self.response(h.image_gif,user,{"ref":v["ref"],**options})
+            return {"gif":result,"text":f"已把「{n.get('name','图片')}」的宫格序列帧导出为循环 GIF。"}
         if name == "media_describe":
             return await self.response(h.describe, user, {"images": [{"ref": v["ref"], "name": n.get("name")}], "mode": "prompt"})
         if name == "image_edit":

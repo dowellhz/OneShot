@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import math
@@ -341,7 +342,12 @@ async def _poll(fn, who: str, every: float = 6, limit: float = 1800):
 
 async def _save_video(http, comfy_dir, who, url):
     path, ref = _out(comfy_dir, "vid", ".mp4")
-    await download(http, url, path, who)
+    partial = path.with_suffix(".part")
+    try:
+        await download(http, url, partial, who)
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
     return {"files": [{"path": path, "ref": ref, "kind": "video"}]}
 
 
@@ -349,10 +355,33 @@ def _b64(path) -> str:
     return data_url(path, 2048).split(",", 1)[1]
 
 
-async def kling_video(http, comfy_dir, p, model, req):
-    """Kling (new path-versioned API, Bearer key): text / first(+last) frame / omni references; poll /tasks."""
-    base = "https://api-singapore.klingai.com" if p["config"].get("region") == "intl" else "https://api-beijing.klingai.com"
-    h = {"Authorization": "Bearer " + p["secrets"].get("api_key", ""), "Content-Type": "application/json"}
+def kling_base(p):
+    return "https://api-singapore.klingai.com" if p["config"].get("region") == "intl" else "https://api-beijing.klingai.com"
+
+
+def ark_base(p):
+    return (p["config"].get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+
+
+VIDEO_BASES = {"kling": kling_base, "minimax": mm_base, "ark": ark_base}
+
+
+def video_endpoint(p):
+    if base := VIDEO_BASES.get(p["kind"]):
+        return hashlib.sha256(base(p).encode()).hexdigest()
+
+
+def video_receipt(p, task_id, draft_created=None):
+    if isinstance(task_id, int) and not isinstance(task_id, bool):
+        task_id = str(task_id)
+    if (not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 250 or
+            task_id in (".", "..") or any(c in task_id for c in ("/", "\\", "%", "?", "#"))):
+        raise ProviderError(f"{p['name']} 没有返回有效的任务号")
+    return {"task_id":task_id, "endpoint":video_endpoint(p), "draft_created":draft_created}
+
+
+async def kling_video(http, comfy_dir, p, model, req, on_submitted=None):
+    """Kling text / first and last frame / omni references."""
     dur = int(round(req.get("duration") or 5))
     settings = {"resolution": "1080p" if req.get("quality") == "hd" else "720p", "duration": max(3, dur)}
     if model.startswith("kling-2.6"):
@@ -377,13 +406,19 @@ async def kling_video(http, comfy_dir, p, model, req):
         settings["aspect_ratio"] = _ratio(req.get("ar") or 16 / 9)
         body = {"prompt": req["prompt"], "settings": settings}
     body["options"] = {"watermark_info": {"enabled": False}}
-    j = await json_req(http, "POST", base + path, p["name"], json=body, headers=h)
+    j = await json_req(http, "POST", kling_base(p) + path, p["name"], json=body, headers=mm_headers(p))
     if j.get("code"):
         raise ProviderError(f"{p['name']} 错误 {j.get('code')}：{j.get('message')}")
-    tid = (j.get("data") or {}).get("id")
+    receipt = video_receipt(p, (j.get("data") or {}).get("id"))
+    if on_submitted:
+        on_submitted(receipt)
+    return await kling_result(http, comfy_dir, p, receipt)
 
+
+async def kling_result(http, comfy_dir, p, receipt):
     async def check():
-        q = await json_req(http, "GET", base + "/tasks", p["name"], params={"task_ids": tid}, headers=h)
+        q = await json_req(http, "GET", kling_base(p) + "/tasks", p["name"],
+                           params={"task_ids":receipt["task_id"]}, headers=mm_headers(p))
         t = (q.get("data") or [{}])[0]
         if t.get("status") == "failed":
             raise ProviderError(f"{p['name']} 生成失败：{t.get('message')}")
@@ -400,7 +435,7 @@ async def kling_video(http, comfy_dir, p, model, req):
     return r
 
 
-async def mm_video(http, comfy_dir, p, model, req):
+async def mm_video(http, comfy_dir, p, model, req, on_submitted=None):
     """MiniMax V2 (cloud MiniMax-H3 family): content items with roles; poll /v2/query."""
     content = [{"type": "text", "text": req["prompt"][:7000]}]
     body = {"model": model, "duration": max(4 if model != "MiniMax-H3-Max" else 5, min(15, int(round(req.get("duration") or 5))))}
@@ -421,17 +456,24 @@ async def mm_video(http, comfy_dir, p, model, req):
     j = await json_req(http, "POST", mm_base(p) + "/v2/video_generation", p["name"], json=body, headers=mm_headers(p))
     if j.get("error"):
         raise ProviderError(f"{p['name']}：{(j['error'] or {}).get('message')}")
-    tid = j.get("task_id")
-    if not tid:
-        raise ProviderError(f"{p['name']} 没有返回任务号：{str(j)[:200]}")
+    receipt = video_receipt(p, j.get("task_id"))
+    if on_submitted:
+        on_submitted(receipt)
+    return await mm_result(http, comfy_dir, p, receipt)
 
+
+async def mm_result(http, comfy_dir, p, receipt):
+    tid = quote(receipt["task_id"], safe="")
     async def check():
         q = await json_req(http, "GET", mm_base(p) + f"/v2/query/video_generation/{tid}", p["name"], headers=mm_headers(p))
         t = q.get("task") or {}
         if t.get("status") in ("failed", "cancelled"):
             raise ProviderError(f"{p['name']} 生成失败：{(t.get('error') or {}).get('message') or t.get('status')}")
         if t.get("status") == "succeeded":
-            return (t.get("content") or {}).get("url")
+            url = (t.get("content") or {}).get("url")
+            if not url:
+                raise ProviderError(f"{p['name']} 没有返回视频")
+            return url
         return None
     return await _save_video(http, comfy_dir, p["name"], await _poll(check, p["name"]))
 
@@ -495,43 +537,62 @@ async def ark_video_body(model, req):
     return body
 
 
-async def ark_video(http, comfy_dir, p, model, req):
+async def ark_video(http, comfy_dir, p, model, req, on_submitted=None):
     """Seedance (Volcengine Ark content generation tasks)."""
-    base = (p["config"].get("base_url") or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
-    h = {"Authorization": "Bearer " + p["secrets"].get("api_key", ""), "Content-Type": "application/json"}
     body = await ark_video_body(model, req)
     created = time.time()
     try:
-        j = await json_req(http, "POST", base + "/contents/generations/tasks", p["name"], json=body, headers=h)
+        j = await json_req(http, "POST", ark_base(p) + "/contents/generations/tasks", p["name"],
+                           json=body, headers=mm_headers(p))
     except ProviderError as e:
         if req.get("audio_refs"):
             raise ProviderError(str(e).split("data:audio/", 1)[0].rstrip()) from None
         raise
-    tid = j.get("id")
-    if not tid:
-        raise ProviderError(f"{p['name']} 没有返回任务号：{str(j)[:200]}")
+    receipt = video_receipt(p, j.get("id"), created if req.get("draft") else None)
+    if on_submitted:
+        on_submitted(receipt)
+    return await ark_result(http, comfy_dir, p, receipt)
 
+
+async def ark_result(http, comfy_dir, p, receipt):
+    tid = quote(receipt["task_id"], safe="")
     async def check():
-        q = await json_req(http, "GET", base + f"/contents/generations/tasks/{tid}", p["name"], headers=h)
+        q = await json_req(http, "GET", ark_base(p) + f"/contents/generations/tasks/{tid}", p["name"], headers=mm_headers(p))
         st = q.get("status")
         if st in ("failed", "cancelled", "expired"):
             raise ProviderError(f"{p['name']} 生成失败：{(q.get('error') or {}).get('message') or st}")
         if st == "succeeded":
-            return (q.get("content") or {}).get("video_url")
+            url = (q.get("content") or {}).get("video_url")
+            if not url:
+                raise ProviderError(f"{p['name']} 没有返回视频")
+            return url
         return None
     result = await _save_video(http, comfy_dir, p["name"], await _poll(check, p["name"]))
-    if req.get("draft"):
-        result.update(draft_task=tid,draft_created=created)
+    if receipt.get("draft_created") is not None:
+        result.update(draft_task=receipt["task_id"],draft_created=receipt["draft_created"])
     return result
 
 
 # =========================================================================== dispatch
 
-async def run(http, comfy_dir: Path, p: dict, model: str | None, cap: str, req: dict, progress=lambda s: None) -> dict:
+VIDEO_RESULTS = {"kling": kling_result, "minimax": mm_result, "ark": ark_result}
+
+
+async def resume_video(http, comfy_dir, p, receipt):
+    validated = video_receipt(p, receipt.get("task_id"), receipt.get("draft_created"))
+    if not validated["endpoint"] or validated["endpoint"] != receipt.get("endpoint"):
+        raise ProviderError("视频服务的请求地址已变更，无法查询原任务")
+    return await VIDEO_RESULTS[p["kind"]](http, comfy_dir, p, validated)
+
+
+async def run(http, comfy_dir: Path, p: dict, model: str | None, cap: str, req: dict, progress=lambda s: None, *,
+              on_submitted=None) -> dict:
     k = p["kind"]
     fn = ADAPTERS.get((k, cap))
     if not fn:
         raise ProviderError(f"{p['name']} 暂不支持「{cap}」")
+    if cap == "video":
+        return await fn(http, comfy_dir, p, model or default_model(p, cap), req, on_submitted)
     return await fn(http, comfy_dir, p, model or default_model(p, cap), req)
 
 

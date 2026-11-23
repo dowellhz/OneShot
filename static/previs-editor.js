@@ -6,6 +6,8 @@ const PV_PARAMS = {
   object:[["x","位置 X"],["y","离地高度"],["z","位置 Z"],["yaw","旋转角度"]],
   size:[["width","宽"],["height","高"],["depth","深"]],
 };
+const PV_MOVES = {push:"推进",pull:"拉远",slide_left:"向左横移",slide_right:"向右横移",
+  orbit_left:"向左环绕",orbit_right:"向右环绕",follow:"跟拍物体"};
 
 function pvInitialScene() {
   return {duration:4,aspect:"16:9",
@@ -131,7 +133,7 @@ function pvFrame(E) {
     canvas.width=width;
     canvas.height=height;
   }
-  if (E.view==="plan") pvPaintPlan(canvas,E.scene,E.tick,E.active,E.drag?.layout);
+  if (E.view==="plan") pvPaintPlan(canvas,E.scene,E.tick,E.active,E.drag?.layout,E.route);
   else pvPaint(canvas,E.scene,E.tick,E.active);
   pvElement("[data-pv-time]").textContent=pvTime(E.tick);
   const scrub=pvElement("[data-pv-scrub]");
@@ -157,7 +159,13 @@ function pvRefreshFields(E) {
   pvElement("[data-pv-key-delete]").disabled=!key || track.length<=1;
   pvElement("[data-pv-ease]").disabled=!key;
   pvElement("[data-pv-ease]").value=key?.ease || "linear";
+  pvElement("[data-pv-ease] option[value=cut]").hidden=!!item;
+  pvElement("[data-pv-cut-tools]").hidden=!!item;
+  pvElement("[data-pv-add-cut]").disabled=!!item || E.tick===0 || E.tick>=E.scene.duration*PV_FPS ||
+    (!key && track.length>=32);
   pvElement("[data-pv-key-add]").disabled=!!key || track.length>=32;
+  pvRefreshMotion(E);
+  pvRefreshRoute(E);
   for (const b of $$("[data-pv-at]",$("#previsEditor"))) b.setAttribute("aria-pressed",String(Number(b.dataset.pvAt)===E.tick));
 }
 
@@ -165,11 +173,19 @@ function pvRefreshTrack(E) {
   const pick=pvElement("[data-pv-track]");
   pick.replaceChildren(new Option("机位","camera"),...E.scene.objects.map(item=>new Option(item.label,item.id)));
   pick.value=E.active;
+  const target=pvElement("[data-pv-motion-target]"), previous=target.value;
+  target.replaceChildren(...E.scene.objects.map(item=>new Option(item.label,item.id)));
+  if (E.scene.objects.some(item=>item.id===previous)) target.value=previous;
+  const cutSource=pvElement("[data-pv-cut-source]"), chosen=cutSource.value;
+  cutSource.replaceChildren(new Option("当前构图","current"),...E.scene.camera.map(key=>
+    new Option(pvTime(key.t),String(key.t))));
+  if ([...cutSource.options].some(option=>option.value===chosen)) cutSource.value=chosen;
   const marker = pvElement("[data-pv-keys]");
   marker.replaceChildren(...pvTrack(E).map(key=>{
     const b=document.createElement("button");
     b.type="button";
-    b.textContent=pvTime(key.t);
+    b.textContent=pvTime(key.t)+(key.ease==="cut"?" · 硬切":"");
+    b.toggleAttribute("data-pv-cut",key.ease==="cut");
     b.dataset.pvAt=key.t;
     b.onclick=()=>{pvPause(E);E.tick=key.t;pvRefreshFields(E);pvFrame(E);};
     return b;
@@ -178,10 +194,129 @@ function pvRefreshTrack(E) {
   pvFrame(E);
 }
 
+function pvMotionPlan(E) {
+  const mode = pvElement("[data-pv-motion-mode]").value;
+  return {mode,start:E.tick,end:Math.round(pvElement("[data-pv-motion-end]").valueAsNumber*PV_FPS),
+    amount:pvElement("[data-pv-motion-amount]").valueAsNumber,
+    target:pvElement("[data-pv-motion-target]").value};
+}
+
+function pvRoutePlan(route) {
+  return {target:route.id,start:route.start,
+    end:Math.round(pvElement("[data-pv-route-end]").valueAsNumber*PV_FPS),points:route.points};
+}
+
+function pvRefreshRoute(E) {
+  const route=E.route, item=route && E.scene.objects.find(o=>o.id===route.id);
+  pvElement("[data-pv-route-start]").disabled=!!route || !pvActive(E) || E.tick>=E.scene.duration*PV_FPS;
+  pvElement("[data-pv-route-tools]").hidden=!route;
+  const undo=E.routeUndo, changed=undo && E.scene.objects.find(o=>o.id===undo.id)?.keys;
+  pvElement("[data-pv-route-undo]").disabled=!changed || undo.applied!==JSON.stringify(changed) || !!route;
+  if (!route) return;
+  const plan=pvRoutePlan(route);
+  pvElement("[data-pv-route-end]").max=E.scene.duration;
+  pvElement("[data-pv-route-info]").textContent=item?
+    `${item.label} · ${pvTime(route.start)} 起 · 已选 ${route.points.length} 个路点`:"路线物体已移除";
+  pvElement("[data-pv-route-apply]").disabled=route.pending || !item || !route.points.length ||
+    !(route.start+route.points.length<=plan.end && plan.end<=E.scene.duration*PV_FPS);
+  pvElement("[data-pv-route-pop]").disabled=route.pending || !route.points.length;
+}
+
+function pvStartRoute(E) {
+  const item=pvActive(E);
+  if (!item || E.route || E.tick>=E.scene.duration*PV_FPS) return;
+  pvPause(E);
+  E.route={id:item.id,start:E.tick,points:[]};
+  E.view="plan";
+  pvElement("[data-pv-view]").value="plan";
+  pvElement("[data-pv-route-end]").value=E.scene.duration;
+  pvRefreshRoute(E);
+  pvFrame(E);
+  pvStatus("在俯视图按顺序点选经过的位置，最后一个点为终点。");
+}
+
+async function pvApplyRoute(E) {
+  const route=E.route, item=route && E.scene.objects.find(o=>o.id===route.id);
+  if (!pvValidNode(E) || !item || pvElement("[data-pv-route-apply]").disabled) return;
+  pvPause(E);
+  const plan=pvRoutePlan(route), snapshot=JSON.stringify(E.scene);
+  const planSnapshot=JSON.stringify(plan);
+  route.pending=true;
+  pvRefreshRoute(E);
+  try {
+    const result=await api("/api/previs/object-motion",{scene:JSON.parse(snapshot),plan});
+    if (PV.editor!==E || E.route!==route || !pvValidNode(E) || E.sending) return;
+    if (JSON.stringify(E.scene)!==snapshot || JSON.stringify(pvRoutePlan(route))!==planSnapshot) {
+      pvStatus("场景或路线已变更，请重新应用");
+      return;
+    }
+    E.routeUndo={id:item.id,previous:item.keys,applied:JSON.stringify(result.keys)};
+    item.keys=result.keys;
+    E.route=null;
+    E.active=item.id;
+    E.tick=route.start;
+    pvRefreshTrack(E);
+    pvStatus("路线已应用，可播放预览或逐帧调整。");
+  } catch (error) {
+    if (PV.editor===E && E.route===route) pvStatus(error.message);
+  } finally {
+    route.pending=false;
+    if (PV.editor===E) pvRefreshRoute(E);
+  }
+}
+
+function pvRefreshMotion(E) {
+  const {mode,start,end,target} = pvMotionPlan(E);
+  const orbit = mode.startsWith("orbit"), follow = mode==="follow";
+  const amount = pvElement("[data-pv-motion-amount]"), limit=pvElement("[data-pv-motion-end]");
+  limit.max=E.scene.duration;
+  amount.min=orbit ? 5 : .1;
+  amount.max=orbit ? 180 : 20;
+  pvElement("[data-pv-motion-unit]").textContent=orbit ? "角度（度）" : "距离（米）";
+  amount.closest("label").hidden=follow;
+  pvElement("[data-pv-motion-target]").closest("label").hidden=!follow;
+  pvElement("[data-pv-motion-start]").textContent=pvTime(start);
+  const replaced=E.scene.camera.filter(key=>start<key.t && key.t<=end).length;
+  pvElement("[data-pv-motion-segment]").textContent=replaced?`区间内 ${replaced} 个机位关键帧将替换`:"";
+  pvElement("[data-pv-motion-apply]").disabled=!!E.motionPending ||
+    !(start<end && end<=E.scene.duration*PV_FPS && (follow ? !!target : pvNumber(amount)!=null));
+  pvElement("[data-pv-motion-undo]").disabled=!E.motionUndo ||
+    E.motionUndo.applied!==JSON.stringify(E.scene.camera);
+}
+
+async function pvApplyMotion(E) {
+  if (!pvValidNode(E) || pvElement("[data-pv-motion-apply]").disabled) return;
+  pvPause(E);
+  const plan=pvMotionPlan(E), snapshot=JSON.stringify(E.scene), previous=E.scene.camera;
+  E.motionPending=true;
+  pvRefreshMotion(E);
+  pvStatus("正在计算运镜关键帧…");
+  try {
+    const result=await api("/api/previs/camera-motion",{scene:JSON.parse(snapshot),plan});
+    if (PV.editor!==E || !pvValidNode(E) || E.sending) return;
+    if (JSON.stringify(E.scene)!==snapshot || JSON.stringify(pvMotionPlan(E))!==JSON.stringify(plan)) {
+      pvStatus("运镜区间或场景已变更，请重新应用");
+      return;
+    }
+    E.scene.camera=result.camera;
+    E.motionUndo={previous,applied:JSON.stringify(result.camera)};
+    E.active="camera";
+    pvRefreshTrack(E);
+    pvStatus(`已应用${PV_MOVES[plan.mode]}。可播放预览或调整生成的关键帧。`);
+  } catch (error) {
+    if (PV.editor===E) pvStatus(error.message || "运镜计算失败");
+  } finally {
+    E.motionPending=false;
+    if (PV.editor===E) pvRefreshMotion(E);
+  }
+}
+
 function pvChangePose(E, change, refresh=true) {
   const track=pvTrack(E), index=track.findIndex(key=>key.t===E.tick);
   if (index<0 && track.length>=32) return false;
-  const newKey={...pvSample(track,E.tick),t:E.tick,...change};
+  const pose=pvSample(track,E.tick);
+  const ease=track[index]?.ease ?? (pose.ease==="cut" ? "linear" : pose.ease);
+  const newKey={...pose,t:E.tick,ease,...change};
   if (index>=0) track[index]=newKey;
   else {
     track.push(newKey);
@@ -257,6 +392,10 @@ function openPrevis(n) {
   pvElement("[data-pv-duration]").value=scene.duration;
   pvElement("[data-pv-aspect]").value=scene.aspect;
   pvElement("[data-pv-view]").value="camera";
+  pvElement("[data-pv-motion]").open=false;
+  pvElement("[data-pv-motion-mode]").value="push";
+  pvElement("[data-pv-motion-end]").value=scene.duration;
+  pvElement("[data-pv-motion-amount]").value="1";
   pvElement("[data-pv-heading]").textContent=n.name;
   pvElement("[data-pv-discard]").hidden=true;
   pvElement("[data-pv-import-model]").textContent="导入 3D 模型";
@@ -421,8 +560,19 @@ function pvBindPlan(canvas) {
     const E=PV.editor;
     if (!E || E.view!=="plan" || E.sending || ev.button!==0) return;
     pvPause(E);
-    const layout=pvPlan(E.scene,E.tick,canvas.width,canvas.height);
+    const layout=pvPlan(E.scene,E.tick,canvas.width,canvas.height,E.active);
     const [x,z]=layout.world(...pvPointer(canvas,ev,canvas.width,canvas.height));
+    const limit=v=>Math.max(-50,Math.min(50,Math.round(v*100)/100));
+    if (E.route) {
+      const item=E.scene.objects.find(o=>o.id===E.route.id), points=E.route.points;
+      if (!item || E.route.pending || points.length>=31) return;
+      const last=points.at(-1) || pvSample(item.keys,E.route.start), next={x:limit(x),z:limit(z)};
+      if (Math.hypot(next.x-last.x,next.z-last.z)<.01) return;
+      points.push(next);
+      pvRefreshRoute(E);
+      pvFrame(E);
+      return;
+    }
     const near=layout.objects.filter(o=>{
       const a=o.yaw*Math.PI/180,dx=x-o.x,dz=z-o.z,padding=5/layout.scale;
       return Math.abs(dx*Math.cos(a)+dz*Math.sin(a))<=o.width/2+padding &&
@@ -482,7 +632,28 @@ function initPrevis() {
         <label class="pv-wide" data-pv-shape hidden>形状<select data-pv-kind>${Object.entries(PV_SHAPES).map(([shape,label])=>`<option value="${shape}">${label}</option>`).join("")}</select></label>
         <div class="pv-fields">${params}</div>
         <div class="pv-controls"><button type="button" data-pv-key-add>添加关键帧</button><button type="button" data-pv-key-delete>移除此帧</button>
-          <label>过渡<select data-pv-ease><option value="linear">匀速</option><option value="smooth">平滑</option></select></label></div>
+          <label>过渡<select data-pv-ease><option value="linear">匀速</option><option value="smooth">平滑</option><option value="cut">硬切</option></select></label></div>
+        <div class="pv-controls pv-cut-tools" data-pv-cut-tools>
+          <label>切镜构图<select data-pv-cut-source></select></label>
+          <button type="button" data-pv-add-cut>添加切镜</button></div>
+        <details data-pv-motion><summary>运镜预设</summary>
+          <label class="pv-wide">方式<select data-pv-motion-mode>${Object.entries(PV_MOVES).map(([id,label])=>`<option value="${id}">${label}</option>`).join("")}</select></label>
+          <p>起点用当前播放头 <output data-pv-motion-start></output></p>
+          <label class="pv-wide">结束秒数<input type="number" min="0" step="any" data-pv-motion-end></label>
+          <label class="pv-wide"><span data-pv-motion-unit>距离（米）</span><input type="number" min=".1" max="20" step="any" data-pv-motion-amount></label>
+          <label class="pv-wide" hidden>跟拍目标<select data-pv-motion-target></select></label>
+          <p data-pv-motion-segment></p>
+          <div class="pv-controls"><button type="button" data-pv-motion-apply>应用运镜</button>
+            <button type="button" data-pv-motion-undo>撤销本次运镜</button></div>
+        </details>
+        <div class="pv-route"><div class="pv-controls"><button type="button" data-pv-route-start>绘制走位</button>
+          <button type="button" data-pv-route-undo disabled>撤销本次走位</button></div>
+          <div data-pv-route-tools hidden><p data-pv-route-info></p>
+            <label class="pv-wide">结束秒数<input type="number" min="0" step="any" data-pv-route-end></label>
+            <div class="pv-controls"><button type="button" data-pv-route-pop>删除上一点</button>
+              <button type="button" data-pv-route-apply>应用路线</button><button type="button" data-pv-route-cancel>取消路线</button></div>
+          </div>
+        </div>
       </section></div></fieldset>
     <div data-pv-status role="status"></div><button type="button" data-pv-discard hidden>关闭并放弃本次编辑</button></dialog>`);
   const panel=$("#previsEditor"), canvas=pvElement("canvas");
@@ -556,6 +727,43 @@ function initPrevis() {
     pvRefreshTrack(E);
   });
   on("[data-pv-ease]","onchange",(E,ev)=>{pvPause(E);pvChangePose(E,{ease:ev.target.value});});
+  on("[data-pv-add-cut]","onclick",E=>{
+    if (pvElement("[data-pv-add-cut]").disabled) return;
+    pvPause(E);
+    const position=pvElement("[data-pv-cut-source]").value;
+    const source=position==="current"?null:E.scene.camera.find(key=>key.t===Number(position));
+    const pose=source?Object.fromEntries(PV_PARAMS.camera.map(([field])=>[field,source[field]])):{};
+    if (pvChangePose(E,{...pose,ease:"cut"})) pvStatus("已添加硬切，可继续调整切换后的构图。");
+  });
+  on("[data-pv-motion-mode]","onchange",(E,ev)=>{
+    pvElement("[data-pv-motion-amount]").value=ev.target.value.startsWith("orbit")?"45":"1";
+    pvRefreshMotion(E);
+  });
+  for (const selector of ["[data-pv-motion-end]","[data-pv-motion-amount]","[data-pv-motion-target]"]) on(selector,"oninput",pvRefreshMotion);
+  on("[data-pv-motion-apply]","onclick",pvApplyMotion);
+  on("[data-pv-motion-undo]","onclick",E=>{
+    if (pvElement("[data-pv-motion-undo]").disabled) return;
+    E.scene.camera=E.motionUndo.previous;
+    E.motionUndo=null;
+    pvRefreshTrack(E);
+    pvStatus("已撤销本次运镜");
+  });
+  on("[data-pv-route-start]","onclick",pvStartRoute);
+  on("[data-pv-route-end]","oninput",pvRefreshRoute);
+  on("[data-pv-route-apply]","onclick",pvApplyRoute);
+  on("[data-pv-route-pop]","onclick",E=>{
+    if (!E.route || E.route.pending) return;
+    E.route.points.pop();pvRefreshRoute(E);pvFrame(E);
+  });
+  on("[data-pv-route-cancel]","onclick",E=>{
+    E.route=null;pvRefreshRoute(E);pvFrame(E);pvStatus("");
+  });
+  on("[data-pv-route-undo]","onclick",E=>{
+    if (pvElement("[data-pv-route-undo]").disabled) return;
+    const item=E.scene.objects.find(o=>o.id===E.routeUndo.id);
+    item.keys=E.routeUndo.previous;
+    E.routeUndo=null;pvRefreshTrack(E);pvStatus("已撤销本次走位");
+  });
   for (const field of $$("[data-pv-param]",panel)) {
     field.onchange=()=>{
       const E=PV.editor, value=pvNumber(field), key=field.dataset.pvParam;

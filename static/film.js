@@ -17,6 +17,8 @@ function saveFilmDraft(F = FILM) {
   if (!F || F.board !== boardId) return;
   if (F.n?.data.playlist && !canvasCanEdit()) return;
   if (ME_USER?.id == null) return;
+  const reuse = $("#fmStoryReuse");
+  if (F.story && !reuse.hidden && F.story.base !== storyDraftSignature(F.spec)) reuse.hidden = true;
   const clip = F.spec.clips[F.sel];
   const offset = clip ? Math.max(0, Math.min(clipLen(clip), filmClipOffset(F))) : 0;
   const spec = {...F.spec, clips:F.spec.clips.map(({src_len, ...c}) => c)};
@@ -112,11 +114,129 @@ function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, tr
   if (!media.length) return false;
   const spec = newSpec(media);
   if (start === 0 && end === script.data.shots.length - 1) spec.story_script = script.id;
-  for (const clip of spec.clips) clip.trans = transition;
   const keys = script.data.shots.slice(start, end + 1).map((shot, i) => shot.id || `index:${start+i}`);
-  const key = filmDraftPrefix()+"story:"+JSON.stringify([script.id,keys,spec.clips.map(clip=>[clip.node,clip.ref])]);
-  showFilm(spec,null,key);
+  spec.story_tracking = true;
+  spec.clips.forEach((clip,i) => { clip.trans=transition; clip.story_shot=keys[i]; });
+  const shots = spec.clips.map((clip,i) => ({id:keys[i],node:clip.node,ref:clip.ref,number:start+i+1}));
+  const scope = [script.id,keys];
+  const key = filmDraftPrefix()+"story:"+JSON.stringify([...scope,shots.map(shot=>[shot.node,shot.ref])]);
+  showFilm(spec,null,key,null,{scope,shots,base:storyDraftSignature(spec)});
   return true;
+}
+
+function storyDraftSignature(spec) {
+  return JSON.stringify(spec, (key,value) => ["src_len","story_tracking","story_shot"].includes(key) ? undefined : value);
+}
+
+function earlierStoryDrafts(F) {
+  const prefix = filmDraftPrefix()+"story:", scope = JSON.stringify(F.story.scope);
+  const drafts = [];
+  try {
+    const latest = localStorage.getItem(filmDraftPrefix()+"latest");
+    for (let i=localStorage.length-1;i>=0;i--) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(prefix) || key===F.key) continue;
+      try {
+        const [script,ids,refs] = JSON.parse(key.slice(prefix.length));
+        if (JSON.stringify([script,ids])!==scope || refs.length!==F.story.shots.length ||
+            refs.some((entry,j)=>entry[0]!==F.story.shots[j].node)) continue;
+        const saved = JSON.parse(localStorage.getItem(key));
+        if (saved?.spec?.clips?.length) drafts.push({saved,refs,latest:key===latest});
+      } catch {}
+    }
+  } catch {}
+  return drafts.sort((a,b)=>Number(b.latest)-Number(a.latest));
+}
+
+function reuseStoryDraft(F, draft) {
+  const spec = JSON.parse(JSON.stringify(draft.saved.spec)), updates = new Map(), legacy = new Map();
+  const shots = F.story.shots.map((shot,i) => {
+    const source = node(shot.node), oldRef = draft.refs[i][1];
+    const to = source?.versions.findIndex(v=>v.ref===shot.ref) ?? -1;
+    const status = {...shot,to,count:0,skipped:0};
+    const entry = {status,source,oldRef};
+    updates.set(shot.id,entry);
+    legacy.set(shot.node,legacy.has(shot.node) ? null : entry);
+    return status;
+  });
+  for (const clip of spec.clips) {
+    const entry = spec.story_tracking ? updates.get(clip.story_shot) : legacy.get(clip.node);
+    if (!entry || clip.node!==entry.status.node || clip.remake_shot ||
+        (!spec.story_tracking && clip.ref!==entry.oldRef)) continue;
+    const {status,source} = entry;
+    clip.story_shot=status.id;
+    if (clip.ref===status.ref || status.to<0) continue;
+    try {
+      const {shorter,...changes} = filmVersionReplacement(clip,source.versions[status.to],source);
+      if (shorter>1e-6) throw new Error("新版本过短");
+      Object.assign(clip,changes,{story_shot:status.id});
+      delete clip.src_len;
+      status.count++;
+    } catch { status.skipped++; }
+  }
+  spec.story_tracking = true;
+  if (F.spec.story_script) spec.story_script = F.story.scope[0];
+  else delete spec.story_script;
+  return {spec,shots};
+}
+
+function openStoryDraftPicker(F) {
+  const editable = () => FILM===F && F.board===boardId && canvasCanEdit() && !F.busy && !F.n &&
+    F.story.base===storyDraftSignature(F.spec);
+  if (!editable()) return toast("当前剪辑已有改动");
+  const drafts = earlierStoryDrafts(F);
+  if (!drafts.length) return toast("没有可沿用的剪辑草稿");
+  const dialog = $("#fmStoryDialog"), list = $("ol",dialog), choice = $("select",dialog);
+  choice.replaceChildren(...drafts.map(({saved,refs},i)=>new Option(
+    `草稿 ${i+1} · ${saved.spec.clips.length} 段 · ${refs.map(([id,ref])=>{
+      const version=node(id)?.versions.findIndex(v=>v.ref===ref) ?? -1;
+      return version<0?"历史版本":`V${version+1}`;
+    }).join(" / ")}`,String(i))));
+  choice.selectedIndex=0;
+  const describe = () => {
+    const {shots} = reuseStoryDraft(F,drafts[Number(choice.value)]);
+    list.replaceChildren(...shots.map(({number,to,count,skipped})=>{
+      const item=document.createElement("li");
+      const changes = [count?`${count} 段改用版本 ${to+1}`:"",skipped?`${skipped} 段因新版本过短保留原素材`:""].filter(Boolean);
+      item.textContent=`镜头 ${number} · ${changes.join("，") || "沿用草稿中的选择"}`;
+      return item;
+    }));
+  };
+  choice.onchange=describe;
+  $("form",dialog).onsubmit=event=>{
+    event.preventDefault();
+    if (!editable()) { closeStoryDraftPicker(); return; }
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(F.key)); } catch {}
+    if (saved?.spec && F.story.base!==storyDraftSignature(saved.spec)) {
+      closeStoryDraftPicker();
+      return toast("此剪辑草稿已有改动，请重新打开剪辑");
+    }
+    const script=node(F.story.scope[0]), first=F.story.shots[0].number-1;
+    const current=script?.type==="script" ? storyFilmSelection(script,first,first+F.story.shots.length-1) : null;
+    if (!current || current.missing.length || F.story.shots.some((shot,i)=>
+        current.media[i]?.id!==shot.node || curV(current.media[i])?.ref!==shot.ref ||
+        (script.data.shots[first+i]?.id || `index:${first+i}`)!==shot.id)) {
+      closeStoryDraftPicker();
+      return toast("当前分镜或视频版本已变更，请重新打开剪辑");
+    }
+    const draft=drafts[Number(choice.value)];
+    const {spec}=reuseStoryDraft(F,draft);
+    F.spec=spec;
+    F.sel=Math.max(0,Math.min(spec.clips.length-1,draft.saved.sel||0));
+    closeStoryDraftPicker();
+    $("#fmStoryReuse").hidden=true;
+    renderFilm(); selectClip(F.sel,Math.min(clipLen(spec.clips[F.sel]),draft.saved.offset||0)); saveFilmDraft(F);
+    toast("已沿用剪辑草稿");
+  };
+  describe();
+  if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open","");
+  choice.focus();
+}
+
+function closeStoryDraftPicker() {
+  const dialog=$("#fmStoryDialog");
+  if (dialog.open && dialog.close) dialog.close(); else dialog.removeAttribute("open");
 }
 
 // open the editor: on a film node (re-edit), or with a list of shot videos (new film)
@@ -139,8 +259,9 @@ function editVideoTimeline(n, version = curV(n)) {
   const spec = saved?.clips?.length ? vtClone(saved) : {...newSpec([]),clips:[filmClipForVersion(n,version)]};
   showFilm(spec, null, key, target);
 }
-function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
+function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, story = null) {
   if (target && !node(target.id)?.versions.some(v => v.ref === target.ref)) return toast("剪辑草稿对应的视频版本已移除");
+  closeStoryDraftPicker();
   finishFilmPlaylistPicker(false,false);
   if (FILM) { saveFilmDraft(); syncFilmAudio(FILM); }
   playAll = false;
@@ -152,8 +273,9 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
     spec = spec.story_script ? {...saved.spec,story_script:spec.story_script} : saved.spec;
   }
   const sel = Math.max(0, Math.min(spec.clips.length - 1, saved?.sel || 0));
-  FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, attempt:saved?.attempt,
+  FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, story, attempt:saved?.attempt,
     downloadExport:saved?.downloadExport,playlistBase};
+  $("#fmStoryReuse").hidden=!(story && canvasCanEdit() && !FILM.n && story.base===storyDraftSignature(spec) && earlierStoryDrafts(FILM).length);
   $("#fmHeading").textContent = playlistBase ? n.name : "成片编辑";
   $("#film").classList.toggle("playlist-review",!!playlistBase && !canvasCanEdit());
   $("#fmSaveList").hidden = !playlistBase || !canvasCanEdit();
@@ -167,6 +289,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
   saveFilmDraft();
 }
 function closeFilm() {
+  closeStoryDraftPicker();
   closePlaylistClipMenu();
   finishFilmPlaylistPicker(false,false);
   saveFilmDraft(); if (FILM) syncFilmAudio(FILM);
@@ -863,6 +986,7 @@ function openFilmVersionPicker(F,clip,source,box,button) {
       const {shorter,...changes}=proposal(), offset=filmClipOffset(F);
       if(!keepsAudio && !captions?.checked)delete clip.captions;
       delete clip.src_len;
+      delete clip.story_shot;
       Object.assign(clip,changes);
       renderFilm();selectClip(F.sel,Math.min(offset,clipLen(clip)));saveFilmDraft(F);
     } catch(error){status.textContent=error.message;}
@@ -1222,6 +1346,16 @@ function initFilm() {
 #film.playlist-review :is(#fmSet,#fmTl .x,#fmTl .fadd,#fmTl .ft,#fmClip .trim,#fmClip .row2,#fmClip .fm-caption-actions,#fmClip button:not([data-playlist-locate])) { display:none; }
 #film .hd { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 #film .hd b { font-size: var(--fs-heading); } #film .hd .dim, #film .dim { color: var(--dim); font-size: var(--fs-small); }
+#fmStoryDialog { width:min(550px,calc(100vw - 30px)); max-height:85vh; z-index:66; margin:auto; padding:18px;
+  border:1px solid var(--line2); border-radius:14px; background:var(--panel); color:var(--text); }
+#fmStoryDialog::backdrop { background:#0009; }
+#fmStoryDialog h2 { font-size:var(--fs-heading); margin:0; }
+#fmStoryDialog form { display:grid; gap:12px; }
+#fmStoryDialog label { display:grid; gap:5px; }
+#fmStoryDialog select { min-width:0; color:var(--text); background:var(--card); border:1px solid var(--line2); border-radius:7px; padding:7px; }
+#fmStoryDialog ol { margin:0; padding-left:22px; max-height:34vh; overflow:auto; line-height:1.65; }
+#fmStoryDialog p { margin:0; color:var(--dim); font-size:var(--fs-small); }
+#fmStoryDialog footer { display:flex; justify-content:flex-end; gap:8px; }
 #fmDownloadStatus:empty { display:none; }
 @media (max-width:950px) { #film .hd { flex-wrap:wrap; gap:6px; } }
 #film .main { flex: 1; min-height: 0; display: flex; gap: 16px; padding: 16px 18px 8px; }
@@ -1337,6 +1471,7 @@ function initFilm() {
   document.body.insertAdjacentHTML("beforeend", `
 <div id="film">
   <div class="hd"><b id="fmHeading">成片编辑</b><span class="dim" id="fmTotal"></span><span class="dim" id="fmDraftState" role="status"></span><span style="flex:1"></span>
+    <button class="pill" id="fmStoryReuse" type="button" hidden>沿用剪辑草稿</button>
     <button class="pill" id="fmSaveList" type="button" hidden>保存列表</button><button class="pill" id="fmPlaylistSources" type="button" hidden>下载原片</button>
     <button class="pill" id="fmDownloadMerged" type="button" hidden>下载合并 MP4</button><span class="dim" id="fmDownloadStatus" role="status"></span>
     <button class="pill" id="fmAll" title="从头顺序播放片段与字幕">▶ 预览全片</button>
@@ -1353,9 +1488,19 @@ function initFilm() {
   <div id="fmAudioLanes" aria-label="音频片段时间线" hidden></div>
   <audio id="fmA"></audio>
 </div>
+<dialog id="fmStoryDialog" aria-labelledby="fmStoryTitle">
+  <form><h2 id="fmStoryTitle">沿用剪辑草稿</h2>
+    <label>来源草稿<select aria-label="来源草稿"></select></label>
+    <ol aria-label="镜头版本变更"></ol>
+    <p>保留原剪辑顺序、裁剪区间、字幕和声音轨道。换用镜头后可预览核对。</p>
+    <footer><button type="button" class="pill" data-close>取消</button><button type="submit" class="pill">沿用到当前剪辑</button></footer>
+  </form>
+</dialog>
 <div class="menu" id="fmAdd"></div><div class="menu" id="playlistClipMenu" aria-label="片段操作"></div>
 <div id="qp"><div id="qpJobs"></div><button type="button" data-enable-notifications hidden>开启完成通知</button></div>`);
   $("#fmClose").onclick = closeFilm;
+  $("#fmStoryReuse").onclick = () => { if (FILM?.story) openStoryDraftPicker(FILM); };
+  $("#fmStoryDialog [data-close]").onclick = closeStoryDraftPicker;
   $("#fmSaveList").onclick = () => { if (FILM) saveFilmPlaylist(FILM); };
   $("#fmPlaylistSources").onclick = () => { if (FILM) downloadFilmPlaylistSources(FILM); };
   if (typeof ResizeObserver === "function") new ResizeObserver(sizeFilmTitleLayer).observe($("#fmTitleLayer").parentElement);
@@ -1405,6 +1550,11 @@ function initFilm() {
   document.addEventListener("keydown", e => {
     if (!FILM) return;
     if($("#light").open)return;
+    if ($("#fmStoryDialog").open) {
+      if (e.key==="Escape") { e.preventDefault(); closeStoryDraftPicker(); $("#fmStoryReuse").focus(); }
+      e.stopImmediatePropagation();
+      return;
+    }
     if(e.key==="Escape" && closePlaylistClipMenu({focus:true})){
       e.preventDefault();e.stopImmediatePropagation();return;
     }

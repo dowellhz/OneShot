@@ -36,7 +36,15 @@ async function loadJSON(url, options) {
   return result.json();
 }
 
-function video(item, prefix) {
+function workMedia(item, prefix) {
+  if (item.media_kind==="gif") {
+    const image = element("img");
+    image.src = prefix + "/" + item.token + "/gif";
+    image.alt = item.title;
+    image.decoding = "async";
+    if (prefix==="/api/admin/showcase") image.loading = "lazy";
+    return image;
+  }
   const player = element("video");
   player.controls = true;
   player.playsInline = true;
@@ -88,13 +96,14 @@ function ownCard(item) {
 async function list(reset) {
   const id = ++request, target = reset ? 1 : page+1;
   const q = mine ? "" : new FormData(search).get("q").trim();
+  const kind = mine ? "" : search.elements.kind.value;
   if (reset) content.replaceChildren();
   content.className = "showcase-grid";
   more.hidden = true;
   statusLine.textContent = "正在读取作品…";
   try {
     const endpoint = mine ? "/api/showcase/me" : creator ? "/api/showcase/creator/"+creator : "/api/showcase";
-    const response = await loadJSON(endpoint+"?" + new URLSearchParams({page:target,q}));
+    const response = await loadJSON(endpoint+"?" + new URLSearchParams({page:target,q,kind}));
     if (id !== request) return;
     if (creator) {
       title.textContent = response.name + "的作品";
@@ -108,7 +117,7 @@ async function list(reset) {
     page = target;
     content.append(...response.items.map(mine ? ownCard : card));
     more.hidden = !response.more;
-    statusLine.textContent = content.childElementCount ? "" : q ? "没有匹配的作品" : "还没有发布的作品";
+    statusLine.textContent = content.childElementCount ? "" : q || kind ? "没有匹配的作品" : "还没有发布的作品";
   } catch (error) {
     if (id !== request) return;
     more.hidden = reset;
@@ -125,11 +134,61 @@ async function watch() {
   title.textContent = item.title;
   document.title = item.title + " · OneShot";
   content.className = "showcase-watch";
-  content.append(video(item,"/api/showcase"),creatorLink(item));
+  content.append(workMedia(item,"/api/showcase"),creatorLink(item));
   if (item.description) content.append(element("p",item.description));
+  if (item.media_kind==="gif") {
+    const gif = link("下载 GIF","/api/showcase/"+item.token+"/gif");
+    gif.download = item.title+".gif";
+    content.append(gif);
+  }
+  if (item.prompt) content.append(showcasePrompt(item));
   if (item.has_canvas) content.append(link("查看或复制制作画布","/share/" + item.token));
   if (item.template) content.append(link("使用工作流模板 · " + item.template.name,"/?template=" + encodeURIComponent(item.template.id)));
   statusLine.textContent = "";
+}
+
+function showcasePrompt(item) {
+  const section = element("section",null,"showcase-prompt");
+  section.append(element("h2","创作提示词"));
+  const text = element("textarea");
+  text.readOnly = true;
+  text.value = item.prompt;
+  text.rows = 6;
+  text.setAttribute("aria-label","公开提示词");
+  const actions = element("div",null,"showcase-entry-actions");
+  const copy = element("button","复制提示词"), use = element("button","用提示词新建画布");
+  const status = element("span");
+  status.setAttribute("role","status");
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(item.prompt);
+      status.textContent = "已复制提示词";
+    } catch {
+      text.focus(); text.select();
+      status.textContent = "提示词已选中，可以手动复制";
+    }
+  };
+  let key;
+  use.onclick = async () => {
+    if (use.disabled) return;
+    use.disabled = true;
+    key ||= Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,"0")).join("");
+    try {
+      const result = await loadJSON("/api/showcase/"+item.token+"/use-prompt",{
+        method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({request_key:key})
+      });
+      location.assign("/?board="+encodeURIComponent(result.id));
+    } catch (error) {
+      status.textContent = error.message;
+      if (error.message === "请先登录") {
+        status.append(" ",link("登录","/login?next="+encodeURIComponent(location.pathname)));
+      }
+      use.disabled = false;
+    }
+  };
+  actions.append(copy,use);
+  section.append(text,actions,status);
+  return section;
 }
 
 function reviewCard(item) {
@@ -167,6 +226,11 @@ function reviewCard(item) {
   };
   copy.append(element("h2",item.title),element("p",item.author));
   if (item.description) copy.append(element("p",item.description));
+  if (item.prompt) {
+    const prompt = element("details",null,"showcase-review-prompt");
+    prompt.append(element("summary","随作品公开的提示词"),element("p",item.prompt));
+    copy.append(prompt);
+  }
   if (item.has_canvas) {
     const preview = link("审核附带画布","/showcase-review/" + item.token);
     preview.target = "_blank";
@@ -174,7 +238,7 @@ function reviewCard(item) {
     copy.append(preview);
   }
   copy.append(form);
-  article.append(video(item,"/api/admin/showcase"),copy);
+  article.append(workMedia(item,"/api/admin/showcase"),copy);
   return article;
 }
 
@@ -188,6 +252,7 @@ async function review() {
 }
 
 search.onsubmit = event=>{ event.preventDefault(); list(true); };
+search.elements.kind.onchange = ()=>list(true);
 more.onclick = ()=>list(false);
 const renderPage = reviewMode ? review : token ? watch : ()=>list(true);
 if (mine) {

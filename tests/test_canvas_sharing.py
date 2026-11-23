@@ -121,6 +121,67 @@ class CanvasSharing(ChatFixture):
         self.assertEqual((await self.client.delete("/api/board/test")).status,200)
         self.assertEqual(list(upload_folder.iterdir()),[])
 
+    async def test_gif_showcase_moderation_upload_and_public_media(self):
+        db.run("UPDATE users SET role='admin' WHERE id=8")
+        for uid in (7,8):
+            db.run("INSERT INTO sessions VALUES(?,?,?,?)",f"gif-{uid}",uid,time.time(),time.time()+600)
+        owner, admin = ({"Cookie":f"{auth.COOKIE}=gif-{uid}"} for uid in (7,8))
+        path, ref = server.film._new(server.COMFY_DIR,"output","gif",".gif")
+        first, second = (Image.new("RGB",(48,32),color) for color in ("red","blue"))
+        first.save(path,save_all=True,append_images=[second],duration=120,loop=0)
+        binary = path.read_bytes()
+        board = self.load()
+        endpoint = "/api/board/test/showcase"
+        request = {"title":"循环作品","confirmed":True,"revision":board["rev"]}
+
+        def upload(content):
+            form = FormData()
+            form.add_field("metadata",json.dumps({**request,"title":"上传动图"}))
+            form.add_field("video",content,filename="loop.gif",content_type="image/gif")
+            return form
+
+        app = web.Application(middlewares=[auth.middleware])
+        app.add_routes(server.routes)
+        async with TestClient(TestServer(app)) as client:
+            payload = {**request,"gif_ref":ref,"public_prompt":"原地转身，再回到起始姿势"}
+            self.assertEqual((await client.post(endpoint,json=payload,headers=owner)).status,403)
+            server.grant_media({"id":7},ref)
+            self.assertEqual((await client.post(endpoint,json={**payload,"gif_ref":"input:h3studio/forged.gif"},headers=owner)).status,400)
+            submitted = await client.post(endpoint,json=payload,headers=owner)
+            self.assertEqual(submitted.status,201,await submitted.text())
+            token = (await submitted.json())["token"]
+            public, moderation = "/api/showcase/"+token,"/api/admin/showcase/"+token
+            self.assertEqual((await client.get(public+"/gif")).status,404)
+            pending = await client.get(moderation+"/gif",headers=admin)
+            self.assertEqual((pending.status,pending.content_type,await pending.read()),(200,"image/gif",binary))
+            self.assertEqual((await client.get(moderation+"/gif",headers=owner)).status,403)
+            self.assertEqual((await client.patch(moderation,json={"state":"approved"},headers=admin)).status,200)
+            detail = await (await client.get(public)).json()
+            self.assertEqual((detail["media_kind"],detail["prompt"]),("gif",payload["public_prompt"]))
+            self.assertEqual((await client.get(public+"/video")).status,404)
+            visible = await client.get(public+"/gif")
+            self.assertEqual((visible.status,visible.content_type,await visible.read()),(200,"image/gif",binary))
+            poster = await client.get(public+"/cover")
+            with Image.open(io.BytesIO(await poster.read())) as cover:
+                red, _, blue = cover.getpixel((5,5))
+                self.assertGreater(red,blue+100)
+            feed = await (await client.get("/api/showcase?kind=gif")).json()
+            self.assertEqual([item["token"] for item in feed["items"]],[token])
+            videos = await (await client.get("/api/showcase?kind=video")).json()
+            self.assertEqual(videos["items"],[])
+            self.assertEqual((await client.post(endpoint,data=upload(b"forged-gif"),headers=owner)).status,400)
+            exported = await client.post(endpoint,data=upload(binary),headers=owner)
+            self.assertEqual(exported.status,201,await exported.text())
+            upload_token = (await exported.json())["token"]
+            uploaded = db.one("SELECT video_ref FROM showcase_entries WHERE token=?",upload_token)["video_ref"]
+            stored = server.showcase.upload_path(server.COMFY_DIR,uploaded)
+            self.assertEqual(stored.read_bytes(),binary)
+            self.assertEqual((await client.delete(endpoint+"/"+upload_token,headers=owner)).status,200)
+            self.assertFalse(stored.exists())
+            self.assertEqual((await client.delete(endpoint+"/"+token,headers=owner)).status,200)
+            self.assertEqual((await client.get(public+"/gif")).status,404)
+            self.assertEqual(path.read_bytes(),binary)
+
     async def test_public_explanation_reuses_copy_and_never_executes_tools(self):
         board = self.load()
         board["nodes"][0]["data"]["prompt"] = "未发布的生成提示词"
@@ -282,7 +343,9 @@ class CanvasSharing(ChatFixture):
             profile = await (await client.get(profile_url)).json()
             self.assertEqual([item["token"] for item in profile["items"]],[token2,token])
             self.assertTrue(all(item["creator"]==creator for item in profile["items"]))
-            self.assertEqual((await (await client.get(listing+"/"+token2)).json())["has_canvas"],0)
+            second_detail = await (await client.get(listing+"/"+token2)).json()
+            self.assertEqual(second_detail["has_canvas"],0)
+            self.assertNotIn("prompt",second_detail)
             self.assertEqual((await client.get("/api/share/"+token2)).status,404)
             self.assertEqual((await client.delete(url+"/"+token,headers=owner)).status,200)
             self.assertIsNone(db.one("SELECT 1 FROM showcase_template_links WHERE token=?",token))
@@ -292,6 +355,64 @@ class CanvasSharing(ChatFixture):
             self.assertEqual((await client.delete("/api/board/test",headers=owner)).status,200)
             self.assertEqual((await (await client.get(listing)).json())["items"],[])
             self.assertEqual((await client.get(profile_url)).status,404)
+
+    async def test_showcase_prompt_is_opt_in_reviewed_and_reusable_as_a_private_draft(self):
+        db.run("UPDATE users SET role='admin' WHERE id=8")
+        db.run("INSERT INTO users(id,username,role,pw_hash) VALUES(9,'viewer','member','test')")
+        for uid in (7,8,9):
+            db.run("INSERT INTO sessions VALUES(?,?,?,?)",f"prompt-{uid}",uid,time.time(),time.time()+600)
+        owner, admin, viewer = ({"Cookie":f"{auth.COOKIE}=prompt-{uid}"} for uid in (7,8,9))
+        clip, ref = server.film._new(server.COMFY_DIR,"input","prompt-film",".mp4")
+        server.film.encode_silent(clip,(Image.new("RGB",(64,64),"blue") for _ in range(8)),64,64,24,
+                                  lambda:False,lambda _:None)
+        self.board["nodes"].append({"id":"n3","type":"video","name":"站台","x":120,"y":20,
+                                    "data":{"prompt":"私有编辑草稿"},"cur":0,
+                                    "versions":[{"ref":ref,"w":64,"h":64,"prompt":"原始制作提示"}]})
+        server.write_board(server.board_path("test"),self.board)
+        public_prompt = "雨夜站台\n远景切近景 <示例>"
+        request = {"title":"雨夜短片","confirmed":True,"revision":self.board["rev"],"video":{"node":"n3","ref":ref}}
+        app = web.Application(middlewares=[auth.middleware])
+        app.add_routes(server.routes)
+        async with TestClient(TestServer(app)) as client:
+            endpoint = "/api/board/test/showcase"
+            for value in (True,"   ","片"*5001):
+                rejected = await client.post(endpoint,json={**request,"public_prompt":value},headers=owner)
+                self.assertEqual(rejected.status,400,await rejected.text())
+            submitted = await client.post(endpoint,json={**request,"public_prompt":public_prompt},headers=owner)
+            self.assertEqual(submitted.status,201,await submitted.text())
+            token = (await submitted.json())["token"]
+            public = "/api/showcase/"+token
+            moderation = "/api/admin/showcase/"+token
+            reuse = public+"/use-prompt"
+            key = {"request_key":"verified-prompt-open"}
+            self.assertEqual((await client.get(public)).status,404)
+            self.assertEqual((await client.post(reuse,json=key,headers=viewer)).status,404)
+            pending = await client.get("/api/admin/showcase",headers=admin)
+            self.assertEqual((await pending.json())[0]["prompt"],public_prompt)
+            self.assertEqual((await client.get("/api/admin/showcase",headers=viewer)).status,403)
+            self.assertEqual((await client.patch(moderation,json={"state":"approved"},headers=admin)).status,200)
+            detail = await (await client.get(public)).json()
+            self.assertEqual(detail["prompt"],public_prompt)
+            self.assertNotIn("私有编辑草稿",json.dumps(detail,ensure_ascii=False))
+            self.assertNotIn("prompt",(await (await client.get("/api/showcase")).json())["items"][0])
+            self.assertEqual((await client.post(reuse,json=key)).status,401)
+            created = await client.post(reuse,json=key,headers=viewer)
+            self.assertEqual(created.status,201,await created.text())
+            board_url = "/api/board/"+(await created.json())["id"]
+            draft = await (await client.get(board_url,headers=viewer)).json()
+            self.assertEqual((draft["owner"],draft["edges"],len(draft["nodes"])),(9,[],1))
+            node = draft["nodes"][0]
+            self.assertEqual((node["type"],node["data"]["prompt"],node["versions"],node["job"]),
+                             ("video",public_prompt,[],None))
+            self.assertNotIn(ref,json.dumps(draft))
+            self.assertEqual((await client.post(reuse,json=key,headers=viewer)).status,200)
+            self.assertGreaterEqual((await client.get(board_url,headers=owner)).status,400)
+            self.assertEqual((await client.delete(endpoint+"/"+token+"/prompt",headers=viewer)).status,404)
+            self.assertEqual((await client.delete(endpoint+"/"+token+"/prompt",headers=owner)).status,200)
+            self.assertNotIn("prompt",await (await client.get(public)).json())
+            self.assertEqual((await client.post(reuse,json=key,headers=viewer)).status,404)
+            self.assertEqual((await client.get(board_url,headers=viewer)).status,200)
+            self.assertEqual((await client.get(public+"/video")).status,200)
 
     async def test_live_canvas_permissions_presence_and_view_revision(self):
         board = "/api/board/test"

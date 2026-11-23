@@ -1719,6 +1719,63 @@ async function run(){
  } finally { publishedDOM.window.close(); }
  console.log('Public snapshot DOM passed: publish and revoke, anonymous rendering, scoped media URL and copy feedback.');
  await evaluate('openBoard("btest")');
+ evaluate(`const publicPromptVideo={id:"showcase-prompt-clip",type:"video",name:"公开示例",cur:0,
+  data:{prompt:"未发布的最新稿"},versions:[
+    {ref:"output:h3studio/publish-take1.mp4",prompt:"最初提示",generation_record:{prompt:"选中版本提示",effective_prompt:"私有扩充提示"}},
+    {ref:"output:h3studio/publish-take2.mp4",prompt:"第二版提示"}]};
+  B.nodes.push(publicPromptVideo);
+  const showcasePanel=$("#shareShowcase"), previousShowcaseDisabled=showcasePanel.disabled;
+  showcasePanel.disabled=false;setupShowcaseForm();
+  const showcaseSelect=$("#shareShowcaseVideo"),showcasePromptOpt=$("#shareShowcaseAttachPrompt"),
+    showcaseText=$("#shareShowcasePrompt");
+  const promptVideoOptions=showcaseChoices("video").filter(option=>option.node===publicPromptVideo.id);
+  const selectPromptVersion=ref=>{
+    showcaseSelect.value=String(showcaseChoices("video").findIndex(option=>option.ref===ref));
+    showcaseSelect.dispatchEvent(new Event("change"));
+  };
+  selectPromptVersion(promptVideoOptions[0].ref);
+  const savedShowcaseChange=changeShowcase, promptSubmission=[];
+  changeShowcase=(...args)=>promptSubmission.push(args);
+  const submitShowcase=()=>$("#shareShowcaseForm").dispatchEvent(new Event("submit",{cancelable:true}));
+  submitShowcase();showcasePromptOpt.click();`);
+ equal(evaluate('[promptSubmission[0][2].public_prompt,showcaseText.value,showcaseText.required]'),
+   [null,'选中版本提示',true],'publishing prompt text requires an explicit opt-in and uses the chosen version');
+ evaluate(`showcaseText.value="核对后的提示";submitShowcase();selectPromptVersion(promptVideoOptions[1].ref);`);
+ equal(evaluate('[promptSubmission[1][2].public_prompt,showcasePromptOpt.checked,showcaseText.value,showcaseText.required]'),
+   ['核对后的提示',false,'',false],'changing video versions clears the previous publication confirmation');
+ evaluate('changeShowcase=savedShowcaseChange;B.nodes.pop();showcasePanel.disabled=previousShowcaseDisabled;$("#shareShowcaseForm").hidden=true');
+ const watchDOM=new JSDOM(fs.readFileSync(path.join(root,'static/showcase.html'),'utf8'),{
+   url:'http://oneshot.test/showcase/'+publicToken,runScripts:'outside-only',
+ });
+ try {
+  const watch=watchDOM.window, publicPrompt='<img src=x onerror=alert(1)>\n照常保留第二行';
+  const reuseCalls=[], clipboard=[];
+  Object.defineProperty(watch.navigator,'clipboard',{value:{writeText:async value=>clipboard.push(value)}});
+  watch.fetch=async(url,options)=>{
+   if (url.endsWith('/use-prompt')) {
+    reuseCalls.push(JSON.parse(options.body));
+    return {ok:false,status:401,json:async()=>({error:"请先登录"})};
+   }
+   return {ok:true,json:async()=>url.endsWith('/auth/state')?{user:null}:
+     {token:publicToken,title:"公开动图",author:"创作者",creator:"visitor",prompt:publicPrompt,media_kind:"gif"}};
+  };
+  vm.runInContext(fs.readFileSync(path.join(root,'static/showcase.js'),'utf8'),watchDOM.getInternalVMContext());
+  for(let i=0;i<30&&!watch.document.querySelector('.showcase-prompt');i++) await pause(10);
+  const card=watch.document.querySelector('.showcase-prompt');
+  assert.equal(watch.document.querySelector('.showcase-watch > img').getAttribute('src'),'/api/showcase/'+publicToken+'/gif');
+  assert.equal(watch.document.querySelector('.showcase-watch a[download]').download,'公开动图.gif');
+  assert.equal(watch.document.querySelector('.showcase-watch video'),null);
+  assert.equal(card.querySelector('textarea').value,publicPrompt);
+  assert.equal(card.querySelector('img'),null);
+  const [copy,reuse]=card.querySelectorAll('button');
+  await copy.onclick();
+  equal(clipboard,[publicPrompt]);
+  await reuse.onclick();await reuse.onclick();
+  assert.equal(reuseCalls.length,2);
+  assert.equal(reuseCalls[0].request_key,reuseCalls[1].request_key);
+  assert.match(card.querySelector('[role=status] a').href,/login\?next=/);
+ } finally { watchDOM.window.close(); }
+ console.log('Showcase prompt DOM passed: opt-in, exact version, edited text, public copy and login-required reuse.');
  evaluate(`const qaFrom=addNode("image",100,200),qaTo=addNode("video",500,200,{prompt:"沿河移动"});
   qaFrom.versions=[{...curV(node("n1"))}];qaFrom.cur=0;
   qaTo.versions=[{ref:"output:h3studio/trace.mp4",w:640,h:360,generation_record:{inputs:[{node_id:qaFrom.id,ref:curV(qaFrom).ref,version:1}]}}];qaTo.cur=0;
@@ -1822,6 +1879,80 @@ async function run(){
  assert.equal(evaluate('B.nodes.length'),beforeInsert);
  evaluate('openAddMenu(160,120,{at:{x:120,y:100}});$("#addMenu [data-add=previs]").click()');
  assert.equal(evaluate('$("#previsEditor").open'),true);
+ const previsMotionFetch=w.fetch, motionRequests=[], routeRequests=[];
+ w.fetch=async(url,opts)=>{
+  if(String(url)==='/api/previs/object-motion'){
+   const request=JSON.parse(opts.body);routeRequests.push(request);
+   const [first,last]=request.scene.objects[0].keys;
+   return {ok:true,text:async()=>JSON.stringify({keys:[
+    first,{...first,t:16,...request.plan.points[0]},
+    {...first,t:48,...request.plan.points[1]},last]})};
+  }
+  if(String(url)!=='/api/previs/camera-motion')return previsMotionFetch(url,opts);
+  const request=JSON.parse(opts.body);motionRequests.push(request);
+  const start=request.scene.camera[0];
+  return {ok:true,text:async()=>JSON.stringify({camera:[start,{...start,t:request.plan.end,x:4,z:6,ease:"smooth"}]})};
+ };
+ evaluate(`$("[data-pv-motion]").open=true;
+  const motionEnd=$("[data-pv-motion-end]");motionEnd.value="2";motionEnd.dispatchEvent(new Event("input"));
+  $("[data-pv-motion-apply]").click();`);
+ await ready('PV.editor.scene.camera.length===2','the camera motion preset adds editable keyframes');
+ equal(motionRequests.map(request=>request.plan),[{mode:'push',start:0,end:48,amount:1,target:'actor'}],
+  'camera motion uses the playhead, end time and selected amount');
+ assert.match(evaluate('$("[data-pv-status]").textContent'),/已应用推进/);
+ equal(evaluate('PV.editor.scene.camera.map(k=>k.t)'),[0,48]);
+ evaluate('$("[data-pv-motion-undo]").click()');
+ equal(evaluate('PV.editor.scene.camera.map(k=>k.t)'),[0]);
+ evaluate(`const routeTrack=$("[data-pv-track]"), routeView=$("[data-pv-view]");
+  routeTrack.value="actor";routeTrack.dispatchEvent(new Event("change"));
+  $("[data-pv-route-start]").click();
+  const routeEnd=$("[data-pv-route-end]");routeEnd.value="2";routeEnd.dispatchEvent(new Event("input"));
+  const routeCanvas=$("#previsEditor canvas");
+  const routeClick=(x,z)=>{
+    const E=PV.editor, box=routeCanvas.getBoundingClientRect();
+    const [px,py]=pvPlan(E.scene,E.tick,routeCanvas.width,routeCanvas.height,E.active).point(x,z);
+    routeCanvas.onpointerdown({button:0,pointerId:10,clientX:box.left+px*box.width/routeCanvas.width,
+      clientY:box.top+py*box.height/routeCanvas.height});
+  };
+  routeClick(0,1);routeClick(1,1);$("[data-pv-route-pop]").click();routeClick(3,1);
+  $("[data-pv-route-apply]").click();`);
+ await ready('PV.editor.scene.objects[0].keys.length===4','clicking a route writes editable object keyframes');
+ equal(routeRequests.map(request=>request.plan),[{target:'actor',start:0,end:48,points:[{x:0,z:1},{x:3,z:1}]}]);
+ equal(evaluate('PV.editor.scene.objects[0].keys.map(k=>[k.t,k.x,k.z])'),
+   [[0,-1.7,0],[16,0,1],[48,3,1],[96,1.5,0]]);
+ evaluate(`$("[data-pv-route-undo]").click();routeTrack.value="camera";routeTrack.dispatchEvent(new Event("change"));
+  routeView.value="camera";routeView.dispatchEvent(new Event("change"));`);
+ equal(evaluate('PV.editor.scene.objects[0].keys.map(k=>k.t)'),[0,96]);
+ w.fetch=previsMotionFetch;
+ evaluate(`const cameraBeforeCut=structuredClone(PV.editor.scene.camera), cutScrub=$("[data-pv-scrub]");
+  cutScrub.value=24;cutScrub.dispatchEvent(new Event("input"));
+  const cutX=$("[data-owner=camera][data-pv-param=x]");cutX.value=2;cutX.dispatchEvent(new Event("change"));
+  cutScrub.value=48;cutScrub.dispatchEvent(new Event("input"));
+  $("[data-pv-cut-source]").value="0";$("[data-pv-add-cut]").click();
+  const cutFov=$("[data-owner=camera][data-pv-param=fov]");cutFov.value=24;cutFov.dispatchEvent(new Event("change"));`);
+ equal(evaluate(`[pvSample(PV.editor.scene.camera,47).x,pvSample(PV.editor.scene.camera,48).x,
+  pvSample(PV.editor.scene.camera,47).fov,pvSample(PV.editor.scene.camera,48).fov,
+  $("[data-pv-at='48']").textContent]`),[2,5,42,24,"2.00 秒 · 硬切"],"the camera holds the old framing up to the cut");
+ w.TextEncoder=TextEncoder;
+ const cutBlob=evaluate('pvGlb(PV.editor.scene,48,"切镜验证")');
+ const cutBinary=Buffer.from(await new Promise((resolve,reject)=>{
+  const reader=new w.FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error);
+  reader.readAsArrayBuffer(cutBlob);
+ }));
+ const cutJsonLength=cutBinary.readUInt32LE(12);
+ const cutGlb=JSON.parse(cutBinary.toString("utf8",20,20+cutJsonLength));
+ const cameraAnimation=cutGlb.animations[0];
+ const cameraTrack=cameraAnimation.channels.find(channel=>channel.target.node===0&&channel.target.path==="translation");
+ const cameraSampler=cameraAnimation.samplers[cameraTrack.sampler];
+ const cameraAccessor=cutGlb.accessors[cameraSampler.output], cameraBuffer=cutGlb.bufferViews[cameraAccessor.bufferView];
+ const offsets=28+cutJsonLength+(cameraBuffer.byteOffset||0)+(cameraAccessor.byteOffset||0);
+ equal([cameraSampler.interpolation,cutBinary.readFloatLE(offsets+47*12),cutBinary.readFloatLE(offsets+48*12)],
+  ['STEP',2,5],'GLB camera animation uses the same cutoff at 24 FPS');
+ const objectTrack=cameraAnimation.channels.find(channel=>channel.target.node===1&&channel.target.path==="translation");
+ const fovTrack=cameraAnimation.channels.find(channel=>channel.target.path==="pointer");
+ equal([cameraAnimation.samplers[objectTrack.sampler].interpolation,cameraAnimation.samplers[fovTrack.sampler].interpolation],
+  ['LINEAR','STEP'],'glTF export keeps object motion smooth and applies the cut to focal length too');
+ evaluate('PV.editor.scene.camera=cameraBeforeCut;PV.editor.tick=0;pvRefreshTrack(PV.editor)');
  evaluate(`const previsNode=PV.editor.n;const pvScrub=$("[data-pv-scrub]");pvScrub.value=48;pvScrub.dispatchEvent(new Event("input"));
   const pvHeight=$("[data-owner=camera][data-pv-param=y]");pvHeight.value="5";pvHeight.dispatchEvent(new Event("change"));
   const pvAspect=$("[data-pv-aspect]");pvAspect.value="9:16";pvAspect.dispatchEvent(new Event("change"));
@@ -2221,6 +2352,66 @@ async function run(){
  ],'both outputs are related to the original media version');
  console.log('Video trim DOM passed: detected and manual cuts, selective export and pinned source links.');
  w.fetch=trimFetch;
+ const gifFetch=w.fetch,gifCalls=[],gridGifCalls=[];
+ const gifResult={ref:'output:h3studio/gif_test.gif',width:256,height:144,seconds:1.75,size_bytes:4800};
+ w.fetch=async(url,opts)=>{
+   if(String(url)==='/api/video/gif')gifCalls.push(JSON.parse(opts.body));
+   else if(String(url)==='/api/image/gif')gridGifCalls.push(JSON.parse(opts.body));
+   else return gifFetch(url,opts);
+   return {ok:true,text:async()=>JSON.stringify(gifResult)};
+ };
+ evaluate(`const gifBefore=JSON.stringify(B.nodes);
+   ctxMenu({target:els.get(clipSource.id),clientX:140,clientY:120});$("#ctxMenu [data-a=gif-export]").click();
+   const gifForm=$("#videoGif form"),gifVideo=$("video",gifForm);
+   gifVideo.pause=()=>{};
+   gifForm.elements.start.value=1;
+   gifForm.elements.end.value=2;
+   gifForm.elements.size.value=256;gifForm.elements.fps.value=8;gifForm.elements.pingPong.checked=true;
+   gifForm.dispatchEvent(new Event("input",{bubbles:true}));
+   gifForm.dispatchEvent(new Event("submit",{cancelable:true}));`);
+ await ready('!$("#videoGif .gif-preview").hidden','GIF preview and download appear');
+ equal(gifCalls,[{ref:'input:h3studio/reference1.mp4',start:1,end:2,fps:8,size:256,ping_pong:true}],
+   'the canvas GIF export uses the pinned source, range and loop settings');
+ equal(evaluate(`[$("#videoGif a").download,$("#videoGif .gif-preview img").getAttribute("src"),JSON.stringify(B.nodes)===gifBefore]`),
+   ['gif_test.gif','/media?ref=output%3Ah3studio%2Fgif_test.gif',true]);
+ assert.match(evaluate(`acResultCards(${JSON.stringify({gif:gifResult})})`),/下载 GIF/);
+ evaluate(`const gifPublish=$("[data-gif-publish]",gifForm);
+   if(gifPublish.hidden)throw new Error("The owner cannot publish a generated GIF");
+   gifForm.elements.end.value=1.1;gifForm.dispatchEvent(new Event("input",{bubbles:true}));
+   if(!$("button[type=submit]",gifForm).disabled||!$("#videoGif .gif-preview").hidden)throw new Error("Invalid interval still exportable");
+   gifForm.elements.end.value=2;gifForm.dispatchEvent(new Event("input",{bubbles:true}));
+   gifForm.dispatchEvent(new Event("submit",{cancelable:true}));`);
+ await ready('!$("#videoGif .gif-preview").hidden','GIF preview shows publication action');
+ evaluate(`const savedGifShareOpen=shareOpen, savedGifShowcaseChange=changeShowcase, capturedGifPublication=[];
+   const oldGifShare=[$("#canvasShare").hidden,$("#shareShowcase").disabled];
+   shareOpen=async()=>{$("#canvasShare").hidden=false;$("#shareShowcase").disabled=false;};
+   changeShowcase=(...args)=>capturedGifPublication.push(args);
+   gifPublish.click();`);
+ await ready('$("#shareShowcaseVideo").value==="gif-export"','the publication form opens on the rendered GIF');
+ equal(evaluate('[$("#videoGif").open,$("#shareShowcaseVideoFile").required,$("#shareShowcaseAttachPrompt").checked]'),
+   [false,false,false],'the export handoff preserves GIF selection and leaves prompt opt-in disabled');
+ evaluate(`$("#shareShowcaseForm").dispatchEvent(new Event("submit",{cancelable:true}));`);
+ equal(evaluate('[capturedGifPublication[0][2].gif_ref,capturedGifPublication[0][2].video,capturedGifPublication[0][2].public_prompt]'),
+   ['output:h3studio/gif_test.gif',null,null]);
+ evaluate(`shareOpen=savedGifShareOpen;changeShowcase=savedGifShowcaseChange;
+   $("#canvasShare").hidden=oldGifShare[0];$("#shareShowcase").disabled=oldGifShare[1];$("#shareShowcaseForm").hidden=true;`);
+ evaluate(`const gifGridSource=node("n1"), gifGridRef=curV(gifGridSource).ref, beforeGridGif=JSON.stringify(B.nodes);
+   ctxMenu({target:els.get(gifGridSource.id),clientX:140,clientY:120});
+   $("#ctxMenu [data-a=gif-export]").click();`);
+ equal(evaluate('[$("#videoGifTitle").textContent,gifVideo.hidden,$$("[data-gif-cells] span").length,gifForm.elements.fps.value]'),
+  ['宫格生成 GIF',true,16,'8']);
+ evaluate(`for(const [name,value] of [["rows",2],["cols",3],["first",2],["last",5]]){
+   const field=gifForm.elements[name];field.value=value;field.dispatchEvent(new Event("input",{bubbles:true}));
+  }`);
+ equal(evaluate('$$("[data-gif-cells] [data-selected]").map(cell=>cell.textContent)'),['2','3','4','5']);
+ evaluate(`gifForm.dispatchEvent(new Event("submit",{cancelable:true}));`);
+ await ready('!$("#videoGif .gif-preview").hidden','the image grid GIF result is available');
+ equal(gridGifCalls,[{ref:evaluate('gifGridRef'),rows:2,cols:3,first:2,last:5,fps:8,size:360,ping_pong:false}],
+  'image GIF uses the agreed row-major range and exact canvas version');
+ assert.equal(evaluate('JSON.stringify(B.nodes)===beforeGridGif'),true);
+ evaluate('closeVideoGif()');
+ w.fetch=gifFetch;
+ console.log('GIF export DOM passed: video interval, image grid, preview, download, publication and assistant result card.');
  const nativeDraftFetch=w.fetch, nativeDraftReq=[];
  w.fetch=async(url,opts)=>{
    const path=String(url);
@@ -2914,19 +3105,60 @@ async function run(){
  evaluate(`closeFilm();rangeFrom.value="range-fourth";rangeFrom.dispatchEvent(new Event("change"));`);
  equal(evaluate('[...rangeTo.options].map(option=>option.textContent)'),['镜头 4'],'choosing a later shot starts its own contiguous interval');
  evaluate(`$("#shotList [data-close]").click();storyNode.data.shots=savedRangeShots;storyNode.data.made=savedRangeLinks;
+  for(const key of [firstRangeDraft,secondRangeDraft])localStorage.removeItem(key);
   openStoryFilm(storyNode);const fullStoryDraft=FILM.key;
-  FILM.spec.clips[0].trans="black";FILM.spec.aspect="9:16";closeFilm();`);
+  Object.assign(FILM.spec.clips[0],{in:1,out:4,trans:"black",volume:.4,speed:1.5,subs:["保留的字幕"],
+    captions:[{start:1.1,end:1.8,text:"校正的字幕"}]});
+  Object.assign(FILM.spec.clips[1],{in:2,out:4});
+  FILM.spec.clips.push({...newFilmClip(legacyStoryVideo),name:"手动补画面"});
+  FILM.spec.aspect="9:16";FILM.spec.titles=[{text:"片头",start:0,end:1,position:"center",style:"plain"}];
+  closeFilm();`);
  await evaluate('wizGo("edit")');
  equal(evaluate('[FILM.key===fullStoryDraft,FILM.spec.story_script,FILM.spec.clips[0].trans,FILM.spec.aspect,FILM.n]'),
   [true,evaluate('storyNode.id'),'black','9:16',null],'the wizard opens the same storyboard draft and keeps its adjustments');
  evaluate(`closeFilm();unrelatedFilm.data.film.story_script=storyNode.id;
-  legacyStoryVideo.cur=0;`);
+  legacyStoryVideo.cur=0;
+  newestStoryVideo.versions.push({ref:"output:h3studio/short-take.mp4",seconds:1.5});
+  newestStoryVideo.cur=1;`);
  await evaluate('wizGo("current-cut")');
  equal(evaluate('[wizardFilm(storyNode)===unrelatedFilm,FILM.key!==fullStoryDraft,FILM.spec.clips[0].ref,FILM.n]'),
   [true,true,'input:h3studio/older.mp4',null],'a finished film can be kept while opening a cut from newly selected shot versions');
- evaluate(`const newFullStoryDraft=FILM.key;closeFilm();legacyStoryVideo.cur=1;W=savedWizard;B.nodes.splice(B.nodes.indexOf(unrelatedFilm),1);
+ assert.equal(evaluate('$("#fmStoryReuse").hidden'),false);
+ evaluate(`const newFullStoryDraft=FILM.key, oldStoryState=localStorage.getItem(fullStoryDraft);
+  $("#fmStoryReuse").click();const storyReuseDialog=$("#fmStoryDialog");
+  const storyReuseSubmit=()=>$("form",storyReuseDialog).dispatchEvent(new Event("submit",{cancelable:true}));`);
+ equal(evaluate('$$("li",storyReuseDialog).map(li=>li.textContent)'),[
+  '镜头 1 · 1 段改用版本 1','镜头 2 · 1 段因新版本过短保留原素材'],
+  'the preview identifies changed and too-short shots before applying');
+ evaluate('$("[data-close]",storyReuseDialog).click()');
+ equal(evaluate('[FILM.spec.aspect,FILM.spec.clips.length,storyReuseDialog.open]'),['source',2,false]);
+ evaluate('$("#fmStoryReuse").click();newestStoryVideo.cur=0;storyReuseSubmit()');
+ equal(evaluate('[FILM.spec.aspect,FILM.spec.clips.length]'),['source',2],'a canvas version change invalidates the preview');
+ evaluate('newestStoryVideo.cur=1;$("#fmStoryReuse").click();storyReuseSubmit()');
+ equal(evaluate(`[FILM.spec.aspect,FILM.spec.titles[0].text,FILM.n,$("#fmStoryReuse").hidden,
+  FILM.spec.clips.map(clip=>[clip.ref,clip.in,clip.out,clip.trans,clip.speed??1,clip.volume]),
+  FILM.spec.clips[0].captions[0].text, localStorage.getItem(fullStoryDraft)===oldStoryState]`),
+  ['9:16','片头',null,true,[
+    ['input:h3studio/older.mp4',1,4,'black',1.5,.4],
+    ['output:h3studio/shot-two.mp4',2,4,'cut',1,1],
+    ['input:h3studio/newer.mp4',0,null,'cut',1,1]],'校正的字幕',true],
+  'the new draft preserves editing, manual duplicates, and the original draft without claiming a finished film');
+ evaluate(`closeFilm();openStoryFilm(storyNode);`);
+ equal(evaluate('[FILM.key===newFullStoryDraft,FILM.spec.clips.length,FILM.spec.aspect,$("#fmStoryReuse").hidden]'),
+  [true,3,'9:16',true],'reopening the new versions restores the saved imported draft');
+ evaluate(`closeFilm();
+  newestStoryVideo.versions.push({ref:"output:h3studio/long-take.mp4",seconds:6});newestStoryVideo.cur=2;
+  openStoryFilm(storyNode);const longStoryDraft=FILM.key;
+  $("#fmStoryReuse").click();const priorStoryDraft=$("select",storyReuseDialog);
+  priorStoryDraft.selectedIndex=[...priorStoryDraft.options].findIndex(option=>option.textContent.endsWith("V1 / V2"));
+  priorStoryDraft.dispatchEvent(new Event("change"));storyReuseSubmit();`);
+ equal(evaluate('FILM.spec.clips.map(clip=>clip.ref)'),[
+  'input:h3studio/older.mp4','output:h3studio/long-take.mp4','input:h3studio/newer.mp4'],
+  'a later version can replace a linked shot that was previously too short');
+ evaluate(`closeFilm();legacyStoryVideo.cur=1;newestStoryVideo.versions.splice(1);newestStoryVideo.cur=0;
+  W=savedWizard;B.nodes.splice(B.nodes.indexOf(unrelatedFilm),1);
   sel=savedRangeSelection;updateSel();
-  for(const key of [firstRangeDraft,secondRangeDraft,fullStoryDraft,newFullStoryDraft])localStorage.removeItem(key);
+  for(const key of [fullStoryDraft,newFullStoryDraft,longStoryDraft])localStorage.removeItem(key);
   if(savedLatestFilm)localStorage.setItem(filmDraftPrefix()+"latest",savedLatestFilm);else localStorage.removeItem(filmDraftPrefix()+"latest");`);
  evaluate(`const revisionShot=storyNode.data.shots[1], revisionEdges=JSON.stringify(B.edges);
   const oldAction=newestStoryVideo.data.fields.action;
@@ -3517,6 +3749,49 @@ async function run(){
  evaluate('undo()');
  equal(evaluate(`[B.nodes.length===countBeforeReferenceUpload,videoInputs(node(groupShot.id))[0].source.id===groupReplacement.id]`),
   [true,true],'undo restores the original reference and removes the node created in the same operation');
+ const audioLibraryFetch=w.fetch, resolvedAudioAssets=[];
+ const libraryAudio=[{id:"cast-voice",name:"演员声线",kind:"character",aliases:["渡船"],media:[
+  {ref:"output:h3studio/voice-old.wav",type:"audio",seconds:2},
+  {ref:"input:h3studio/alternate-voice.wav",type:"audio",seconds:7},
+  {ref:"input:h3studio/full-interview.wav",type:"audio",seconds:80},
+ ]}];
+ w.fetch=async(url,options={})=>{
+  const path=new URL(url,"http://oneshot.test").pathname;
+  if(path==="/api/memory")return {ok:true,json:async()=>libraryAudio};
+  if(path==="/api/memory/resolve"){
+   resolvedAudioAssets.push(JSON.parse(options.body));
+   return {ok:true,json:async()=>libraryAudio};
+  }
+  return audioLibraryFetch(url,options);
+ };
+ evaluate(`const libraryAudioTarget=addNode("audio",4300,1650,{mode:"seed_audio"});
+  selectOnly(libraryAudioTarget.id);
+  const audioLibraryNodeCount=B.nodes.length;
+  $("#refs [data-seed-library]").click();`);
+ await ready('$("#seedAudioLibrary select").options.length===3','audio picker lists reusable clips under the duration limit');
+ evaluate(`const audioLibraryQuery=$("#seedAudioLibrary input");
+  audioLibraryQuery.value="渡船";audioLibraryQuery.dispatchEvent(new Event("input"));
+  const audioLibraryPick=index=>{
+    const choice=$("#seedAudioLibrary select");choice.selectedIndex=index;
+    choice.dispatchEvent(new Event("change"));
+  };
+  audioLibraryPick(1);`);
+ assert.match(evaluate('$("#seedAudioLibrary audio").src'),/voice-old\.wav/);
+ await evaluate('$("#seedAudioLibrary form").onsubmit(new Event("submit"))');
+ equal(evaluate('[B.nodes.length===audioLibraryNodeCount,libraryAudioTarget.data.references[0].node_id===versionCopyAudio.id,libraryAudioTarget.data.references[0].ref,node(versionCopyAudio.id).cur]'),
+  [true,true,"output:h3studio/voice-old.wav",1],'reuse the historical canvas version without adding a duplicate or changing the current version');
+ await evaluate('openSeedAudioLibrary(libraryAudioTarget)');
+ equal(evaluate('$("#seedAudioLibrary select").options.length'),2,'an already linked audio version is omitted');
+ await evaluate('audioLibraryPick(1);$("#seedAudioLibrary form").onsubmit(new Event("submit"))');
+ equal(evaluate(`(()=>{
+   const ref=libraryAudioTarget.data.references[1], source=node(ref.node_id);
+   return [B.nodes.length,source.data.asset.id,curV(source).ref,B.edges.some(e=>e.from===source.id&&e.to===libraryAudioTarget.id&&e.slot===2)];
+ })()`),[evaluate('audioLibraryNodeCount+1'),"cast-voice","input:h3studio/alternate-voice.wav",true]);
+ assert.deepEqual(resolvedAudioAssets.map(body=>body.ids),[["cast-voice"],["cast-voice"]]);
+ evaluate('undo()');
+ equal(evaluate('[B.nodes.length===audioLibraryNodeCount,node(libraryAudioTarget.id).data.references.length]'),[true,1]);
+ w.fetch=audioLibraryFetch;
+ console.log('Library audio DOM passed: search, audition, pinned history reuse, asset import, reference slot and undo.');
  evaluate('restore(copyFlowBase)');
  console.log('Version copies and references DOM passed: keyboard menu, drag, pinned audio reference, read-only guard, provenance, video inputs and undo.');
  const queueFetch=w.fetch, queueSends=[], queueDeletes=[];
@@ -4132,7 +4407,7 @@ async function run(){
    $("#ieLightDepth").value="-75";$("#ieLightDepth").dispatchEvent(new Event("input",{bubbles:true}));`);
  assert.equal(evaluate('$("#ieLightXValue").textContent'),'65');
  equal(evaluate('[$("#ieLightTemperatureValue").textContent,$("#ieLightDepthValue").textContent]'),['7550 K','后方 75%']);
- await evaluate('saveRelight();');
+ evaluate('$("#ieSaveLight").click()');
  await ready('sourcePortrait.versions.length===2 && !IMAGE_EDITOR.loading && !IMAGE_EDITOR.busy','the adjusted image is saved on the source node');
  equal(evaluate('[sourcePortrait.cur,curV(sourcePortrait).w,curV(sourcePortrait).h,curV(sourcePortrait).edit.source,curV(sourcePortrait).edit.light.x]'),
   [1,512,384,'output:h3studio/portrait.png',65]);
@@ -4140,7 +4415,7 @@ async function run(){
  equal(evaluate('[IMAGE_EDITOR.mode,sourcePortrait.cur,$("#ieLightX").value,$("#ieLightTemperature").value,$("#ieLightDepth").value]'),
   ['relight',0,'65','-50','-75']);
  evaluate('$("#ieRelightAI").click()');
- equal(evaluate('[IMAGE_EDITOR.mode,$("#ieAI").hidden,$("#ieSaveLight").hidden]'),['relight_ai',false,true]);
+ equal(evaluate('[IMAGE_EDITOR.mode,$("#ieAI").hidden,$("#ieSaveLight").hidden,$("#ieExportLight").hidden]'),['relight_ai',false,true,true]);
  assert.equal(evaluate('sourcePortrait.versions.length'),2,'preparing AI guidance does not submit a generation');
  const relightFetch=w.fetch;
  let modelLightRequest;
@@ -4160,9 +4435,22 @@ async function run(){
   ['whole','h3',-75,-50]);
  await evaluate('$("#ieReuse").onclick()');
  equal(evaluate('[IMAGE_EDITOR.mode,relightSettings().depth,relightSettings().temperature]'),['relight_ai',-75,-50]);
+ evaluate(`$("#ieRelightAI").click();
+   const portraitBeforeExport=JSON.stringify(sourcePortrait), nodeCountBeforeRelight=B.nodes.length;
+   $("#ieExportLight").click();`);
+ await ready('B.nodes.length===nodeCountBeforeRelight+1 && !IMAGE_EDITOR.busy && !$("#ieLocateLight").hidden',
+  'manual relighting exports a new canvas node from the editor');
+ equal(evaluate(`(()=>{
+   const exported=node(IMAGE_EDITOR.lightExportId), version=curV(exported);
+   return [JSON.stringify(sourcePortrait)===portraitBeforeExport,IMAGE_EDITOR.mode,exported.type,
+     version.w,version.h,version.edit.source,version.edit.light.depth,version.edit.light.temperature];
+ })()`),[true,'relight','image',512,384,'output:h3studio/portrait.png',-75,-50]);
+ evaluate(`const lightExportId=IMAGE_EDITOR.lightExportId;$("#ieLocateLight").click();`);
+ equal(evaluate('[IMAGE_EDITOR===null,[...sel]]'),[true,[evaluate('lightExportId')]]);
+ evaluate('undo()');
+ equal(evaluate('[!node(lightExportId),B.nodes.length===nodeCountBeforeRelight]'),[true,true]);
  w.fetch=relightFetch;
- evaluate('closeImageEditor()');
- console.log('Image relighting passed: deterministic lighting, alpha, in-place version save, reuse and AI handoff.');
+ console.log('Image relighting passed: alpha, in-place save, separate export, canvas location, undo and AI handoff.');
  const originalCameraFetch=w.fetch;
  let cameraRequest;
  w.fetch=async(url,options={})=>{
@@ -4844,7 +5132,7 @@ async function run(){
  evaluate('acAttachNodeReference(stemTestVideo,stemTestVideo.versions[0].ref);$("#creativeAppsBtn").click()');
  assert.equal(evaluate('$("#creativeApps").open'),true);
  evaluate('$("#creativeApps [data-app-category]").value="视频";$("#creativeApps [data-app-category]").dispatchEvent(new Event("change"))');
- equal(evaluate(' $$("#creativeApps [data-app-list] button").map(button=>button.dataset.appId)'),['previs','broll','remake']);
+ equal(evaluate(' $$("#creativeApps [data-app-list] button").map(button=>button.dataset.appId)'),['previs','broll','loop-gif','remake']);
  evaluate('$("#creativeApps [data-app-id=broll]").click()');
  assert.equal(evaluate('$("#creativeApps video").getAttribute("src")'),'/static/creative-examples/broll.mp4');
  await evaluate('$("#creativeApps [data-app-example]").onclick()');
@@ -4862,6 +5150,11 @@ async function run(){
   [true,'output:h3studio/stem-video-old.mp4',1,'画面内容和图表数据 · 结尾显示订单增长\n显示时段和样式 · 保留原声'],
   'opening the native workspace carries the form brief and uses the pinned historical media without switching tabs');
  evaluate('closeBroll()');
+ evaluate('$("#creativeAppsBtn").click();$("#creativeApps [data-app-id=loop-gif]").click()');
+ await evaluate('$("#creativeApps [data-app-example]").onclick()');
+ const gifAppDraft=evaluate('$("#acInput").value');
+ assert.ok(gifAppDraft.includes("创作任务 · 循环动图") && gifAppDraft.includes("再导出 GIF"));
+ assert.equal(evaluate('AC.referencePins.get(stemTestVideo.id).ref'),'output:h3studio/stem-video-old.mp4');
  const appPreviewFetch=w.fetch;
  w.fetch=(url,options)=>{
   const path=new URL(String(url),'http://oneshot.test').pathname;
