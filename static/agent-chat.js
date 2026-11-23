@@ -431,6 +431,12 @@ async function acFocus(ids,editor=false){
  }
 }
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
+function acShotAssetNames(assets){
+ return (assets||[]).map(asset=>{
+  const view=CHARACTER_VIEWS[asset.view]?.[0];
+  return asset.name+(view?"（"+view+"）":"");
+ }).join("、");
+}
 function acResultCards(result){
  if(result.gif?.ref && /^output:h3studio\/gif_[\w-]+\.gif$/.test(result.gif.ref)){
   const gif=result.gif,url="/media?ref="+encodeURIComponent(gif.ref);
@@ -482,12 +488,13 @@ function acResultCards(result){
  }
  if(result.shot_revision){
   const p=result.shot_revision;
-  const labels={duration:"时长",shot_size:"景别",camera:"机位",scene:"场景",action:"动作",dialogue:"台词",sound:"声音",keyframe:"首帧"};
-  const display=value=>esc((Array.isArray(value)?value.join("\n"):value)??"");
+  const labels={duration:"时长",shot_size:"景别",camera:"机位",scene:"场景",action:"动作",dialogue:"台词",sound:"声音",keyframe:"首帧",
+   asset_refs:"参考资产"};
+  const display=(key,value)=>esc(key==="asset_refs"?acShotAssetNames(value):Array.isArray(value)?value.join("\n"):value??"");
   return `<section class="ac-storyboard-plan" data-shot-revision="${esc(JSON.stringify(p))}">
    <strong>${esc(p.name)} · 第 ${p.shot} 镜</strong>
    <dl>${Object.entries(p.changes).map(([key,value])=>`<dt>${esc(labels[key])}</dt><dd>
-     <span class="ac-revision-before">${display(p.before[key])||"未填写"}</span><span aria-label="改为"> → </span>${display(value)||"清空"}</dd>`).join("")}</dl>
+     <span class="ac-revision-before">${display(key,p.before[key])||"未填写"}</span><span aria-label="改为"> → </span>${display(key,value)||"清空"}</dd>`).join("")}</dl>
    <div class="ac-storyboard-actions"><button type="button" data-apply-shot-revision>应用到原镜头</button>
     <button type="button" data-run-shot-revision hidden>查看重生成计划</button></div><span role="status"></span></section>`;
  }
@@ -504,14 +511,14 @@ function acResultCards(result){
    ${p.refs.length?`<p>参考图：${esc(p.refs.map(item=>item.name).join("、"))}</p>`:""}
    <ol>${p.shots.map(s=>`<li><details><summary>${s.duration} 秒 · ${esc(s.shot_size || s.scene || "镜头")}</summary>
     <p>${[s.scene,s.camera,s.keyframe,...s.action,...s.dialogue].filter(Boolean).map(esc).join("<br>")}</p>
-    ${s.asset_refs?.length?`<small>参考资产 · ${esc(s.asset_refs.map(asset=>asset.name+(CHARACTER_VIEWS[asset.view]?"（"+CHARACTER_VIEWS[asset.view][0]+"）":"")).join("、"))}</small>`:""}
+    ${s.asset_refs?.length?`<small>参考资产 · ${esc(acShotAssetNames(s.asset_refs))}</small>`:""}
    </details></li>`).join("")}</ol>
    <button type="button" data-create-storyboard>${node(p.id)?"定位分镜":"加入画布"}</button><span role="status"></span></section>`;
  }
  if(result.storyboard_plan){
   const p=result.storyboard_plan,s=p.shot;
   const fields=[["场景",s.scene],["机位",s.camera],["首帧",s.keyframe],["动作",s.action.join("\n")],
-    ["角色",s.characters.join("、")],["台词",s.dialogue.join("\n")],["声音",s.sound]];
+    ["角色",s.characters.join("、")],["台词",s.dialogue.join("\n")],["声音",s.sound],["参考资产",acShotAssetNames(s.asset_refs)]];
   return `<section class="ac-storyboard-plan" data-storyboard-plan="${esc(JSON.stringify(p))}">
    <strong>${esc(p.name)} · 第 ${p.anchor.count+1} 镜 · ${esc(s.shot_size)} · ${s.duration} 秒</strong>
    <dl>${fields.filter(([,value])=>value).map(([label,value])=>`<dt>${label}</dt><dd>${esc(value)}</dd>`).join("")}</dl>

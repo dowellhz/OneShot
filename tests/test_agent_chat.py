@@ -1611,6 +1611,57 @@ class ChatIntegration(ChatFixture):
             self.assertIn('"preferred_views": ["face"]',planner_input)
             self.assertNotIn(hidden["id"],planner_input)
 
+    async def test_storyboard_continuation_and_revisions_validate_shot_asset_changes(self):
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        hero = store.put(user,{"board":"test","kind":"character","name":"林森","ref":self.source["ref"],
+                              "source_board":"test","character_view":"main"})
+        store.put(user,{"id":hero["id"],"ref":self.source["ref"],"source_board":"test","character_view":"face"})
+        room = store.put(user,{"board":"test","kind":"scene","name":"旧房"})
+        bridge = store.put(user,{"board":"test","kind":"scene","name":"桥面"})
+        extra = store.put(user,{"board":"test","kind":"character","name":"小孟"})
+        await self.client.put("/api/board/another",json={"nodes":[]})
+        hidden = store.put(user,{"board":"another","kind":"scene","name":"其他画布"})
+        previous = {"duration":5,"shot_size":"中景","camera":"缓推","scene":"窗边暖光","characters":["林森"],
+                    "action":["拿起木盒"],"dialogue":[],"sound":"风声","keyframe":"木盒在窗台",
+                    "asset_refs":[{"id":room["id"],"name":"旧房","kind":"scene"}]}
+        b = self.load()
+        b["nodes"].append({"id":"story","type":"script","name":"换景","data":{"shots":[previous]},"cur":-1,"versions":[]})
+        server.write_board(server.board_path("test"),b)
+        baseline = self.load()
+        next_shot = {**previous,"scene":"桥面","asset_refs":[
+            {"memory_id":hero["id"]},{"memory_id":bridge["id"]},
+        ]}
+        self.svc.model.side_effect = [
+            call("storyboard_context",{"node_id":"story"},"read"),
+            call("storyboard_next_shot_plan",{"node_id":"story","after_shot":1,"shot":next_shot},"next"),
+            call("storyboard_revision_plan",{"node_id":"story","shot":1,"changes":{"asset_refs":[]}},"clear"),
+            call("storyboard_revision_plan",{"node_id":"story","shot":1,
+                 "changes":{"asset_refs":[{"memory_id":hidden["id"]}]}},"hidden"),
+            call("storyboard_revision_plan",{"node_id":"story","shot":1,
+                 "changes":{"asset_refs":[{"memory_id":extra["id"],"views":["back"]}]}},"undrafted"),
+            call("storyboard_revision_plan",{"node_id":"story","shot":1,
+                 "changes":{"asset_refs":[{"memory_id":hero["id"],"views":["main"]}]}},"replace-view"),
+            answer(),
+        ]
+        explicit = "@{"+hero["id"]+"#face|林森}"
+        rid = await self.send(f"用 {explicit} 续写，并清除上一镜的场景参考",selected=["story"])
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        results = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)]
+        context, next_plan, clear = results[0]["storyboard"],results[1]["storyboard_plan"],results[2]["shot_revision"]
+        self.assertEqual(context["shots"][0]["asset_refs"],previous["asset_refs"])
+        self.assertEqual(next_plan["anchor"]["last"]["asset_refs"],previous["asset_refs"])
+        self.assertEqual(next_plan["shot"]["asset_refs"],[
+            {"id":hero["id"],"name":"林森","kind":"character","view":"face"},{"id":bridge["id"],"name":"桥面","kind":"scene"},
+        ])
+        self.assertEqual(clear["before"]["asset_refs"],previous["asset_refs"])
+        self.assertEqual(clear["changes"],{"asset_refs":[]})
+        self.assertIn("不可访问",results[3]["error"])
+        self.assertIn("未定稿",results[4]["error"])
+        self.assertEqual(results[5]["shot_revision"]["changes"]["asset_refs"],
+                         [{"id":hero["id"],"name":"林森","kind":"character","view":"main"}])
+        self.assertEqual(self.load(),baseline)
+
     async def test_storyboard_continuation_reads_pinned_reference_and_prepares_one_shot(self):
         current = image_editor.save(server.COMFY_DIR,Image.new("RGB",(60,32),"blue"),"input")
         board = self.load()
@@ -1638,7 +1689,7 @@ class ChatIntegration(ChatFixture):
         self.assertEqual(context["shots"][-1]["action"],previous["action"])
         self.assertEqual((context["references"][0]["version"],context["references"][0]["ref"]),(1,self.source["ref"]))
         plan = next(row["storyboard_plan"] for row in results if "storyboard_plan" in row)
-        self.assertEqual(plan["anchor"]["last"],previous)
+        self.assertEqual(plan["anchor"]["last"],{**previous,"asset_refs":None})
         self.assertEqual(plan["shot"],next_shot)
         self.assertEqual(path.read_text(),previous_board)
         script = board["nodes"][-1]

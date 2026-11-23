@@ -3618,8 +3618,10 @@ async function run(){
  await ready('!groupRun.active','assistant planned run completes',350);
  assert.equal(submittedBatches.length,targetedStart+3);
  evaluate(`const storyLast={duration:5,shot_size:"中景",camera:"缓推",scene:"窗边暖光",characters:["林森"],
-   action:["右手握木盒"],dialogue:[],sound:"风声",keyframe:"木盒在窗台"};
-  const storyNext={...storyLast,shot_size:"近景",keyframe:"林森右手握木盒",action:["左手打开盒盖"]};
+   action:["右手握木盒"],dialogue:[],sound:"风声",keyframe:"木盒在窗台",
+   asset_refs:[{id:"prior-room",name:"旧房",kind:"scene"}]};
+  const storyNext={...storyLast,shot_size:"近景",keyframe:"林森右手握木盒",action:["左手打开盒盖"],
+   asset_refs:[{id:"next-hero",name:"林森",kind:"character",view:"face"}]};
   const storyCast=[{name:"林森",look:"深蓝外套"}];
   const storyNode=addNode("script",4000,100,{style:"写实暖光",characters:storyCast,shots:[storyLast],made:[]});
   const legacyStoryImage=addNode("image",4450,100,{}, {name:"以前的首帧"});
@@ -3636,7 +3638,11 @@ async function run(){
   storyNode.data.style="冷光";adoptShot.click();`);
  assert.match(evaluate('$("[data-call=next-shot] [role=status]").textContent'),/重新准备/);
  assert.equal(evaluate('storyNode.data.shots.length'),1);
- evaluate('storyNode.data.style="写实暖光";adoptShot.click();');
+ assert.match(evaluate('$("[data-call=next-shot]").textContent'),/林森（正面头肩）/);
+ evaluate('storyNode.data.style="写实暖光";const priorShotAssets=storyLast.asset_refs;storyLast.asset_refs=[];adoptShot.click()');
+ assert.match(evaluate('$("[data-call=next-shot] [role=status]").textContent'),/重新准备/);
+ assert.equal(evaluate('storyNode.data.shots.length'),1,'changing prior assets invalidates the continuation preview');
+ evaluate('storyLast.asset_refs=priorShotAssets;adoptShot.click()');
  equal(evaluate('[storyNode.data.shots.length,storyNode.data.shots.at(-1).keyframe,storyNode.data.made.length,B.nodes.length===storyBefore,adoptShot.disabled]'),
   [2,"林森右手握木盒",1,true,true],'confirmed continuation appends one script shot without generating or expanding the canvas');
  evaluate(`const openNewShot=$("[data-call=next-shot] [data-open-approved-shot]");
@@ -3647,6 +3653,8 @@ async function run(){
   newestStoryVideo.name,plan(newestStoryVideo).inputs.map(({edge,version})=>[edge.role,version?.ref??null])]`),
   [true,true,"镜2",[["first",null],["subject","output:h3studio/cast-previous.png"]]],
   'the new shot can be expanded once and located without duplicating the prior pair or switching the pinned cast');
+ equal(evaluate('[newestStoryVideo.data.fields.scene.includes("@{next-hero#face|林森}"),newestStoryVideo.data.fields.scene.includes("prior-room")]'),
+  [true,false],'continuation only attaches the approved references for the new shot');
  evaluate('$("[data-call=next-shot] [data-run-approved-shot]").click()');
  equal(evaluate('$$("#groupRunConfirm li strong").map(el=>el.textContent)'),["镜2 · 分镜图","镜2"],
   'the single-shot plan only includes its two nodes in dependency order');
@@ -3870,20 +3878,23 @@ async function run(){
   const oldDialogue=newestStoryVideo.data.fields.dialogue;
   newestStoryVideo.data.fields.dialogue="人工调整的对白";
   const revisionPlan={board:boardId,node:storyNode.id,shot:2,shot_id:revisionShot.id,
-    before:{keyframe:revisionShot.keyframe,action:revisionShot.action,dialogue:revisionShot.dialogue??null},
-    changes:{keyframe:"木盒在左手",action:["抬起木盒"],dialogue:["方案对白"]}};
+    before:{keyframe:revisionShot.keyframe,action:revisionShot.action,dialogue:revisionShot.dialogue??null,asset_refs:revisionShot.asset_refs},
+    changes:{keyframe:"木盒在左手",action:["抬起木盒"],dialogue:["方案对白"],asset_refs:[]}};
   const continuitySuffix=picture.data.prompt.slice(scriptShotSettings(storyNode,revisionShot).image.prompt.length);
   acAppendEvent({kind:"tool_start",data:{name:"storyboard_revision_plan",call_id:"revise-shot"}});
   acAppendEvent({kind:"tool_end",data:{name:"storyboard_revision_plan",call_id:"revise-shot",result:{shot_revision:revisionPlan}}});
   const revisionCard=$("[data-call=revise-shot]"), revisionApply=$("[data-apply-shot-revision]",revisionCard);
   revisionShot.keyframe="先手动改了首帧";revisionApply.click();`);
  assert.match(evaluate(`$('[role=status]',revisionCard).textContent`),/重新准备/);
+ assert.match(evaluate('revisionCard.textContent'),/参考资产.*林森（正面头肩）.*清空/s);
  evaluate('revisionShot.keyframe=revisionPlan.before.keyframe;revisionApply.click()');
  equal(evaluate(`[revisionShot.keyframe,picture.data.prompt.includes("木盒在左手"),picture.data.prompt.endsWith(continuitySuffix),
    newestStoryVideo.data.fields.action,newestStoryVideo.data.fields.dialogue,curV(newestStoryVideo).node_data.fields.action===oldAction,
    JSON.stringify(B.edges)===revisionEdges,$("[data-run-shot-revision]",revisionCard).dataset.mode]`),
    ["木盒在左手",true,true,"抬起木盒","人工调整的对白",true,true,"all"],
    'confirmed shot revision updates the linked prompts while retaining manual changes, history and continuity links');
+ equal(evaluate('[revisionShot.asset_refs,picture.data.prompt.includes("next-hero"),newestStoryVideo.data.fields.scene.includes("next-hero")]'),
+  [[],false,false],'clearing references in the revision removes them from both linked generation nodes');
  evaluate('newestStoryVideo.data.fields.dialogue=oldDialogue;undo()');
  w.fetch=storyCaptureFetch;
  evaluate('AC.board=groupPlanBoard;undo();undo()');
@@ -4142,14 +4153,14 @@ async function run(){
  await ready('!!$("[data-add-shot-asset=shot-edit-hero]")','shot editor searches the accessible library');
  evaluate(`const shotAssetResult=$("[data-add-shot-asset=shot-edit-hero]").closest("li");
   $("select",shotAssetResult).value="face";$("button",shotAssetResult).click();shotEditSubmit.click();`);
- equal(evaluate(`[editedRangeShot.asset_refs[0].view,
+ equal(evaluate(`[editedRangeShot.asset_refs.find(asset=>asset.id==="shot-edit-hero").view,
   currentRangeFrame().data.prompt.includes("@{shot-edit-hero#face|镜头角色}"),
   editedRangeVideo.data.fields.scene.includes("@{shot-edit-hero#face|镜头角色}")]`),
   ['face',true,true],'saving a shot reference updates both linked nodes');
  evaluate(`editedRangeVideo.data.fields.scene="节点独立场景";
-  $("[data-remove-shot-asset]",shotEditForm).click();
+  $('[data-remove-shot-asset][aria-label^="移除 镜头角色"]',shotEditForm).click();
   $("select",shotAssetResult).value="main";$("button",shotAssetResult).click();shotEditSubmit.click();`);
- equal(evaluate(`[editedRangeShot.asset_refs[0].view,
+ equal(evaluate(`[editedRangeShot.asset_refs.find(asset=>asset.id==="shot-edit-hero").view,
   currentRangeFrame().data.prompt.includes("@{shot-edit-hero#main|镜头角色}"),
   currentRangeFrame().data.prompt.includes("@{shot-edit-hero#face|镜头角色}"),
   editedRangeVideo.data.fields.scene,JSON.stringify([currentRangeFrame().versions,editedRangeVideo.versions])===editorHistory]`),
@@ -4188,7 +4199,7 @@ async function run(){
  equal(evaluate(`[duplicatedRangeShot.id!==editedRangeShot.id,duplicatedRangeShot.action,duplicatedRangeShot.action!==editedRangeShot.action,
   !!duplicatedRangeShot.frame,scriptShotLinks(liveRangeScript)[4]]`),
   [true,['推近木盒','抬头看窗外'],true,false,null],'copy duplicates the specification and leaves generated media attached to the original');
- equal(evaluate('[duplicatedRangeShot.asset_refs[0].view,duplicatedRangeShot.asset_refs!==editedRangeShot.asset_refs]'),
+ equal(evaluate('[duplicatedRangeShot.asset_refs.find(asset=>asset.id==="shot-edit-hero").view,duplicatedRangeShot.asset_refs!==editedRangeShot.asset_refs]'),
   ['main',true],'copy preserves the shot reference without sharing its editable list');
  evaluate(`$('[data-edit-shot="3"]',$("#shotList")).click();
   $("[data-remove-shot]",shotEditForm).click();`);
