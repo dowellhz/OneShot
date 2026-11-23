@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, skipUnless
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import av
 import numpy as np
@@ -61,6 +61,31 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.BOARDS.mkdir()
         self.user = {"id": 7, "role": "member"}
         self.source = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "red"), "asset", "input")
+
+    async def test_remake_uses_the_next_long_enough_duration_and_splits_at_model_limit(self):
+        source = self.make_clip("model-limited",12,(100,90,80),300)
+        server.board_path("test").write_text(json.dumps({"owner":7,"nodes":[
+            {"id":"n3","type":"video","versions":[{"ref":source}]}]}))
+        key = (7,"test","n3",source)
+        first = {"w":64,"h":64,"ref":self.source["ref"],"at":0,"approved":"approved-frame","previews":[
+            {"job":"approved-frame","state":"done","ref":self.source["ref"],"asset":{"name":"测试人物"}}]}
+        shot = {"start":0,"end":12,"summary":{},"frames":{"first":first}}
+        video_remake.save(key,{"shots":[shot]})
+        provider = server.providers.save(None,"kling","有限时长服务",{}, {},True)
+        server.providers.set_route("video",[{"provider_id":provider,"model":"kling-2.6"}])
+        opened = json.loads((await server.remake(Request(source,self.user))).body)
+        self.assertEqual(opened["video_limits"],[10])
+        submit = AsyncMock(return_value=web.json_response({"ids":["remake-10"]}))
+        with patch.object(server,"generate_request",submit):
+            with self.assertRaises(web.HTTPBadRequest) as error:
+                await server.remake(Request(source,self.user,{"action":"generate_video","shot":0}))
+            self.assertIn("10 秒",error.exception.text)
+            submit.assert_not_awaited()
+            await video_remake.generate_shot(Request(source,self.user),server,key,{**shot,"end":6.5},{})
+            self.assertEqual(submit.await_args.args[1]["duration"],10)
+        with patch.object(server,"llm_call",side_effect=self.no_vision):
+            split = json.loads((await server.remake(Request(source,self.user,{"action":"split_long_shot","shot":0}))).body)
+        self.assertEqual([(item["start"],item["end"]) for item in split["shots"]],[(0,6),(6,12)])
 
     async def test_shot_depth_guide_keeps_exact_cut_and_can_reopen(self):
         source = self.make_clip("depth-cuts", seconds=3, color=lambda i: (43, 43, 43) if i < 25 else (160, 160, 160),

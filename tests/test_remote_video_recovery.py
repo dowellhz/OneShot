@@ -10,6 +10,39 @@ from test_agent_chat import ChatFixture
 
 
 class RemoteVideoRecovery(ChatFixture):
+    async def test_recovered_cloud_video_preserves_submission_settings(self):
+        provider = {"id":"ark","kind":"ark","name":"提交时的服务","config":{},"enabled":True}
+        model = "doubao-seedance-2-5-qa"
+        jid = "xabcdef000008"
+        prompt = "让红色火车驶出画面"
+        receipt = server.remote.video_receipt(provider,"external-42")
+        db.task_start(id=jid,capability="video",provider_id=provider["id"],provider_kind=provider["kind"],model=model,
+                      user_id=7,request={"prompt":prompt,"resolution":"4k"})
+        job = server.job_from_log(db.one("SELECT * FROM tasks WHERE id=?",jid))
+        job["started"] = time.time()
+        job["meta"].update(provider=provider["name"],model=model,resolution="4k",mode_name="局部修改")
+        server.record_remote_video(job,receipt)
+
+        renamed = {**provider,"name":"现在的服务名称"}
+        with patch.object(server.providers,"get",return_value=renamed), patch.object(server,"start_remote") as start:
+            restored = server.restore_logged_job(self.app,db.one("SELECT * FROM tasks WHERE id=?",jid))
+        expected = {"provider":provider["name"],"model":model,"resolution":"4k","mode_name":"局部修改","prompt":prompt}
+        self.assertEqual({k:restored["meta"][k] for k in expected},expected)
+        self.assertEqual(start.call_args.kwargs["receipt"],receipt)
+
+        restored.update(state="done",finished=time.time(),outputs=[])
+        server.log_end(restored)
+        del server.JOBS[jid]
+        completed = server.restore_logged_job(self.app,db.one("SELECT * FROM tasks WHERE id=?",jid))
+        self.assertEqual({k:completed["meta"][k] for k in expected},expected)
+
+        legacy = "xabcdef000009"
+        db.task_start(id=legacy,capability="video",provider_id=provider["id"],provider_kind=provider["kind"],model=model,
+                      user_id=7,state="done",request={"prompt":prompt,"resolution":"1080p","mode_name":"1080P 定稿"})
+        restored = server.restore_logged_job(self.app,db.one("SELECT * FROM tasks WHERE id=?",legacy))
+        self.assertEqual((restored["meta"]["model"],restored["meta"]["resolution"],restored["meta"]["mode_name"]),
+                         (model,"1080p","1080P 定稿"))
+
     async def test_interrupted_video_keeps_the_provider_job_and_recovers_its_output(self):
         fixtures = {
             "kling": ("kling-3.0", {"data":{"id":"external-42"}}, {"data":[{

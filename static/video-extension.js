@@ -17,10 +17,11 @@ function openVideoExtension(source) {
   if (!canvasCanEdit() || !version) return toast("请先选择可播放的视频");
   const board=boardId;
   const services=(CAPS_LIST.video_extension || CAPS_LIST.previs || []).filter(()=>version.source!=="previs" && !(version.seconds>0 && version.seconds<2));
+  const local=(CAPS_LIST.video || []).find(service=>service.kind==="local_h3");
   const dialog=$("#videoExtension"), form=$("form",dialog), mode=$("[name=method]",form);
   if (dialog.open) return;
   mode.replaceChildren(...services.map(service=>new Option("连续画面 · "+service.name,service.id)),
-    new Option("以接点画面为参考","frame"));
+    new Option(local?"本地 H3 · 以接点画面为参考":"以接点画面为参考","frame"));
   mode.selectedIndex=0;
   form.elements.direction.value="after";
   form.elements.prompt.value="";
@@ -31,7 +32,7 @@ function openVideoExtension(source) {
     const max=service?.models?.find(model=>model.id===service.model)?.durations?.at(-1) ||
       (service?.model?.includes("2-5")?30:service?15:14);
     form.elements.duration.max=max;
-    form.elements.duration.min=service?4:2;
+    form.elements.duration.min=service?4:local?5:2;
     form.elements.duration.value=Math.max(Number(form.elements.duration.min),Math.min(max,form.elements.duration.valueAsNumber||5));
     const before=form.elements.direction.value==="before";
     $("[data-ve-help]",form).textContent=service?
@@ -50,7 +51,7 @@ function openVideoExtension(source) {
     const prompt=form.elements.prompt.value.trim();
     closeVideoExtension(dialog);
     if (mode.value==="frame") {
-      continueFrom(source,{direction,duration,prompt});return;
+      continueFrom(source,{direction,duration,prompt,provider:local?.id});return;
     }
     const provider=mode.value;
     const at=freeSpot(direction==="before"?source.x-580:source.x+size(source).w+110,source.y,"video");

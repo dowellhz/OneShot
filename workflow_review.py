@@ -21,7 +21,7 @@ SETTINGS = {
     "model":"模型", "provider_model":"模型", "provider":"服务", "backend":"编辑后端", "quality":"质量",
     "ar":"宽高比", "duration":"生成时长", "seed":"随机种子", "strength":"生成强度", "steps":"步数",
     "denoise":"去噪强度", "feather":"羽化", "padding":"扩图边距", "count":"结果数量",
-    "voice":"音色", "speed":"配音语速", "lyrics":"歌词", "extension":"续拍方向", "resolution":"定稿分辨率",
+    "voice":"音色", "speed":"配音语速", "lyrics":"歌词", "extension":"续拍方向", "resolution":"输出分辨率",
     "duration_seconds":"音效时长", "prompt_influence":"提示词影响", "loop":"循环音效",
     "subtitles":"生成同步字幕",
     "audio_format":"音频输出格式", "sample_rate":"音频采样率",
@@ -129,6 +129,9 @@ def argument_rows(v, receipt, remake):
             values.append({"label":"像素尺寸", "value":f"{settings['width']} × {settings['height']} · {image_editor.RESIZE_FITS[settings['fit']]}"})
         except ValueError:
             pass
+    if edit.get("mode") == "upscale" and edit.get("scale") in (2,4):
+        details = [f"{edit['scale']:g}×", text(edit.get("model"))]
+        values.append({"label":"智能放大","value":" · ".join(filter(None,details))})
     if remake.get("motion_model"):
         parameters["provider_model"] = remake["motion_model"]
     if number(v.get("seed")) is not None:

@@ -26,17 +26,23 @@ function canvasBatchLayout() {
   return Object.hasOwn(BATCH_LAYOUTS,B?.batch_layout)?B.batch_layout:"tabs";
 }
 
+function canvasGenerationCount(n) {
+  const max = n.type === "audio" ? 1 : n.type === "video" ? 3 : 4;
+  return Math.max(1,Math.min(max,Math.trunc(Number(n.data.count)) || 1));
+}
+
 function canvasCostRequest(n) {
   const data = n.data;
   if (n.type === "audio") return {kind:"audio",mode:audioMode(data),provider:data.provider};
-  const request = {kind:n.type,count:Math.max(1,Math.min(4,Math.trunc(Number(data.count)) || 1)),
+  const request = {kind:n.type,count:canvasGenerationCount(n),
     provider:(CAPS_LIST[n.type] || []).find(service=>service.id===data.provider)?.id,
     selected_model:data.selected_model};
   if (data.selected_model) request.provider = data.provider;
   if (n.type === "video") Object.assign(request,{
     duration:canvasVideoDuration(n),quality:canvasVideoQuality(n),draft:data.draft && videoDraftAvailable(n),
     has_asset:!!data.replay_memory_ref || inheritedVideoAssets(n).length>0 ||
-      /@/.test([fullPrompt(n),...Object.values(data.fields || {})].join("\n")),
+      /@/.test([fullPrompt(n),...Object.values(data.fields || {})].join("\n")
+        .replace(/@(?:图|视频|音频|音)(?:\{\d{1,16}\}|\d+)/g,"")),
     previs_guide:!!previsInput(n),audio_refs:!!audioInputs(n).length,video_refs:!!videoInputs(n).length
   });
   return request;
@@ -139,6 +145,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   if (n.type === "script") return planStoryboard(n);
   if (n.job) return toast("这个节点仍有生成任务，请等待完成或取消");
   if (prepping.has(n.id)) return toast("这个节点正在准备提交，请稍等");
+  if (draftFinalEdge(n)) return openVideoDraftFinal(n);
   const grid = imageGrid && n.type==="image";
   const d = n.data, prompt = grid ? GRID9_PROMPT : fullPrompt(n); delete n.agent_error; showErr(n, "");
   const hasEditPlan=n.type==="video" && (d.camera_plan || d.object_edit) && videoInputs(n)[0]?.edge.segment_edit;
@@ -173,7 +180,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     }
     let ar = AR[d.aspect];
     if (d.aspect === "auto") { const v=ins[0]?.version || (guide?.enabled && guide.version); ar=v?.w&&v.h?v.w/v.h:1; }
-    req = { kind: "image", model, expand: d.expand, prompt:resolved, images, ar, quality: model === "h3video" ? (d.quality === "16mp" ? "hd" : "std") : d.quality, turbo: d.turbo, seed: d.seed, count: d.count };
+    req = { kind: "image", model, expand: d.expand, prompt:resolved, images, ar, quality: model === "h3video" ? (d.quality === "16mp" ? "hd" : "std") : d.quality, turbo: d.turbo, seed: d.seed, count: canvasGenerationCount(n) };
   }
   else {
     req = videoReq(n, prompt); if (!req) return;
@@ -281,7 +288,7 @@ function videoReq(n, prompt) {
     const bindings=canvasPromptBindings(tokenOrder,sounds,clips,guide,extension||clips[0]?.edge.segment_edit);
     const resolved=resolveCanvasPrompt(n,prompt,bindings);
     if(resolved===null)return null;
-    const common = { kind: "video", prompt:resolved, ar, duration:canvasVideoDuration(n), quality:canvasVideoQuality(n), turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: d.count || 1 };
+    const common = { kind: "video", prompt:resolved, ar, duration:canvasVideoDuration(n), quality:canvasVideoQuality(n), turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: canvasGenerationCount(n) };
     if(d.video_optics&&Object.keys(d.video_optics).length)common.video_optics=structuredClone(d.video_optics);
     if (d.draft && videoDraftAvailable(n)) Object.assign(common,{draft:true,quality:"std"});
     if(usesFields(n)){
@@ -416,7 +423,8 @@ async function poll() {
           const m = o.meta || {};
           const receipt = n.job.generation_record;
           const generation = receipt && {generation_record:{...receipt, service:s.meta?.provider || receipt.service,
-            effective_prompt:s.meta?.prompt || receipt.effective_prompt,
+            mode:s.meta?.mode || receipt.mode,
+            effective_prompt:s.meta?.full_prompt || s.meta?.prompt || receipt.effective_prompt,
             settings:{...receipt.settings,...(s.meta?.model ? {provider_model:s.meta.model} : {}),
               ...(s.meta?.resolution ? {resolution:s.meta.resolution} : {})}}};
           versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: actualSource, memory_used: n.job.memory_used||[], mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}), ...generation, ...(job.group_run_id?{group_run_id:job.group_run_id}:{}) });
@@ -583,16 +591,18 @@ async function captureOnCanvas(sourceId, version, {position, at, before=false, a
 }
 async function continueFrom(n, extension) {
   const v = curV(n); if (!v) return toast("还没有视频");
+  const before=extension.direction==="before";
   try {
-    const before=extension.direction==="before";
-    const img=await captureOnCanvas(n.id,v,{position:before?"first":"last",before});
-    if (!img) return;
-    const at2 = freeSpot(before?img.x-460:img.x+size(img).w+110,img.y,"video");
-    const vid = addNode("video",at2.x,at2.y,{duration:extension?.duration || n.data.duration,quality:n.data.quality,turbo:n.data.turbo,aspect:n.data.aspect,
-      ...(extension?{prompt:extension.prompt}: {})},extension?{name:n.name+" · "+extensionLabel(extension.direction)}:{});
-    link(img,vid,true);
-    if (before) {B.edges.find(edge=>edge.from===img.id&&edge.to===vid.id).role="last";refresh(vid);save();}
-    selectOnly(vid.id); setTimeout(() => $("#prompt").focus(), 30);
+    const anchor=await captureOnCanvas(n.id,v,{position:before?"first":"last",before,onCaptured:image=>{
+      const at=freeSpot(before?image.x-460:image.x+size(image).w+110,image.y,"video");
+      const result=addNode("video",at.x,at.y,{duration:extension.duration,quality:n.data.quality,turbo:n.data.turbo,
+        aspect:"auto",prompt:extension.prompt,provider:extension.provider||""},
+        {name:n.name+" · "+extensionLabel(extension.direction)});
+      link(image,result,true,{ref:curV(image).ref,role:before?"last":"first"});
+      return result;
+    }});
+    if (!anchor) return;
+    $("#prompt").focus();
     toast(before?"已用原视频首帧作为新片段尾帧":"已截取最后一帧，写下一段的提示词继续生成");
   } catch (e) { toast("截帧失败：" + e.message); }
 }

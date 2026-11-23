@@ -2470,6 +2470,8 @@ def generation_history_metadata(job):
     settings = {key: meta[key] for key in ("seed", "width", "height") if type(meta.get(key)) is int}
     if meta.get("prompt"):
         settings["prompt"] = clean(meta["prompt"])[:2000]
+    if job["kind"] == "video":
+        settings.update(video_job_details(meta))
     image_edits = {output["ref"]:output["extra"]["edit"] for output in job.get("outputs") or []
                    if job["kind"]=="image" and output.get("ref") and isinstance(output.get("extra",{}).get("edit"),dict)}
     if not settings and not image_edits:
@@ -2814,27 +2816,22 @@ async def preview(req):
     raw = await req.json()
     replay_ref = checked_asset_replay(raw)
     payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"],raw,replay_ref=replay_ref))
-    inputs = workflow_review.capture_generation(payload)["inputs"]
     if payload.get("previs_guide") is not None or payload.get("audio_refs") or payload.get("video_refs"):
         retake = resolve_camera_plan(payload)
         object_plan = resolve_object_edit(payload)
         mode = ("镜头重拍" if retake else
                 object_edit.ACTIONS[object_plan["action"]] if object_plan else "全模态参考")
-        details = {}
-        if has_asset_media(payload):
-            review = await describe_asset_references(req["user"],payload,object_plan)
-            mode += f" · {review['provider']} · {review['model']} · {review['duration']:g} 秒 · {review['quality']}"
-            mode += "".join(f" · {label} {count}/{limit}" for label,count,limit in review["counts"] if count)
-            inputs = review["inputs"]
-            details["reference_preview"] = review["key"]
-        elif payload.get("selected_model") is not None or payload.get("quality") in ("480p","4k"):
-            route = requested_reference_route(payload)
-            resolution = checked_video_resolution(payload,route["provider"]["kind"],route["model"])
-            mode += f" · {route['model']} · {resolution}"
+        review = await describe_video_references(req["user"],payload,object_plan)
+        resolution = review["quality"]
+        mode += f" · {review['provider']} · {review['model']} · {review['duration']:g} 秒 · {resolution}"
+        mode += "".join(f" · {label} {count}/{limit}" for label,count,limit in review["counts"] if count)
+        inputs = review["inputs"]
         for item in inputs:
             if item.get("role") in ("subject", "frame"):
                 item["role"] = "image_ref"
+        details = {"reference_preview":review["key"]} if has_asset_media(payload) else {}
         return web.json_response({"prompt": reference_prompt(payload), "mode": mode, "inputs": inputs, **details})
+    inputs = workflow_review.capture_generation(payload)["inputs"]
     route = requested_generation_route(payload, "video")
     if route and route["provider"]["kind"] != "local_h3":
         resolution = checked_video_resolution(payload,route["provider"]["kind"],route["model"])
@@ -2845,7 +2842,7 @@ async def preview(req):
         for item, role in zip(inputs, roles):
             item["role"] = role
         return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs})
-    checked_video_resolution(payload,"local_h3","h3-video")
+    resolution = checked_video_resolution(payload,"local_h3","h3-video")
     p = apply_fields(payload)
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
@@ -2853,7 +2850,9 @@ async def preview(req):
     _, meta = graph_video(p)
     if meta.get("mode") == "fl2v" and len(inputs) > 1:
         inputs[-1]["role"] = "last_frame"
-    mode = meta.get("mode_name", "") + (" · 未翻译成英文：" + p["_xlate_err"] if p.get("_xlate_err") else "")
+    mode = " · ".join(filter(None,(meta.get("mode_name"), "本地 H3", resolution)))
+    if p.get("_xlate_err"):
+        mode += " · 未翻译成英文：" + p["_xlate_err"]
     return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode, "inputs": inputs})
 
 
@@ -3261,13 +3260,19 @@ def generation_unit_cost(raw):
     fields = raw.get("fields")
     prompt_parts = [raw.get("prompt"),*(fields.values() if isinstance(fields,dict) else [])]
     if kind == "video" and (raw.get("has_asset") or raw.get("memory_ids") or raw.get("memory_views") or
-            any(isinstance(value,str) and "@" in value for value in prompt_parts)):
+            any(isinstance(value,str) and "@" in re.sub(r"@(?:图|视频|音频|音)(?:\{\d{1,16}\}|\d+)", "", value)
+                for value in prompt_parts)):
         return None
-    if kind not in ("image", "video") or any(raw.get(key) for key in (
-            "draft", "extension", "segment_edit", "audio_refs", "video_refs", "previs_guide")):
+    if kind not in ("image", "video") or any(raw.get(key) for key in ("draft","extension","segment_edit")):
+        return None
+    reference_video = any(raw.get(key) for key in ("audio_refs","video_refs","previs_guide"))
+    if reference_video and kind != "video":
         return None
     try:
-        route = requested_generation_route(raw, kind)
+        if reference_video:
+            route = requested_reference_routes({**raw,"previs_guide":raw.get("previs_guide") or None})[0]
+        else:
+            route = requested_generation_route(raw,kind)
     except web.HTTPBadRequest:
         return None
     if not route or route["provider"]["kind"] == "local_h3":
@@ -3284,13 +3289,19 @@ def generation_unit_cost(raw):
     duration = raw.get("duration", 5)
     if type(duration) not in (float, int) or not 0 < duration <= 30:
         return None
+    if reference_video:
+        try:
+            duration = reference_video_duration(raw,provider,model,{"source":"previs"} if raw.get("previs_guide") else None)
+        except web.HTTPBadRequest:
+            return None
     quality = raw.get("quality") or "hd"
     options = remote.video_resolutions(adapter,model)
     if quality in ("480p","4k") and quality not in options:
         return None
     quality = quality if isinstance(quality,str) and quality in options else "std"
     rate = rates.get(f"video {model} {quality}")
-    return round(rate * remote.video_duration(adapter, model, duration), 4) if rate is not None else None
+    seconds = duration if reference_video else remote.video_duration(adapter,model,duration)
+    return round(rate * seconds,4) if rate is not None else None
 
 
 @routes.post("/api/generation-cost")
@@ -5075,7 +5086,8 @@ async def prepare_engine(app, p: dict, pids: list, prev):
                 j["state"] = "error"; j["error"] = f"本地引擎拒绝了任务：{jr.get('error')}"; log_end(j)
                 continue
             j.update(meta=m, eid=jr["id"], out_ref=f"output:h3studio/{name}")
-            db.task_update(pid, request=json.dumps({"engine": {"id": j["eid"], "out_ref": j["out_ref"]}}))
+            db.task_update(pid, request=json.dumps({"engine": {"id": j["eid"], "out_ref": j["out_ref"]},
+                                                    "history":{**video_job_details(m),"seed":m["seed"]}}))
             j.pop("prep", None)
         asyncio.create_task(follow_engine(app))
     except Exception as e:
@@ -5092,6 +5104,7 @@ def engine_body(p: dict):
     short = 768 if p.get("quality", "hd") == "hd" else 480
     long_ = min(int(round(short * max(ar, 1 / ar) / 32)) * 32, (1032192 // short) // 32 * 32)
     meta["width"], meta["height"] = (long_, short) if ar >= 1 else (short, long_)
+    meta.update(provider="本地 H3",model="h3-video",resolution=f"{short}P")
     imgs = p.get("images") or []
     paths = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs]
     body = {"kind": "video", "prompt": meta["full_prompt"], "frames": engine_video_frames(float(p.get("duration") or 5)), "height": meta["height"],
@@ -5117,6 +5130,13 @@ def engine_body(p: dict):
     return body, meta
 
 
+def video_job_details(meta):
+    details = {key:meta[key] for key in ("mode","mode_name","provider","model","resolution") if isinstance(meta.get(key),str)}
+    if isinstance(meta.get("full_prompt"),str):
+        details["full_prompt"] = meta["full_prompt"][:5000]
+    return details
+
+
 _following = False
 
 
@@ -5133,16 +5153,24 @@ def restore_logged_job(app, row):
     if jid in JOBS:
         return JOBS[jid]
     job = job_from_log(row)
+    request = task_settings(row.get("request"))
+    if job["kind"] == "video":
+        job["meta"].update(video_job_details(request))
+        if isinstance(request.get("prompt"),str):
+            job["meta"]["prompt"] = request["prompt"]
+        if row.get("provider_kind") in ("ark","kling","minimax") and row.get("model"):
+            job["meta"]["model"] = row["model"]
+    history = request.get("history")
+    if isinstance(history,dict):
+        job["meta"].update({key:history[key] for key in ("seed","mode_name") if key in history})
+        if job["kind"] == "video":
+            job["meta"].update(video_job_details(history))
     if row["state"] in ("done", "error"):
         try:
             refs = json.loads(row.get("outputs") or "[]")
         except (ValueError, TypeError):
             refs = []
         outputs = []
-        request = task_settings(row.get("request"))
-        history = request.get("history")
-        if isinstance(history,dict):
-            job["meta"].update({key:history[key] for key in ("seed","mode_name") if key in history})
         image_edits = request.get("image_edits")
         for index, ref in enumerate(refs if isinstance(refs,list) else []):
             if not isinstance(ref, str):
@@ -5175,7 +5203,6 @@ def restore_logged_job(app, row):
         job.update(error=row.get("error"), outputs=outputs, _logged=True)
         JOBS[jid] = job
         return job
-    request = task_settings(row.get("request"))
     receipt = request.get("engine") or {}
     if not isinstance(receipt, dict):
         receipt = {}
@@ -5197,8 +5224,7 @@ def restore_logged_job(app, row):
             log_end(job)
         else:
             job["started"] = row.get("started") or job["created"]
-            job["meta"].update(provider=provider["name"], model=row.get("model"),
-                               prompt=request.get("prompt"), mode_name=request.get("mode_name") or job["meta"]["mode_name"])
+            job["meta"].setdefault("provider",provider["name"])
             start_remote(app, job, provider, row["model"], "video", {}, receipt=receipt)
         return job
     remote_final = len(jid) == 25 and jid.startswith("r") and row.get("provider_kind") == "ark" and row.get("capability") == "video"
@@ -5344,10 +5370,6 @@ def requested_reference_routes(raw):
     raise bad("请选择支持全模态参考的视频服务" + ("，并配置参考视频公网地址" if has_motion else ""))
 
 
-def requested_reference_route(raw):
-    return requested_reference_routes(raw)[0]
-
-
 def reference_video_duration(raw, provider, model, motion):
     from_previs = motion and motion.get("source") == "previs"
     limit = 14 if from_previs and not raw.get("extension") else remote.video_durations(provider["kind"],model)[-1]
@@ -5404,7 +5426,7 @@ def reference_preview_fingerprint(raw, route):
     return hashlib.sha256(json.dumps(details,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
 
-async def describe_asset_references(user,payload,object_plan):
+async def describe_video_references(user,payload,object_plan):
     route, motion, _, _ = await prepare_reference_generation(user,payload,object_plan)
     model, provider = route["model"],route["provider"]
     seconds = reference_video_duration(payload,provider,model,motion)
@@ -5418,7 +5440,7 @@ async def describe_asset_references(user,payload,object_plan):
               ("音频",len(payload.get("audio_refs") or []),limit))
     inputs = workflow_review.capture_generation(payload)["inputs"]
     return {"provider":provider["name"],"model":model,"duration":seconds,"quality":quality,
-            "counts":counts,"inputs":inputs,"assets":[item["name"] for item in payload["memory_used"]],
+            "counts":counts,"inputs":inputs,"assets":[item["name"] for item in payload.get("memory_used",[])],
             "key":reference_preview_fingerprint(payload,route)}
 
 
@@ -5433,7 +5455,7 @@ async def asset_reference_review(req,raw):
         owner_only=bool(req.get("connector_own_assets")))
     payload = apply_video_optics(prepared)
     if has_asset_media(payload):
-        return await describe_asset_references(req["user"],payload,resolve_object_edit(payload))
+        return await describe_video_references(req["user"],payload,resolve_object_edit(payload))
     return None
 
 
@@ -5851,9 +5873,9 @@ async def finalize_video_draft(req):
     label = (node["name"] + " · " + resolution.upper() + " 定稿")[:60]
     cls = f"remote|ark|video|{model}|final|{resolution}"
     meta = {"label":label,"cls":cls,"units":1,"est":estimate(cls,1,150),"board":bid,"uid":user["id"],
-            "mode_name":resolution.upper()+" 定稿","provider":provider["name"],"model":model}
+            "mode_name":resolution.upper()+" 定稿","provider":provider["name"],"model":model,"resolution":resolution}
     db.task_start(id=jid,user_id=user["id"],board_id=bid,label=label,capability="video",provider_id=provider["id"],
-                  provider_kind="ark",model=model,request=fingerprint)
+                  provider_kind="ark",model=model,request={**fingerprint,"history":video_job_details(meta)})
     job = JOBS[jid] = {"id":jid,"kind":"video","state":"queued","created":time.time(),"meta":meta}
     start_remote(req.app,job,provider,model,"video",
                  {"draft_task":source["provider_task"],"resolution":resolution})
@@ -5875,7 +5897,7 @@ def start_remote(app, *args, **kwargs):
 def record_remote_video(job, receipt):
     row = db.one("SELECT request FROM tasks WHERE id=?", job["id"])
     request = task_settings(row["request"])
-    request.update(remote_video=receipt, mode_name=job["meta"].get("mode_name"))
+    request.update(remote_video=receipt, history=video_job_details(job["meta"]))
     fields = {"request":json.dumps(request, ensure_ascii=False)}
     if not job.get("cancel"):
         fields.update(state="running", started=job["started"])

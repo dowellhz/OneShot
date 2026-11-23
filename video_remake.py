@@ -477,9 +477,10 @@ async def edit_cuts(req, host, source, session, data):
     elif action == "split_long_shot":
         start, end = old[index:index + 2]
         length = end - start
-        pieces = math.ceil(length / (MAX_SHOT_SECONDS * fps))
+        limit = shot_video_limit(host,old_shots[index],session.get("mapping"),default_remake_durations(host))
+        pieces = math.ceil(length / (limit * fps))
         if pieces < 2:
-            fail(f"此镜头已经在 {MAX_SHOT_SECONDS} 秒以内")
+            fail(f"此镜头已经在 {limit} 秒以内")
         if len(old_shots) + pieces - 1 > MAX_SHOTS:
             fail(f"拆分后会超过 {MAX_SHOTS} 个镜头，请先合并不需要的切点")
         # Balance the segments so a shot just over the limit doesn't leave a tiny final piece.
@@ -1043,6 +1044,28 @@ def motion_providers(host):
     return [{"id":r["provider"]["id"], "name":r["provider"]["name"], "model":r["model"]} for r in motion_routes(host)]
 
 
+def remake_durations(host, route):
+    if not route or route["provider"]["kind"] == "local_h3":
+        return ()
+    return host.remote.video_durations(route["provider"]["kind"],route["model"])
+
+
+def default_remake_durations(host):
+    return remake_durations(host,host.providers.primary("video"))
+
+
+def shot_video_limit(host, shot, mapping, default_durations):
+    if not default_durations or default_durations[-1] >= MAX_SHOT_SECONDS:
+        return MAX_SHOT_SECONDS
+    try:
+        _, approved, entry = shot_start(shot,mapping,host.film.FPS)
+        if shot_guides(shot,approved,host.film.FPS,mapping,entry):
+            return MAX_SHOT_SECONDS
+    except web.HTTPBadRequest:
+        pass
+    return default_durations[-1]
+
+
 def depth_motion(user, host, key, shot, start_ref, first, ticks, entry_tick, guides):
     board = host.board_meta(host.board_path(key[1]))
     if not board or not host.can_edit(user, board):
@@ -1075,8 +1098,12 @@ async def generate_shot(req, host, key, shot, data, mapping=None, *, motion_rout
     fps = host.film.FPS
     ticks = round(shot["end"] * fps) - round(shot["start"] * fps)
     length = round(ticks / fps, 3)
-    if not 0 < ticks <= MAX_SHOT_SECONDS * fps:
-        fail(f"请先把镜头拆分到 {MAX_SHOT_SECONDS} 秒以内，或保留原镜头")
+    guides = shot_guides(shot, approved, fps, mapping, entry_tick)
+    durations = remake_durations(host,motion_route) if motion_route else () if guides else default_remake_durations(host)
+    limit = min(MAX_SHOT_SECONDS,durations[-1]) if durations else MAX_SHOT_SECONDS
+    if not 0 < ticks <= limit * fps:
+        fail(f"请先把镜头拆分到 {limit} 秒以内，或保留原镜头")
+    duration = next(seconds for seconds in durations if seconds * fps >= ticks) if durations else max(2,length)
     instructions = data.get("motion", "")
     if not isinstance(instructions, str):
         fail("动作要求格式不正确")
@@ -1096,11 +1123,10 @@ async def generate_shot(req, host, key, shot, data, mapping=None, *, motion_rout
     prompt = (beginning + timing)[:3000]
     raw = {
         "kind": "video", "board": key[1], "label": "镜头重制 · " + approved["asset"]["name"],
-        "prompt": prompt, "duration": max(2, length), "ar": first["w"] / first["h"], "quality": "std",
+        "prompt": prompt, "duration": duration, "ar": first["w"] / first["h"], "quality": "std",
         "count": 1, "mode": "fl2v", "_preserve_speech_motion": True,
         "images": [{"ref": start_ref, "role": "frame", "time": 0}],
     }
-    guides = shot_guides(shot, approved, host.film.FPS, mapping, entry_tick)
     depth_ref = None
     if motion_route:
         if data.get("first_job") != approved["job"]:
@@ -1109,7 +1135,7 @@ async def generate_shot(req, host, key, shot, data, mapping=None, *, motion_rout
         prompt = ("以 @图片1 确定开场构图、角色外观、场景光线及成片色彩。"
                   "使用 @视频1 的深度变化参考人物走位、姿态变化、遮挡关系和相机运动。"
                   "成片保持图片的正常色彩、纹理和照明，视频的灰度仅用于空间与时间参考。" + timing)[:3000]
-        raw.update(prompt=prompt, duration=max(4, math.ceil(ticks / fps)), provider=motion_route["provider"]["id"],
+        raw.update(prompt=prompt, provider=motion_route["provider"]["id"],
                    images=[{"ref":start_ref, "role":"subject"}])
         response = await host.generate_remote(req, raw, motion_route, "video", motion=motion)
     elif guides:
@@ -1488,6 +1514,8 @@ def public_session(host, session, **extra):
                               for key, receipt in session.get("remake_plans", {}).items()}
     if "export" in result:
         result["export"] = available_export(host, result["export"])
+    durations = default_remake_durations(host)
+    result["video_limits"] = [shot_video_limit(host,shot,session.get("mapping"),durations) for shot in session["shots"]]
     return {**result, "can_undo_cut": bool(session.get("cut_undo")), "export_review": export_review(session),
             "motion_providers": motion_providers(host),
             "depth_available": video_depth.configuration() is not None, **extra}

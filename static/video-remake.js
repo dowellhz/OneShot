@@ -433,6 +433,10 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     }));
   }
 
+  function videoLimit(index) {
+    return session.video_limits?.[index] || RM_MAX_SHOT_SECONDS;
+  }
+
   function batchVideos() {
     if (!session?.mapping) return [];
     const queue = [];
@@ -443,7 +447,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
       const versions = shot.videos || [];
       const duration = (Math.round(shot.end * RM_FPS) - Math.round(shot.start * RM_FPS)) / RM_FPS;
       if (!first || !matchesPerson(first) || !previewMatchesRegions(start.frame, first) ||
-          shot.keep_original || versions.some(active) || duration <= 0 || duration > RM_MAX_SHOT_SECONDS) continue;
+          shot.keep_original || versions.some(active) || duration <= 0 || duration > videoLimit(index)) continue;
       const guides = shotGuides(shot, first, start.entryTick);
       if (!guides) continue;
       const motion = shotMotion(shot).slice(0, 1600);
@@ -735,7 +739,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     el('[data-cut="move_cut"]').disabled = locked || joiningDepth || !shotIndex || at <= previous || at >= end || at === start;
     el('[data-cut="merge_shots"]').disabled = locked || joiningDepth || !shotIndex;
     const longSplit = el('[data-cut="split_long_shot"]');
-    const pieces = Math.ceil((end - start) / (RM_MAX_SHOT_SECONDS * RM_FPS));
+    const pieces = Math.ceil((end - start) / (videoLimit(shotIndex) * RM_FPS));
     longSplit.hidden = pieces <= 1 || !inScope(shotIndex);
     longSplit.disabled = busy || !!session.export && active(session.export) || shot.videos?.some(active) ||
       Object.values(shot.frames).some(frame => frame.previews.some(active));
@@ -759,10 +763,11 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     const staleStart = firstApproved && !previewMatchesRegions(start.frame, approved);
     const guides = firstApproved ? shotGuides(shot, approved, start.entryTick) : [];
     renderDepth(shot, {firstApproved, staleStart, startsAbsent, guides});
-    const tooLong = Math.round(shot.end * RM_FPS) - Math.round(shot.start * RM_FPS) > RM_MAX_SHOT_SECONDS * RM_FPS;
+    const limit = videoLimit(shotIndex);
+    const tooLong = Math.round(shot.end * RM_FPS) - Math.round(shot.start * RM_FPS) > limit * RM_FPS;
     let hint = "先在「镜头首帧」中采用替换预览。";
     if (!inScope(shotIndex)) hint = "该镜头不在替换范围，合成时使用原片。";
-    else if (tooLong) hint = `单个镜头最多生成 ${RM_MAX_SHOT_SECONDS} 秒。拆分后可逐段预览并批量生成。`;
+    else if (tooLong) hint = `当前方式单镜最多 ${limit} 秒。拆分后可逐段预览并批量生成。`;
     else if (staleStart) hint = `${startsAbsent ? "入画帧" : "首帧"}选区已更新，请重新生成并采用预览。`;
     else if (!guides) hint = "动作关键帧的选区已更新，请重新生成预览或取消该关键帧。";
     else if (startsAbsent) hint = firstApproved

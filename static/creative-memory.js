@@ -20,7 +20,12 @@ function cmNewScope(){
   const team=B?.team||'';
   return {board:project||team?'':boardId,project,team};
 }
-function cmToken(a){const names=CM.items.filter(b=>[b.name,...(b.aliases||[])].some(n=>n.toLocaleLowerCase()===a.name.toLocaleLowerCase()));return names.length>1?'@{'+a.id+'}':'@'+a.name;}
+function cmToken(asset) {
+ const name = asset.name.toLocaleLowerCase();
+ const ambiguous = CM.items.some(other=>other.id!==asset.id && [other.name,...(other.aliases||[])]
+  .some(label=>label.toLocaleLowerCase()===name));
+ return ambiguous ? cmLabelledToken(asset) : "@"+asset.name;
+}
 async function cmFolders() {
  const bid=boardId;
  if(cmFolderCache?.bid===bid && cmFolderCache.until>Date.now())return cmFolderCache.items;
@@ -176,7 +181,11 @@ async function cmSuggest(ta,force=false){
  const [items, folders]=await Promise.all([cmList(force).catch(error=>{memoryError=error;return [];}),cmFolders().catch(()=>[])]);
  if(boardId!==bid||CM.target!==ta||document.activeElement!==ta||ta.selectionStart!==pos||ta.value.slice(0,pos)!==part)return;
  const nodes=cmCanvasMatches(ta,versionSearch?.[1]??query,versionSearch?.[2],bid);
- const memory=items.filter(a=>[a.name,...(a.aliases||[]),...(a.tags||[])].some(v=>v.toLocaleLowerCase().includes(query)));
+ const memory=items.map(asset=>{
+  const names=[asset.name,...(asset.aliases||[])].map(label=>label.toLocaleLowerCase());
+  const matches=[...names,...(asset.tags||[]).map(tag=>tag.toLocaleLowerCase())].some(label=>label.includes(query));
+  return {asset,matches,score:2*Number(names.includes(query))+Number(!!alInCurrent(asset))};
+ }).filter(entry=>entry.matches).sort((a,b)=>b.score-a.score).map(entry=>entry.asset);
  const targetType=canvasPromptNode(ta)?.type;
  const views = viewSearch && (ta.id==="acInput" || targetType==="image" || targetType==="video")
   ? items.filter(asset=>asset.kind==="character" && [asset.name,...(asset.aliases||[])]

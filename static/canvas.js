@@ -1123,26 +1123,31 @@ ppResize.onpointerdown=event=>{
   if(event.button!==0||ppResizeDrag)return;
   event.preventDefault();event.stopPropagation();
   ppResizeDrag={id:event.pointerId,x:event.clientX,y:event.clientY,rect:$("#pp").getBoundingClientRect(),previous:ppSize,moved:false};
-  if(Number.isInteger(event.pointerId))ppResize.setPointerCapture?.(event.pointerId);
   $("#pp").classList.add("resizing");
+  addEventListener("pointermove",movePPResize);
+  addEventListener("pointerup",endPPResize);
+  addEventListener("pointercancel",endPPResize);
 };
-ppResize.onpointermove=event=>{
+function movePPResize(event) {
   const drag=ppResizeDrag;
   if(!drag||event.pointerId!==drag.id)return;
   const dx=event.clientX-drag.x,dy=event.clientY-drag.y;
   if(!drag.moved&&Math.hypot(dx,dy)<3)return;
   drag.moved=true;
   setPPSize({width:Math.min(innerWidth-16,drag.rect.width+dx),height:Math.min(innerHeight-16,drag.rect.height+dy)});
-};
-ppResize.onpointerup=ppResize.onpointercancel=ppResize.onlostpointercapture=event=>{
+}
+function endPPResize(event) {
   const drag=ppResizeDrag;
   if(!drag||event.pointerId!==drag.id)return;
-  if(event.type==="pointerup")ppResize.onpointermove(event);
+  removeEventListener("pointermove",movePPResize);
+  removeEventListener("pointerup",endPPResize);
+  removeEventListener("pointercancel",endPPResize);
+  if(event.type==="pointerup")movePPResize(event);
   ppResizeDrag=null;
   $("#pp").classList.remove("resizing");
   if(event.type==="pointercancel")setPPSize(drag.previous);
   else if(drag.moved)setPPSize(ppSize,true);
-};
+}
 ppResize.ondblclick=event=>{event.preventDefault();setPPSize(null,true);};
 ppResize.onkeydown=event=>{
   const direction={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[event.key];
@@ -1196,6 +1201,7 @@ function showPanel() {
   if (n.type === "audio" && v?.ref && canvasCanEdit()) b.push(tool("transcript","text","音频转写"));
   if (["video","audio"].includes(n.type) && v?.ref && canvasCanEdit()) b.push(tool("separate-audio","audio","人声分离"));
   if (n.data.playlist) b.push(tool("playlist-open","stack","打开播放列表"));
+  if (!n.job && canvasCanEdit() && draftFinalEdge(n)) b.push(tool("draft-final","hd","重试定稿"));
   if (n.versions.length > 1) b.push(tool("prev", "left", "上一个版本") + `<span class="pg">${n.cur + 1}/${n.versions.length}</span>` + tool("next", "right", "下一个版本") + `<span class="sep"></span>`);
   if (v) {
     if (n.type === "image") b.push(tool("edit", "edit", "编辑图片", "编辑图片 · 局部重绘、扩图、裁剪与调色") + tool("tovideo", "video", "生成视频") + tool("hd", "hd", "高清重绘") + tool("describe", "text", "反推提示词"));
@@ -1447,7 +1453,7 @@ function showPanel() {
   }
   h += `<span class="grow"></span>${reference ? "" : `<span class="est">${estimate(n)}</span>`}`;
   if (!n.job && n.type !== "script" && !d.film) h += '<span class="est" data-generation-cost title="仅估算生成服务费用，实际费用以服务账单为准">正在估算费用…</span>';
-  const sendLabel = n.job ? "取消" : curV(n) && n.type!=="script" ? "重新生成" : "生成";
+  const sendLabel = n.job ? "取消" : draftFinalEdge(n) ? "重试定稿" : curV(n) && n.type!=="script" ? "重新生成" : "生成";
   h += `<button id="send" class="${n.job ? "stop" : ""}" aria-label="${sendLabel}" title="${sendLabel}${n.job?"":" (⌘↩)"}">${ico(n.job ? "stop" : "send")}</button>`;
   ctl.innerHTML = h;
   renderCanvasCost(n,$("[data-generation-cost]",ctl));
@@ -1614,6 +1620,10 @@ async function previewPrompt(n) {
   const board = B, sequence = ++previewSequence;
   const current = () => sequence === previewSequence && B === board && node(n.id) === n && sel.has(n.id);
   try {
+    if (req.previs_guide || req.audio_refs || req.video_refs) {
+      await flushSave();
+      if (!current()) return;
+    }
     const r = await api("/api/preview", req);
     if (!current()) return;
     if (r.reference_preview) videoReferencePreviews.set(n,{key:r.reference_preview,signature:videoPreviewSignature(req)});
@@ -2253,6 +2263,7 @@ function ctxMenu(e) {
   if (!many && n.type === "audio" && v?.ref) add("transcript","text","音频转写");
   if (!many && ["video","audio"].includes(n.type) && v?.ref && canvasCanEdit()) add("separate-audio","audio","人声分离");
   if (!many && n.data.playlist) add("playlist-open","stack","打开播放列表");
+  if (!many && !n.job && canvasCanEdit() && draftFinalEdge(n)) add("draft-final","hd","重试定稿");
   if (!many && canvasCanEdit() && B.edges.some(edge=>edge.from===n.id && vtGenerationReference(edge,n,node(edge.to)))) {
     add("replace-reference","next","替换下游参考…");
   }

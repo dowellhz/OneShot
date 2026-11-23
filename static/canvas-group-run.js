@@ -124,7 +124,7 @@ function groupRunAffected(group, changed) {
   return affected;
 }
 
-const groupGeneratable=n=>!!n&&["image","video","audio"].includes(n.type)&&!n.data.previs&&!n.data.film;
+const groupGeneratable=n=>!!n&&["image","video","audio"].includes(n.type)&&!n.data.previs&&!n.data.film&&!draftFinalEdge(n);
 function groupGenerationNodes(group, includeExisting, affected=null, completed=new Map(), tails=new Map()) {
   const candidates=[...new Set(group.nodes)].map(node).filter(n=>groupGeneratable(n) &&
     (!affected || affected.has(n.id)) &&
@@ -159,7 +159,7 @@ function groupGenerationNodes(group, includeExisting, affected=null, completed=n
     const error=n.job||prepping.has(n.id)?"节点已有任务":tailError||compositionError|| (missing?`参考素材不可用${missing.source?` · ${missing.source.name}`:""}`:
       switched?`「${switched.source.name}」已切换版本，请切回上轮结果或固定要用的版本`:
       !configured && !hasEditPlan?"尚未填写生成指令":"");
-    const count=n.type==="audio"?1:Math.max(1,Math.min(4,Math.trunc(Number(n.data.count))||1));
+    const count=canvasGenerationCount(n);
     const references=groupRunReferenceDetails(n,usableMedia,deps,completed);
     if(composition?.enabled)references.push({name:"白模构图",label:composition.version?"固定参考":"版本已移除",
       thumbnail:composition.version?.ref});

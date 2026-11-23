@@ -62,7 +62,7 @@ class VideoDialogueFields(unittest.TestCase):
 class ChatFixture(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.patchers = [patch.object(db, "DB_PATH", self.root / "chat.db"), patch.object(db, "_conn", None),
                          patch.object(server, "BOARDS", self.root / "boards"), patch.object(server, "COMFY_DIR", self.root / "media"),
                          patch.object(server, "LIBRARY", self.root / "library.json"),
@@ -569,18 +569,30 @@ class ChatIntegration(ChatFixture):
         providers.set_route("video",[{"provider_id":video,"model":"kling-2.6"}])
         image = providers.save(None,"ark","Image fixture",{"generation_rates":"image custom-image 0.125",
             "models":{"image":"custom-image"}}, {}, True)
+        reference_model = "doubao-seedance-2-5-fixture"
+        reference = providers.save(None,"ark","Reference fixture",{"generation_rates":f"video {reference_model} 4k 0.5",
+            "models":{"video":reference_model},"motion_origin":"https://studio.example"},{"api_key":"fixture"},True)
+        audio_reference = providers.save(None,"ark","Audio reference fixture",{"generation_rates":f"video {reference_model} 4k 1",
+            "models":{"video":reference_model}},{"api_key":"fixture"},True)
         with self.assertRaisesRegex(providers.ProviderError,"重复"):
             providers.save(image,"ark","Image fixture",{"generation_rates":"image custom-image 1\nimage custom-image 2"}, {}, True)
         video_request = {"kind":"video","duration":8,"quality":"hd","count":2}
+        media_request = {**video_request,"provider":reference,"selected_model":reference_model,"quality":"4k",
+                         "video_refs":True,"audio_refs":True,"prompt":"按 @视频{123} 和 @音频1 的节奏"}
         requests = [
             video_request, {**video_request,"quality":"std"}, {**video_request,"video_refs":True},
             {"kind":"image","provider":image,"selected_model":"custom-image","count":4},
             {"kind":"image","provider":image,"selected_model":"unavailable"},
             {"kind":"image","count":2},
+            {**video_request,"prompt":"照着 @图1 构图"},
+            media_request,
+            {**media_request,"prompt":"按 @林森 和 @视频1"},
+            {**media_request,"previs_guide":True,"duration":15},
+            {**media_request,"provider":audio_reference,"previs_guide":False,"video_refs":False,"prompt":"按 @音频1 的节奏"},
         ]
         response = await self.client.post("/api/generation-cost",json={"requests":requests})
         self.assertEqual(response.status,200,await response.text())
-        self.assertEqual((await response.json())["amounts"],[5,None,None,.5,None,0])
+        self.assertEqual((await response.json())["amounts"],[5,None,None,.5,None,0,5,8,None,None,16])
         self.assertFalse(server.JOBS)
         self.assertFalse(db.q("SELECT id FROM tasks"))
 

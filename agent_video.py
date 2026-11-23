@@ -1614,6 +1614,7 @@ def remake_status(host, nid, key, session, *, review_shot=None):
             and (version.get("mode") == "combined" or video_remake.matches_mapping(version, mapping))
         ]
     issues = {item["shot"]: item["error"] for item in review["remaining"]}
+    durations = video_remake.default_remake_durations(host)
     for index, shot in enumerate(session["shots"]):
         reviewed, issue = video_remake.export_choice(shot, mapping, index)
         frame_key = video_remake.start_preview_key(shot, mapping)
@@ -1626,8 +1627,12 @@ def remake_status(host, nid, key, session, *, review_shot=None):
         selected = bool(video_remake.person_selection(frame, mapping))
         frame_approved = bool(adopted_frame and video_remake.matches_mapping(adopted_frame, mapping) and
                               video_remake.preview_matches_regions(frame, adopted_frame, mapping))
+        limit = video_remake.shot_video_limit(host,shot,mapping,durations)
+        fps = host.film.FPS
+        ticks = round(shot["end"] * fps) - round(shot["start"] * fps)
         result["shots"].append({
             "number": index + 1, "start": shot["start"], "end": shot["end"],
+            "max_source_seconds":limit,"requires_split":ticks > limit * fps,
             "suggested_people": [name[:60] for name in people[:24] if isinstance(name, str)] if isinstance(people, list) else [],
             "keep_original": bool(shot.get("keep_original") or
                                   mapping and index not in mapping["shots"] and not reviewed and not issue),

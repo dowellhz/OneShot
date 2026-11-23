@@ -730,20 +730,30 @@ async function acReviewRemake(button) {
  }
 }
 
+const AC_CHOICE_PROMPT = /(?:请选择|(?:你|您)(?:想|要|会)?选|选哪|选一个|哪[个种一]|二选一|回复\s*[12]|1\s*还是\s*2|choose|pick one|which option)/i;
+const acChoiceProse = el => el?.matches("p,h1,h2,h3,h4,h5,h6") && AC_CHOICE_PROMPT.test(el.textContent);
+
+function acChoiceLabels(block) {
+ if (block.querySelector("ol,ul,pre,table,input,a,img")) return null;
+ if (block.tagName==="OL") {
+  return block.start===1 ? [...block.children].map(el=>el.textContent.trim().replace(/\s+/g," ")) : null;
+ }
+ if (block.tagName!=="P") return null;
+ const lines=[...block.childNodes].map(child=>child.nodeName==="BR"?"\n":child.textContent).join("").trim().split(/\n+/);
+ const numbered=lines.map(line=>line.match(/^\s*([1-6])[、）．]\s*(\S.*?)\s*$/));
+ return numbered.length>1 && numbered.every((entry,i)=>Number(entry?.[1])===i+1) ? numbered.map(entry=>entry[2]) : null;
+}
+
 function acAddChoices(message, event) {
- const prose = Array.from(message.children).filter(el => !["OL","UL","PRE","BLOCKQUOTE"].includes(el.tagName));
- const prompt = prose.map(el => el.textContent).join(" ");
- if (!/(?:请选择|(?:你|您)(?:想|要|会)?选|选哪|选一个|哪[个种一]|二选一|回复\s*[12]|1\s*还是\s*2|choose|pick one|which option)/i.test(prompt)) return;
- const lists = Array.from(message.children).filter(el => el.tagName === "OL");
- const list = lists[0];
- let options;
- if (lists.length === 1) {
-  const items = Array.from(list.children);
-  if (list.start !== 1 || items.some(el => el.querySelector("ol,ul,pre,table,input,a,img"))) return;
-  options = items.map(el => el.textContent.trim().replace(/\s+/g, " "));
- } else if (!lists.length && /(?:^|\D)1\s*还是\s*2(?:\D|$)/.test(prompt)) {
-  options = ["", ""];
- } else return;
+ const blocks = Array.from(message.children);
+ if (!blocks.some(acChoiceProse)) return;
+ const candidates = blocks.map(block=>({block,labels:acChoiceLabels(block)}))
+  .filter(({labels})=>labels && labels.length>=2 && labels.length<=6 && labels.every(label=>label && label.length<=350));
+ const following = candidates.filter(({block})=>acChoiceProse(block.previousElementSibling));
+ const attached = following.length ? following : candidates.filter(({block})=>acChoiceProse(block.nextElementSibling));
+ const choice = candidates.length===1 ? candidates[0] : attached.length===1 ? attached[0] : null;
+ const binary = !candidates.length && blocks.some(el=>acChoiceProse(el) && /(?:^|\D)1\s*还是\s*2(?:\D|$)/.test(el.textContent));
+ const options = choice?.labels || (binary ? ["",""] : []);
  if (options.length < 2 || options.length > 6 || options.some(label => label.length > 350)) return;
  const card = document.createElement("div");
  card.className = "ac-choices";
@@ -766,7 +776,7 @@ function acAddChoices(message, event) {
   };
   card.append(button);
  });
- if (list) list.replaceWith(card);
+ if (choice) choice.block.replaceWith(card);
  else message.append(card);
 }
 

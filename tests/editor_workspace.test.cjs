@@ -309,7 +309,8 @@ async function run(){
  evaluate(`selectOnly("n1");
   const sizedPromptPanel=$("#pp"), oldPPRect=sizedPromptPanel.getBoundingClientRect, promptBeforeResize=$("#prompt").value;
   sizedPromptPanel.getBoundingClientRect=()=>({left:60,top:70,width:ppSize?.width||560,height:ppSize?.height||220});
-  const resizePrompt=(type,x,y)=>$("#ppResize").dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientX:x,clientY:y}));
+  const resizePrompt=(type,x,y)=>(["pointerdown","dblclick"].includes(type)?$("#ppResize"):document.body)
+    .dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientX:x,clientY:y}));
   resizePrompt("pointerdown",620,290);resizePrompt("pointermove",710,355);resizePrompt("pointerup",710,355);`);
  equal(evaluate('[ppSize,JSON.parse(localStorage.getItem("h3.ppSize")),sizedPromptPanel.classList.contains("resized")]'),
   [{width:650,height:285},{width:650,height:285},true]);
@@ -683,7 +684,14 @@ async function run(){
  evaluate('document.getElementById("acInput").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))');
  equal(evaluate('CM.popup.hidden'),true,'escape closes completion');
  evaluate('CM.items.push({...CM.items[0],id:"person2"});document.getElementById("acInput").value="";document.getElementById("acInput").setSelectionRange(0,0);cmInsert(document.getElementById("acInput"),CM.items[0])');
- equal(evaluate('document.getElementById("acInput").value'),'@{person1} ','duplicate names insert unambiguous IDs');
+ equal(evaluate('document.getElementById("acInput").value'),'@{person1|林森} ','duplicate names preserve a readable label and a stable asset ID');
+ w.__memories=[{...w.__memories[0],id:'personal-lin',board:''}, {...w.__memories[0],id:'canvas-lin',board:'btest'}];
+ evaluate(`cmInvalidate();
+   const scopePrompt=$("#acInput");scopePrompt.value="@林森";scopePrompt.focus();scopePrompt.setSelectionRange(3,3);
+   scopePrompt.dispatchEvent(new Event("input",{bubbles:true}));`);
+ await ready('!CM.popup.hidden && CM.matches.filter(a=>a.id.endsWith("-lin")).length===2','same-name assets are offered across visible scopes');
+ equal(evaluate('CM.matches.filter(a=>a.id.endsWith("-lin")).map(a=>a.id)'),['canvas-lin','personal-lin'],'current library sorts ahead of personal results');
+ evaluate('cmClose()');
  await evaluate('cmEdit(null,"document")');
  equal(evaluate('document.querySelector("#memoryEditor [name=kind]").value'),'document','background memory editor');
  equal(evaluate('document.querySelector("#memoryEditor [name=board]").value'),'btest','standalone canvas defaults to its own asset library');
@@ -899,6 +907,10 @@ async function run(){
  equal(evaluate('document.querySelectorAll("#acMessages .ac-choices").length'),0,'instructions stay as a list');
  appendChatEvent('assistant','你想选择哪个方案？\n\n1. **暖色风格**\n2. 冷色风格');
  equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),2,'assistant offers two active choices');
+ appendChatEvent('assistant','准备工作：\n\n1. 载入素材\n2. 定好画幅\n\n请选择一个风格：\n\n1、**暖色风格**\n2、冷色风格');
+ equal(evaluate('$$(".ac-choices button:not(:disabled)").map(b=>b.textContent)'),['1暖色风格','2冷色风格'],
+  'only the list attached to the latest choice question becomes clickable');
+ assert(evaluate('$$("#acMessages ol").some(list=>list.textContent.includes("定好画幅"))'),'the preceding procedure stays an ordered list');
  const priorChatFetch=w.fetch;
  let picked, attempts=0;
  w.fetch=async(url,options={})=>{
@@ -911,7 +923,7 @@ async function run(){
   }
   return priorChatFetch(url,options);
  };
- evaluate('$("#acInput").value="正在写的草稿"; const choices=$$(".ac-choices button");choices[1].click();choices[0].click()');
+ evaluate('$("#acInput").value="正在写的草稿"; const choices=$$(".ac-choices button:not(:disabled)");choices[1].click();choices[0].click()');
  await ready('!AC.sending && AC.events.at(-1).data.text==="我选择 2：冷色风格"','selected option reaches the conversation');
  assert.equal(picked.text,'我选择 2：冷色风格');
  assert.equal(attempts,1,'clicks cannot submit twice');
@@ -1385,6 +1397,13 @@ async function run(){
  equal(evaluate('$("[aria-label=预览版本]").selectedOptions[0].textContent.includes("旧参考图") && !$("[data-batch-previews]").disabled'),true,
   'an updated asset reference re-enables batch generation and marks the older preview');
  evaluate('$("#videoRemake [data-close]").click()');
+ remakeSession.shots[0].end=12;
+ remakeSession.video_limits=[10];
+ await evaluate('openVideoRemake(mergePeer)');
+ equal(evaluate('[$("[data-cut=split_long_shot]").hidden,$("[data-cut=split_long_shot]").textContent,$("[data-generate-video]").disabled]'),
+  [false,'拆成 2 个镜头',true],'the current route can require splitting below the general remake limit');
+ evaluate('$("#videoRemake [data-close]").click()');
+ delete remakeSession.video_limits;
  remakeSession.shots[0].end=29.5;
  await evaluate('openVideoRemake(mergePeer)');
  equal(evaluate('$("[data-cut=split_long_shot]").textContent'), '拆成 3 个镜头','an oversized shot shows its balanced split action');
@@ -2507,6 +2526,29 @@ async function run(){
  equal(evaluate('extensionInput({video_recipe:{images:[{...localPrologue.video_recipe.images[0],role:"subject"}]}})'),
    null,'a captured image used as an appearance reference does not create a continuation');
  evaluate('B.nodes=B.nodes.filter(n=>n!==localTail&&n!==tailAnchor);rebuild();updateSel();');
+ const frameExtensionFetch=w.fetch, frameExtensionReads=[];
+ w.fetch=async(url,options)=>{
+  if(String(url)!=="/api/lastframe")return frameExtensionFetch(url,options);
+  frameExtensionReads.push(JSON.parse(options.body));
+  return {ok:true,text:async()=>JSON.stringify({ref:"output:h3studio/local-pin.png",url:"/media?ref=output%3Ah3studio%2Flocal-pin.png",w:720,h:1280,at:0})};
+ };
+ evaluate(`const previousExtensionServices=CAPS_LIST.video;
+   CAPS_LIST.video=[{id:"cloud-default",kind:"ark",name:"云端服务",default:true},
+                   {id:"local_h3",kind:"local_h3",name:"本地 H3",local:true}];
+   openVideoExtension(clipSource);extForm.elements.method.value="frame";
+   extForm.elements.method.dispatchEvent(new Event("change"));
+   extForm.elements.direction.value="before";extForm.elements.prompt.value="补上空站台";
+   extForm.dispatchEvent(new Event("submit",{cancelable:true}));`);
+ await ready('node([...sel][0])?.name.endsWith("补拍片头")','the frame capture creates and selects the continuation');
+ equal(frameExtensionReads,[{ref:evaluate('curV(clipSource).ref'),position:"first"}]);
+ evaluate(`const frameExtensionDraft=node([...sel][0]);
+   const frameExtensionAnchor=imageInputs(frameExtensionDraft)[0].source;
+   addVersion(frameExtensionAnchor,{ref:"output:h3studio/unrelated-version.png",w:1280,h:720});`);
+ equal(evaluate(`[frameExtensionDraft.data.provider,extForm.elements.duration.min,videoReq(frameExtensionDraft,"").ar,
+   imageInputs(frameExtensionDraft)[0].edge.role,videoReq(frameExtensionDraft,"").images[0].ref]`),
+   ["local_h3","5",9/16,"last","output:h3studio/local-pin.png"],'local continuation keeps the pinned anchor, actual aspect and local service after switching versions');
+ evaluate('CAPS_LIST.video=previousExtensionServices;removeNodes([frameExtensionAnchor.id,frameExtensionDraft.id]);');
+ w.fetch=frameExtensionFetch;
  console.log('Extension DOM passed: head/tail mode, pinned boundary, directional placement and ordered timeline.');
  evaluate(`CAPS_LIST.segment_edit=[{id:"fixture-edit",name:"片段编辑服务",model:"doubao-seedance-2-5-fixture"}];
    openSegmentEditor(clipSource);const segForm=$("#videoSegment form");
@@ -2866,7 +2908,7 @@ async function run(){
  w.fetch=checkedPreviewFetch;
  console.log('Mixed reference preview passed: submitting reviewed assets is pinned until the node inputs change.');
  const nativeDraftFetch=w.fetch, nativeDraftReq=[];
- let branchTransportFailure=true;
+ let branchTransportFailure=true, branchProviderFailure=true;
  w.fetch=async(url,opts)=>{
    const path=String(url);
    if(!['/api/generate','/api/video/draft/finalize'].includes(path))return nativeDraftFetch(url,opts);
@@ -2874,6 +2916,11 @@ async function run(){
    const branch=path==='/api/video/draft/finalize'&&payload.resolution==="1080p";
    if(branch&&branchTransportFailure){branchTransportFailure=false;throw new Error("连接中断");}
    const id=path==='/api/generate'?'native-draft':branch?'native-branch':'native-final';
+   if(branch&&branchProviderFailure){
+     branchProviderFailure=false;
+     jobs.set(id,{state:'error',error:'定稿任务失败'});
+     return {ok:true,text:async()=>JSON.stringify({ids:[id]})};
+   }
    const ref='output:h3studio/'+id+'.mp4';
    jobs.set(id,{state:'done',meta:{mode_name:id,provider:'fixture'},outputs:[{ref,url:'/media?ref='+encodeURIComponent(ref),
      meta:{width:720,height:1280,duration:5},...(id==='native-draft'?{extra:{draft_expires:Date.now()/1000+600}}:{})}]});
@@ -2931,8 +2978,20 @@ async function run(){
  evaluate('closeVideoDraftFinal();openVideoDraftFinal(nativeDraftNode)');
  assert.equal(evaluate('draftFinalForm.elements.placement.value'),"branch");
  evaluate('draftFinalForm.dispatchEvent(new Event("submit",{cancelable:true}))');
+ await ready('B.nodes.some(n=>draftFinalEdge(n)?.from===nativeDraftNode.id&&!n.job)','a confirmed provider failure keeps its branch',250);
+ evaluate(`const failedDraftBranch=B.nodes.find(n=>draftFinalEdge(n)?.from===nativeDraftNode.id);
+   switchVersion(nativeDraftNode,1,{recordUndo:false});selectOnly(failedDraftBranch.id);
+   ctxMenu({target:els.get(failedDraftBranch.id),clientX:140,clientY:120});
+   $("#ctxMenu [data-a=draft-final]").click();`);
+ equal(evaluate('[draftFinalForm.elements.placement.disabled,$("[data-draft-name]").textContent.endsWith("版本 1")]'),[true,true],
+   'retry from the branch locks its placement and finds the pinned sample even after switching tabs');
+ evaluate('draftFinalForm.dispatchEvent(new Event("submit",{cancelable:true}))');
  await ready('B.nodes.some(n=>curV(n)?.ref==="output:h3studio/native-branch.mp4")','final branch appears next to the sample',250);
  equal(nativeDraftReq[2],nativeDraftReq[3],'retry preserves the same provider job key and pinned sample');
+ assert.notEqual(nativeDraftReq[3].request_key,nativeDraftReq[4].request_key,'a confirmed provider failure needs a new request key');
+ equal([nativeDraftReq[4].node,nativeDraftReq[4].ref],[nativeDraftReq[3].node,nativeDraftReq[3].ref]);
+ assert.equal(evaluate('curV(failedDraftBranch)?.ref'),'output:h3studio/native-branch.mp4','provider retry completes in the original branch');
+ evaluate('switchVersion(nativeDraftNode,0,{recordUndo:false})');
  equal(evaluate(`(()=>{const branch=B.nodes.find(n=>curV(n)?.ref==="output:h3studio/native-branch.mp4");
    const edge=B.edges.find(e=>e.to===branch.id&&e.from===nativeDraftNode.id);
    return [JSON.stringify(nativeDraftNode)===sourceBeforeBranch,branch.x>nativeDraftNode.x+size(nativeDraftNode).w,
@@ -3282,6 +3341,12 @@ async function run(){
  await ready('$("[data-generation-cost]")?.textContent.includes("¥0.25")','node generation quotes include the selected result count');
  equal(evaluate('$$("#groupRunConfirm li strong").map(el=>el.textContent)'),['分镜首帧','分镜视频','场景参考'],'confirmation shows dependency order before submission');
  assert.match(evaluate('$("#groupRunConfirm [data-summary]").textContent'),/3 个节点.*4 项/);
+ equal(evaluate(`workflowVideo.data.count=4;
+   workflowVideo.data.prompt+=" @图{123}";
+   const batchCountQuote=canvasCostRequest(workflowVideo);
+   workflowVideo.data.count=1;workflowVideo.data.prompt="镜头慢慢推进";
+   [batchCountQuote.count,batchCountQuote.has_asset]`),
+   [3,false],'legacy video counts honor the cap, and connected canvas references do not look like external assets');
  assert.match(evaluate('$("#groupRunConfirm .group-run-refs").textContent'),/分镜首帧\s*首帧 · 本轮生成/);
  assert.equal(evaluate('$("#groupRunConfirm .group-run-refs img")'),null,'a live dependency preview does not show a stale thumbnail');
  evaluate('$("#groupRunConfirm footer [data-close]").click()');
@@ -5631,6 +5696,17 @@ async function run(){
  evaluate(`navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException("denied","NotAllowedError");};
   $("#acVoiceRecord").click();`);
  await ready('$("#acVoiceStatus").textContent.startsWith("麦克风权限未开启")','microphone denial is reported without uploading');
+ voiceCommand="从文件转写";
+ evaluate(`selectOnly(voicedImage.id);
+   const nodeVoiceFile=$("#ppVoiceFile");
+   Object.defineProperty(nodeVoiceFile,"files",{configurable:true,value:[new File(["voice"],"recording.wav")]});
+   $("#ppVoiceUpload").click();
+   nodeVoiceFile.dispatchEvent(new Event("change"));`);
+ await ready('node(voicedImage.id).data.prompt==="完整转写\\n从文件转写"','audio file transcribes into the selected node without microphone access');
+ evaluate(`$("#ppVoiceUpload").click();
+   selectOnly(voicedAudio.id);
+   nodeVoiceFile.dispatchEvent(new Event("change"));`);
+ equal(evaluate('[acVoiceActive,node(voicedAudio.id).data.prompt]'),[null,"停止"],'a file selection cannot move to a different node');
  voiceCommand=null;
  console.log('Live dictation passed: incremental drafts, final result, shared preference, cancelled response, interrupted recording and denied permission.');
  evaluate(`restore(${JSON.stringify(beforeNodeVoice)})`);

@@ -130,6 +130,10 @@ def view_selections(views):
     return [{"memory_id":mid, "views":slots} for mid, slots in views.items()]
 
 
+def mention_pattern(alias):
+    return "@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else "")
+
+
 class Store:
     def __init__(self, host):
         self.h = host
@@ -571,22 +575,27 @@ class Store:
             if item not in selected:
                 selected.append(item)
             occupied.append(match.span())
-        for a in sorted(items, key=lambda x: -max(map(len, [x["name"], *x.get("aliases", [])]))):
-            for alias in [a["name"], *a.get("aliases", []), "{" + a["id"] + "}"]:
-                pattern = r"@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else "")
-                for m in re.finditer(pattern, content, re.I):
-                    if any(lo <= m.start() < hi for lo, hi in occupied):
-                        continue
-                    if content[m.end():m.end()+1] in ("#", "＃"):
-                        if strict:
-                            fail(f"请从 @{alias}# 的菜单选择已定稿视角")
-                        continue
-                    matches = [b for b in items if alias.casefold() in [n.casefold() for n in [b["name"], *b.get("aliases", []), "{" + b["id"] + "}"]]]
-                    if len(matches) != 1:
-                        fail(f"@{alias} 对应多条记忆，请重命名或用引用选择器指定", 409)
-                    if a not in selected:
-                        selected.append(a)
-                    occupied.append(m.span())
+        aliases, spellings = {}, {}
+        for item in items:
+            for alias in [item["name"], *item.get("aliases", []), "{" + item["id"] + "}"]:
+                folded = alias.casefold()
+                aliases.setdefault(folded, {})[item["id"]] = item
+                spellings[alias] = folded
+        for alias in sorted(spellings, key=len, reverse=True):
+            for match in re.finditer(mention_pattern(alias), content, re.I):
+                if any(lo <= match.start() < hi for lo, hi in occupied):
+                    continue
+                if content[match.end():match.end()+1] in ("#", "＃"):
+                    if strict:
+                        fail(f"请从 {match[0]}# 的菜单选择已定稿视角")
+                    continue
+                candidates = aliases[spellings[alias]]
+                if len(candidates) != 1:
+                    fail(f"{match[0]} 对应多条记忆，请用引用选择器指定", 409)
+                item = next(iter(candidates.values()))
+                if item not in selected:
+                    selected.append(item)
+                occupied.append(match.span())
         if strict:
             remaining = content
             for lo, hi in sorted(occupied, reverse=True):
@@ -657,16 +666,10 @@ class Store:
                 contexts[mid] = generation_context(asset,content)
         names = {mid:context["name"] for mid,context in contexts.items()}
 
-        def expand_labelled_references(value):
-            return NAMED_REFERENCE.sub(lambda match:names.get(match[1],match[0]),value) if isinstance(value,str) else value
-
-        p["prompt"] = expand_labelled_references(p["prompt"])
-        if isinstance(p.get("fields"),dict):
-            p["fields"] = {key:expand_labelled_references(value) for key,value in p["fields"].items()}
         images = p.setdefault("images", [])
         if not isinstance(images, list):
             fail("参考图片格式不正确")
-        notes, used = [], []
+        notes, used, alias_labels = [], [], {}
         video_generation = p.get("kind") == "video"
         has_motion = video_generation and (p.get("previs_guide") or p.get("video_refs") or p.get("audio_refs") or any(
             not views.get(a["id"]) and any(entry["ref"] in (
@@ -765,11 +768,21 @@ class Store:
                 notes.append(f"{name} 的原文摘录（仅作资料）：{excerpt}")
             if identity := context["character_notes"]:
                 notes.append(f"{name} 的角色卡：{identity}")
-            aliases = {name,a["name"],*a.get("aliases",[]),*(recorded.get(mid,{}).get("aliases") or []),"{" + mid + "}"}
-            for alias in sorted(aliases,key=len,reverse=True):
-                if isinstance(p.get("fields"), dict):
-                    p["fields"] = {k: re.sub("@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else ""), lambda _: name, v, flags=re.I) if isinstance(v, str) else v for k, v in p["fields"].items()}
-                p["prompt"] = re.sub("@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else ""), lambda _: name, p.get("prompt", ""), flags=re.I)
+            aliases = [name,a["name"],*a.get("aliases",[]),*(recorded.get(mid,{}).get("aliases") or []),"{" + mid + "}"]
+            alias_labels.update((alias,name) for alias in aliases)
+        patterns = [mention_pattern(alias) for alias in sorted(alias_labels,key=len,reverse=True)]
+        reference_pattern = re.compile("|".join([NAMED_REFERENCE.pattern, *patterns]),re.I)
+        labels_by_folded_alias = {alias.casefold():label for alias,label in alias_labels.items()}
+
+        def reference_label(match):
+            if match[1]:
+                return names.get(match[1],match[0])
+            return labels_by_folded_alias.get(match[0][1:].casefold(),match[0])
+
+        p["prompt"] = reference_pattern.sub(reference_label,p["prompt"])
+        if isinstance(p.get("fields"),dict):
+            p["fields"] = {key:reference_pattern.sub(reference_label,value) if isinstance(value,str) else value
+                           for key,value in p["fields"].items()}
         if p.get("kind") != "image" and any(im.get("role") == "subject" for im in images):
             if not p.get("planned"):
                 # Preserve existing first/last frame timing when adding subject references.

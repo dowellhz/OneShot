@@ -14,29 +14,50 @@ function closeVideoDraftFinal() {
   }
 }
 
+function draftFinalEdge(n) {
+  if (n.type==="video" && !n.versions.length) return B.edges.find(edge=>edge.to===n.id && edge.relation==="draft_final");
+}
+
 function openVideoDraftFinal(n) {
-  const version=curV(n), dialog=$("#videoDraftFinal"), form=$("form",dialog);
-  if (!canvasCanEdit() || n.job || prepping.has(n.id) || dialog.open || !version?.draft_expires) return;
+  const dialog=$("#videoDraftFinal"), form=$("form",dialog);
+  if (!canvasCanEdit() || n.job || prepping.has(n.id) || dialog.open) return;
+  const edge=draftFinalEdge(n), source=edge?node(edge.from):n;
+  const version=edge?source?.versions.find(v=>v.ref===edge.ref):curV(source);
+  if (!version?.draft_expires) {
+    if (edge) toast("定稿对应的样片版本已移除");
+    return;
+  }
   const board=boardId, send=$("button[type=submit]",form), status=$("[data-draft-status]",form);
   const expired=version.draft_expires<=Date.now()/1000;
   status.textContent=expired?"样片已过定稿有效期，请重新生成样片。":"";
   send.disabled=expired;
   const saved=n.draft_finalize_attempt?.ref===version.ref?n.draft_finalize_attempt:null;
-  form.elements.resolution.value=saved?.resolution || "1080p";
-  form.elements.placement.value=saved?.placement || "tab";
-  $("[data-draft-name]",form).textContent=n.name+" · 版本 "+(n.cur+1);
+  form.elements.resolution.value=saved?.resolution || (edge && n.data.quality==="4k"?"4k":"1080p");
+  form.elements.placement.value=edge?"branch":saved?.placement || "tab";
+  form.elements.placement.disabled=!!edge;
+  $("[data-draft-name]",form).textContent=source.name+" · 版本 "+(source.versions.indexOf(version)+1);
   $("[data-draft-close]",form).onclick=closeVideoDraftFinal;
   dialog.oncancel=event=>{event.preventDefault();closeVideoDraftFinal();};
   async function submit(event) {
     event.preventDefault();
-    if (send.disabled || n.job || node(n.id)!==n || curV(n)?.ref!==version.ref) return;
-    const resolution=form.elements.resolution.value, placement=form.elements.placement.value;
+    if (send.disabled || n.job || node(n.id)!==n) return;
+    const current=()=>{
+      if (boardId!==board || node(n.id)!==n || node(source.id)!==source || n.job) return false;
+      if (!edge) return curV(source)?.ref===version.ref;
+      const binding=draftFinalEdge(n);
+      return binding?.from===source.id && binding.ref===version.ref && source.versions.some(v=>v.ref===version.ref);
+    };
+    if (!current()) {
+      status.textContent="原样片版本已改变，请重新打开定稿";
+      return;
+    }
+    const resolution=form.elements.resolution.value, placement=edge?"branch":form.elements.placement.value;
     const prior=n.draft_finalize_attempt;
     if (prior && prior.ref===version.ref && (prior.resolution!==resolution || (prior.placement || "tab")!==placement)) {
       status.textContent="上一项定稿请求尚未确认。请用相同的分辨率和结果位置重试。";return;
     }
     const attempt=prior?.ref===version.ref?prior:{ref:version.ref,resolution,placement,
-      ...(placement==="branch"?{nodeId:newCanvasNodeId()}:{}),
+      ...(placement==="branch"?{nodeId:edge?n.id:newCanvasNodeId()}:{}),
       key:crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)),x=>x.toString(16).padStart(2,"0")).join("")};
     n.draft_finalize_attempt=attempt;
     send.disabled=true;status.textContent="正在提交定稿…";
@@ -44,14 +65,14 @@ function openVideoDraftFinal(n) {
     save();
     try {
       await flushSave();
+      if (!current()) throw new Error("原样片版本已改变，请重新打开定稿");
+      const result=await api("/api/video/draft/finalize",{board,node:source.id,ref:version.ref,resolution,request_key:attempt.key});
       if (boardId!==board || node(n.id)!==n) return;
-      const result=await api("/api/video/draft/finalize",{board,node:n.id,ref:version.ref,resolution,request_key:attempt.key});
-      if (boardId!==board || node(n.id)!==n) return;
-      const copy=vtClone(version.node_data || n.data), recipe=vtClone(version.video_recipe || {});
+      const copy=vtClone(version.node_data || source.data), recipe=vtClone(version.video_recipe || {});
       delete copy.draft;delete recipe.draft;
       copy.quality=recipe.quality=resolution==="4k"?"4k":"hd";
       const job={ids:result.ids,t0:Date.now(),st:{},prompt:version.prompt||"",memory_used:vtClone(version.memory_used || []),
-        history:{input_edges:vtClone(version.input_edges || B.edges.filter(edge=>edge.to===n.id)),node_data:copy,video_recipe:recipe,
+        history:{input_edges:vtClone(version.input_edges || B.edges.filter(edge=>edge.to===source.id)),node_data:copy,video_recipe:recipe,
           draft_final:{source_ref:version.ref,resolution}},
         generation_record:{...vtClone(version.generation_record || {}),settings:{
           ...version.generation_record?.settings,resolution}}
@@ -59,18 +80,20 @@ function openVideoDraftFinal(n) {
       let target=n;
       if (placement==="branch") {
         delete n.draft_finalize_attempt;
-        target=node(attempt.nodeId);
+        const binding={from:source.id,to:attempt.nodeId,relation:"draft_final",ref:version.ref};
+        job.history.input_edges=[binding];
+        job.history.draft_final.source_node=source.id;
+        copy.prompt=job.prompt;
+        target=edge?n:node(attempt.nodeId);
         if (!target) {
           checkpoint();
-          const dimensions=size(n);
-          const at=freeSpot(n.x+dimensions.w+110,n.y,"video",dimensions);
-          const edge={from:n.id,to:attempt.nodeId,relation:"draft_final",ref:version.ref};
-          job.history.input_edges=[edge];
-          job.history.draft_final.source_node=n.id;
-          copy.prompt=job.prompt;
+          const dimensions=size(source);
+          const at=freeSpot(source.x+dimensions.w+110,source.y,"video",dimensions);
           target=addNode("video",at.x,at.y,copy,{
-            id:attempt.nodeId,name:n.name.slice(0,44)+" · "+resolution.toUpperCase()+" 定稿",job});
-          B.edges.push(edge);
+            id:attempt.nodeId,name:source.name.slice(0,44)+" · "+resolution.toUpperCase()+" 定稿",job});
+          B.edges.push(binding);
+        } else if (edge) {
+          target.job=job;
         }
       } else {
         rememberVideoVersion(n);

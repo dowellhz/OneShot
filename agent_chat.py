@@ -1144,8 +1144,10 @@ class AgentService:
                                 receipt["settings"]["provider_model"] = metadata["model"]
                             if metadata.get("resolution"):
                                 receipt["settings"]["resolution"] = metadata["resolution"]
+                            if metadata.get("mode"):
+                                receipt["mode"] = metadata["mode"]
                             receipt["service"] = metadata.get("provider") or receipt.get("service")
-                            receipt["effective_prompt"] = metadata.get("prompt") or receipt.get("effective_prompt")
+                            receipt["effective_prompt"] = metadata.get("full_prompt") or metadata.get("prompt") or receipt.get("effective_prompt")
                         versions.append({"ref": out["ref"], "url": "/media?ref=" + quote(out["ref"], safe=""),
                                          "w": m.get("width"), "h": m.get("height"), "seed": (s.get("meta") or {}).get("seed"),
                                          "seconds": m.get("duration"), "prompt": pending["prompt"], "source": pending.get("source", "gen"), "memory_used": pending.get("memory_used", []), **(out.get("extra") or {}),

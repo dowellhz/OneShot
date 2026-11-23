@@ -31,11 +31,13 @@ function alBoardInLibrary(bid) {
   const project = currentProject()?.id;
   return bid === boardId || !!(project && boardDirectory.some(board=>board.id===bid&&board.project===project));
 }
+function alInCurrent(asset) {
+  const team = alCurrentTeam(), project = currentProject()?.id;
+  return asset.board && alBoardInLibrary(asset.board) ||
+    (team ? asset.team === team : project && asset.project === project);
+}
 function alBaseItems() {
   const q = AL.query.trim().toLocaleLowerCase();
-  const team = alCurrentTeam(), project = currentProject()?.id;
-  const inCurrent = a => a.board && alBoardInLibrary(a.board) ||
-    (team ? a.team === team : project && a.project === project);
   const found = AL.documentQuery===q ? AL.documentResults : new Map();
   const items = new Map(AL.items.map(a=>[a.id,a]));
   for(const [id,a] of found)items.set(id,a);
@@ -43,7 +45,7 @@ function alBaseItems() {
   const candidates = ranked ? ranked.map(id=>items.get(id)).filter(Boolean) : [...items.values()];
   return candidates.filter(a => (ranked || !q || found.has(a.id) ||
     [a.name,a.desc,a.document?.name,a.document?.text||a.document?.excerpt,...(a.aliases||[]),...(a.tags||[])].join(' ').toLocaleLowerCase().includes(q))
-    && (AL.scope === 'current' && inCurrent(a) ||
+    && (AL.scope === 'current' && alInCurrent(a) ||
       AL.scope === 'personal' && alPersonal(a) || AL.scope === 'shared' && a.shared || AL.scope.startsWith('team:') && a.team === AL.scope.slice(5))
     && (AL.source === 'all' || alSource(a) === AL.source)
     && (AL.folder === 'all' || (AL.folder === 'none' ? !alFolderSlot(a) : alFolderSlot(a) === AL.folder)));

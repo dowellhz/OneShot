@@ -586,6 +586,27 @@ class MemoryIntegration(ChatFixture):
         p=self.app['creative_memory'].prepare({'id':7,'role':'member'},{'kind':'image','board':'test','prompt':'@{'+a['id']+'} 跑步'})
         self.assertEqual([m['id'] for m in p['memory_used']],[a['id']])
 
+    async def test_longer_character_alias_wins_in_project_generation(self):
+        created = await self.client.post("/api/canvas-projects",json={"name":"短片","board":"test"})
+        project = (await created.json())["id"]
+        await self.client.put("/api/board/shots",params={"project":project},json={"nodes":[]})
+        elder = await self.create(name="红围巾",aliases=["林森","戴着红色围巾在街上走的人"],board="",project=project)
+        younger = await self.create(name="黑夹克",aliases=["林森弟弟"],board="",project=project)
+        await self.create(name="个人版本",aliases=["林森"],board="")
+        raw = {"kind":"video","board":"shots","prompt":"@林森弟弟等车"}
+        with patch.object(server,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit:
+            response = await self.client.post("/api/generate",json=raw)
+            self.assertEqual(response.status,200,await response.text())
+            prepared = submit.await_args.args[1]
+            self.assertEqual([m["id"] for m in prepared["memory_used"]],[younger["id"]])
+            self.assertTrue(prepared["prompt"].startswith("黑夹克等车"))
+            labelled = "@{" + elder["id"] + "|红围巾}"
+            response = await self.client.post("/api/generate",json={**raw,"fields":{"action":labelled+"看向@林森弟弟"}})
+            self.assertEqual(response.status,200,await response.text())
+            prepared = submit.await_args.args[1]
+            self.assertEqual(prepared["fields"]["action"],"红围巾看向黑夹克")
+            self.assertEqual({m["id"] for m in prepared["memory_used"]},{elder["id"],younger["id"]})
+
     async def test_legacy_import_and_delete_never_resurrect(self):
         old={'id':'old1','owner':7,'name':'老角色','kind':'character','desc':'旧设定','ref':self.source['ref']}
         server.LIBRARY.write_text(json.dumps([old]))
@@ -718,6 +739,7 @@ class MemoryIntegration(ChatFixture):
         body,meta=server.engine_body(p)
         self.assertEqual(body['references'],[str(server.tools.ref_path(server.COMFY_DIR,self.source['ref']))])
         self.assertEqual(body['keyframes'],[]);self.assertIn('is the environment',body['prompt']);self.assertNotIn('face, body shape',body['prompt'])
+        self.assertEqual((meta["mode"],meta["provider"],meta["model"],meta["resolution"]),("planned","本地 H3","h3-video","768P"))
 
     async def test_character_main_approval_controls_default_and_invalidates_old_angles(self):
         asset = await self.create()

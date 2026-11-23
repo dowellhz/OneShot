@@ -6,6 +6,7 @@ const acVoiceFormats = [
  ["audio/ogg", ".ogg"],
 ];
 const acVoiceLimit = 8 * 1024 * 1024;
+const voiceFileTypes = ".wav,.webm,.ogg,.m4a,.mp4,.mp3,.flac";
 const voicePreviewInterval = 9000;
 const voicePreviewMaxRequests = 6;
 let acVoiceActive = null;
@@ -289,7 +290,7 @@ async function voiceRecord(active, format) {
   else acVoiceReferenceStatus();
  } catch (error) {
   const reason = error.name === "NotAllowedError" ? "麦克风权限未开启" : "无法使用麦克风";
-  acVoiceEnd(active, active.target ? reason : reason + "，可用音频文件转写");
+  acVoiceEnd(active, reason + "，可用音频文件转写");
  }
 }
 
@@ -314,6 +315,7 @@ function nodeVoiceCurrent(active) {
 
 function nodeVoiceRender(message) {
  const box = $("#ppVoice"), button = $("#ppVoiceRecord"), status = $("#ppVoiceStatus");
+ const upload = $("#ppVoiceUpload");
  const source = B && sel.size === 1 ? node([...sel][0]) : null;
  if (box._source !== source) {
   box._source = source;
@@ -324,7 +326,9 @@ function nodeVoiceRender(message) {
  box.hidden = !acVoiceAvailable || !canvasCanEdit() || !nodeVoiceTarget(source);
  button.textContent = recording ? "停止录音" : "语音输入";
  button.setAttribute("aria-pressed", String(!!recording));
- button.disabled = !!source?.job || !!source && prepping.has(source.id) || !!active && !recording;
+ const busy = !!source?.job || !!source && prepping.has(source.id);
+ button.disabled = busy || !!active && !recording;
+ upload.disabled = busy || !!active;
  $("#ppVoiceCancel").hidden = !active?.target;
  if (message !== undefined) status.textContent = message;
 }
@@ -349,16 +353,23 @@ function nodeVoiceInsert(target, transcript) {
  return addition === transcript ? "已填入提示词" : "已填入可容纳的文字";
 }
 
-function nodeVoiceStart(hold = null) {
- if (acVoiceActive || $("#ppVoiceRecord").disabled || $("#ppVoice").hidden) return;
+function nodeVoiceSelection() {
+ if (acVoiceActive || $("#ppVoice").hidden) return null;
  const source = $("#ppVoice")._source, target = nodeVoiceTarget(source);
- if (!target) return;
+ const selection = {board:B,source,target};
+ return target && nodeVoiceCurrent(selection) ? selection : null;
+}
+
+function nodeVoiceStart(hold = null) {
+ const selection = nodeVoiceSelection();
+ if (!selection) return;
  const format = voiceRecordingFormat();
- if (!format) return nodeVoiceRender("当前页面无法使用麦克风");
- const active = {phase:"permission",board:B,source,target,hold};
- if (!nodeVoiceCurrent(active)) return;
- acVoiceActive = active;
- void voiceRecord(active,format);
+ if (!format) {
+  nodeVoiceRender(window.isSecureContext === false ? "请用 HTTPS 访问以使用麦克风，或选择音频转写" : "当前页面无法录音，可用音频文件转写");
+  return;
+ }
+ acVoiceActive = {...selection,phase:"permission",hold};
+ void voiceRecord(acVoiceActive,format);
 }
 
 function acVoiceApplyReferences(active) {
@@ -500,12 +511,15 @@ function acVoiceInit() {
   <button type="button" id="acVoiceUpload" title="将音频转写为草稿">音频</button>
   <label class="ac-voice-key">按住说话 <select id="acVoiceKey" aria-label="按住说话快捷键"></select></label>
   <button type="button" id="acVoiceCancel" title="取消录音或转写" hidden>取消</button>
-  <input type="file" id="acVoiceFile" accept=".wav,.webm,.ogg,.m4a,.mp4,.mp3,.flac" hidden>
+  <input type="file" id="acVoiceFile" accept="${voiceFileTypes}" hidden>
   <label class="voice-live-setting" title="录音时会额外调用转写服务，可能产生额外费用"><input type="checkbox" id="acVoiceLive">实时预览</label>
   <span id="acVoiceStatus" role="status" hidden></span>
   <output class="voice-live-preview" id="acVoicePreview" aria-label="实时转写草稿" hidden></output>`;
  $("#agentChat .ac-composer").append(box);
  const picker = $("#acVoiceFile");
+ const nodePicker = $("#ppVoiceFile");
+ nodePicker.accept = voiceFileTypes;
+ let nodeSelection;
  $("#acVoiceRecord").onclick = () => acVoiceRecord();
  $("#acVoiceUpload").onclick = () => picker.click();
  $("#acVoiceCancel").onclick = acVoiceCancel;
@@ -514,6 +528,19 @@ function acVoiceInit() {
   else nodeVoiceStart();
  };
  $("#ppVoiceCancel").onclick = acVoiceCancel;
+ $("#ppVoiceUpload").onclick = () => {
+  nodeSelection = nodeVoiceSelection();
+  if (nodeSelection) nodePicker.click();
+ };
+ nodePicker.oncancel = () => { nodeSelection = null; };
+ nodePicker.onchange = () => {
+  const file = nodePicker.files[0], selection = nodeSelection;
+  nodePicker.value = "";
+  nodeSelection = null;
+  if (!file || !selection || acVoiceActive || !nodeVoiceCurrent(selection)) return;
+  acVoiceActive = selection;
+  void acVoiceSubmit(selection,file,file.name);
+ };
  for (const setting of [$("#acVoiceLive"),$("#ppVoiceLive")]) setting.onchange = () => {
   voicePreviewEnabled = setting.checked;
   localStorage.setItem("h3.voice.livePreview",String(voicePreviewEnabled));

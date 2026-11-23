@@ -14,6 +14,19 @@ from test_agent_chat import ChatFixture
 
 
 class GenerationHistory(ChatFixture):
+    async def test_video_history_restores_effective_generation_details(self):
+        ref = "output:h3studio/sample.mp4"
+        meta = {"uid":7,"provider":"本地 H3","model":"h3-video","mode":"planned",
+                "mode_name":"人物设定","resolution":"480P","full_prompt":"Use the red toy train as a reference.","seed":63071}
+        db.task_start(id="local-video-history",user_id=7,capability="video",state="running")
+        server.log_end({"id":"local-video-history","kind":"video","state":"done","created":100,
+                        "finished":104,"outputs":[{"ref":ref}],"meta":meta})
+        reply = await self.client.get("/api/jobs",params={"ids":"local-video-history"})
+        self.assertEqual(reply.status,200)
+        restored = (await reply.json())["local-video-history"]
+        self.assertEqual(restored["state"],"done")
+        self.assertEqual({key:restored["meta"][key] for key in meta},meta)
+
     async def test_audio_waveform_is_version_specific_and_private(self):
         ref = "input:h3studio/waveform.wav"
         path = server.tools.ref_path(server.COMFY_DIR,ref)

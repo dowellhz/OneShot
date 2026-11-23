@@ -480,9 +480,18 @@ class SegmentEdit(ChatFixture):
         scope={"node_id":"n3","start":.5,"end":4.5}
         payload={"kind":"video","board":"test","segment_edit":True,"video_refs":[{**scope,"ref":source_ref}],
                  "provider":provider["id"],"camera_plan":cut,"prompt":""}
-        preview=await self.client.post("/api/preview",json=payload)
-        self.assertEqual(preview.status,200)
-        expected=(await preview.json())["prompt"]
+        with patch.object(server.providers,"routes",return_value=[route]), patch.object(server.providers,"all_providers",return_value=[]):
+            preview=await self.client.post("/api/preview",json=payload)
+            self.assertEqual(preview.status,200,await preview.text())
+            reviewed=await preview.json()
+            self.assertIn("方舟 · doubao-seedance-2-5-test · 4 秒 · 1080p · 视频 1/10",reviewed["mode"])
+            self.assertEqual((reviewed["inputs"][0]["start"],reviewed["inputs"][0]["end"]),(.5,4.5))
+            short=await self.client.post("/api/preview",json={**payload,"video_refs":[{**scope,"ref":source_ref,"end":2}]})
+            self.assertEqual(short.status,400)
+            self.assertIn("待编辑片段须为 4 到 30 秒",(await short.json())["error"])
+            unsupported=await self.client.post("/api/preview",json={**payload,"provider":"local_h3"})
+            self.assertEqual(unsupported.status,400)
+        expected=reviewed["prompt"]
         self.assertIn("片段中点硬切",expected)
         self.assertIn("右侧 · 全景",expected)
         invalid=await self.client.post("/api/generate",json={**payload,"camera_plan":{"mode":"move","start":start}})

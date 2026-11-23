@@ -336,6 +336,12 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(image.getchannel("A").tobytes(),alpha.tobytes())
             resized = source.convert("RGB").resize(size,Image.Resampling.LANCZOS)
             self.assertIsNotNone(ImageChops.difference(resized,image.convert("RGB")).getbbox())
+            version = {**result,"source":"edit","edit":{"source":path,"mode":"upscale","scale":scale,"model":"FSRCNN"}}
+            board = {"nodes":[{"id":"n1","name":"图片","type":"image","cur":1,"versions":[{"ref":path},version]}],"edges":[]}
+            report = server.workflow_review.build(board,"n1",2)
+            current = next(row for row in report["steps"] if row["version"]==2)
+            self.assertIn({"label":"智能放大","value":f"{scale}× · FSRCNN"},current["settings"])
+            self.assertTrue(any(entry["ref"]==path and entry["version"]==1 for entry in current["inputs"]))
         self.assertEqual(editor.load(self.root,path).tobytes(),source.tobytes())
 
     async def test_resize_fits_keep_exact_dimensions_and_alpha(self):
