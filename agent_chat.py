@@ -1796,9 +1796,9 @@ class AgentService:
                 "ar":ar,"images":copy.deepcopy(images),"quality":"4mp","turbo":True,"seed":-1,
                 **({"memory_views":args["memory_views"]} if "memory_views" in args else {})}
 
-    def image_set_assets(self, run, user, payload):
+    def prepare_image_references(self, run, user, payload):
         try:
-            prepared = self.app["creative_memory"].prepare(user,payload,
+            return self.app["creative_memory"].prepare(user,payload,
                 owner_only=bool(run["data"].get("external_tool")))
         except web.HTTPException as error:
             try:
@@ -1806,7 +1806,33 @@ class AgentService:
             except (TypeError,ValueError,AttributeError):
                 message = None
             raise ToolError(message or error.reason) from None
-        return prepared.get("memory_used",[])
+
+    @staticmethod
+    def image_asset_names(assets):
+        names = []
+        for asset in assets:
+            angles = [creative_memory.CHARACTER_VIEW_LABELS[ref["view"]]
+                      for ref in asset.get("references",[]) if ref.get("view")]
+            names.append(asset["name"] + ("（"+"、".join(angles)+"）" if angles else ""))
+        return names
+
+    def review_image_references(self, run, user, payload):
+        for image in payload.get("images",[]):
+            if image.get("node_id"):
+                self.source(run,user,image["node_id"],pinned_ref=image["ref"])
+        prepared = self.prepare_image_references(run,user,payload)
+        used = prepared.get("memory_used",[])
+        inputs = workflow_review.capture_generation(prepared)["inputs"]
+        cost = self.host.generation_unit_cost(prepared)
+        if not (used or inputs):
+            return None,cost
+        route = self.host.requested_generation_route(prepared,"image")
+        provider = route["provider"] if route else {}
+        model = route["model"] if route else None
+        signature = [inputs,used,provider.get("id"),provider.get("updated"),model]
+        review = {"counts":[("图",len(inputs),9)],"inputs":inputs,"assets":self.image_asset_names(used),
+                  "provider":provider.get("name"),"model":model,"key":hashlib.sha256(dumps(signature).encode()).hexdigest()}
+        return review,cost
 
     async def submit_image_set(self, run, user, cid, args, images):
         label = (args.get("name") or "").strip() or "图片套图"
@@ -1828,13 +1854,8 @@ class AgentService:
             views = {**creative_memory.requested_views(item.get("memory_views",[])),**explicit_views}
             if views:
                 payload["memory_views"] = creative_memory.view_selections(views)
-            used = self.image_set_assets(run,user,payload)
-            assets = []
-            for asset in used:
-                angles = [creative_memory.CHARACTER_VIEW_LABELS[ref["view"]]
-                          for ref in asset.get("references",[]) if ref.get("view")]
-                assets.append(asset["name"] + ("（"+"、".join(angles)+"）" if angles else ""))
-            plan.append({"name":name,"prompt":prompt,"aspect":aspect,"assets":assets})
+            used = self.prepare_image_references(run,user,payload).get("memory_used",[])
+            plan.append({"name":name,"prompt":prompt,"aspect":aspect,"assets":self.image_asset_names(used)})
             requests.append(payload)
             snapshots.append(used)
         await self.begin_generation(run,cid,"image",len(plan),{"label":label,"prompt":style,
@@ -1843,7 +1864,7 @@ class AgentService:
                                      "asset_fingerprint":hashlib.sha256(dumps(snapshots).encode()).hexdigest()},
                                     force_confirmation=True,pricing_request={"kind":"image"})
         for payload, used in zip(requests,snapshots):
-            if self.image_set_assets(run,user,payload) != used:
+            if self.prepare_image_references(run,user,payload).get("memory_used",[]) != used:
                 raise ToolError(f"「{payload['label']}」的参考资产已更新。请重新检查并确认套图。")
         batch = [{**item,"state":"unsubmitted"} for item in plan]
         pending = {"ids":[],"name":label,"prompt":style,"kind":"image","batch":batch}
@@ -1856,7 +1877,7 @@ class AgentService:
                 self.validate_external_task(run)
                 for image in images:
                     self.source(run,user,image["node_id"],pinned_ref=image["ref"])
-                if pending["ids"] and self.image_set_assets(run,user,payload) != used:
+                if pending["ids"] and self.prepare_image_references(run,user,payload).get("memory_used",[]) != used:
                     raise ToolError("参考资产已更新，请重新检查后再生成这张图")
             except ToolError as exc:
                 item["error"] = str(exc)
@@ -2079,6 +2100,8 @@ class AgentService:
 
         async def inspect_references(changes):
             review_payload = {**payload,"board":run["board_id"],**changes}
+            if kind == "image":
+                return self.review_image_references(run,user,review_payload)
             request = InternalRequest(self,user,review_payload)
             request["replay_memory_ref"] = replay_ref
             request["connector_own_assets"] = bool(run["data"].get("external_tool"))
@@ -2096,7 +2119,7 @@ class AgentService:
                                               edit_prompt=kind == "image" or simple_video,
                                               edit_count=kind == "image" and not target_id and fn == self.host.generate_request,
                                               pricing_request=payload if fn == self.host.generate_request and not replay_ref else None,
-                                              reference_review=inspect_references if kind == "video" and fn == self.host.generate_request else None)
+                                              reference_review=inspect_references if fn == self.host.generate_request else None)
         reference_reviewed = "_reference_preview" in changes
         reference_preview = changes.pop("_reference_preview",None)
         payload.update(changes)
@@ -2108,8 +2131,12 @@ class AgentService:
         if target_data is not None and "prompt" in changes:
             target_data = {**target_data,"prompt":changes["prompt"],"pmode":"free"}
         payload.update(board=run["board_id"], label=name)
+        if reference_reviewed and kind == "image":
+            review,_ = self.review_image_references(run,user,payload)
+            if (review or {}).get("key") != reference_preview:
+                raise ToolError("参考素材或生成服务已变化，请重新确认生成")
         request = InternalRequest(self,user,payload)
-        if reference_reviewed:
+        if reference_reviewed and kind == "video":
             request.update(reference_reviewed=True,reference_preview=reference_preview)
         if replay_ref:
             request["replay_memory_ref"] = replay_ref
@@ -3097,7 +3124,10 @@ async def decide_generation(req):
                     return web.json_response({"error":f"数量必须为 1–{editable['count']} 的整数"},status=400)
                 changes["count"] = count
             plan["overrides"] = {**plan.get("overrides",{}),**changes}
-            if plan.get("reference_checked"):
+            asset_prompt_edit = "prompt" in changes and (
+                "@" in changes["prompt"] or (plan.get("reference_review") or {}).get("assets") or plan.get("reference_error")
+            )
+            if plan.get("reference_checked") and (plan.get("kind") != "image" or asset_prompt_edit):
                 plan["reference_pending"] = True
                 plan.pop("reference_error",None)
                 plan["unit_cost"] = None

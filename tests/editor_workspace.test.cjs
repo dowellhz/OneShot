@@ -5955,6 +5955,11 @@ async function run(){
   ['参考资产 · 林森（标准主图）、车站 <img src=x>','参考资产 · 林森（正面头肩）']);
  assert.equal(evaluate('$("#acApprovals img")'),null);
  evaluate('AC.approvals=previousApprovals;acRenderApprovals()');
+ evaluate(`AC.approvals=[{id:"image-review",name:"image_generate",plan:{kind:"image",count:1,reference_review:{
+    assets:["林森（正面头肩）"],counts:[["图",2,9]],inputs:[{name:"画布参考",version:2},{name:"林森 · 正面头肩",role:"subject"}]}}}];
+  acRenderApprovals();`);
+ assert.match(evaluate('$("#acApprovals").textContent'),/画布参考 · 图片 · 版本 2.*林森 · 正面头肩.*林森（正面头肩）/s);
+ evaluate('AC.approvals=previousApprovals;acRenderApprovals()');
 
  const fullscreenFetch=w.fetch;
  let fullscreenRequest;

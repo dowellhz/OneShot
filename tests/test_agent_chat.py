@@ -725,6 +725,69 @@ class ChatIntegration(ChatFixture):
             submit.assert_called_once()
             self.assertEqual(submit.call_args.args[-1]["audio_refs"],[(audio,0,2)])
 
+    async def test_image_approval_shows_edited_asset_references_and_blocks_stale_submission(self):
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        face = image_editor.save(server.COMFY_DIR,Image.new("RGB",(64,64),"blue"))
+        b = self.load()
+        b["nodes"][0]["versions"].append(face)
+        server.write_board(server.board_path("test"),b)
+        asset = store.put(user,{"board":"test","kind":"character","name":"林森","ref":self.source["ref"],
+                               "source_board":"test","character_view":"main","desc":"蓝衣"})
+        store.put(user,{"id":asset["id"],"ref":face["ref"],"source_board":"test","character_view":"face"})
+        prompt = "画 @{"+asset["id"]+"#face|林森} 的头肩特写"
+        endpoint = f"/api/chat/sessions/{self.sid}/messages"
+        seen = []
+
+        async def submit(_req,payload):
+            seen.append(payload)
+            jid = "e000000124001"
+            output = image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),"green"))
+            server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[output]}
+            return web.json_response({"ids":[jid]})
+
+        async def start(key, text):
+            self.svc.model.side_effect = [call("image_generate",{"prompt":text,"reference_ids":["n1"]}),answer()]
+            response = await self.client.post(endpoint,json={"text":"生成海报","request_key":key,"generation_mode":"manual"})
+            self.assertEqual(response.status,200,await response.text())
+            rid = (await response.json())["id"]
+            return rid,await self.pending_generation(rid)
+
+        with patch.object(server,"_generate_request",submit):
+            rid, approval = await start("image-asset-adjust","只有场景")
+            review = approval["plan"]["reference_review"]
+            self.assertEqual(review["assets"],[])
+            self.assertEqual([(entry["ref"],entry["version"]) for entry in review["inputs"]],[(self.source["ref"],1)])
+            url = f"/api/chat/runs/{rid}/approvals/"
+            adjusted = await self.client.post(url+approval["id"],json={"decision":"adjust","parameters":{"prompt":prompt}})
+            self.assertEqual(adjusted.status,200,await adjusted.text())
+            revised = (await adjusted.json())["approval_id"]
+            for _ in range(100):
+                plan = (await self.pending_generation(rid))["plan"]
+                if (plan.get("reference_review") or {}).get("assets"):
+                    break
+                await asyncio.sleep(.02)
+            review = plan["reference_review"]
+            self.assertEqual(review["assets"],["林森（正面头肩）"])
+            self.assertEqual([(entry["ref"],entry.get("memory_view")) for entry in review["inputs"]],
+                             [(self.source["ref"],None),(face["ref"],"face")])
+            self.assertNotIn("key",review)
+            store.put(user,{"id":asset["id"],"desc":"红衣"})
+            self.assertEqual((await self.client.post(url+revised,json={"decision":"approve"})).status,200)
+            await self.wait(rid)
+            self.assertEqual(seen,[])
+            self.assertIn("参考素材或生成服务已变化",db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+            rid, approval = await start("image-asset-confirmed",prompt)
+            b = self.load()
+            b["nodes"][0]["cur"] = 1
+            server.write_board(server.board_path("test"),b)
+            decision = await self.client.post(f"/api/chat/runs/{rid}/approvals/{approval['id']}",json={"decision":"approve"})
+            self.assertEqual(decision.status,200,await decision.text())
+            await self.wait(rid)
+        self.assertEqual(len(seen),1)
+        self.assertEqual([entry["ref"] for entry in seen[0]["images"]],[self.source["ref"],face["ref"]])
+        self.assertIn("红衣",seen[0]["prompt"])
+
     async def test_image_set_recovers_known_jobs_without_issuing_the_unconfirmed_submission_again(self):
         plan = {"name":"插图","items":[{"name":"首页","prompt":"简洁封面","aspect":"16:9"},
                  {"name":"正文","prompt":"桌上的文档"},{"name":"收尾","prompt":"夕阳中的桌子"}]}
