@@ -948,16 +948,41 @@ def asset_list_entries(items, user, query):
 async def listing(req):
     s,user,query = store(req),req["user"],req.query.get("q","")
     bid, scope = req.query.get("board") or None, req.query.get("scope")
+    cursor = req.query.get("cursor")
     if scope is not None and (not bid or not valid_library_scope(scope)):
         fail("请选择有效的画布和资产范围")
+    if cursor is not None and (scope is None or query):
+        fail("请选择有效的资产分页范围")
     items = s.list(user,bid,query,req.query.get("kind"))
     if scope is not None:
         in_scope = s.scope_filter(user,bid,scope)
         items = [asset for asset in items if in_scope(asset)]
-    items = items[:300]
+    if cursor is not None:
+        items, next_cursor = library_page(items,cursor)
+    else:
+        items = items[:300]
     s.character_drafts(user,items)
     asset_list_entries(items,user,query)
-    return web.json_response(items,headers={"Cache-Control":"no-store"})
+    payload = items if cursor is None else {"items":items,"next_cursor":next_cursor}
+    return web.json_response(payload,headers={"Cache-Control":"no-store"})
+
+
+def library_page(items, cursor):
+    def position(asset):
+        return asset["mtime"],asset["id"]
+
+    if cursor:
+        try:
+            if len(cursor) > 240:
+                raise ValueError
+            mtime, mid = json.loads(cursor)
+            if type(mtime) not in (int,float) or not math.isfinite(mtime) or not isinstance(mid,str):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            fail("资产分页位置无效")
+        items = [asset for asset in items if position(asset) < (mtime,mid)]
+    page = sorted(items,key=position,reverse=True)[:120]
+    return page, dumps(position(page[-1])) if len(items) > len(page) else None
 
 
 @routes.post("/api/document-import")

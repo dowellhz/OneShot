@@ -104,6 +104,12 @@ w.fetch=async(url,options={})=>{
     scope==='personal' ? !asset.board&&!asset.project&&!asset.team&&(asset.owner==null||asset.owner===1) :
     scope==='shared' ? asset.shared : scope?.startsWith('team:') ? asset.team===scope.slice(5) : true);
    if(!scope && w.__limitedMemoryList)result=result.filter(asset=>!asset.board);
+   if(u.searchParams.has('cursor')){
+    const cursor=u.searchParams.get('cursor');
+    if(cursor && w.__failAssetPage)return {ok:false,status:503,json:async()=>({error:'加载暂时失败'})};
+    const extra=scope==='current' && w.__oldAssetPage;
+    result={items:cursor?[extra]:result,next_cursor:extra&&!cursor?'older':null};
+   }
   }
  }
  else if(pathname==='/api/memory/search'){
@@ -723,6 +729,7 @@ async function run(){
   {id:'public',name:'共享画风',kind:'style',owner:2,shared:true,board:'',aliases:[],tags:[],desc:'黑白线稿',media:[],mtime:1}
  ];
  w.__memoryHistory=[{ref:'output:h3studio/history.png',board:'btest'}];
+ w.__oldAssetPage={id:'old-doc',name:'旧场记',kind:'document',board:'btest',owner:1,mtime:0};
  const nodesBeforeLibrary=evaluate('B.nodes.length');
  evaluate('ME_USER={id:1,role:"member"};document.getElementById("assetLibraryBtn").click()');
  await ready('AL.items.length===3 && document.getElementById("alLoading").hidden','asset library fetches only the current scope');
@@ -735,6 +742,16 @@ async function run(){
  assert.equal(evaluate('$("#alSemanticStatus").hidden'),true,'reset clears the description search');
  equal(evaluate('[$("#alScope").value,$("#alScope option:checked").textContent,$$("#alGrid .al-card").length]'),
   ['current','当前资产库 · '+evaluate('B.name'),3],'the standalone library shows only the current canvas assets');
+ w.__failAssetPage=true;
+ evaluate('$("#alLoadMore").click()');
+ await ready('!$("#alError").hidden && !$("#alLoadMore").disabled','pagination failure allows retry');
+ assert.equal(evaluate('$$("#alGrid .al-card").length'),3);
+ w.__failAssetPage=false;
+ evaluate('$("#alLoadMore").click()');
+ await ready('!!$("#alGrid [data-id=old-doc]") && $("#alLoadMore").hidden','pagination appends older assets');
+ assert.equal(evaluate('$$("#alGrid .al-card").length'),4);
+ delete w.__oldAssetPage;
+ await evaluate('alRefresh()');
  equal(evaluate('document.querySelector("#alGrid .al-card[data-id=doc] strong svg")'),null,'asset names are escaped');
  evaluate('$("#alNewFolder").click();$("#alFolderEditor input").value="试拍";$("#alFolderEditor button[type=submit]").click()');
  await ready('!!$("#alFolders [data-folder=qa-folder]")','creates a personal asset folder');
@@ -1564,6 +1581,7 @@ async function run(){
     const scope=u.searchParams.get('scope');
     result=projectAssets.filter(a=>scope==='current' ? !!a.project&&a.project===projectMembership.get(bid) :
      scope==='personal' ? !a.project : !a.project||a.project===projectMembership.get(bid));
+    if(u.searchParams.has('cursor'))result={items:result,next_cursor:null};
    }
   } else if(u.pathname==='/api/board/btest/comments'){
    if(method==='POST'){

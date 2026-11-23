@@ -40,3 +40,5 @@
 .al-import-selection small,.al-group-import p { color:var(--dim); margin:0; }
 .al-group-import p { flex-basis:100%; font-size:var(--fs-caption); }
 .al-file-check { position: absolute; z-index: 1; right: 7px; bottom: 40px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--card-hi); border: 1px solid var(--line2); }
+.al-content #alLoadMore:not([hidden]){display:flex;margin:16px auto 0;justify-content:center}
+.al-content:has(#alLoadMore:not([hidden])) .al-empty{height:auto;min-height:160px}

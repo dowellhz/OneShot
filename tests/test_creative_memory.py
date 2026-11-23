@@ -408,6 +408,23 @@ class MemoryIntegration(ChatFixture):
         self.assertEqual([asset["id"] for asset in await browse("shots",scope="current",q="剧本")],[project_asset["id"]])
         self.assertEqual(await browse("standalone",scope="current"),[])
 
+        # A tied timestamp must still paginate deterministically.
+        db.run("UPDATE creative_memories SET updated=? WHERE id LIKE 'personal-%'",sibling_asset["mtime"]+1)
+        page = await browse("shots",scope="personal",cursor="")
+        ids = [asset["id"] for asset in page["items"]]
+        self.assertEqual(len(ids),120)
+        self.assertTrue(page["next_cursor"])
+        db.run("""INSERT INTO creative_memories(id,owner,kind,name,data,updated)
+                  VALUES('new-personal',7,'document','新剧本','{}',?)""",sibling_asset["mtime"]+2)
+        for expected in (120,65):
+            page = await browse("shots",scope="personal",cursor=page["next_cursor"])
+            self.assertEqual(len(page["items"]),expected)
+            ids.extend(asset["id"] for asset in page["items"])
+        self.assertIsNone(page["next_cursor"])
+        self.assertEqual(ids,sorted((f"personal-{i}" for i in range(1,306)),reverse=True))
+        response = await self.client.get("/api/memory",params={"board":"shots","scope":"personal","cursor":"bad"})
+        self.assertEqual(response.status,400)
+
     async def test_explicit_mention_reaches_generation_and_records_history(self):
         a = await self.create(aliases=['小林'], constraints='眼镜不能消失')
         output = image_editor.save(server.COMFY_DIR, Image.new('RGB',(64,48),'orange'))
