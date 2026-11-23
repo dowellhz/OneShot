@@ -306,7 +306,7 @@ function ctOpenGroupGallery(group) {
   const chat=$("[data-group-chat]",dialog);
   const media=members.filter(n=>["image","video","audio"].includes(n.type)&&curV(n)?.ref);
   const collect=$("[data-group-collect]",dialog);
-  const assets=members.filter(n=>media.includes(n)||n.type==="text"&&n.data?.text?.trim());
+  const assets=members.filter(alCanvasCollectable);
   collect.hidden=!canvasCanEdit();
   collect.disabled=!assets.length;
   collect.onclick=()=>{

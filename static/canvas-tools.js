@@ -199,6 +199,7 @@ async function ctDownload(nodes=ctSelected()) {
 function ctAction(action) {
   if (action === "download") return ctDownload();
   if (!canvasCanEdit()) return;
+  if (action === "collect") return alOpenCanvasImport(byPosition([...sel]));
   if (action === "fold") return ctGroup(true);
   if (action === "group") return ctGroup();
   if (action === "ungroup") return ctUngroup();
@@ -214,10 +215,22 @@ function ctAction(action) {
 }
 function ctRenderSelectionTools(){const box=$("#selectionTools");if(!box || !B)return;const nodes=ctSelected();box.classList.toggle("on",nodes.length>1);if(nodes.length<2)return;
   const edit=canvasCanEdit(), playlist=edit&&nodes.filter(playlistVideo).length>=2;
-  const key=nodes.map(n=>n.id).sort().join(",")+":"+playlist+":"+edit;if(box.dataset.key!==key){box.dataset.key=key;box.innerHTML=CT_ACTIONS.map(([action,label,path])=>`<button data-action="${action}" aria-label="${label}" data-tip="${label}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg></button>`).join("");
+  const collect=edit&&nodes.some(alCanvasCollectable);
+  const key=nodes.map(n=>n.id).sort().join(",")+":"+playlist+":"+edit+":"+collect;if(box.dataset.key!==key){box.dataset.key=key;box.innerHTML=CT_ACTIONS.map(([action,label,path])=>`<button data-action="${action}" aria-label="${label}" data-tip="${label}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg></button>`).join("");
     if(edit)box.insertAdjacentHTML("beforeend",`<button data-action="fold" aria-label="收起为一组" data-tip="收起为一组">${ico("stack")}</button>`);
+    if(edit)box.insertAdjacentHTML("beforeend",`<button data-action="pin" aria-label="颜色标记" data-tip="颜色标记">${ico("tag")}</button>`);
+    if(collect)box.insertAdjacentHTML("beforeend",`<button data-action="collect" aria-label="收录到资产库" data-tip="收录到资产库">${ico("assets")}</button>`);
     if(playlist)box.insertAdjacentHTML("beforeend",`<button data-action="playlist" aria-label="创建播放列表" data-tip="创建播放列表">${ico("stack")}</button>`);
-    $$("button",box).forEach(button=>{button.onclick=()=>{hideNodeToolTip();if(button.dataset.action==="playlist")createFilmPlaylist(byPosition([...sel]));else ctAction(button.dataset.action);};button.onmouseenter=button.onfocus=()=>showNodeToolTip(button);button.onmouseleave=button.onblur=hideNodeToolTip;});}
+    $$("button",box).forEach(button=>{
+      button.onclick=()=>{
+        hideNodeToolTip();
+        if(button.dataset.action==="playlist")return createFilmPlaylist(byPosition([...sel]));
+        if(button.dataset.action==="pin")return openNodePinMenu(button);
+        ctAction(button.dataset.action);
+      };
+      button.onmouseenter=button.onfocus=()=>showNodeToolTip(button);
+      button.onmouseleave=button.onblur=hideNodeToolTip;
+    });}
   $("[data-action=download]",box).disabled=ctDownloading||!ctDownloadable(nodes).length;
   ctPlaceSelectionTools();}
 function ctPlaceSelectionTools(){const box=$("#selectionTools");if(!box?.classList.contains("on"))return;const selected=ctSelected();if(selected.length<2){box.classList.remove("on");return;}const rects=selected.map(n=>$(".card",els.get(n.id))?.getBoundingClientRect()).filter(Boolean);if(!rects.length)return;const center=(Math.min(...rects.map(r=>r.left))+Math.max(...rects.map(r=>r.right)))/2;box.style.left=Math.max(8,Math.min(innerWidth-box.offsetWidth-8,center-box.offsetWidth/2))+"px";box.style.top=Math.max(64,Math.min(innerHeight-50,Math.min(...rects.map(r=>r.top))-58))+"px";}

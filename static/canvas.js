@@ -7,6 +7,17 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const AR = { "16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1, "4:3": 4 / 3, "3:4": 3 / 4, "21:9": 21 / 9 };
 const TYPE_CN = { text: "文本", image: "图片", video: "视频", audio: "音频", script: "分镜" };
 const NODE_PINS = new Map([["blue","雾蓝"],["lilac","淡紫"],["amber","琥珀"],["rose","玫瑰"]]);
+function nodePins(n) { return [...new Set((Array.isArray(n.pins)?n.pins:[n.pin]).filter(color=>NODE_PINS.has(color)))]; }
+function renderNodePinBar() {
+  const bar=$("#nodePinBar");
+  if(!bar || !B)return;
+  const counts=new Map();
+  for(const n of B.nodes)for(const color of nodePins(n))counts.set(color,(counts.get(color)||0)+1);
+  const markup=[...NODE_PINS].filter(([color])=>counts.has(color)).map(([color,label])=>
+    `<button type="button" data-pin-color="${color}" aria-controls="nodeSearch" aria-label="${label}标记 · ${counts.get(color)} 个节点" title="${label}标记 · ${counts.get(color)} 个节点"><span class="node-pin" data-color="${color}" aria-hidden="true"></span><span aria-hidden="true">${counts.get(color)}</span></button>`).join("");
+  if(bar._markup!==markup){bar._markup=markup;bar.innerHTML=markup;}
+  bar.hidden=!markup;
+}
 const nodeLocked = n => n?.locked === true;
 
 const vp = $("#vp"), world = $("#world"), svg = $("#edges");
@@ -214,7 +225,7 @@ function newCanvasNodeId() {
 }
 function addNode(type, x, y, data = {}, extra = {}) {
   const n = { id: newCanvasNodeId(), type, name: nextName(type), x: Math.round(x), y: Math.round(y), data: { ...defaults(type), ...data }, versions: [], cur: -1, job: null, ...extra };
-  B.nodes.push(n); build(n); save(); updateEmpty(); return n;
+  B.nodes.push(n); build(n); save(); updateEmpty(); if(nodePins(n).length)renderNodePinBar(); return n;
 }
 function size(n) {
   if (n.type === "group") return {w:n.w,h:n.h};
@@ -335,18 +346,32 @@ function removeNodes(ids) {
   B.edges = B.edges.filter(e => !removable.has(e.from) && !removable.has(e.to));
   sel = new Set([...sel].filter(i => !removable.has(i)));
   touched.forEach(id => node(id) && refresh(node(id)));
-  drawEdges(); save(); updateEmpty(); updateSel();
+  drawEdges(); save(); updateEmpty(); updateSel();renderNodePinBar();
 }
 function markCanvasNodes(ids, value, {lock = false} = {}) {
   if (!canvasCanEdit() || !lock && value && !NODE_PINS.has(value)) return;
-  const key = lock ? "locked" : "pin";
-  const changed = [...new Set(ids)].map(node).filter(n => n && (n[key] || undefined) !== (value || undefined));
+  const nodes=[...new Set(ids)].map(node).filter(Boolean);
+  const removeColor=!lock&&value&&nodes.every(n=>nodePins(n).includes(value));
+  const changed=nodes.filter(n=>lock?nodeLocked(n)!==!!value:
+    value?nodePins(n).includes(value)===!!removeColor:nodePins(n).length>0);
   if (!changed.length) return;
   checkpoint();
   for (const n of changed) {
-    if (value) n[key] = value; else delete n[key];
+    if(lock){
+      if(value)n.locked=true;
+      else delete n.locked;
+    }else{
+      const colors=!value?[]:removeColor?nodePins(n).filter(color=>color!==value):[...nodePins(n),value];
+      if(colors.length){
+        n.pins=colors;
+        n.pin=colors[0];
+      }else{
+        delete n.pins; delete n.pin;
+      }
+    }
     render(n);
   }
+  if(!lock)renderNodePinBar();
   showPanel();
   save();
 }
@@ -383,7 +408,7 @@ function plan(n) {
 function build(n) {
   const el = document.createElement("div");
   el.className = "node " + n.type; el.dataset.id = n.id;
-  el.innerHTML = `<div class="lbl">${ico(n.type)}<span class="nm"></span><span class="meta"></span><span class="node-pin" hidden></span><span class="node-lock" title="已锁定位置和删除" aria-label="已锁定位置和删除" hidden>${ico("lock")}</span><span class="gr" title="按住拖动">${ico("grip")}</span></div>
+  el.innerHTML = `<div class="lbl">${ico(n.type)}<span class="nm"></span><span class="meta"></span><span class="node-pins" hidden></span><span class="node-lock" title="已锁定位置和删除" aria-label="已锁定位置和删除" hidden>${ico("lock")}</span><span class="gr" title="按住拖动">${ico("grip")}</span></div>
     <div class="card"><div class="grip" title="按住拖动">${ico("grip")}</div><div class="body"></div><div class="gen"><div class="pct"></div><div class="bar"><i></i></div><div class="s"></div></div><div class="errbox"></div></div>
     <div class="plus l" title="添加上游节点">${ico("plus")}</div><div class="plus r" title="拖动连线 / 点击新建下游节点">${ico("plus")}</div>`;
   world.appendChild(el); els.set(n.id, el);
@@ -392,6 +417,8 @@ function build(n) {
 function rebuild() {
   els.forEach(e => e.remove()); els.clear();
   B.nodes.forEach(build); drawEdges(); updateEmpty(); placeOverlays();
+  renderNodePinBar();
+  if (filmPlaylistPicker) paintFilmPlaylistPicker();
 }
 function render(n) {
   const el = els.get(n.id); if (!el) return;
@@ -400,10 +427,12 @@ function render(n) {
   el.style.left = n.x + "px"; el.style.top = n.y + "px";
   card.style.width = s.w + "px"; card.style.height = s.h + "px";
   $(".nm", el).textContent = n.name; $(".nm", el).title = n.name;
-  const pin = $(".node-pin",el), color = NODE_PINS.get(n.pin);
-  pin.hidden = !color;
-  pin.dataset.color = color ? n.pin : "";
-  if (color) pin.title = `标记 · ${color}`;
+  const pinGroup=$(".node-pins",el),colors=nodePins(n),colorKey=colors.join(",");
+  if(pinGroup.dataset.colors!==colorKey){
+    pinGroup.dataset.colors=colorKey;
+    pinGroup.hidden=!colors.length;
+    pinGroup.innerHTML=colors.map(color=>`<span class="node-pin" data-color="${color}" title="${NODE_PINS.get(color)}标记"></span>`).join("");
+  }
   el.classList.toggle("node-locked",nodeLocked(n));
   $(".node-lock",el).hidden = !nodeLocked(n);
   let meta = "";
@@ -530,6 +559,12 @@ function renderVTabs(n, el) {
     return `<button role="tab" aria-selected="${i === n.cur}" aria-label="版本 ${i + 1}" data-i="${i}" tabindex="${i===n.cur?0:-1}" class="${i === n.cur ? "on" : ""}" title="${esc(tip)}" ${n.job ? "disabled" : ""}>${i + 1}</button>`;
   }).join("");
   $$("button",t).forEach(button=>vtWireTab(button,n));
+  const active=$(".on",t);
+  if(active){
+    const top=active.offsetTop,bottom=top+active.offsetHeight;
+    if(top<t.scrollTop)t.scrollTop=top;
+    else if(bottom>t.scrollTop+t.clientHeight)t.scrollTop=bottom-t.clientHeight;
+  }
 }
 function refresh(n) { if (!n) return; render(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges(); }
 
@@ -829,13 +864,21 @@ function showPanel() {
     if (v.ref && ["image","video","audio"].includes(n.type)) b.push(tool("favorite", "star", "收藏此版本"));
   }
   b.push(tool("agent", "script", "交给创作助手") + tool("dup", "copy", "创建副本") +
-    (nodeLocked(n) ? tool("unlock-node", "lock", "解锁节点") : tool("del", "trash", "删除节点")) + tool("more", "more", "更多操作"));
+    (nodeLocked(n) ? tool("unlock-node", "lock", "解锁节点") : tool("del", "trash", "删除节点")) +
+    (canvasCanEdit() ? tool("pin", "tag", "颜色标记") : "") + tool("more", "more", "更多操作"));
   tools.innerHTML = b.join("");
   $$("button", tools).forEach(x => {
     x.onmouseenter = x.onfocus = () => showNodeToolTip(x);
     x.onmouseleave = x.onblur = hideNodeToolTip;
     if (x.dataset.a === "favorite") nodeMediaFavorite(x,n,v);
-    else x.onclick = ev => { hideNodeToolTip(); x.dataset.a === "more" ? (ev.stopPropagation(), ctxMenu({ target: els.get(n.id), clientX: x.getBoundingClientRect().left, clientY: x.getBoundingClientRect().bottom + 6 })) : nodeAction(n, x.dataset.a); };
+    else x.onclick = ev => {
+      hideNodeToolTip();
+      if (x.dataset.a === "pin") return openNodePinMenu(x);
+      if (x.dataset.a !== "more") return nodeAction(n, x.dataset.a);
+      ev.stopPropagation();
+      const rect = x.getBoundingClientRect();
+      ctxMenu({ target: els.get(n.id), clientX: rect.left, clientY: rect.bottom + 6 });
+    };
   });
   if (n.type === "audio") { renderAudioPanel(n); placeOverlays(); return; }
   if (n.type === "text" || n.data.previs) { placeOverlays(); return; }
@@ -1669,6 +1712,36 @@ vp.addEventListener("pointerdown", e => {
 vp.addEventListener("contextmenu", e => e.preventDefault());
 
 // ---- right-click menu
+function nodePinPalette(nodes) {
+  return `<div class="node-pin-menu" role="group" aria-label="节点颜色标记">
+    ${[...NODE_PINS].map(([key,label]) => `<button type="button" data-a="pin:${key}" title="${label}标记" aria-label="${label}标记" aria-pressed="${nodes.every(n=>nodePins(n).includes(key))}"><span class="node-pin" data-color="${key}"></span></button>`).join("")}
+    <button type="button" data-a="pin:" title="清除标记" aria-label="清除标记" ${nodes.some(n=>nodePins(n).length) ? "" : "disabled"}>${ico("minus")}</button>
+  </div>`;
+}
+let nodePinTrigger = null;
+function openNodePinMenu(button) {
+  const nodes = [...sel].map(node).filter(Boolean);
+  if (!canvasCanEdit() || !nodes.length) return;
+  const menu = $("#nodePinMenu");
+  closeMenus();
+  const board = B, ids = nodes.map(n=>n.id);
+  nodePinTrigger = button;
+  menu.innerHTML = nodePinPalette(nodes);
+  menu.classList.add("on");
+  const rect = button.getBoundingClientRect();
+  const below = rect.bottom + 6;
+  menu.style.left = Math.max(8, Math.min(rect.left, innerWidth - menu.offsetWidth - 8)) + "px";
+  menu.style.top = Math.max(8, below + menu.offsetHeight <= innerHeight - 8 ? below : rect.top - menu.offsetHeight - 6) + "px";
+  const triggerSelector = ids.length === 1 ? "#ntools [data-a=pin]" : "#selectionTools [data-action=pin]";
+  $$("button", menu).forEach(choice => choice.onclick = () => {
+    closeMenus();
+    if (B !== board || ids.length !== sel.size || !ids.every(id=>sel.has(id))) return;
+    markCanvasNodes(ids, choice.dataset.a.slice(4));
+    $(triggerSelector)?.focus();
+    hideNodeToolTip();
+  });
+  $("button", menu).focus();
+}
 function ctxMenu(e) {
   const el = e.target.closest?.(".node");
   if (!canvasCanEdit() && !el) { ccPoint(toW(e.clientX, e.clientY)); return; }
@@ -1680,10 +1753,7 @@ function ctxMenu(e) {
   const add = (a, icon, label, k = "") => it.push(`<button data-a="${a}">${ico(icon)}${label}${k ? `<span class="k">${k}</span>` : ""}</button>`);
   it.push(`<div class="mt">${many ? `已选 ${sel.size} 个节点` : esc(n.name)}</div>`);
   if (canvasCanEdit()) {
-    it.push(`<div class="node-pin-menu" role="group" aria-label="节点颜色标记">
-      ${[...NODE_PINS].map(([key,label]) => `<button type="button" data-a="pin:${key}" title="${label}标记" aria-label="${label}标记" aria-pressed="${selected.every(m=>m.pin===key)}"><span class="node-pin" data-color="${key}"></span></button>`).join("")}
-      <button type="button" data-a="pin:" title="清除标记" aria-label="清除标记" ${selected.some(m=>NODE_PINS.has(m.pin)) ? "" : "disabled"}>${ico("minus")}</button>
-    </div>`);
+    it.push(nodePinPalette(selected));
     if (selected.some(m=>!nodeLocked(m))) add("lock-selection","lock",many ? "锁定所选节点" : "锁定节点");
     if (selected.some(nodeLocked)) add("unlock-selection","lock",many ? "解锁所选节点" : "解锁节点");
     it.push('<div class="sep"></div>');
@@ -1741,6 +1811,7 @@ function ctxMenu(e) {
     add("ct:left", "fit", "左对齐"); add("ct:top", "fit", "顶部对齐");
     add("ct:distributeX", "assets", "水平等距排列"); add("ct:distributeY", "assets", "垂直等距排列");
     add("ct:group", "assets", "编组", "⌘G"); add("ct:ungroup", "assets", "取消编组", "⇧⌘G");
+    if (ctSelected().some(alCanvasCollectable)) add("ct:collect","assets","收录到资产库");
     add("ct:download", "dl", "批量下载素材"); it.push(`<div class="sep"></div>`);
     add("template", "stack", "将选区保存为模板");
   }
@@ -1912,6 +1983,7 @@ function freeSpot(x, y, type, dimensions) {
 function closeMenus() {
   closeSlash();
   $$(".menu").forEach(m => m.classList.remove("on"));
+  nodePinTrigger = null;
   $("#canvasLayoutBtn").setAttribute("aria-expanded","false");
 }
 function addFromMenu(type) {
@@ -1948,10 +2020,14 @@ initCanvasAlignmentSettings();
 // keyboard
 let clip = null;
 addEventListener("keydown", e => {
+  if (e.key === "Escape" && nodePinTrigger) {
+    const button = nodePinTrigger;
+    e.preventDefault(); closeMenus(); button.focus(); hideNodeToolTip(); return;
+  }
   if (e.key === "Escape" && $("#canvasLayoutMenu.on")) {
     e.preventDefault(); closeMenus(); $("#canvasLayoutBtn").focus(); return;
   }
-  if ($("#groupRunConfirm")?.open || $("#groupGallery")?.open || $("#videoExtension").open || $("#videoSegment").open || $("#segmentReview").open || $("#videoTrim").open || $("#frameCapture").open || $("#videoDraftFinal").open || $("#videoCompare").open) return;
+  if ($("#groupRunConfirm")?.open || $("#groupGallery")?.open || $("#alCanvasImport")?.open || $("#videoExtension").open || $("#videoSegment").open || $("#segmentReview").open || $("#videoTrim").open || $("#frameCapture").open || $("#videoDraftFinal").open || $("#videoCompare").open) return;
   if (lightState) {
     const dialog = e.target.closest?.("dialog");
     if (dialog && dialog.id !== "light") return;

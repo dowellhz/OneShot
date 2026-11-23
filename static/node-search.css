@@ -14,3 +14,6 @@
 #nodeSearch li span { display:block; overflow-wrap:anywhere; }
 #nodeSearch li .node-pin { display:inline-block; }
 #nodeSearch output { flex:1; }
+#nodeSearch li .ns-preview { flex:none; border:1px solid var(--line2); }
+#nodeSearch [data-ns-open]:focus-visible { outline:1px solid var(--text); }
+.node.ns-located>.card,.canvas-group.ns-located { outline:2px solid var(--c-video); outline-offset:4px; }

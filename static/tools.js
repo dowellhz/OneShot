@@ -465,15 +465,20 @@ function libraryNodeSpec(a) {
   return {type,name:a.name,data,versions:[version],cur:0};
 }
 
-function buildLibraryNode(spec, at) {
+function buildCanvasMediaNode(spec, at) {
   const {type,data,name,versions,cur}=spec;
   const n=addNode(type,at.x,at.y,data,{name,versions,cur});
   const version=curV(n);
-  if (type==="video" && (!version.w || !version.h)) {
-    const probe = document.createElement("video"), bid = boardId;
+  if (type==="video" && (!version.w || !version.h || !version.seconds)
+    || type==="audio" && !version.seconds) {
+    const probe = document.createElement(type), bid = boardId;
     probe.preload = "metadata";
     probe.onloadedmetadata = () => {
-      if (boardId === bid && node(n.id) === n) { version.w = probe.videoWidth; version.h = probe.videoHeight; if(Number.isFinite(probe.duration))version.seconds = probe.duration; render(n); save(); }
+      if (boardId === bid && node(n.id) === n) {
+        if(probe.videoWidth && probe.videoHeight){version.w=probe.videoWidth;version.h=probe.videoHeight;}
+        if(Number.isFinite(probe.duration) && probe.duration>0)version.seconds=probe.duration;
+        render(n);save();
+      }
       probe.onloadedmetadata = probe.onerror = null; probe.removeAttribute("src");
     };
     probe.onerror = () => { probe.onloadedmetadata = probe.onerror = null; probe.removeAttribute("src"); };
@@ -485,21 +490,25 @@ function buildLibraryNode(spec, at) {
 function placeLibAsset(a, at) {
   const spec=libraryNodeSpec(a);
   checkpoint();
-  const n=buildLibraryNode(spec,at);
+  const n=buildCanvasMediaNode(spec,at);
   selectOnly(n.id);
   return n;
 }
 
 function placeLibraryBatch(items, at) {
-  const specs=items.map(libraryNodeSpec);
+  return placeCanvasNodeBatch(items.map(libraryNodeSpec),at);
+}
+function placeCanvasNodeBatch(specs, at) {
   if(!specs.length)return [];
   checkpoint();
   const made=[];
   let x=at.x,y=at.y,rowEnd=y;
   for(const spec of specs){
-    const dims=size({...spec,data:{...defaults(spec.type),...spec.data}});
+    const version=spec.versions[spec.cur];
+    const dims=spec.type==="video" && (!version?.w || !version?.h)
+      ? {w:520,h:970}:size({...spec,data:{...defaults(spec.type),...spec.data}});
     const spot=freeSpot(x,y,spec.type,dims);
-    made.push(buildLibraryNode(spec,spot));
+    made.push(buildCanvasMediaNode(spec,spot));
     x=spot.x+dims.w+100;
     rowEnd=Math.max(rowEnd,spot.y+dims.h+90);
     if(made.length%3===0){x=at.x;y=rowEnd;}

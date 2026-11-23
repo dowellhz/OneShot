@@ -270,7 +270,7 @@ async function run(){
  evaluate('document.getElementById("ieCollapse").click()');assert(w.document.getElementById('imageEditor').classList.contains('collapsed'));evaluate('document.getElementById("ieCollapse").click()');
  evaluate('closeImageEditor();sel=new Set(["n1","n2","n3"]);updateSel();ctAction("left")');equal(evaluate('B.nodes.map(n=>n.x)'),[120,120,120],'align nodes');
  evaluate('ctGroup()');equal(evaluate('B.groups.length'),1,'group nodes');evaluate('ctUngroup()');equal(evaluate('B.groups.length'),0,'ungroup nodes');evaluate('undo()');equal(evaluate('B.groups.length'),1,'undo restores group');
- assert.equal(w.document.querySelectorAll('#selectionTools button').length,12);
+ assert.equal(w.document.querySelectorAll('#selectionTools button').length,14);
  evaluate(`const foldFixture=snap();
   B.edges=[{from:"n1",to:"n2"},{from:"n1",to:"n3"},{from:"n2",to:"n3"}];
   sel=new Set(["n1","n2"]);updateSel();$("#selectionTools [data-action=fold]").click();`);
@@ -331,6 +331,18 @@ async function run(){
  equal(evaluate(`(()=>{const sound=placeLibAsset({id:"sound",name:"现场录音",kind:"prop",media:[{type:"audio",ref:"input:h3studio/fx.wav",seconds:2}]},{x:400,y:350});return [sound.type,curV(sound).seconds,!!$("audio",els.get(sound.id))];})()`),["audio",2,true],'an audio asset returns to the canvas as playable audio');
  w.__memories=memoriesBeforeBatch;w.__folders=[];
  evaluate('restore(foldFixture);sel=new Set(["n1","n2","n3"]);updateSel()');
+ evaluate(`const plainImportLength=B.nodes.length;node("n3").data.text="";
+   $("#selectionTools [data-action=collect]").click();`);
+ await ready('$("#alCanvasImport").open && !$("#alCanvasImport [type=submit]").disabled','ungrouped selection opens the batch import dialog');
+ equal(evaluate('$$("#alCanvasImport .al-import-selection li").length'),2,'only the usable image and document are listed');
+ equal(evaluate('$("#alCanvasImport form p").textContent'),'另有 1 个节点暂不可收录。','unavailable items are identified');
+ evaluate('$("#alCanvasImport select[name=scope]").value="personal";$("#alCanvasImport [type=submit]").click()');
+ await ready('!$("#alCanvasImport").open && AL.open && $("#alLoading").hidden','selected nodes open in their destination library');
+ assert.equal(w.__batchImports[2].scope,'personal');
+ equal(w.__batchImports[2].nodes.map(n=>n.id),['n1','n2'],'the canvas entry submits the whole usable selection');
+ equal(evaluate('B.nodes.length'),evaluate('plainImportLength'),'collection leaves existing canvas nodes in place');
+ evaluate('$("#alReset").click();alClose();restore(foldFixture);sel=new Set(["n1","n2","n3"]);updateSel();');
+ w.__memories=memoriesBeforeBatch;
  const positions=evaluate('ctPositions([{id:"a",x:0,y:0},{id:"b",x:40,y:0},{id:"c",x:100,y:0}],"distributeX",()=>({w:10,h:10}))');equal(positions.map(x=>x.x),[0,190,380],'distribution expands cramped bounds to keep positive spacing');
  // Regressions: aligning a dense row/column and distributing overlapping cards must not stack them.
  const packed=[{id:"wide",x:0,y:0,w:460,h:180},{id:"tall",x:0,y:0,w:240,h:760},{id:"portrait",x:10,y:10,w:280,h:520},{id:"video",x:20,y:20,w:440,h:250}];
@@ -1646,6 +1658,15 @@ async function run(){
  assert.equal(w.__previsRequests[0].node,evaluate('previsNode.id'));
  equal(evaluate('previsNode.versions[0].previs_recipe.camera.map(x=>[x.t,x.y])'),[[0,3.2],[48,5]],'scene snapshot stores the camera keyframes');
  equal(evaluate('[$("#previsEditor canvas").width,$("#previsEditor canvas").height]'),[405,720],'portrait preview preserves framing');
+ evaluate(`const pvPlanSelect=$("[data-pv-view]");pvPlanSelect.value="plan";pvPlanSelect.dispatchEvent(new Event("change"));
+   const pvEncode=HTMLCanvasElement.prototype.toBlob;
+   let pvFrameDimensions;
+   HTMLCanvasElement.prototype.toBlob=function(callback,mime){pvFrameDimensions=[this.width,this.height,this!==$("#previsEditor canvas"),mime];pvEncode.call(this,callback,mime);};
+   $("[data-pv-frame-canvas]").click();`);
+ await ready('!PV.editor.sending && [...sel].some(id=>curV(node(id))?.source==="previs-frame")','previs frame creates a selected image node');
+ equal(evaluate('[pvFrameDimensions,curV(node([...sel][0])).w,curV(node([...sel][0])).h,PV.editor.tick,previsNode.versions.length]'),
+  [[405,720,true,'image/png'],405,720,48,1],'export uses the shot framing and keeps the original timeline and video');
+ evaluate('HTMLCanvasElement.prototype.toBlob=pvEncode');
  evaluate('pvHeight.value="7";pvHeight.dispatchEvent(new Event("change"));$("[data-pv-render]").click()');
  await ready('previsNode.versions.length===2','re-render remains on the same node',300);
  evaluate('$("[data-pv-close]").click();switchVersion(previsNode,0);openPrevis(previsNode)');
@@ -2259,6 +2280,36 @@ async function run(){
    acAppendEvent({kind:"tool_end",data:{call_id:"playlist-create-card",name:"video_playlist_create",result:{playlist_node:savedPlaylist.id}}});
    $("[data-call=playlist-create-card] [data-playlist-open]").click();`);
  await ready('FILM?.n?.id===savedPlaylist.id','the assistant result opens the same saved playlist');
+ evaluate(`const startPlaylistPick=()=>{$("#fmTl .fadd").click();$("#fmAdd [data-playlist-pick]").click();};
+   const pickTimelineSource=i=>$(".lbl",els.get(playlistInputs[i].id)).dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true}));
+   const originalPlaylistLength=FILM.spec.clips.length;
+   startPlaylistPick();pickTimelineSource(1);pickTimelineSource(0);`);
+ equal(evaluate('playlistInputs.map(n=>els.get(n.id).dataset.playlistPickOrder)'),['2','1'],
+   'canvas selection badges follow the order in which videos are clicked');
+ evaluate('$("#filmPlaylistPick").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));');
+ equal(evaluate('[filmPlaylistPicker,$("#film").classList.contains("on"),FILM.spec.clips.length]'),
+   [null,true,evaluate('originalPlaylistLength')],'cancelling selection reopens the unchanged timeline');
+ evaluate(`startPlaylistPick();pickTimelineSource(1);pickTimelineSource(0);
+   $("#filmPlaylistPick").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));`);
+ equal(evaluate('FILM.spec.clips.slice(-2).map(c=>c.ref)'),['input:h3studio/playlist-source-1.mp4','input:h3studio/playlist-source-0.mp4'],
+   'confirming canvas selection appends the exact clips in click order');
+ equal(evaluate('savedPlaylist.data.film.clips.length'),evaluate('originalPlaylistLength'),
+   'canvas picking updates the timeline draft before the list is explicitly saved');
+ evaluate(`const tray=()=>$("#fmTl .fc:last-of-type");
+   const pinnedClip=FILM.spec.clips.at(-1);
+   const otherVersion={ref:"output:h3studio/playlist-newer.mp4",url:"/media?ref=output%3Ah3studio%2Fplaylist-newer.mp4",seconds:4};
+   addVersion(playlistInputs[0],otherVersion);
+   tray().dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true,clientX:100,clientY:80}));
+   $("#playlistClipMenu [data-source-preview]").click();`);
+ equal(evaluate('[$("#light").open,$("#light video").getAttribute("src"),curV(playlistInputs[0]).ref]'),
+   [true,'/media?ref=input%3Ah3studio%2Fplaylist-source-0.mp4','output:h3studio/playlist-newer.mp4'],
+   'timeline preview opens the pinned version without changing the source node');
+ evaluate('document.body.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));');
+ equal(evaluate('[$("#light").open,$("#film").classList.contains("on")]'),[false,true],
+   'escaping from the source preview preserves the open timeline');
+ evaluate('tray().querySelector(".fm-clip-menu").click();$("#playlistClipMenu [data-playlist-clip-remove]").click();');
+ equal(evaluate('[FILM.spec.clips.includes(pinnedClip),FILM.spec.clips.length,!!node(playlistInputs[0].id)]'),
+   [false,evaluate('originalPlaylistLength+1'),true],'removing a timeline entry keeps its source video');
  evaluate('closeFilm();AC.board=playlistChatBoard;');
  evaluate('removeNodes([emptyPlaylist.id,savedPlaylist.id,...playlistInputs.map(n=>n.id)]);');
  console.log('Playlist DOM passed: empty and multi-selection entries, board save, ordering, splitting, original download and merged export.');
@@ -3204,13 +3255,26 @@ async function run(){
      addNode("video",800,111000,{}, {versions:[copyAsset("movable-two.mp4")],cur:0}).id];
    selectOnly(fixedId);
    const openNodeActions=id=>ctxMenu({target:els.get(id),clientX:150,clientY:110});
-   openNodeActions(fixedId);$("#ctxMenu [data-a='pin:lilac']").click();
+   $("#ntools [data-a=pin]").click();$("#nodePinMenu [data-a='pin:lilac']").click();
    openNodeActions(fixedId);$("#ctxMenu [data-a='lock-selection']").click();`);
  equal(evaluate('[node(fixedId).pin,node(fixedId).locked,$(".node-lock",els.get(fixedId)).hidden,!!$("#ntools [data-a=del]")]'),
   ['lilac',true,false,false]);
  evaluate('$("#nodeSearchBtn").click();$(".ns-status").value="lilac";$(".ns-status").dispatchEvent(new Event("change"))');
  equal(evaluate('$$("#nodeSearch li strong").map(el=>el.textContent.trim())'),['定稿图']);
  evaluate('$("#nodeSearch [data-close]").click()');
+ evaluate(`sel=new Set([fixedId,movableIds[0]]);updateSel();
+   $("#selectionTools [data-action=pin]").click();$("#nodePinMenu [data-a='pin:amber']").click();
+   $("#nodePinBar [data-pin-color=amber]").click();`);
+ equal(evaluate('[nodePins(node(fixedId)),$$(".node-pins .node-pin",els.get(fixedId)).length,$$(".ns-status option:checked").map(x=>x.value),$$("#nodeSearch li").length]'),
+  [['lilac','amber'],2,['amber'],2],'adding a second color preserves the existing marker and opens the corresponding color group');
+ evaluate('$("#nodeSearch [data-close]").click();$("#selectionTools [data-action=pin]").click()');
+ assert.equal(evaluate('$("#nodePinMenu [data-a=\'pin:amber\']").getAttribute("aria-pressed")'),'true');
+ evaluate('$("#nodePinMenu [data-a=\'pin:amber\']").click()');
+ equal(evaluate('[nodePins(node(fixedId)),!!$("#nodePinBar [data-pin-color=amber]")]'),[['lilac'],false],
+   'toggling a shared color removes only that color');
+ evaluate('undo()');
+ assert.equal(evaluate('!!$("#nodePinBar [data-pin-color=amber]")'),true,'undo restores the bar and the markers');
+ evaluate('markCanvasNodes([fixedId,movableIds[0]],"amber")');
  evaluate(`$(".lbl",els.get(fixedId)).dispatchEvent(new MouseEvent("pointerdown",{button:0,clientX:150,clientY:100,bubbles:true}));
    window.dispatchEvent(new MouseEvent("pointermove",{clientX:240,clientY:170}));
    window.dispatchEvent(new MouseEvent("pointerup",{clientX:240,clientY:170}));`);
@@ -3235,7 +3299,7 @@ async function run(){
  evaluate('undo();selectOnly(fixedId);$("#ntools [data-a=unlock-node]").click();undo()');
  assert.equal(evaluate('node(fixedId).locked'),true,'undo restores the lock');
  evaluate('const originalAccess=B.access;B.access="reviewer";openNodeActions(fixedId);markCanvasNodes([fixedId],"rose");removeNodes([fixedId])');
- equal(evaluate('[!!$(".node-pin-menu"),node(fixedId).pin,node(fixedId).locked]'),[false,'lilac',true]);
+ equal(evaluate('[!!$("#ctxMenu .node-pin-menu"),node(fixedId).pin,node(fixedId).locked]'),[false,'lilac',true]);
  evaluate('closeMenus();B.access=originalAccess;const lockBase={nodes:[{id:"locktest",x:10,y:20}]};');
  equal(evaluate('acMerge(lockBase,{nodes:[{id:"locktest",x:300,y:400}]},{nodes:[{id:"locktest",x:10,y:20,locked:true}]}).nodes[0]'),
   {id:'locktest',x:10,y:20,locked:true});
@@ -3716,5 +3780,53 @@ async function run(){
  evaluate('restore(gridFixture)');
  w.fetch=gridFetch;
  console.log('Image shortcuts passed: required reference, filtering, Tab activation, preserved draft and ordered grid splits.');
+ const historyFetch=w.fetch;
+ const recoveryItems=[
+  {id:'qa-history-image',type:'image',label:'找回海报',width:480,height:800,seed:24,ref:'output:h3studio/recovery-image.png'},
+  {id:'qa-history-video',type:'video',label:'找回镜头',width:640,height:360,seconds:3,ref:'output:h3studio/recovery-video.mp4'},
+  {id:'qa-history-audio',type:'audio',label:'找回旁白',seconds:4,ref:'output:h3studio/recovery-audio.wav'},
+ ].map(item=>({...item,available:true,url:'/media?ref='+encodeURIComponent(item.ref)}));
+ w.fetch=async(url,options)=>{
+  const path=new URL(String(url),'http://oneshot.test');
+  if(path.pathname!=='/api/generation-history')return historyFetch(url,options);
+  const items=recoveryItems.filter(item=>['all',item.type].includes(path.searchParams.get('kind')));
+  return {ok:true,json:async()=>({items, next:null})};
+ };
+ evaluate('ghOpen();const historyCanvasSize=B.nodes.length;');
+ await ready('ghCards().length===3','history restores usable results');
+ evaluate(`const historyKind=kind=>{const picker=gh("[data-gh-kind]");picker.value=kind;picker.dispatchEvent(new Event("change"));};
+  historyKind("image");`);
+ await ready('ghCards().length===1 && ghCards()[0]._historyItem.type==="image"','history image filter loads');
+ evaluate('gh("[data-gh-select-visible]").click();historyKind("video");');
+ await ready('ghCards().length===1 && ghCards()[0]._historyItem.type==="video"','history video filter loads');
+ equal(evaluate('gh("[data-gh-count]").textContent'),'已选 1 · 筛选外 1','selection survives media filters');
+ evaluate('gh("[data-gh-select-visible]").click();historyKind("audio");');
+ await ready('ghCards().length===1 && ghCards()[0]._historyItem.type==="audio"','history audio filter loads');
+ evaluate('gh("[data-gh-select-visible]").click();gh("[data-gh-apply]").click();');
+ equal(evaluate('B.nodes.slice(-3).map(n=>[n.type,n.versions[0].seed??null,n.versions[0].seconds??null])'),
+  [['image',24,null],['video',null,3],['audio',null,4]],'mixed history restore keeps generation settings and media metadata');
+ evaluate('undo()');
+ equal(evaluate('B.nodes.length'),evaluate('historyCanvasSize'),'mixed history restore uses one undo step');
+ w.fetch=historyFetch;
+ evaluate(`const historySearchNode=addNode("image",420,80,{}, {name:"重复名称",versions:[
+  {ref:"output:h3studio/search-old.png",url:"/media?ref=output%3Ah3studio%2Fsearch-old.png",prompt:"旧版港口灯光"},
+  {ref:"output:h3studio/search-new.png",url:"/media?ref=output%3Ah3studio%2Fsearch-new.png",prompt:"当前空白站台"}],cur:1});
+  const nsGroup=ctNewGroup("验收镜头组",[historySearchNode.id,"n1"]);ctSetFold(nsGroup,true);
+  document.body.dispatchEvent(new KeyboardEvent("keydown",{key:"f",ctrlKey:true,bubbles:true,cancelable:true}));
+  const historySearchInput=$("#nodeSearch input[type=search]");
+  const searchFor=value=>{historySearchInput.value=value;historySearchInput.dispatchEvent(new Event("input",{bubbles:true}));};
+  searchFor("旧版港口灯光");`);
+ assert.equal(evaluate('$("#nodeSearch").open'),true,'Ctrl+F opens application search');
+ assert.match(evaluate('$("#nodeSearch ol").textContent'),/匹配版本 1/);
+ evaluate('$("#nodeSearch .ns-preview").click()');
+ equal(evaluate('[$("#light img").getAttribute("src"),historySearchNode.cur]'),
+   ['/media?ref=output%3Ah3studio%2Fsearch-old.png',1],'history search previews the exact matching version');
+ evaluate(`closeLightbox();$("#nodeSearchBtn").click();searchFor("验收镜头组");
+  $$(".ns-filters button").find(x=>x.textContent.startsWith("分组")).click();
+  historySearchInput.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true,cancelable:true}));`);
+ assert.match(evaluate('document.activeElement.textContent'),/验收镜头组/);
+ evaluate('document.activeElement.click()');
+ equal(evaluate('[nsGroup.collapsed,CT_GROUPS.get(nsGroup.id).classList.contains("ns-located")]'),[true,true],
+   'group search locates the folded group without expanding it');
 }
 run().catch(err=>{console.error(err);process.exitCode=1;}).finally(()=>w.close());

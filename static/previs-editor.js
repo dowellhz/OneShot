@@ -256,6 +256,72 @@ function openPrevis(n) {
   pvUpdateRenderState(n);
 }
 
+function pvDownload(blob, filename) {
+  const url=URL.createObjectURL(blob), link=document.createElement("a");
+  link.href=url;
+  link.download=filename;
+  link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function pvDownloadScene(E) {
+  if (!pvValidNode(E)) return;
+  pvPause(E);
+  try {
+    const name=E.n.name || "白模预演";
+    pvDownload(pvGlb(E.scene,E.tick,name),name.replace(/[\\/:*?"<>|]/g,"_")+".glb");
+    pvStatus("已开始下载场景 GLB");
+  } catch(error) {
+    pvStatus(error.message);
+  }
+}
+
+async function pvExportFrame(E, download) {
+  if (!pvValidNode(E) || E.sending) return;
+  pvPause(E);
+  if (!download && !pvCommit(E)) return;
+  const tick=E.tick, time=pvTime(tick), board=B, savedScene=E.savedScene;
+  const [w,h]=PV_SIZE[E.scene.aspect];
+  E.sending=true;
+  pvUpdateRenderState(E.n);
+  pvStatus(download ? "正在导出 PNG…" : "正在将当前帧放入画布…");
+  try {
+    const frame=document.createElement("canvas");
+    frame.width=w;
+    frame.height=h;
+    pvPaint(frame,E.scene,tick);
+    const blob=await new Promise(resolve=>frame.toBlob(resolve,"image/png"));
+    if (!blob) throw new Error("无法导出当前帧");
+    const name=E.n.name+" · "+time;
+    const filename=name.replace(/[\\/:*?"<>|]/g,"_")+".png";
+    if (download) {
+      pvDownload(blob,filename);
+      pvStatus("已开始下载当前帧");
+      return;
+    }
+    const asset=await ewUpload(blob,filename);
+    if (PV.editor!==E || B!==board || !pvValidNode(E) || JSON.stringify(E.n.data.previs)!==savedScene) {
+      throw new Error("画布或白模场景已更新，请重新打开场景后再截帧");
+    }
+    const version=mediaVersion({...asset,w,h},{source:"previs-frame",mode:"白模机位截帧"});
+    const data={aspect:E.scene.aspect};
+    const extra={name,versions:[version],cur:0};
+    const dimensions=size({type:"image",data,...extra});
+    const at=freeSpot(E.n.x+size(E.n).w+110,E.n.y,"image",dimensions);
+    checkpoint();
+    const image=addNode("image",at.x,at.y,data,extra);
+    selectOnly(image.id);
+    fit([image]);
+    loadAssets();
+    pvStatus("当前帧已放入画布，关闭预演即可查看");
+  } catch(error) {
+    pvStatus(error.message);
+  } finally {
+    E.sending=false;
+    pvUpdateRenderState(E.n);
+  }
+}
+
 async function pvRender(E) {
   if (!pvValidNode(E) || E.sending || E.n.job) return;
   pvPause(E);
@@ -352,6 +418,9 @@ function initPrevis() {
       <div class="pv-controls pv-timeline"><button type="button" data-pv-play>播放</button>
         <input type="range" min="0" max="96" step="1" data-pv-scrub aria-label="预演时间轴">
         <output data-pv-time></output></div>
+      <div class="pv-controls"><button type="button" data-pv-frame-canvas>机位帧放入画布</button>
+        <button type="button" data-pv-frame-download>下载机位帧 PNG</button>
+        <button type="button" data-pv-scene-download>导出场景 GLB</button></div>
       <div class="pv-keys" data-pv-keys aria-label="当前轨道的关键帧"></div></section>
       <section class="pv-inspector">
         <label class="pv-wide">轨道<select data-pv-track></select></label>
@@ -374,6 +443,9 @@ function initPrevis() {
   on("[data-pv-close]","onclick",()=>closePrevis());
   on("[data-pv-discard]","onclick",()=>closePrevis(true));
   on("[data-pv-play]","onclick",pvPlayback);
+  on("[data-pv-frame-canvas]","onclick",E=>pvExportFrame(E,false));
+  on("[data-pv-frame-download]","onclick",E=>pvExportFrame(E,true));
+  on("[data-pv-scene-download]","onclick",pvDownloadScene);
   on("[data-pv-scrub]","oninput",(E,ev)=>{pvPause(E);E.tick=Number(ev.target.value);pvRefreshFields(E);pvFrame(E);});
   on("[data-pv-track]","onchange",(E,ev)=>{pvPause(E);E.active=ev.target.value;pvRefreshTrack(E);});
   on("[data-pv-view]","onchange",(E,ev)=>{E.view=ev.target.value;pvFrame(E);});

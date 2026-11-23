@@ -40,12 +40,17 @@ const PV_MESH = {
     ...pvBox(-.40,.36,0,.16,.39,.45,.96),...pvBox(.40,.36,0,.16,.39,.45,.96)],
 };
 
-function pvCamera(camera) {
+function pvCameraBasis(camera) {
   const unit=(a,fallback)=>{const m=Math.hypot(...a);return m>1e-6?a.map(x=>x/m):fallback;};
   const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
   const forward=unit([camera.tx-camera.x,camera.ty-camera.y,camera.tz-camera.z],[0,0,-1]);
   const right=unit(cross(forward,[0,1,0]),[1,0,0]),up=cross(right,forward);
-  return ([x,y,z])=>[right,up,forward].map(a=>a[0]*(x-camera.x)+a[1]*(y-camera.y)+a[2]*(z-camera.z));
+  return [right,up,forward];
+}
+
+function pvCamera(camera) {
+  const basis=pvCameraBasis(camera);
+  return ([x,y,z])=>basis.map(a=>a[0]*(x-camera.x)+a[1]*(y-camera.y)+a[2]*(z-camera.z));
 }
 
 function pvNearHit(a,b) {

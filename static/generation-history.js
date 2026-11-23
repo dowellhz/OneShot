@@ -3,6 +3,8 @@
 const generationHistoryDialog = $("#generationHistory");
 const GH = {epoch:0, cursor:null, chosen:new Map(), board:null, timer:null, downloading:false};
 const gh = selector => $(selector,generationHistoryDialog);
+const ghCards = () => $$("[data-gh-grid] article",generationHistoryDialog);
+const GH_SELECTION_LIMIT = 100;
 const mediaFavoriteStates = new Map();
 const ghFavorites = () => gh("[data-gh-view]").value === "favorites";
 
@@ -68,15 +70,20 @@ function nodeMediaFavorite(button,node,version) {
 }
 
 function ghActions() {
-  gh("[data-gh-count]").textContent = `已选 ${GH.chosen.size}`;
+  const visible=ghCards().map(card=>card._historyItem);
+  const visibleSelected=visible.filter(item=>GH.chosen.has(item.id)).length;
+  const outside=GH.chosen.size-visibleSelected;
+  gh("[data-gh-count]").textContent = `已选 ${GH.chosen.size}${outside?` · 筛选外 ${outside}`:""}`;
+  gh("[data-gh-select-visible]").disabled=GH.chosen.size>=GH_SELECTION_LIMIT || !visible.some(item=>item.available&&!GH.chosen.has(item.id));
+  gh("[data-gh-clear]").disabled=!GH.chosen.size;
   gh("[data-gh-apply]").disabled = !GH.chosen.size || !canvasCanEdit();
   gh("[data-gh-download]").disabled = !GH.chosen.size || GH.downloading;
 }
 
-function ghReset() {
+function ghReset({keepSelection=false}={}) {
   GH.epoch++;
   GH.cursor = null;
-  GH.chosen.clear();
+  if(!keepSelection)GH.chosen.clear();
   clearTimeout(GH.timer);
   gh("[data-gh-grid]").replaceChildren();
   gh("[data-gh-more]").hidden = true;
@@ -117,6 +124,7 @@ async function ghLoad(append=false) {
     if (!ghCurrent(epoch)) return;
     const grid = gh("[data-gh-grid]");
     grid.append(...page.items.map(ghCard));
+    ghActions();
     GH.cursor = page.next;
     more.hidden = !GH.cursor;
     status.textContent = grid.childElementCount ? "" : GH.cursor ? "这一页没有可显示的结果" : favorites ? "没有匹配的收藏" : "没有匹配的生成记录";
@@ -129,6 +137,11 @@ async function ghLoad(append=false) {
 
 function ghCard(item) {
   const card = document.createElement("article");
+  card._historyItem=item;
+  if(GH.chosen.has(item.id)){
+    if(item.available)GH.chosen.set(item.id,item);
+    else GH.chosen.delete(item.id);
+  }
   const title = esc(item.label), kind = TYPE_CN[item.type];
   const preview = !item.available ? '<span>原文件已不可用</span>' : item.type === "image" ?
     `<img src="${esc(item.url)}" alt="${title}" loading="lazy">` : item.type === "video" ?
@@ -142,8 +155,9 @@ function ghCard(item) {
     ${item.available || item.favorite ? `<button type="button" data-gh-favorite>${ico("star")}</button>` : ""}
     <button type="button" data-gh-card-apply ${item.available && canvasCanEdit() ? "" : "disabled"}>放入画布</button></div>`;
   const select = $("input",card);
+  select.checked=GH.chosen.has(item.id);
   select.onchange = () => {
-    if (select.checked && GH.chosen.size >= 100) {
+    if (select.checked && GH.chosen.size >= GH_SELECTION_LIMIT) {
       select.checked = false;
       gh("[data-gh-status]").textContent = "每次最多选择 100 个结果";
       return;
@@ -169,24 +183,23 @@ function ghCard(item) {
 function ghApply(items) {
   if (GH.board !== boardId || !canvasCanEdit() || !items.length) return;
   const origin = toW(innerWidth/2-150,innerHeight/2-180);
-  checkpoint();
-  const ids = items.map((item,index) => {
+  const specs = items.filter(item=>item.available).map(item => {
     const width = item.width > 0 ? item.width : undefined, height = item.height > 0 ? item.height : undefined;
-    const version = {ref:item.ref,url:item.url,prompt:item.prompt,source:item.source || "gen",mode_name:item.model,w:width,h:height};
+    const version = {ref:item.ref,url:item.url,prompt:item.prompt,source:item.source || "gen",mode_name:item.model,w:width,h:height,
+      seconds:item.seconds>0?item.seconds:undefined};
     if (item.broll_recipe) version.broll_recipe = item.broll_recipe;
-    const at = freeSpot(origin.x+(index%3)*615,origin.y,item.type,{w:520,h:820});
-    const data = {prompt:item.prompt};
+    const data = {prompt:item.prompt,...(item.type==="video"?{aspect:"auto"}:{})};
     if (item.audio_recipe) {
       version.audio_recipe = item.audio_recipe;
       Object.assign(data,item.audio_recipe);
     }
     if (Number.isSafeInteger(item.seed)) data.seed = version.seed = item.seed;
-    return addNode(item.type,at.x,at.y,data,{name:item.label,versions:[version],cur:0}).id;
+    return {type:item.type,name:item.label,data,versions:[version],cur:0};
   });
-  sel = new Set(ids);
-  updateSel();
+  if(!specs.length)return;
+  const placed=placeCanvasNodeBatch(specs,origin);
   ghClose();
-  toast(`已放入 ${ids.length} 个素材`);
+  toast(`已放入 ${placed.length} 个素材`);
 }
 
 async function ghDownload() {
@@ -212,10 +225,29 @@ gh("[data-gh-close]").onclick = ghClose;
 gh("[data-gh-apply]").onclick = () => ghApply([...GH.chosen.values()]);
 gh("[data-gh-download]").onclick = ghDownload;
 gh("[data-gh-more]").onclick = () => ghLoad(true);
+gh("[data-gh-select-visible]").onclick = () => {
+  for(const card of ghCards()){
+    if(GH.chosen.size>=GH_SELECTION_LIMIT)break;
+    const item=card._historyItem;
+    if(!item.available || GH.chosen.has(item.id))continue;
+    GH.chosen.set(item.id,item);
+    $("input",card).checked=true;
+  }
+  if(GH.chosen.size>=GH_SELECTION_LIMIT && ghCards().some(card=>!$("input",card).checked&&card._historyItem.available))
+    gh("[data-gh-status]").textContent="每次最多选择 100 个结果";
+  ghActions();
+};
+gh("[data-gh-clear]").onclick = () => {
+  GH.chosen.clear();
+  for(const card of ghCards())$("input",card).checked=false;
+  ghActions();
+};
 generationHistoryDialog.addEventListener("cancel",event=>{ event.preventDefault(); ghClose(); });
 generationHistoryDialog.addEventListener("keydown",event=>event.stopPropagation());
 gh("[data-gh-query]").oninput = () => {
-  ghReset();
+  ghReset({keepSelection:true});
   GH.timer = setTimeout(ghLoad,250);
 };
-for (const selector of ["[data-gh-view]","[data-gh-kind]","[data-gh-scope]"]) gh(selector).onchange = () => { ghReset(); ghLoad(); };
+for (const selector of ["[data-gh-view]","[data-gh-kind]","[data-gh-scope]"]) gh(selector).onchange = () => {
+  ghReset({keepSelection:selector!=="[data-gh-view]"}); ghLoad();
+};

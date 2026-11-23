@@ -115,6 +115,7 @@ function editVideoTimeline(n, version = curV(n)) {
 }
 function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
   if (target && !node(target.id)?.versions.some(v => v.ref === target.ref)) return toast("剪辑草稿对应的视频版本已移除");
+  finishFilmPlaylistPicker(false,false);
   if (FILM) { saveFilmDraft(); syncFilmAudio(FILM); }
   playAll = false;
   let saved;
@@ -138,6 +139,8 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
   saveFilmDraft();
 }
 function closeFilm() {
+  closePlaylistClipMenu();
+  finishFilmPlaylistPicker(false,false);
   saveFilmDraft(); if (FILM) syncFilmAudio(FILM);
   playAll = false; FILM = null;
   clearFilmCutawayPreview();
@@ -149,6 +152,7 @@ function closeFilm() {
 }
 
 function renderFilm() {
+  closePlaylistClipMenu();
   const F = FILM, s = F.spec, total = filmTotal(s);
   const playlist = !!F.n?.data.playlist, editable = canvasCanEdit();
   if (playlist) $("#fmGo").disabled = !editable || F.busy || !s.clips.length;
@@ -168,14 +172,27 @@ function renderFilm() {
         <div class="fl"><b>${i + 1}</b> ${esc(c.name || m?.name || "已删除")}<span>${L.toFixed(1)}s</span></div>
         ${lines.length && s.subtitles ? `<div class="fs">${esc(lines[0])}${lines.length > 1 ? " …" : ""}</div>` : ""}
         ${editable&&c.kind!=="image"?'<span class="fm-trim-edge" data-trim-edge="in" title="拖动入点" aria-hidden="true"></span><span class="fm-trim-edge" data-trim-edge="out" title="拖动出点" aria-hidden="true"></span>':""}
+        ${playlist?'<button class="fm-clip-menu" type="button" aria-label="片段操作" aria-haspopup="true">⋯</button>':""}
         <button class="x" title="从成片中移除">×</button></div>` +
       (i + 1 < s.clips.length ? `<button class="ft" data-i="${i}" title="点击切换转场">${TRANS_CN[c.trans] || "硬切"}</button>` : "");
   }).join("") + `<button class="fadd" title="添加画布上的图片或视频">＋ 添加片段</button>`;
   $$(".fc", tl).forEach(el => {
     const i = +el.dataset.i;
-    el.onclick = e => { if (e.target.closest(".x,[data-trim-edge]")) return; selectClip(i); };
+    const clip=s.clips[i];
+    el.onclick = e => { if (e.target.closest(".x,.fm-clip-menu,[data-trim-edge]")) return; selectClip(i); };
     for(const handle of $$("[data-trim-edge]",el))bindFilmTrimEdge(F,i,handle);
-    $(".x", el).onclick = () => { if (s.clips.length <= 1 && !playlist) return toast("至少保留一段"); s.clips.splice(i, 1); F.sel = Math.max(0,Math.min(F.sel,s.clips.length-1)); renderFilm(); selectClip(F.sel); saveFilmDraft(F); };
+    $(".x", el).onclick = () => removeFilmClip(F,clip);
+    const menu=$(".fm-clip-menu",el);
+    if(menu){
+      menu.onclick=()=>{
+        const pos=menu.getBoundingClientRect();
+        showPlaylistClipMenu(F,clip,menu,pos.left,pos.bottom+5);
+      };
+      el.oncontextmenu=e=>{
+        e.preventDefault();
+        showPlaylistClipMenu(F,clip,menu,e.clientX,e.clientY);
+      };
+    }
     el.addEventListener("dragstart", e => { e.dataTransfer.setData("text/x-clip", String(i)); el.classList.add("drag"); });
     el.addEventListener("dragend", () => el.classList.remove("drag"));
     el.addEventListener("dragover", e => { e.preventDefault(); el.classList.add("over"); });
@@ -871,16 +888,35 @@ function previewTick() {
   $("#fmTimeLabel").textContent = Math.min(Number($("#fmTime").max), position).toFixed(2) + "s";
   syncFilmAudio(F, playing && !ended ? position : undefined);
 }
+function removeFilmClip(F,clip) {
+  if(FILM!==F || !canvasCanEdit() || F.busy)return;
+  const clips=F.spec.clips,index=clips.indexOf(clip);
+  if(index<0)return;
+  if(clips.length<=1 && !F.n?.data.playlist)return toast("至少保留一段");
+  const current=clips[F.sel],offset=filmClipOffset(F);
+  clips.splice(index,1);
+  const retained=clips.indexOf(current);
+  const next=retained>=0?retained:Math.max(0,Math.min(index,clips.length-1));
+  renderFilm();
+  selectClip(next,retained>=0?offset:0);
+  saveFilmDraft(F);
+}
+
 function addClipMenu(e) {
+  closePlaylistClipMenu();
   const F = FILM;
   const have = new Set(F.spec.clips.map(c => c.ref || filmVersion(c)?.ref));
   const media = byPosition(B.nodes.filter(n => filmSource(n) && (!F.n?.data.playlist || playlistVideo(n)) && n !== F.n && n.id !== F.target?.id).map(n => n.id));
   const m = $("#fmAdd");
   m.innerHTML = `<div class="mt">添加到末尾</div>` + (media.map(n => `<button data-id="${esc(n.id)}">${ico(n.type)}${esc(n.name)}<span class="k">${have.has(curV(n).ref) ? "已加入" : n.type === "image" ? "图片 · 3s" : vlen(n).toFixed(1) + "s"}</span></button>`).join("") || `<div class="h" style="padding:8px">画布上没有可用素材</div>`);
+  if(F.n?.data.playlist && media.some(n=>!ctFolded(n.id)) && canvasCanEdit()){
+    $(".mt",m).insertAdjacentHTML("afterend",`<button type="button" data-playlist-pick>${ico("select")}在画布多选</button>`);
+    $("[data-playlist-pick]",m).onclick=()=>startFilmPlaylistPicker(F);
+  }
   m.classList.add("on");
   const r = e.target.getBoundingClientRect();
   m.style.left = Math.min(r.left, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.max(8, r.top - m.offsetHeight - 8) + "px";
-  $$("button", m).forEach(b => b.onclick = () => {
+  $$("button[data-id]", m).forEach(b => b.onclick = () => {
     m.classList.remove("on");
     const n = node(b.dataset.id);
     if (FILM !== F || !filmSource(n)) return;
@@ -1131,6 +1167,15 @@ function initFilm() {
 #fmClip .still-duration { font-size: var(--fs-small); color: var(--dim); }
 #fmClip .still-duration input { width: 75px; margin: 0 5px; padding: 4px 7px; background: var(--card-hi); border: 1px solid var(--line); border-radius: 6px; }
 #fmAdd { z-index: 61; }
+#playlistClipMenu { z-index:62; }
+#filmPlaylistPick { position:fixed; z-index:72; left:50%; bottom:22px; transform:translateX(-50%); display:flex; align-items:center; gap:9px; flex-wrap:wrap; max-width:calc(100vw - 24px); width:max-content; padding:9px 13px; border:1px solid var(--line2); border-radius:12px; background:var(--panel); color:var(--text); box-shadow:0 8px 32px #0006; }
+#filmPlaylistPick[hidden] { display:none; }
+#filmPlaylistPick span { color:var(--dim); }
+.playlist-picking #vp .node:not(.playlist-pickable) { opacity:.5; }
+.playlist-picking #vp .playlist-pickable { cursor:pointer; }
+.playlist-picking #vp .playlist-pickable:hover .card, .playlist-picking #vp .playlist-picked .card { outline:2px solid var(--c-video); }
+.playlist-picking #vp .playlist-picked::after { content:attr(data-playlist-pick-order); position:absolute; pointer-events:none; top:6px; right:6px; min-width:24px; height:24px; display:grid; place-items:center; background:var(--text); color:var(--bg); border-radius:7px; font-weight:600; }
+.playlist-picking :is(#ntools,#selectionTools,#pp,#chatLaunch) { visibility:hidden; }
 #fmSub { position: absolute; left: 5%; right: 5%; bottom: 7%; text-align: center; color: #fff; font-size: 100%; font-weight: 600; pointer-events: none;
   text-shadow: 0 0 3px #000, 0 0 3px #000, 0 0 6px #000; font-size: clamp(14px, 2.4vw, 30px); }
 #fmClip { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -1172,6 +1217,7 @@ function initFilm() {
 #fmTl .fs { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 7px; font-size: var(--fs-caption); background: #000a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #fmTl .x { position: absolute; right: 4px; bottom: 22px; width: 20px; height: 20px; border-radius: 50%; border: none; background: #000b; color: #fff; display: none; }
 #fmTl .fc:hover .x { display: block; }
+#fmTl .fm-clip-menu { position:absolute; right:5px; top:24px; width:26px; height:23px; z-index:3; background:#16161acf; border:1px solid #ffffff35; color:#fff; border-radius:6px; }
 #fmTl .ft { flex: none; align-self: center; margin: 0 4px; padding: 3px 7px; font-size: var(--fs-caption); border-radius: 8px; border: 1px solid var(--line2); background: #1b1b1f; color: #cfcfd5; writing-mode: vertical-rl; letter-spacing: 2px; }
 #fmTl .fadd { flex: none; align-self: center; margin-left: 12px; height: 104px; padding: 0 16px; border-radius: 10px; border: 1px dashed var(--line2); background: none; color: var(--dim); }
 .fm-time { display: flex; align-items: center; gap: 10px; margin: 0 18px 8px; color: var(--dim); font-size: var(--fs-caption); }
@@ -1225,7 +1271,7 @@ function initFilm() {
   <div id="fmAudioLanes" aria-label="音频片段时间线" hidden></div>
   <audio id="fmA"></audio>
 </div>
-<div class="menu" id="fmAdd"></div>
+<div class="menu" id="fmAdd"></div><div class="menu" id="playlistClipMenu" aria-label="片段操作"></div>
 <div id="qp"></div>`);
   $("#fmClose").onclick = closeFilm;
   $("#fmSaveList").onclick = () => { if (FILM) saveFilmPlaylist(FILM); };
@@ -1233,6 +1279,7 @@ function initFilm() {
   if (typeof ResizeObserver === "function") new ResizeObserver(sizeFilmTitleLayer).observe($("#fmTitleLayer").parentElement);
   $("#fmGo").onclick = () => void exportFilm();
   $("#fmDownloadMerged").onclick = () => void exportFilm(true);
+  initFilmPlaylistPicker();
   $("#fmMainPlay").onclick = () => {
     if (!FILM) return;
     const video = $("#fmV");
@@ -1270,9 +1317,25 @@ function initFilm() {
   document.addEventListener("pointerdown", e => {
     if (qOpen && !e.target.closest("#qp, #tr")) toggleQueue(false);
     if (!e.target.closest("#fmAdd, .fadd")) $("#fmAdd").classList.remove("on");
+    if (!e.target.closest("#playlistClipMenu,.fm-clip-menu")) closePlaylistClipMenu();
   });
+  $("#fmTl").addEventListener("scroll",()=>closePlaylistClipMenu(),{passive:true});
   document.addEventListener("keydown", e => {
     if (!FILM) return;
+    if($("#light").open)return;
+    if(e.key==="Escape" && closePlaylistClipMenu({focus:true})){
+      e.preventDefault();e.stopImmediatePropagation();return;
+    }
+    if(filmPlaylistPicker){
+      if(e.key==="Escape"){e.preventDefault();e.stopImmediatePropagation();finishFilmPlaylistPicker();}
+      else if(e.key==="Enter"&&!e.isComposing&&!e.repeat&&!e.target.closest?.("#filmPlaylistPick button")){
+        e.preventDefault();e.stopImmediatePropagation();finishFilmPlaylistPicker(true);
+      }else if(e.key!=="Tab" && !e.target.closest?.("#filmPlaylistPick button") &&
+          (e.metaKey||e.ctrlKey||![" ","+","=","-","0","f","m"].includes(e.key.toLowerCase()))){
+        e.preventDefault();e.stopImmediatePropagation();
+      }
+      return;
+    }
     if (e.key === "Escape") { e.stopPropagation(); closeFilm(); return; }
     if (!canvasCanEdit() || FILM.busy || e.defaultPrevented || e.isComposing || e.repeat ||
         e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || $("dialog[open]")) return;

@@ -28,4 +28,15 @@
 .al-card { position: relative; }
 #assetLibrary.al-dragging { opacity:0; pointer-events:none; }
 .al-card[draggable=true] .al-cover { cursor:grab; }
+#alCanvasImport { width:min(520px,calc(100vw - 28px)); max-height:calc(100dvh - 32px); padding:16px; border:1px solid var(--line2); border-radius:14px; background:var(--panel); color:var(--text); }
+#alCanvasImport::backdrop { background:#0009; }
+#alCanvasImport h2 { margin:0 0 10px; font-size:var(--fs-heading); }
+#alCanvasImport form { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
+#alCanvasImport button { border:1px solid var(--line2); border-radius:7px; padding:5px 9px; background:var(--card-hi); color:var(--text); }
+#alCanvasImport button:disabled { opacity:.45; }
+.al-group-import .al-import-selection { flex:1 0 100%; list-style:none; margin:0; padding:5px 0; max-height:28vh; overflow:auto; border-block:1px solid var(--line); }
+.al-import-selection li { display:flex; justify-content:space-between; gap:10px; padding:4px 0; }
+.al-import-selection li span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.al-import-selection small,.al-group-import p { color:var(--dim); margin:0; }
+.al-group-import p { flex-basis:100%; font-size:var(--fs-caption); }
 .al-file-check { position: absolute; z-index: 1; right: 7px; bottom: 40px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--card-hi); border: 1px solid var(--line2); }
