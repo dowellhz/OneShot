@@ -322,7 +322,21 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     connect.closest("label").hidden=!reviewed.canConnect;
     const ready=steps.filter(step=>step.status==="waiting");
     const outputs=ready.reduce((total,step)=>total+step.count,0);
-    summary.textContent=ready.length?`将${retry?"重试":"运行"} ${ready.length} 个节点，计划生成 ${outputs} 项。实际用量由所选服务记录。`:"当前没有可运行的节点";
+    summary.textContent=ready.length?`将${retry?"重试":"运行"} ${ready.length} 个节点，计划生成 ${outputs} 项。`:"当前没有可运行的节点";
+    const cost = $("[data-group-cost]",dialog);
+    cost.hidden=!ready.length;
+    if (ready.length) {
+      cost.textContent="正在估算费用…";
+      const snapshot=reviewed;
+      void canvasGenerationCosts(ready.map(step=>canvasCostRequest(node(step.id)))).then(amounts=>{
+        if (B!==board || reviewed!==snapshot || !dialog.open) return;
+        const known=amounts.filter(Number.isFinite);
+        const total=known.reduce((sum,amount)=>sum+amount,0);
+        cost.textContent=known.length===ready.length?displayGenerationCost(total):
+          known.length?`${displayGenerationCost(total)}（已知部分），另有 ${ready.length-known.length} 个节点无法估算`:
+          displayGenerationCost(null);
+      });
+    }
     const newConnections=ready.filter(step=>step.tail?.connect).length;
     if(newConnections)summary.textContent+=` 将为 ${newConnections} 张分镜图连接上一镜尾帧。`;
     if(retained.length)summary.textContent+=` 已保留 ${retained.length} 个完成节点。`;
@@ -515,7 +529,7 @@ function initCanvasGroupRun() {
       <option value="frame" data-shot-mode hidden disabled>重生成分镜图</option><option value="video" data-shot-mode hidden disabled>重生成视频</option></select></label>
     <label hidden><input type="checkbox" name="refresh-tails">生成分镜图前刷新已有的上一镜尾帧</label>
     <label hidden><input type="checkbox" name="connect-tails">为未连接的分镜图连接上一镜尾帧</label>
-    <p data-summary></p><ol></ol>
+    <p data-summary></p><p data-group-cost role="status" title="实际费用以服务账单为准" hidden></p><ol></ol>
     <footer><button type="button" data-close>取消</button><button type="button" data-set-retake-length hidden></button><button type="submit">确认运行</button></footer>
     </form></dialog>
     <aside id="groupRunProgress" aria-label="生成进度" hidden>

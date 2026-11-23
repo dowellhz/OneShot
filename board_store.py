@@ -235,6 +235,9 @@ def workflow_template(board, selected=None, include_upstream=False):
             origin = version.get("copied_from")
             if isinstance(origin,dict) and (not isinstance(origin.get("node"),str) or origin["node"] not in ids):
                 origin.pop("node",None)
+            draft = version.get("draft_final")
+            if isinstance(draft,dict) and (not isinstance(draft.get("source_node"),str) or draft["source_node"] not in ids):
+                draft.pop("source_node",None)
             for record, field, key in (("generation_record","inputs","node_id"), ("film_recipe","clips","node"),
                                        ("film_recipe","cutaways","node")):
                 recipe = version.get(record)

@@ -2812,29 +2812,40 @@ async def to_english(app, p: dict) -> dict:
 async def preview(req):
     """Preview the prepared video prompt and its configured media without submitting a job."""
     raw = await req.json()
-    payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"], raw))
+    replay_ref = checked_asset_replay(raw)
+    payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"],raw,replay_ref=replay_ref))
     inputs = workflow_review.capture_generation(payload)["inputs"]
     if payload.get("previs_guide") is not None or payload.get("audio_refs") or payload.get("video_refs"):
         retake = resolve_camera_plan(payload)
         object_plan = resolve_object_edit(payload)
         mode = ("镜头重拍" if retake else
                 object_edit.ACTIONS[object_plan["action"]] if object_plan else "全模态参考")
-        if payload.get("selected_model") is not None:
+        details = {}
+        if has_asset_media(payload):
+            review = await describe_asset_references(req["user"],payload,object_plan)
+            mode += f" · {review['provider']} · {review['model']} · {review['duration']:g} 秒 · {review['quality']}"
+            mode += "".join(f" · {label} {count}/{limit}" for label,count,limit in review["counts"] if count)
+            inputs = review["inputs"]
+            details["reference_preview"] = review["key"]
+        elif payload.get("selected_model") is not None or payload.get("quality") in ("480p","4k"):
             route = requested_reference_route(payload)
-            mode += f" · {route['model']}"
+            resolution = checked_video_resolution(payload,route["provider"]["kind"],route["model"])
+            mode += f" · {route['model']} · {resolution}"
         for item in inputs:
             if item.get("role") in ("subject", "frame"):
                 item["role"] = "image_ref"
-        return web.json_response({"prompt": reference_prompt(payload), "mode": mode, "inputs": inputs})
+        return web.json_response({"prompt": reference_prompt(payload), "mode": mode, "inputs": inputs, **details})
     route = requested_generation_route(payload, "video")
     if route and route["provider"]["kind"] != "local_h3":
+        resolution = checked_video_resolution(payload,route["provider"]["kind"],route["model"])
         prompt, roles = remote_video_prompt(payload, route["provider"], route["model"])
         if not prompt:
             raise bad("提示词不能为空")
-        mode = f"{route['provider']['name']} · {route['model']}"
+        mode = f"{route['provider']['name']} · {route['model']} · {resolution}"
         for item, role in zip(inputs, roles):
             item["role"] = role
         return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs})
+    checked_video_resolution(payload,"local_h3","h3-video")
     p = apply_fields(payload)
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
@@ -2853,7 +2864,26 @@ async def generate(req):
     raw.pop("_image_edit", None)
     raw.pop("_native_inpaint", None)
     raw.pop("_preserve_speech_motion", None)
+    if replay_ref := checked_asset_replay(raw):
+        req["replay_memory_ref"] = replay_ref
+    if (preview_key := raw.pop("reference_preview",None)) is not None:
+        if not isinstance(preview_key,str) or not re.fullmatch(r"[a-f0-9]{64}",preview_key):
+            raise bad("素材预览编号无效")
+        req["reference_preview"] = preview_key
     return await generate_request(req, raw)
+
+
+def checked_asset_replay(raw):
+    ref = raw.pop("replay_memory_ref",None)
+    if ref is None:
+        return None
+    try:
+        if not isinstance(ref,str) or not ref:
+            raise ValueError()
+        tools.ref_path(COMFY_DIR,ref)
+    except ValueError:
+        raise bad("历史生成版本无效") from None
+    return ref
 
 
 @routes.post("/api/image-edit/transform")
@@ -3172,8 +3202,6 @@ async def generate_request(req, raw):
 
 async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=None):
     memory = req.app["creative_memory"]
-    if isinstance(req, agent_chat.InternalRequest):
-        req["generation_snapshot"] = copy.deepcopy(payload)
     native = payload.get("_native_inpaint")
     if native:
         response = await generate_native_image(req, payload)
@@ -3181,9 +3209,15 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
         response = await _generate_request(req, payload, fixed_route=fixed_route)
     else:
         response = await _generate_request(req, payload)
+    if isinstance(req, agent_chat.InternalRequest):
+        req["generation_snapshot"] = copy.deepcopy(payload)
     result = json.loads(response.body)
-    if payload.get("video_refs"):
-        result["reference_context"] = {"video_refs":payload["video_refs"]}
+    references = {key:payload[key] for key in ("video_refs","audio_refs") if payload.get(key)}
+    if references:
+        result["reference_context"] = references
+        route = req.get("generation_route")
+        if route and has_asset_media(payload):
+            references.update(provider=route["provider"],selected_model=route["model"])
         if payload.get("camera_plan"):
             result["reference_context"]["camera_plan"] = payload["camera_plan"]
         if payload.get("object_edit"):
@@ -3212,15 +3246,89 @@ def requested_generation_route(raw, cap):
     return providers.primary(cap)
 
 
+def generation_unit_cost(raw):
+    """Estimated CNY per output, or None when the applicable rate is unknown."""
+    kind = raw.get("kind")
+    if kind == "previs":
+        return 0
+    if kind == "audio":
+        mode = raw.get("mode")
+        if not isinstance(mode, str) or mode not in AUDIO_GENERATION_MODES:
+            return None
+        route = next((item for item in audio_routes(mode) if not raw.get("provider") or
+                      item["provider"]["id"] == raw["provider"]), None)
+        return 0 if route and route["provider"]["kind"] == "local_kokoro" else None
+    fields = raw.get("fields")
+    prompt_parts = [raw.get("prompt"),*(fields.values() if isinstance(fields,dict) else [])]
+    if kind == "video" and (raw.get("has_asset") or raw.get("memory_ids") or raw.get("memory_views") or
+            any(isinstance(value,str) and "@" in value for value in prompt_parts)):
+        return None
+    if kind not in ("image", "video") or any(raw.get(key) for key in (
+            "draft", "extension", "segment_edit", "audio_refs", "video_refs", "previs_guide")):
+        return None
+    try:
+        route = requested_generation_route(raw, kind)
+    except web.HTTPBadRequest:
+        return None
+    if not route or route["provider"]["kind"] == "local_h3":
+        if kind == "video" and raw.get("quality") in ("480p","4k"):
+            return None
+        return 0
+    provider, model = route["provider"], route["model"]
+    adapter = provider["kind"]
+    if not isinstance(model, str) or (adapter, kind) not in remote.ADAPTERS:
+        return None
+    rates = provider["config"].get("generation_rates", {})
+    if kind == "image":
+        return rates.get(f"image {model}")
+    duration = raw.get("duration", 5)
+    if type(duration) not in (float, int) or not 0 < duration <= 30:
+        return None
+    quality = raw.get("quality") or "hd"
+    options = remote.video_resolutions(adapter,model)
+    if quality in ("480p","4k") and quality not in options:
+        return None
+    quality = quality if isinstance(quality,str) and quality in options else "std"
+    rate = rates.get(f"video {model} {quality}")
+    return round(rate * remote.video_duration(adapter, model, duration), 4) if rate is not None else None
+
+
+@routes.post("/api/generation-cost")
+async def generation_cost(req):
+    body = await req.json()
+    requests = body.get("requests") if isinstance(body, dict) else None
+    if not isinstance(requests, list) or not 1 <= len(requests) <= 200 or any(
+            not isinstance(item, dict) for item in requests):
+        raise bad("请选择 1 到 200 个生成节点")
+    amounts = []
+    for item in requests:
+        count = item.get("count", 1)
+        if type(count) is not int or not 1 <= count <= 4:
+            raise bad("生成数量无效")
+        if item.get("kind") == "video":
+            count = min(count, 3)
+        cost = generation_unit_cost(item)
+        amounts.append(round(cost * count, 4) if cost is not None else None)
+    return web.json_response({"amounts":amounts})
+
+
 async def _generate_request(req, raw, *, fixed_route=None):
     raw = apply_video_optics(raw)
     u = req["user"]
     cap = "image" if raw.get("kind") == "image" else "video"
+    preview_key = req.get("reference_preview")
+    if preview_key and not has_asset_media(raw):
+        next_step = "重新确认生成" if req.get("reference_reviewed") else "重新预览"
+        creative_memory.fail(f"参考素材已变化，请{next_step}",409)
+    if req.get("reference_reviewed") and has_asset_media(raw) and not preview_key:
+        creative_memory.fail("混合参考素材已变化，请重新确认生成",409)
+    entries = raw.get("video_refs")
+    has_source_clip = isinstance(entries,list) and bool(entries) and isinstance(entries[0],dict) and not entries[0].get("memory_id")
     extension = raw.get("extension")
-    if extension is not None and (extension not in ("before","after") or not raw.get("video_refs")):
+    if extension is not None and (extension not in ("before","after") or not has_source_clip):
         raise bad("请选择续拍方向和原视频")
     edit = raw.get("segment_edit")
-    if edit is not None and (edit is not True or extension or not raw.get("video_refs")):
+    if edit is not None and (edit is not True or extension or not has_source_clip):
         raise bad("请选择要修改的原视频片段")
     retake = resolve_camera_plan(raw)
     if retake:
@@ -3231,14 +3339,11 @@ async def _generate_request(req, raw, *, fixed_route=None):
     if raw.get("previs_guide") is not None or raw.get("audio_refs") or raw.get("video_refs"):
         if raw.get("kind") != "video":
             raise bad("音视频参考仅用于视频生成")
-        route = requested_reference_route(raw)
-        if fixed_route and (not route or route["provider"]["id"] != fixed_route["provider"] or route["model"] != fixed_route["model"]):
-            raise bad("原参考视频服务或模型已变更，请重新配置后再重试")
-        motion = await resolve_previs_guide(u, raw) if raw.get("previs_guide") is not None else None
-        clips = await resolve_video_refs(u, raw, route["model"], motion) if raw.get("video_refs") else []
-        audio = await resolve_audio_refs(u, raw, route["model"]) if raw.get("audio_refs") else []
-        if isinstance(req, agent_chat.InternalRequest):
-            req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]}
+        route, motion, clips, audio = await prepare_reference_generation(u,raw,object_plan,fixed_route=fixed_route)
+        if preview_key and preview_key != reference_preview_fingerprint(raw,route):
+            next_step = "重新确认生成" if req.get("reference_reviewed") else "重新预览"
+            creative_memory.fail(f"参考素材或生成服务已变化，请{next_step}",409)
+        req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]}
         return await generate_remote(req, raw, route, cap, motion=motion, audio_refs=audio, video_refs=clips)
     if fixed_route:
         route = None
@@ -3253,6 +3358,8 @@ async def _generate_request(req, raw, *, fixed_route=None):
         req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]} if route else {"provider":None,"model":None}
     if route and route["provider"]["kind"] != "local_h3":
         return await generate_remote(req, raw, route, cap)
+    if cap=="video":
+        checked_video_resolution(raw,"local_h3","h3-video")
     if raw.get("draft"):
         raise bad("请选择支持原生样片的 Seedance 2.5 服务")
     p = apply_fields(raw)
@@ -4117,7 +4224,14 @@ async def transcribe_audio(req):
         raise bad("无法读取上传的音频")
     if not is_transcription_audio(audio, extension):
         raise bad("音频内容与文件格式不符")
-    transcript = await plain_transcript(req, configured, bytes(audio), extension, content_type)
+    recording = bytes(audio)
+    if req.query.get("preview") == "1":
+        try:
+            recording = await asyncio.to_thread(film.recording_preview_wav, recording)
+        except ValueError as error:
+            raise bad(str(error)) from None
+        extension, content_type = ".wav", "audio/wav"
+    transcript = await plain_transcript(req, configured, recording, extension, content_type)
     if transcript is not None:
         return web.json_response({"text": transcript})
     return auth.err(502, "语音转写服务暂时不可用，请稍后重试")
@@ -5192,10 +5306,11 @@ def configured_models(provider, cap, routes):
     return list(dict.fromkeys(model for model in models if model))
 
 
-def reference_routes(*, require_motion=False, segment_edit=False, all_models=False):
+def reference_routes(*, require_motion=False, segment_edit=False, extension=False, all_models=False):
     check = motion_reference.supports if require_motion or segment_edit else motion_reference.supports_audio
     def supports(provider, model):
-        return check(provider,model) and (not segment_edit or "seedance-2-5" in model)
+        return (check(provider,model) and (not extension or provider["kind"] == "ark") and
+                (not segment_edit or "seedance-2-5" in model))
     choices = {}
     routes = providers.routes("video")
     defaults = [{"provider":p,"model":providers.default_model(p, "video")} for p in providers.all_providers()]
@@ -5207,18 +5322,119 @@ def reference_routes(*, require_motion=False, segment_edit=False, all_models=Fal
     return list(choices.values())
 
 
-def requested_reference_route(raw):
+def requested_reference_routes(raw):
     has_motion = raw.get("previs_guide") is not None or bool(raw.get("video_refs"))
     edit = bool(raw.get("segment_edit"))
     selected = raw.get("selected_model")
-    for route in reference_routes(require_motion=has_motion, segment_edit=edit, all_models=selected is not None):
+    auto = has_asset_media(raw) and not raw.get("provider") and selected is None
+    routes = reference_routes(require_motion=has_motion,segment_edit=edit,extension=bool(raw.get("extension")),
+                              all_models=selected is not None or auto)
+    if auto and routes:
+        return routes
+    for route in routes:
         if route["provider"]["id"] == raw.get("provider") and (selected is None or route["model"] == selected):
-            return route
+            return [route]
     if selected is not None:
         raise bad("所选模型不支持当前参考素材或已不可用，请重新选择模型")
     if edit:
         raise bad("请选择已配置参考视频公网地址的 Seedance 2.5 服务")
-    raise bad("请选择支持全模态参考的 Seedance 2.x 服务" + ("，并配置参考视频公网地址" if has_motion else ""))
+    if has_asset_media(raw):
+        raise bad("资产包含音频或视频参考，请选择支持全模态参考的视频服务" +
+                  ("，并配置参考视频公网地址" if has_motion else ""))
+    raise bad("请选择支持全模态参考的视频服务" + ("，并配置参考视频公网地址" if has_motion else ""))
+
+
+def requested_reference_route(raw):
+    return requested_reference_routes(raw)[0]
+
+
+def reference_video_duration(raw, provider, model, motion):
+    from_previs = motion and motion.get("source") == "previs"
+    limit = 14 if from_previs and not raw.get("extension") else remote.video_durations(provider["kind"],model)[-1]
+    try:
+        seconds = image_editor.number(raw.get("duration"),2,limit,"成片时长",5)
+    except ValueError as exc:
+        raise bad(str(exc)) from None
+    return remote.video_duration(provider["kind"],model,seconds)
+
+
+def checked_video_resolution(raw,kind,model):
+    quality = raw.get("quality") or "hd"
+    if quality in ("480p","4k") and (raw.get("draft") or quality not in remote.video_resolutions(kind,model)):
+        raise bad(f"当前生成模式不支持 {quality.upper()}，请更改分辨率或模型")
+    return "480p" if raw.get("draft") else remote.video_resolution(kind,model,quality)
+
+
+async def prepare_reference_generation(user, raw, object_plan, *, fixed_route=None):
+    routes = requested_reference_routes(raw)
+    if fixed_route:
+        routes = [route for route in routes if route["provider"]["id"] == fixed_route["provider"] and
+                  route["model"] == fixed_route["model"]]
+        if not routes:
+            raise bad("原参考视频服务或模型已变更，请重新配置后再重试")
+    motion = await resolve_previs_guide(user,raw) if raw.get("previs_guide") is not None else None
+    first_error = None
+    for route in routes:
+        provider, model = route["provider"], route["model"]
+        entries = {key:copy.deepcopy(raw[key]) for key in ("audio_refs","video_refs") if raw.get(key)}
+        candidate = {**raw,**entries}
+        try:
+            ensure_reference_media_count(candidate,provider["kind"],model,object_plan)
+            reference_video_duration(candidate,provider,model,motion)
+            checked_video_resolution(candidate,provider["kind"],model)
+            if candidate.get("draft") and not remote.supports_video_draft(provider,model):
+                raise bad("请选择支持原生样片的 Seedance 2.5 服务")
+            clips = await resolve_video_refs(user,candidate,model,motion) if "video_refs" in entries else []
+            audio = await resolve_audio_refs(user,candidate,model,provider_kind=provider["kind"]) if "audio_refs" in entries else []
+        except web.HTTPBadRequest as exc:
+            if first_error is None:
+                first_error = exc
+            continue
+        for key, value in entries.items():
+            raw[key][:] = value
+        return route, motion, clips, audio
+    raise first_error
+
+
+def reference_preview_fingerprint(raw, route):
+    snapshot = workflow_review.capture_generation(raw)
+    provider = route["provider"]
+    details = [raw.get("board"),provider["id"],provider.get("updated"),route["model"],reference_prompt(raw),
+               snapshot,raw.get("draft")]
+    return hashlib.sha256(json.dumps(details,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+
+
+async def describe_asset_references(user,payload,object_plan):
+    route, motion, _, _ = await prepare_reference_generation(user,payload,object_plan)
+    model, provider = route["model"],route["provider"]
+    seconds = reference_video_duration(payload,provider,model,motion)
+    if payload.get("segment_edit") and payload.get("video_refs"):
+        source = payload["video_refs"][0]
+        seconds = round(source["end"]-source["start"],2)
+    quality = checked_video_resolution(payload,provider["kind"],model)
+    limit = motion_reference.av_limits(model)[0]
+    counts = (("图",len(payload.get("images") or []),motion_reference.image_limit(model)),
+              ("视频",len(payload.get("video_refs") or [])+bool(motion),limit),
+              ("音频",len(payload.get("audio_refs") or []),limit))
+    inputs = workflow_review.capture_generation(payload)["inputs"]
+    return {"provider":provider["name"],"model":model,"duration":seconds,"quality":quality,
+            "counts":counts,"inputs":inputs,"assets":[item["name"] for item in payload["memory_used"]],
+            "key":reference_preview_fingerprint(payload,route)}
+
+
+async def asset_reference_review(req,raw):
+    replay_ref = req.get("replay_memory_ref")
+    fields = raw.get("fields")
+    fields = fields if isinstance(fields,dict) else {}
+    has_mention = any(isinstance(part,str) and "@" in part for part in [raw.get("prompt"),*fields.values()])
+    if not (replay_ref or raw.get("memory_ids") or raw.get("memory_views") or has_mention):
+        return None
+    prepared = req.app["creative_memory"].prepare(req["user"],raw,replay_ref=replay_ref,
+        owner_only=bool(req.get("connector_own_assets")))
+    payload = apply_video_optics(prepared)
+    if has_asset_media(payload):
+        return await describe_asset_references(req["user"],payload,resolve_object_edit(payload))
+    return None
 
 
 def previs_routes():
@@ -5276,6 +5492,13 @@ def reference_prompt(raw):
         raise bad("请描述正式视频的内容或画面风格")
     prompt = re.sub(r"@图(\d+)", r"@图片\1", prompt)
     prompt = re.sub(r"@音(\d+)", r"@音频\1", prompt)
+    if has_asset_media(raw):
+        frames = [i for i,entry in enumerate(raw.get("images") or [],1) if entry.get("role") == "frame"]
+        if frames:
+            guide = f"开头参考 @图片{frames[0]} 的构图。"
+            if len(frames) > 1:
+                guide += f"结尾参考 @图片{frames[-1]} 的构图。"
+            prompt = guide + "\n" + prompt
     extension = raw.get("extension")
     edit = raw.get("segment_edit")
     if raw.get("previs_guide"):
@@ -5299,7 +5522,19 @@ def reference_prompt(raw):
     return prompt
 
 
-async def resolve_audio_refs(user, raw, model):
+def has_asset_media(raw):
+    return any(isinstance(entry,dict) and entry.get("memory_id") for key in ("audio_refs","video_refs")
+               for entry in (raw.get(key) if isinstance(raw.get(key),list) else []))
+
+
+def is_asset_media(raw, entry):
+    if not isinstance(entry,dict) or not entry.get("memory_id"):
+        return False
+    return any(asset["id"] == entry["memory_id"] and any(item.get("ref") == entry.get("ref")
+               for item in asset.get("references",[])) for asset in raw.get("memory_used",[]))
+
+
+async def resolve_audio_refs(user, raw, model, *, provider_kind="ark"):
     limit, max_seconds = motion_reference.av_limits(model)
     entries = raw["audio_refs"]
     if not isinstance(entries, list) or len(entries) > limit:
@@ -5312,8 +5547,8 @@ async def resolve_audio_refs(user, raw, model):
     paths = []
     for entry in entries:
         ref, nid = (entry.get("ref"), entry.get("node_id")) if isinstance(entry, dict) else (None, None)
-        if (not isinstance(ref, str) or not isinstance(nid, str) or
-                not any(v.get("ref") == ref for v in nodes.get(nid, {}).get("versions", []))):
+        if (not isinstance(ref, str) or not (is_asset_media(raw,entry) or isinstance(nid,str) and
+                any(v.get("ref") == ref for v in nodes.get(nid, {}).get("versions", [])))):
             raise bad("音频参考版本已移除或尚未保存，请重新选择")
         try:
             path = tools.ref_path(COMFY_DIR, ref)
@@ -5332,9 +5567,12 @@ async def resolve_audio_refs(user, raw, model):
         if not 2 <= seconds <= max_seconds + .05:
             raise bad(f"每段参考音频须为 2 到 {max_seconds} 秒")
         result.append((path, min(seconds, max_seconds)))
+    for entry, (_,seconds) in zip(entries,result):
+        if is_asset_media(raw,entry):
+            entry.update(start=0,end=round(seconds,5))
     if sum(seconds for _, seconds in result) > max_seconds + .05:
         raise bad(f"参考音频总时长不能超过 {max_seconds} 秒")
-    if max_seconds == 15 and not raw.get("images") and not raw.get("previs_guide") and not raw.get("video_refs"):
+    if provider_kind == "ark" and max_seconds == 15 and not raw.get("images") and not raw.get("previs_guide") and not raw.get("video_refs"):
         raise bad("此服务需要同时连入参考图或参考视频")
     return result
 
@@ -5379,8 +5617,8 @@ async def resolve_video_refs(user, raw, model, motion):
     clips = []
     for index, entry in enumerate(entries):
         ref, nid = (entry.get("ref"), entry.get("node_id")) if isinstance(entry, dict) else (None, None)
-        if (not isinstance(ref, str) or not isinstance(nid, str) or
-                not any(v.get("ref") == ref for v in nodes.get(nid, {}).get("versions", []))):
+        if (not isinstance(ref, str) or not (is_asset_media(raw,entry) or isinstance(nid,str) and
+                any(v.get("ref") == ref for v in nodes.get(nid, {}).get("versions", [])))):
             raise bad("参考视频版本已移除或尚未保存，请重新选择")
         require_media(user, {ref})
         try:
@@ -5397,7 +5635,7 @@ async def resolve_video_refs(user, raw, model, motion):
         default_start = max(0,seconds-4) if extension=="after" else 0
         try:
             start = image_editor.number(entry.get("start"), 0, seconds, "视频参考入点", default_start)
-            default_end = seconds if extension=="after" else min(seconds,start+(4 if extension=="before" else max_seconds))
+            default_end = seconds if extension=="after" or is_asset_media(raw,entry) else min(seconds,start+(4 if extension=="before" else max_seconds))
             end = min(seconds, image_editor.number(entry.get("end"), start, seconds + .025, "视频参考出点",
                                                    default_end))
         except ValueError as exc:
@@ -5414,6 +5652,8 @@ async def resolve_video_refs(user, raw, model, motion):
         minimum = 4 if edit else 2
         ticks = round((end-start) * film.FPS)
         if not film.FPS * minimum <= ticks <= max_seconds * film.FPS:
+            if is_asset_media(raw,entry):
+                raise bad(f"资产「{entry['name']}」的参考视频须为 {minimum} 到 {max_seconds} 秒")
             raise bad(f"待编辑片段须为 {minimum} 到 {max_seconds} 秒" if edit else f"每段参考视频须为 2 到 {max_seconds} 秒")
         clips.append({"path":path, "start":start, "ticks":ticks, "ratio":w / h, "source_seconds":seconds})
     if sum(clip["ticks"] for clip in clips) + (motion["ticks"] if motion else 0) > max_seconds * film.FPS:
@@ -5441,10 +5681,22 @@ def media_info(path: Path, kind: str) -> dict:
     return {}
 
 
+def ensure_reference_media_count(raw, provider_kind, model, object_plan):
+    limit = motion_reference.image_limit(model)
+    extra = (1 + bool(object_plan.get("replacement_ref"))) if object_plan else 0
+    if len(raw.get("images") or []) + extra > limit:
+        raise bad(f"此服务最多支持 {limit} 张有效参考图")
+    if provider_kind == "minimax":
+        total = sum(len(raw.get(key) or []) for key in ("images","audio_refs","video_refs")) + bool(raw.get("previs_guide"))
+        if total > 12:
+            raise bad("云端 H3 的图片、视频和音频参考合计最多 12 项")
+
+
 async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None, audio_refs=(), video_refs=()):
     """Run one image / video request on a third-party provider; tracked in JOBS like a local job (id "x…")."""
     p, model = route["provider"], route["model"]
     u = req["user"]
+    resolution = checked_video_resolution(raw,p["kind"],model) if cap=="video" else None
     draft = raw.get("draft")
     if draft and (draft is not True or cap != "video" or not remote.supports_video_draft(p,model)):
         raise bad("请选择支持原生样片的 Seedance 2.5 服务")
@@ -5469,14 +5721,13 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
         nreq = {"prompt": re.sub(r"@图(\d+)", r"图\1", prompt), "images": [x["path"] for x in imgs], "ar": float(raw.get("ar") or 1), "n": int(raw.get("count") or 1)}
     elif full_reference:
         limit = motion_reference.image_limit(model)
-        extra_images = (1 + bool(object_plan.get("replacement_ref"))) if object_plan else 0
-        if (len(imgs) + extra_images > limit or len(imgs) != len(raw.get("images") or []) or
+        ensure_reference_media_count(raw,p["kind"],model,object_plan)
+        if (len(imgs) != len(raw.get("images") or []) or
                 any(x["path"].suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp") or not x["path"].is_file() for x in imgs)):
             raise bad(f"此服务最多支持 {limit} 张有效参考图")
         require_media(u, {x["ref"] for x in imgs})
         try:
-            limit = 14 if from_previs and not raw.get("extension") else 30 if "2-5" in model else 15
-            seconds = max(4, round(image_editor.number(raw.get("duration"), 2, limit, "成片时长", 5)))
+            seconds = reference_video_duration(raw,p,model,motion)
             ratio = image_editor.number(raw.get("ar"), .4, 2.5, "画面宽高比", 16 / 9)
         except ValueError as exc:
             raise bad(str(exc))
@@ -5523,6 +5774,8 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
         meta = {"label": clean(raw.get("label"))[:60] or p["name"], "cls": cls, "units": 1, "est": estimate(cls, 1, 40 if cap == "image" else 150),
                 "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "model":model,
                 "prompt": prompt, "board":clean(raw.get("board"))}
+        if resolution:
+            meta["resolution"] = resolution
         if raw.get("segment_edit"):
             operation = object_edit.ACTIONS[object_plan["action"]] if object_plan else "镜头重拍" if raw.get("camera_plan") else "片段修改"
             meta["mode_name"]=operation+" · "+meta["mode_name"]
@@ -5531,6 +5784,8 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
         j = JOBS[jid] = {"id": jid, "kind": cap, "state": "queued", "created": time.time(), "meta": meta}
         attach_image_edit(j, raw)
         request_data = {"prompt":prompt[:2000]}
+        if resolution:
+            request_data["resolution"] = resolution
         if from_previs:
             request_data["previs_ref"] = raw["previs_guide"]["ref"]
         if audio_refs:
@@ -5645,9 +5900,22 @@ async def run_with_motion(app, j, p, model, nreq, motion, video_refs=(), *, on_s
             paths.append(path)
         if cancelled():
             return None
-        j["phase"] = "sampling"
-        urls = [leases.enter_context(motion_reference.publish(origin, path, lambda:j["state"] == "running" and not cancelled())) for path in paths]
+        def publish(path):
+            return leases.enter_context(motion_reference.publish(origin,path,lambda:j["state"] == "running" and not cancelled()))
+        urls = [publish(path) for path in paths]
         request = {**nreq, "motion_url":urls[0] if motion else None, "video_urls":urls[bool(motion):]}
+        if p["kind"] == "minimax":
+            audio_urls = []
+            for index,(source,seconds) in enumerate(nreq.get("audio_refs",[])):
+                if cancelled():
+                    return None
+                path = Path(temp) / f"reference-audio-{index}.wav"
+                data = await asyncio.to_thread(remote.reference_audio_wav,source,seconds)
+                path.write_bytes(data)
+                audio_urls.append(publish(path))
+            request["audio_urls"] = audio_urls
+            urls += audio_urls
+        j["phase"] = "sampling"
         try:
             if plan := nreq.get("object_edit"):
                 guide = Path(temp) / "selection.png"
@@ -5661,7 +5929,7 @@ async def run_with_motion(app, j, p, model, nreq, motion, video_refs=(), *, on_s
         except Exception as exc:
             message = str(exc)
             for url in urls:
-                message = message.replace(url, "视频参考链接").replace(url.rsplit("/", 1)[-1], "已隐藏")
+                message = message.replace(url, "素材参考链接").replace(url.rsplit("/", 1)[-1], "已隐藏")
             raise providers.ProviderError(message) from None
 
 
@@ -5678,7 +5946,7 @@ async def run_remote(app, j: dict, p: dict, model: str, cap: str, nreq: dict, *,
             elif cap == "video":
                 def submitted(value):
                     record_remote_video(j, value)
-                if motion or video_refs:
+                if motion or video_refs or p["kind"] == "minimax" and nreq.get("audio_refs"):
                     r = await run_with_motion(app, j, p, model, nreq, motion, video_refs, on_submitted=submitted)
                 else:
                     r = await remote.run(app["http"], COMFY_DIR, p, model, cap, nreq, on_submitted=submitted)
@@ -5748,13 +6016,14 @@ async def capabilities(req):
                             "model": model,"default":pr["id"] == default,
                             **({"default_route_model":rts[0]["model"]} if pr["id"] == default else {}),
                             **({"models":[canvas_model_choice(pr, cap, choice) for choice in configured_models(pr, cap, rts)]}
-                               if cap in ("image", "video") and not local else {}),
+                               if cap == "video" or cap == "image" and not local else {}),
                             **({"draft":remote.supports_video_draft(pr,model)} if cap=="video" else {})})
         lst.sort(key=lambda x: (not x["default"], not x["local"]))
         out[cap] = lst
         if cap=="video":
             out["default_video_draft"] = bool(rts and remote.supports_video_draft(rts[0]["provider"],rts[0]["model"]))
     out["previs"] = canvas_reference_choices(require_motion=True)
+    out["video_extension"] = canvas_reference_choices(require_motion=True,extension=True)
     out["audio_reference"] = canvas_reference_choices()
     out["segment_edit"] = canvas_reference_choices(segment_edit=True)
     out["audio_generation"] = {cap:audio_service_options(cap) for cap in AUDIO_GENERATION_MODES}
@@ -5764,7 +6033,14 @@ async def capabilities(req):
 
 
 def canvas_model_choice(provider, cap, model):
-    return {"id":model, **({"draft":remote.supports_video_draft(provider, model)} if cap == "video" else {})}
+    if cap != "video":
+        return {"id":model}
+    kind = provider["kind"]
+    return {"id":model,"draft":remote.supports_video_draft(provider,model),
+            "durations":[5,8,10,14] if kind == "local_h3" else remote.video_durations(kind,model),
+            "qualities":remote.video_resolutions(kind,model),
+            "accepts_audio":motion_reference.supports_audio(provider,model),
+            "accepts_video":motion_reference.supports(provider,model)}
 
 
 def canvas_reference_choices(**constraints):

@@ -136,6 +136,7 @@ class VideoIntegration(ChatFixture):
         before = await (await self.client.get(route)).json()
         self.assertEqual(before["canvas"],[])
         store.put(user,{"id":asset["id"],"source_board":"test","ref":replacement,"character_view":"face"})
+        store.put(user,{"id":background["id"],"desc":"所有列车照常运行"})
         after = await (await self.client.get(route)).json()
         self.assertEqual(after["canvas"][0]["views"],[{"view":"face","previous":face,"reference":replacement}])
         received = []
@@ -155,7 +156,7 @@ class VideoIntegration(ChatFixture):
                 rid = await self.send("重新生成视频",key=key,selected=["old-video"])
                 self.assertEqual((await self.wait(rid))["state"],"done")
                 self.assertEqual([item["ref"] for item in received[-1]["images"]], [expected])
-                self.assertIn("雨夜列车停运",received[-1]["prompt"])
+                self.assertIn("雨夜列车停运" if expected==face else "所有列车照常运行",received[-1]["prompt"])
                 self.assertEqual([item["id"] for item in received[-1]["memory_used"]],[asset["id"],background["id"]])
             self.svc.model.side_effect = [call("video_regenerate",{"node_id":"old-video","version":1,
                 "prompt":"空站台的远景","memory_ids":[]}),answer()]

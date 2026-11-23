@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import wave
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
@@ -14,6 +15,65 @@ from test_agent_chat import ChatFixture, answer, call
 
 
 class ReferenceVideo(ChatFixture):
+    async def test_cloud_h3_sends_mixed_references_and_revokes_leases(self):
+        provider = server.providers.save(None,"minimax","云端 H3 测试",{"motion_origin":"https://studio.example"},
+                                         {"api_key":"fixture"},True)
+        model = "MiniMax-H3"
+        server.providers.set_route("video",[{"provider_id":provider,"model":model}])
+        path, ref = server.film._new(server.COMFY_DIR,"input","h3-motion",".mp4")
+        server.film.encode_silent(path,(Image.new("RGB",(64,64),"navy") for _ in range(48)),64,64,24,lambda:False,lambda _:None)
+        audio, sound = server.film._new(server.COMFY_DIR,"input","h3-sound",".wav")
+        with wave.open(str(audio),"wb") as recording:
+            recording.setparams((1,2,8000,0,"NONE",""))
+            recording.writeframes(b"\x00\x08" * 16000)
+        self.board["nodes"].extend([
+            {"id":"n3","type":"video","name":"参考动作","versions":[{"ref":ref}],"cur":0,"data":{}},
+            {"id":"n4","type":"audio","name":"参考声音","versions":[{"ref":sound}],"cur":0,"data":{}},
+        ])
+        server.write_board(server.board_path("test"),self.board)
+        request = {"kind":"video","board":"test","provider":provider,"selected_model":model,"duration":4,
+                   "prompt":"参考 @视频1 和 @音频1","quality":"std","images":[{"ref":self.source["ref"]}],
+                   "video_refs":[{"node_id":"n3","ref":ref}],"audio_refs":[{"node_id":"n4","ref":sound}]}
+        leases = []
+
+        async def upstream(_http,method,url,_name,**kwargs):
+            if method == "GET":
+                return {"task":{"status":"succeeded","content":{"url":"https://example.test/result.mp4"}}}
+            self.assertTrue(url.endswith("/v2/video_generation"))
+            payload = kwargs["json"]
+            self.assertEqual((payload["duration"],payload["resolution"]),(4,"768P"))
+            self.assertEqual([item.get("role") for item in payload["content"]],
+                             [None,"reference_image","reference_video","reference_audio"])
+            for item, mime in zip(payload["content"][2:],("video/mp4","audio/wav")):
+                lease = urlsplit(item[item["type"]]["url"]).path
+                response = await self.client.get(lease)
+                self.assertEqual((response.status,response.content_type),(200,mime))
+                if mime == "audio/wav":
+                    with wave.open(io.BytesIO(await response.read()),"rb") as recording:
+                        self.assertEqual(recording.getnframes(),2*recording.getframerate())
+                leases.append(lease)
+            return {"task_id":"h3-mixed"}
+
+        with patch.object(server.remote,"json_req",side_effect=upstream), \
+                patch.object(server.remote,"_save_video",return_value={"files":[]}):
+            response = await self.client.post("/api/generate",json=request)
+            self.assertEqual(response.status,200,await response.text())
+            jid = (await response.json())["ids"][0]
+            for _ in range(300):
+                if server.JOBS[jid]["state"] in ("done","error"):
+                    break
+                await asyncio.sleep(.02)
+        self.assertEqual(server.JOBS[jid]["state"],"done",server.JOBS[jid].get("error"))
+        self.assertEqual(len(leases),2)
+        for lease in leases:
+            self.assertEqual((await self.client.get(lease)).status,404)
+        options = json.loads((await server.capabilities(None)).body)
+        output = next(item for item in options["video"] if item["id"]==provider)["models"][0]
+        self.assertEqual((output["durations"][0],output["durations"][-1],output["qualities"]),
+                         (4,15,{"std":"768P","hd":"2K"}))
+        self.assertTrue(output["accepts_audio"] and output["accepts_video"])
+        self.assertNotIn(provider,[item["id"] for item in options["video_extension"]])
+
     async def test_video_optics_reaches_generation_prompt_and_leaves_request_reusable(self):
         optics={"lens":85,"sensor":"full-frame","optics":"anamorphic","aperture":"2.8"}
         raw={"kind":"video","board":"test","fields":{"scene":"雨夜车站","camera":"缓慢推近","action":"列车到站"},

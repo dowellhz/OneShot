@@ -256,11 +256,16 @@ function editProvider(p) {
       : `<input class="in" data-f="${f.k}" ${f.secret ? `type="password" autocomplete="off" data-secret="1" placeholder="${p.secrets?.[f.k] ? "已保存（" + esc(p.secrets[f.k]) + "），留空不修改" : esc(f.hint || "")}"` : `value="${esc(p.config[f.k] ?? f.default ?? "")}" placeholder="${esc(f.hint || "")}"`}>`}</label>`).join("")}
     <div class="faint" style="margin:12px 0 4px">每项能力默认用的模型（可以填官方的新模型名）</div>
     ${cat.caps.map(c => `<label class="f">${CAPN[c]}<input class="in" data-m="${c}" list="pm_${c}" value="${esc((p.config.models || {})[c] || cat.models[c]?.[0] || "")}"><datalist id="pm_${c}">${(cat.models[c] || []).map(m => `<option value="${m}">`).join("")}</datalist></label>`).join("")}
+    ${cat.caps.some(c=>["image","video"].includes(c))?`<label class="f">生成费用参考（人民币）
+      <textarea class="in" id="generationRates" rows="3" maxlength="8000">${esc(Object.entries(p.config.generation_rates || {}).map(([key,value])=>key+" "+value).join("\n"))}</textarea>
+      <span class="faint">每行一项。图片填 image 模型名 每张费用。视频填 video 模型名 std、hd、480p 或 4k 每秒费用。价格随输入或其他参数变化时，留空。</span></label>`:""}
     <label class="f">状态<select class="in" id="pe"><option value="1" ${p.enabled ? "selected" : ""}>启用</option><option value="0" ${!p.enabled ? "selected" : ""}>停用</option></select></label>
     <div class="row" style="margin-top:16px">${isNew ? "" : `<button class="btn danger" id="pdel">删除</button>`}<span class="grow"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn pri" id="psave">保存并测试</button></div>
     <div class="faint" id="pmsg" style="margin-top:8px"></div>`);
   $("#psave", box).onclick = async () => {
     const config = { models: {} }, secrets = {};
+    const rates = $("#generationRates", box);
+    if (rates) config.generation_rates = rates.value;
     $$("[data-f]", box).forEach(i => i.dataset.secret ? (i.value.trim() && (secrets[i.dataset.f] = i.value.trim())) : (config[i.dataset.f] = i.value.trim()));
     $$("[data-m]", box).forEach(i => i.value.trim() && (config.models[i.dataset.m] = i.value.trim()));
     try {

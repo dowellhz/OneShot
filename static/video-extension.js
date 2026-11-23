@@ -16,7 +16,7 @@ function openVideoExtension(source) {
   const version=curV(source);
   if (!canvasCanEdit() || !version) return toast("请先选择可播放的视频");
   const board=boardId;
-  const services=(CAPS_LIST.previs || []).filter(()=>version.source!=="previs" && !(version.seconds>0 && version.seconds<2));
+  const services=(CAPS_LIST.video_extension || CAPS_LIST.previs || []).filter(()=>version.source!=="previs" && !(version.seconds>0 && version.seconds<2));
   const dialog=$("#videoExtension"), form=$("form",dialog), mode=$("[name=method]",form);
   if (dialog.open) return;
   mode.replaceChildren(...services.map(service=>new Option("连续画面 · "+service.name,service.id)),
@@ -28,7 +28,8 @@ function openVideoExtension(source) {
   $("[data-ve-source]",form).textContent=`${source.name} · 版本 ${source.cur+1}`;
   const refresh=()=>{
     const service=services.find(s=>s.id===mode.value);
-    const max=service?.model?.includes("2-5")?30:service?15:14;
+    const max=service?.models?.find(model=>model.id===service.model)?.durations?.at(-1) ||
+      (service?.model?.includes("2-5")?30:service?15:14);
     form.elements.duration.max=max;
     form.elements.duration.min=service?4:2;
     form.elements.duration.value=Math.max(Number(form.elements.duration.min),Math.min(max,form.elements.duration.valueAsNumber||5));

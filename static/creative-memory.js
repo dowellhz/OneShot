@@ -143,7 +143,7 @@ function cmDraw(){
   sub.textContent=a.assetFolder ? `文件夹 · ${cmScopeLabel(a)} · ${a.count} 项` : a.canvasNode
    ?'画布 · '+(TYPE_CN[a.type]||'节点')+(a.version?' · 版本 '+a.version:'')+(a.duplicate?' · '+a.id:'')
    :cmKind(a)+' · '+cmScopeLabel(a)+(a.characterView?' · '+CHARACTER_VIEWS[a.characterView][0]:
-     a.generation_images?.length?' · '+a.generation_images.length+' 张生成参考图':a.desc?' · '+a.desc.slice(0,55):'');
+     (a.generation_media || a.generation_images)?.length?' · '+(a.generation_media || a.generation_images).length+' 项生成参考':a.desc?' · '+a.desc.slice(0,55):'');
   info.append(name,sub);b.append(info);box.append(b);
  });
  CM.target?.setAttribute('aria-activedescendant','cm-option-'+CM.index);
@@ -229,7 +229,7 @@ async function cmEdit(a=null, kind='character', options={}) {
   cmClose(); CM.editor?.remove();
   const panel=document.createElement('section'); panel.id='memoryEditor'; panel.className='cm-editor'; panel.role='dialog';
   panel.setAttribute('aria-modal','false'); panel.setAttribute('aria-label','资产详情');
-  panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>保存到<select name="board">${projectOptions.map(p=>`<option value="project:${esc(p.id)}">项目 · ${esc(p.name)}</option>`).join("")}<option value="">个人资产库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享给所有平台账号（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片、视频或文档<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
+  panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>保存到<select name="board">${projectOptions.map(p=>`<option value="project:${esc(p.id)}">项目 · ${esc(p.name)}</option>`).join("")}<option value="">个人资产库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享给所有平台账号（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片、视频、音频或文档<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.txt,.md,.markdown,.csv,.json,.docx,.pdf"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
   if(host)host.replaceChildren(panel); else document.body.append(panel); CM.editor=panel;
   const character = document.createElement("section");
   character.className = "cm-character";
@@ -238,10 +238,10 @@ async function cmEdit(a=null, kind='character', options={}) {
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
   let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
-  let generationImages=[...(data.generation_images||[])];
+  let generationMedia=[...(data.generation_media || data.generation_images || [])];
   const generationBox=document.createElement("details");
   generationBox.className="cm-generation-images";
-  generationBox.innerHTML='<summary>生成参考图</summary><p class="cm-help">选中的图片会随 @资产 一起发送。留空时采用默认参考图。</p><ol></ol>';
+  generationBox.innerHTML='<summary>生成参考素材</summary><p class="cm-help">@资产 会采用选中的素材和资产正文。图片生成采用图片和文字。视频和音频参考需要支持全模态的视频服务。留空采用默认参考图。</p><ol></ol>';
   $(".cm-media",panel).after(generationBox);
  let documentData=options.preset?.document||data.document||null, documentDirty=!!options.preset?.document;
   const docBox=document.createElement("details");
@@ -388,43 +388,49 @@ async function cmEdit(a=null, kind='character', options={}) {
   }
   const status=msg=>panel.querySelector('.cm-error').textContent=msg;
   function setBusy(value) {busy=value;panel.dataset.busy=String(value);panel.querySelector('[type=submit]').disabled=value;field('upload').disabled=value||readonly;panel.querySelector('[data-current]').disabled=value;}
-  function paintGenerationImages(media,focusRef) {
-    const allowed=media.filter(item=>cmMediaType(item.ref,item)==="image");
-    generationImages=generationImages.filter(ref=>allowed.some(item=>item.ref===ref));
+  function paintGenerationMedia(media,focusRef) {
+    const allowed=media.filter(item=>cmMediaType(item.ref,item));
+    generationMedia=generationMedia.filter(ref=>allowed.some(item=>item.ref===ref));
     generationBox.hidden=!allowed.length;
-    $("summary",generationBox).textContent="生成参考图"+(generationImages.length?" · "+generationImages.length+" 张":"");
+    $("summary",generationBox).textContent="生成参考素材"+(generationMedia.length?" · "+generationMedia.length+" 项":"");
     const list=$("ol",generationBox);
     list.replaceChildren();
-    const ordered=[...generationImages,...allowed.map(item=>item.ref).filter(ref=>!generationImages.includes(ref))];
+    const ordered=[...generationMedia,...allowed.map(item=>item.ref).filter(ref=>!generationMedia.includes(ref))];
     for(const ref of ordered) {
       const item=document.createElement("li"), caption=document.createElement("label");
-      const check=document.createElement("input"), index=generationImages.indexOf(ref);
+      const entry=allowed.find(item=>item.ref===ref), type=cmMediaType(ref,entry);
+      const check=document.createElement("input"), index=generationMedia.indexOf(ref);
       check.type="checkbox";check.checked=index>=0;check.disabled=readonly;
-      check.dataset.generationImage=ref;
-      const label=index>=0?"参考图 "+(index+1):"加入生成参考";
-      const picture=document.createElement("img");
-      picture.src="/media?ref="+encodeURIComponent(ref);picture.alt="";
-      caption.append(check,picture,label);
-      check.setAttribute("aria-label",label+" · 图片 "+(allowed.findIndex(entry=>entry.ref===ref)+1));
+      check.dataset.generationMedia=ref;
+      const label=index>=0?"参考 "+(index+1):"加入生成参考";
+      const detail=TYPE_CN[type]+(Number.isFinite(entry.seconds)?" · "+entry.seconds.toFixed(1)+" 秒":"");
+      caption.append(check);
+      if(type==="image"){
+        const picture=document.createElement("img");picture.src="/media?ref="+encodeURIComponent(ref);picture.alt="";
+        caption.append(picture);
+      } else caption.insertAdjacentHTML("beforeend",ico(type));
+      caption.append(label+" · "+detail);
+      check.setAttribute("aria-label",label+" · "+detail+" · 素材 "+(allowed.indexOf(entry)+1));
       check.onchange=()=>{
-        if(busy||check.checked&&generationImages.length>=9){
+        const max=type==="image"?9:10;
+        if(busy||check.checked&&generationMedia.filter(ref=>cmMediaType(ref,allowed.find(item=>item.ref===ref))===type).length>=max){
           check.checked=index>=0;
-          if(!busy)status("一次最多添加 9 张生成参考图");
+          if(!busy)status(`每组最多选择 ${max} 项${TYPE_CN[type]}参考`);
           return;
         }
-        if(check.checked) generationImages.push(ref); else generationImages.splice(index,1);
-        paintGenerationImages(media,ref);
+        if(check.checked) generationMedia.push(ref); else generationMedia.splice(index,1);
+        paintGenerationMedia(media,ref);
       };
       item.append(caption);
       if(index>=0&&!readonly) for(const [offset,title] of [[-1,"上移"],[1,"下移"]]){
         const next=index+offset;
         const button=action(title,()=>{
           if(busy) return;
-          [generationImages[index],generationImages[next]]=[generationImages[next],generationImages[index]];
-          paintGenerationImages(media,ref);
+          [generationMedia[index],generationMedia[next]]=[generationMedia[next],generationMedia[index]];
+          paintGenerationMedia(media,ref);
         });
-        button.disabled=next<0||next>=generationImages.length;
-        button.setAttribute("aria-label",title+"参考图 "+(index+1));
+        button.disabled=next<0||next>=generationMedia.length;
+        button.setAttribute("aria-label",title+"参考 "+(index+1));
         item.append(button);
       }
       list.append(item);
@@ -434,7 +440,7 @@ async function cmEdit(a=null, kind='character', options={}) {
   function paint() {
     const grid=panel.querySelector('.cm-media');grid.replaceChildren();
     const media=[...(data.media||[]),...(pending&&!data.media?.some(m=>m.ref===pending.ref)?[pending]:[])];
-    paintGenerationImages(media);
+    paintGenerationMedia(media);
     const hero=panel.querySelector('.cm-hero'), lead=selectedRef||media[0]?.ref;
     hero.hidden=!host||!lead;hero.replaceChildren();
     if(host&&lead){
@@ -471,14 +477,15 @@ async function cmEdit(a=null, kind='character', options={}) {
   panel.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Escape')panel.querySelector('[data-close]').click();});
   panel.querySelector('[data-current]').onclick=async()=>{
     if(busy||readonly)return;
-    try{const n=[...sel].map(node).find(n=>['image','video'].includes(n?.type)&&curV(n));if(!n)throw new Error('先在画布选中已完成的图片或视频');await flushSave();if(boardId!==initialBoard)return;const v=curV(n);pending={...v,source_board:initialBoard,node_id:n.id,source:v.source||'generated'};if(!selectedRef&&n.type==='image')selectedRef=v.ref;paint();status('已选用「'+n.name+'」，保存后生效');}catch(e){status(e.message);}
+    try{const n=[...sel].map(node).find(n=>['image','video','audio'].includes(n?.type)&&curV(n));if(!n)throw new Error('先在画布选中已完成的图片、视频或音频');await flushSave();if(boardId!==initialBoard)return;const v=curV(n);pending={...v,type:n.type,source_board:initialBoard,node_id:n.id,source:v.source||'generated'};if(!selectedRef&&n.type==='image')selectedRef=v.ref;paint();status('已选用「'+n.name+'」，保存后生效');}catch(e){status(e.message);}
   };
   async function receiveFile(file) {
     if(!file||busy||readonly)return;setBusy(true);status('正在上传…');
     try{
       const body=new FormData();body.append('file',file);
       const isDocument=CM_DOCUMENT_EXT.test(file.name);
-      const r=await fetch(isDocument?'/api/document-import':'/api/upload',{method:'POST',body}),v=await r.json();
+      const audio=/\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(file.name);
+      const r=await fetch(isDocument?'/api/document-import':audio?'/api/upload_audio':'/api/upload',{method:'POST',body}),v=await r.json();
       if(!r.ok)throw new Error(v.error||'上传失败');
       if(isDocument){
         documentData=v;documentDirty=true;
@@ -500,7 +507,7 @@ async function cmEdit(a=null, kind='character', options={}) {
       const team=target.startsWith('team:')?target.slice(5):'';
       const p={id:data.id,mtime:data.mtime,name:field('name').value,kind:field('kind').value,board:project||team?'':target,project,team,desc:field('desc').value,constraints:field('constraints').value,aliases:field('aliases').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),tags:field('tags').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),shared:!target&&field('shared').checked,default_ref:selectedRef};
       if(documentDirty)p.document=documentData;
-      p.generation_images=generationImages;
+      p.generation_media=generationMedia;
       if(pending)Object.assign(p,{ref:pending.ref,source_board:pending.source_board||'',node_id:pending.node_id});
       if(p.kind === "character") {
         p.character_card = readCard();
@@ -509,14 +516,14 @@ async function cmEdit(a=null, kind='character', options={}) {
           if (boardId !== initialBoard) return;
           Object.assign(p, {ref:approval.version.ref, source_board:initialBoard, node_id:approval.nodeId, character_view:approval.slot});
           if(pending && pending.ref!==p.ref && !data.media.some(item=>item.ref===pending.ref))
-            p.generation_images=p.generation_images.filter(ref=>ref!==pending.ref);
+            p.generation_media=p.generation_media.filter(ref=>ref!==pending.ref);
         }
       }
       data=await api('/api/memory',p);if(!approval||pending?.ref===p.ref)pending=null;
       documentDirty=false;documentData=data.document||null;paintDocument();
       if (approval?.draftKey && readCharacterDraft(approval.draftKey)?.ref === p.ref) writeCharacterDraft(approval.draftKey, null);
-      generationImages=[...new Set([...(data.generation_images||[]),
-        ...(pending && generationImages.includes(pending.ref) ? [pending.ref] : [])])];
+      generationMedia=[...new Set([...(data.generation_media || data.generation_images || []),
+        ...(pending && generationMedia.includes(pending.ref) ? [pending.ref] : [])])];
       selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
       panel.querySelector('header strong').textContent='编辑资产';panel.querySelector('[data-delete]').hidden=false;
       if(typeof alChanged==='function')alChanged(data);if(KIND_CN[afilter])await cmRenderLibrary(afilter);

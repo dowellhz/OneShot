@@ -37,7 +37,7 @@ function canvasNodeModel(n, service, reference = false) {
   }
   if (!service) return null;
   const id = reference || n.data.provider ? service.model : service.default_route_model || service.model;
-  return {id,draft:service.models?.find(model => model.id === id)?.draft ?? service.draft};
+  return service.models?.find(model => model.id === id) || {id,draft:service.draft};
 }
 
 function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {

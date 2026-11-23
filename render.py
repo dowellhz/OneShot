@@ -778,6 +778,34 @@ def cut_audio_ranges(root, ref, ranges, output_ref):
     return {"ref":output_ref,"seconds":offset/SR,"ranges":mapping}
 
 
+def recording_preview_wav(audio):
+    """Convert the available audio in an unfinished browser recording to a complete WAV."""
+    import av
+
+    rate = 16000
+    remaining = 60 * rate * 2
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setparams((1, 2, rate, 0, "NONE", ""))
+        try:
+            with av.open(io.BytesIO(audio), options={"protocol_whitelist":"pipe"}) as recording:
+                if not recording.streams.audio:
+                    raise ValueError("录音片段没有音轨")
+                resample = av.AudioResampler(format="s16", layout="mono", rate=rate)
+                for frame in recording.decode(audio=0):
+                    for converted in resample.resample(frame):
+                        pcm = converted.to_ndarray().tobytes()[:remaining]
+                        wav.writeframesraw(pcm)
+                        remaining -= len(pcm)
+                    if not remaining:
+                        break
+        except av.FFmpegError:
+            pass  # The last container block may still be in progress.
+    if remaining == 60 * rate * 2:
+        raise ValueError("录音片段尚不可读取")
+    return output.getvalue()
+
+
 def transcription_wav(root, clip, *, audio_only=False):
     """Encode only the selected region of the clip's source soundtrack."""
     import numpy as np

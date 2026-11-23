@@ -7,17 +7,70 @@ async function api(path, body, method = "POST") {
   if (!r.ok) throw new Error(j.error || t || r.statusText); return j;
 }
 function fullPrompt(n) {
-  const parts = inputs(n, "text").map(t => t.data.text.trim()).filter(Boolean);
-  if (!usesFields(n) && n.data.prompt.trim()) parts.push(n.data.prompt.trim());   // field mode: the fields replace the free text
+  const parts = inputs(n, "text").map(t => typeof t.data.text === "string" ? t.data.text.trim() : "").filter(Boolean);
+  const prompt = typeof n.data.prompt === "string" ? n.data.prompt.trim() : "";
+  if (!usesFields(n) && prompt) parts.push(prompt);   // field mode: the fields replace the free text
   return parts.join("\n");
 }
 function showErr(n, msg) { const b = $(".errbox", els.get(n.id)); b.textContent = msg || ""; b.classList.toggle("on", !!msg); }
 const usesFields = n => !!n && n.type === "video" && n.data.pmode === "fields";
 const fieldsFilled = n => FIELDS.some(f => !["sound", "music"].includes(f.k) && (n.data.fields?.[f.k] || "").trim());
 const prepping = new Set();   // nodes whose request is being submitted before it reaches the queue
+const videoReferencePreviews = new WeakMap();
+
+function videoPreviewSignature(request) {
+  return JSON.stringify(Object.keys(request).filter(key=>key!=="label").sort().map(key=>[key,request[key]]));
+}
 const BATCH_LAYOUTS = {tabs:"同一节点的版本 Tab",spread:"在画布横向展开",fold:"收起为一组"};
 function canvasBatchLayout() {
   return Object.hasOwn(BATCH_LAYOUTS,B?.batch_layout)?B.batch_layout:"tabs";
+}
+
+function canvasCostRequest(n) {
+  const data = n.data;
+  if (n.type === "audio") return {kind:"audio",mode:audioMode(data),provider:data.provider};
+  const request = {kind:n.type,count:Math.max(1,Math.min(4,Math.trunc(Number(data.count)) || 1)),
+    provider:(CAPS_LIST[n.type] || []).find(service=>service.id===data.provider)?.id,
+    selected_model:data.selected_model};
+  if (data.selected_model) request.provider = data.provider;
+  if (n.type === "video") Object.assign(request,{
+    duration:canvasVideoDuration(n),quality:canvasVideoQuality(n),draft:data.draft && videoDraftAvailable(n),
+    has_asset:!!data.replay_memory_ref || inheritedVideoAssets(n).length>0 ||
+      /@/.test([fullPrompt(n),...Object.values(data.fields || {})].join("\n")),
+    previs_guide:!!previsInput(n),audio_refs:!!audioInputs(n).length,video_refs:!!videoInputs(n).length
+  });
+  return request;
+}
+
+async function canvasGenerationCosts(requests) {
+  const amounts = [];
+  for (let i = 0; i < requests.length; i += 200) {
+    const batch = requests.slice(i,i+200);
+    try {
+      const response = await api("/api/generation-cost",{requests:batch});
+      amounts.push(...response.amounts);
+    } catch {
+      amounts.push(...batch.map(()=>null));
+    }
+  }
+  return amounts;
+}
+
+function displayGenerationCost(amount) {
+  if (!Number.isFinite(amount)) return "费用暂无法估算";
+  return "预计费用 ¥" + amount.toLocaleString("zh-CN",{minimumFractionDigits:2,maximumFractionDigits:4});
+}
+
+let canvasCostTimer;
+function renderCanvasCost(n, output) {
+  clearTimeout(canvasCostTimer);
+  if (!output) return;
+  const request = canvasCostRequest(n);
+  canvasCostTimer = setTimeout(async ()=>{
+    if (!output.isConnected || !sel.has(n.id)) return;
+    const [amount] = await canvasGenerationCosts([request]);
+    if (output.isConnected && sel.has(n.id)) output.textContent = displayGenerationCost(amount);
+  },150);
 }
 function canvasPromptBindings(images,sounds=[],clips=[],guide=null,special=false) {
   const bindings=new Map();
@@ -128,9 +181,10 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   }
   req.label = n.name;
   req.board = boardId;
+  if (d.replay_memory_ref) req.replay_memory_ref=d.replay_memory_ref;
   if (req.previs_guide || req.audio_refs || req.video_refs) {
     if (!referenceServices(n).some(x => x.id === d.provider)) {
-      showErr(n, needsReferenceVideo(n) ? "请选择已配置参考视频公网地址的 Seedance 服务" : "请选择支持音频参考的 Seedance 服务");
+      showErr(n, needsReferenceVideo(n) ? "请选择已配置公网地址的视频参考服务" : "请选择支持音频参考的视频服务");
       return;
     }
     req.provider = d.provider;
@@ -154,12 +208,14 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
       await flushSave();
       if (B!==sourceBoard || node(n.id)!==n) return;
     }
-    const r = await api("/api/generate", req);
+    const preview=videoReferencePreviews.get(n);
+    const checked=preview?.signature===videoPreviewSignature(req);
+    const r = await api("/api/generate",checked?{...req,reference_preview:preview.key}:req);
     if (B!==sourceBoard || node(n.id)!==n) return;
     if(history?.video_recipe && r.memory_context)Object.assign(history.video_recipe,r.memory_context);
-    if(history?.video_recipe && r.reference_context?.video_refs) {
+    if(history?.video_recipe && r.reference_context) {
       Object.assign(history.video_recipe,r.reference_context);
-      const clips=r.reference_context.video_refs;
+      const clips=r.reference_context.video_refs || [];
       for (const edge of history.input_edges) {
         const clip=edge.relation==="video_ref" && clips.find(c=>c.node_id===edge.from && c.ref===edge.ref);
         if (clip) Object.assign(edge,{start:clip.start,end:clip.end});
@@ -170,10 +226,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
       }
     }
     if (r.memory_context) {
-      const resolved = captureGenerationRecord({...req, ...r.memory_context}, textInputs);
-      generationRecord.prompt = resolved.prompt;
-      generationRecord.fields = resolved.fields;
-      generationRecord.inputs.push(...resolved.inputs.filter(item => item.ref && !generationRecord.inputs.some(old=>old.ref===item.ref)));
+      Object.assign(generationRecord,captureGenerationRecord({...req,...r.memory_context,...r.reference_context},textInputs));
     }
     n.job = { ids: r.ids, prompt, t0: Date.now(), st: {}, memory_used:r.memory_used||[], generation_record:generationRecord,
       ...(groupRunId ? {group_run_id:groupRunId} : {}),
@@ -188,6 +241,10 @@ function inheritedVideoAssets(n) {
     !(Array.isArray(ignored) && ignored.includes(asset.id))) : [];
 }
 function applyVideoMemory(n, request) {
+  if (n.data.replay_memory_ref) {
+    request.replay_memory_ref=n.data.replay_memory_ref;
+    return;
+  }
   const ids = new Set(inheritedVideoAssets(n).map(asset=>asset.id));
   if (!ids.size) return;
   request.memory_ids = [...ids];
@@ -224,9 +281,9 @@ function videoReq(n, prompt) {
     const bindings=canvasPromptBindings(tokenOrder,sounds,clips,guide,extension||clips[0]?.edge.segment_edit);
     const resolved=resolveCanvasPrompt(n,prompt,bindings);
     if(resolved===null)return null;
-    const common = { kind: "video", prompt:resolved, ar, duration: d.duration, quality: d.quality, turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: d.count || 1 };
+    const common = { kind: "video", prompt:resolved, ar, duration:canvasVideoDuration(n), quality:canvasVideoQuality(n), turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: d.count || 1 };
     if(d.video_optics&&Object.keys(d.video_optics).length)common.video_optics=structuredClone(d.video_optics);
-    if (d.draft && videoDraftAvailable(n)) common.draft=true;
+    if (d.draft && videoDraftAvailable(n)) Object.assign(common,{draft:true,quality:"std"});
     if(usesFields(n)){
       common.fields={};
       for(const [k,value] of Object.entries(d.fields||{})){
@@ -237,7 +294,7 @@ function videoReq(n, prompt) {
     }
     if (guide || sounds.length || clips.length) {
       const max = guide&&!extension ? 14 : referenceDuration(n);
-      req = {...common, duration:Math.min(max,Math.max(4,d.duration)), images:imgs, planned:true, mode:guide?"previs":"reference"};
+      req = {...common, duration:Math.min(max,Math.max(4,common.duration)), images:imgs, planned:true, mode:guide?"previs":"reference"};
       if (guide) req.previs_guide={node_id:guide.source.id, ref:guide.edge.ref, name:guide.source.name, version:guide.index+1};
       if (sounds.length) req.audio_refs=sounds.map(({source,edge,index})=>({node_id:source.id,ref:edge.ref,name:source.name,version:index+1,
         ...(promptSlot(edge.prompt_slot)?{prompt_slot:edge.prompt_slot}:{})}));
@@ -360,7 +417,8 @@ async function poll() {
           const receipt = n.job.generation_record;
           const generation = receipt && {generation_record:{...receipt, service:s.meta?.provider || receipt.service,
             effective_prompt:s.meta?.prompt || receipt.effective_prompt,
-            settings:{...receipt.settings,...(s.meta?.model ? {provider_model:s.meta.model} : {})}}};
+            settings:{...receipt.settings,...(s.meta?.model ? {provider_model:s.meta.model} : {}),
+              ...(s.meta?.resolution ? {resolution:s.meta.resolution} : {})}}};
           versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: actualSource, memory_used: n.job.memory_used||[], mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}), ...generation, ...(job.group_run_id?{group_run_id:job.group_run_id}:{}) });
         }
         const batch=n.job.batch;

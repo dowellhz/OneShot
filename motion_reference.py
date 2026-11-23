@@ -18,6 +18,8 @@ LEASE_PATH = re.compile(LEASE_PREFIX + r"[a-f0-9]{64}")
 LEASE_SECONDS = 35 * 60
 MIN_SECONDS = 2
 _leases = {}
+H3_CLOUD_MODELS = {"MiniMax-H3","MiniMax-H3-Highspeed","MiniMax-H3-Lite","MiniMax-H3-Max",
+                   "MiniMax-H3-Max-Turbo","MiniMax-H3-MG","MiniMax-H3-NC"}
 
 
 class PublicAccessLogger(AccessLogger):
@@ -50,16 +52,21 @@ def public_origin(value):
 
 
 def supports_audio(provider, model):
+    if provider.get("kind") == "minimax":
+        return bool(provider.get("enabled") and provider.get("secrets", {}).get("api_key") and
+                    isinstance(model,str) and model in H3_CLOUD_MODELS and has_public_origin(provider))
     return bool(provider.get("kind") == "ark" and provider.get("enabled")
                 and provider.get("secrets", {}).get("api_key") and isinstance(model, str)
                 and re.fullmatch(r"(?:doubao-seedance-2-[05](?:-[a-z0-9]+)*|ep-[a-zA-Z0-9-]+)", model))
 
 
 def supports(provider, model):
-    if not supports_audio(provider, model):
-        return False
+    return supports_audio(provider, model) and has_public_origin(provider)
+
+
+def has_public_origin(provider):
     try:
-        return bool(public_origin(provider["config"].get("motion_origin")))
+        return bool(public_origin((provider.get("config") or {}).get("motion_origin")))
     except ValueError:
         return False
 
@@ -125,5 +132,5 @@ async def serve(req):
     path, expiry, alive = lease
     if time.monotonic() >= expiry or not alive() or not path.is_file():
         raise web.HTTPNotFound()
-    return web.FileResponse(path, headers={"Content-Type":"video/mp4", "Cache-Control":"private, no-store",
+    return web.FileResponse(path, headers={"Content-Type":"audio/wav" if path.suffix==".wav" else "video/mp4", "Cache-Control":"private, no-store",
                                            "X-Content-Type-Options":"nosniff"})

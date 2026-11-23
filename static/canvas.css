@@ -53,6 +53,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 :is(#videoExtension,#videoSegment,#segmentReview,#videoTrim,#frameCapture,#videoDraftFinal) header,:is(#videoExtension,#videoSegment,#segmentReview,#videoTrim,#frameCapture,#videoDraftFinal) footer { display:flex; justify-content:space-between; align-items:center; gap:8px; }
 :is(#videoExtension,#videoSegment,#segmentReview,#videoTrim,#frameCapture,#videoDraftFinal) footer { justify-content:flex-end; }
 :is(#videoExtension,#videoSegment,#segmentReview,#videoTrim,#frameCapture,#videoDraftFinal) p { margin:8px 0; color:var(--dim); }
+#videoDraftFinal label { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:8px 0; }
 :is(#videoExtension,#videoSegment) label { display:block; margin:8px 0; }
 :is(#videoExtension,#videoSegment,#segmentReview,#videoTrim,#frameCapture,#videoDraftFinal) :is(select,input,textarea,button) { color:var(--text); background:var(--card-hi); border:1px solid var(--line2); border-radius:7px; padding:5px 8px; }
 :is(#videoExtension,#videoSegment) :is(select,input) { margin-left:8px; }
@@ -287,6 +288,11 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #ppVoice[hidden],#ppVoice button[hidden] { display:none; }
 #ppVoice button[aria-pressed="true"] { color:var(--text); border-color:currentColor; }
 #ppVoiceStatus { color:var(--dim); font-size:var(--fs-caption); }
+.voice-live-setting { display:inline-flex; align-items:center; gap:4px; color:var(--dim); font-size:var(--fs-caption); }
+.voice-live-preview:not([hidden]) {
+  flex:1 0 100%; min-width:0; box-sizing:border-box; max-height:5em; overflow:auto; overflow-wrap:anywhere;
+  border-left:2px solid var(--line2); padding:3px 8px; color:var(--dim); font-size:var(--fs-caption); white-space:pre-wrap;
+}
 #ppResize { position:absolute; right:3px; bottom:3px; display:grid; place-items:center; width:24px; height:24px; padding:0;
   background:transparent; color:var(--dim); border:0; border-radius:5px; cursor:nwse-resize; touch-action:none; }
 #ppResize:hover,#ppResize:focus-visible { background:var(--card-hi); color:var(--text); }

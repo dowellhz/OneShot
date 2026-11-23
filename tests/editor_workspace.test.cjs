@@ -824,21 +824,23 @@ async function run(){
  w.__memories=w.__memories.filter(a=>a.id!=='team-style');
  w.__memories.push({id:"bundle-qa",name:"样品瓶",kind:"prop",owner:1,ref:"input:h3studio/bottle-front.png",
   media:[{ref:"input:h3studio/bottle-front.png",type:"image"},{ref:"input:h3studio/bottle-side.png",type:"image"},
-   {ref:"input:h3studio/bottle-spin.mp4",type:"video"}]});
+   {ref:"input:h3studio/bottle-spin.mp4",type:"video",seconds:3},{ref:"input:h3studio/bottle-sound.wav",type:"audio",seconds:3}]});
  await evaluate('cmEdit(window.__memories.find(a=>a.id==="bundle-qa"),"prop")');
  evaluate('$(".cm-generation-images").open=true');
- assert.equal(evaluate('$$("[data-generation-image]").length'),2,'only image references enter the image bundle');
- evaluate(`const bundleCheck=ref=>$$("[data-generation-image]").find(box=>box.dataset.generationImage.endsWith(ref));
+ assert.equal(evaluate('$$("[data-generation-media]").length'),4,'all supported media can join the same bundle');
+ assert.match(evaluate('$(".cm-generation-images").textContent'),/视频 · 3.0 秒/);
+ evaluate(`const bundleCheck=ref=>$$("[data-generation-media]").find(box=>box.dataset.generationMedia.endsWith(ref));
   bundleCheck("bottle-front.png").click();bundleCheck("bottle-side.png").click();
-  $(".cm-generation-images button[aria-label='上移参考图 2']").click();
+  bundleCheck("bottle-spin.mp4").click();bundleCheck("bottle-sound.wav").click();
+  $(".cm-generation-images button[aria-label='上移参考 2']").click();
   $("#memoryEditor button[type=submit]").click();`);
  await ready('$("#memoryEditor .cm-error").textContent.startsWith("已保存")','the image reference bundle is saved');
- equal(w.__lastMemoryPost.generation_images,["input:h3studio/bottle-side.png","input:h3studio/bottle-front.png"]);
+ equal(w.__lastMemoryPost.generation_media,["input:h3studio/bottle-side.png","input:h3studio/bottle-front.png","input:h3studio/bottle-spin.mp4","input:h3studio/bottle-sound.wav"]);
  assert.equal(w.__lastMemoryPost.default_ref,"input:h3studio/bottle-front.png");
  evaluate('$("#memoryEditor [data-close]").click()');
  w.__memories=w.__memories.filter(a=>a.id!=="bundle-qa");
  evaluate('cmInvalidate()');
- console.log('Asset image bundle passed: explicit selection, order, and a separate default image.');
+ console.log('Mixed asset bundle passed: ordered media selection, durations and a separate default image.');
  await evaluate('cmEdit(window.__memories.find(a=>a.id==="char"),"character")');
  equal(evaluate('$$(".cm-character-view button").some(b=>b.textContent==="用现有图片定稿")'),true,'existing image has direct approval action');
  equal(evaluate('$$(".cm-character-hint").filter(el=>el.textContent==="主图定稿后可生成").length'),4,'locked angles explain the prerequisite');
@@ -2822,12 +2824,56 @@ async function run(){
  evaluate('closeVideoGif()');
  w.fetch=gifFetch;
  console.log('GIF export DOM passed: video interval, image grid, preview, download, publication and assistant result card.');
+ evaluate(`const beforeModelOptions=snap(), previousVideoServices=CAPS_LIST.video;
+  CAPS_LIST.video=[{id:"h3-fixture",kind:"minimax",name:"云端 H3",default:true,
+                    model:"MiniMax-H3",default_route_model:"MiniMax-H3-Max",
+                    models:[{id:"MiniMax-H3",durations:[4,5,15],qualities:{std:"768P",hd:"2K"}},
+                            {id:"MiniMax-H3-Max",durations:[5,15],qualities:{std:"480P",hd:"768P"}}]},
+                   {id:"flash-fixture",kind:"kling",name:"可灵 Flash",model:"kling-4.0-flash",
+                    models:[{id:"kling-4.0-flash",durations:[3,20],qualities:{std:"720p"}}]}];
+  const optionsVideo=addNode("video",420,90,{prompt:"测试可用选项",duration:4,quality:"hd"});
+  selectOnly(optionsVideo.id);`);
+ equal(evaluate(`[$("#ctl select[data-k=duration]").value, $("#ctl select[data-k=quality]").selectedOptions[0].textContent,
+  videoReq(optionsVideo,"测试").duration]`),['5','768P',5]);
+ evaluate(`optionsVideo.data.provider="flash-fixture";optionsVideo.data.duration=23;showPanel();`);
+ equal(evaluate(`[$("#ctl select[data-k=duration]").value,!!$("#ctl select[data-k=quality]"),
+  videoReq(optionsVideo,"测试").duration,videoReq(optionsVideo,"测试").quality]`),['20',false,20,'std']);
+ evaluate('CAPS_LIST.video=previousVideoServices;restore(beforeModelOptions)');
+ console.log('Video model settings passed: configured default model, provider-specific durations and single-resolution submission.');
+ const checkedPreviewFetch=w.fetch, checkedSubmissions=[];
+ w.fetch=async(url,options)=>{
+  const path=String(url);
+  if(path==="/api/preview")return {ok:true,text:async()=>JSON.stringify({
+    reference_preview:"a".repeat(64),prompt:"采用资产里的图片和音频",mode:"全模态参考",inputs:[]})};
+  if(path!=="/api/generate")return checkedPreviewFetch(url,options);
+  const req=JSON.parse(options.body), jobId="checked-reference-"+checkedSubmissions.length;
+  checkedSubmissions.push(req);
+  jobs.set(jobId,{state:"error",error:"模拟停止"});
+  return {ok:true,text:async()=>JSON.stringify({ids:[jobId]})};
+ };
+ evaluate(`const beforeCheckedPreview=snap(), checkedVideo=addNode("video",450,90,{prompt:"按 @样品素材 动作"});
+  selectOnly(checkedVideo.id);`);
+ await evaluate("previewPrompt(checkedVideo)");
+ evaluate("closePromptPreview()");
+ await evaluate("generate(checkedVideo)");
+ await ready("!checkedVideo.job","preview-bound generation finished",350);
+ assert.equal(checkedSubmissions[0].reference_preview,"a".repeat(64));
+ evaluate('checkedVideo.data.duration=10');
+ await evaluate("generate(checkedVideo)");
+ await ready("!checkedVideo.job","edited request finished",350);
+ assert.equal(Object.hasOwn(checkedSubmissions[1],"reference_preview"),false);
+ evaluate("restore(beforeCheckedPreview)");
+ w.fetch=checkedPreviewFetch;
+ console.log('Mixed reference preview passed: submitting reviewed assets is pinned until the node inputs change.');
  const nativeDraftFetch=w.fetch, nativeDraftReq=[];
+ let branchTransportFailure=true;
  w.fetch=async(url,opts)=>{
    const path=String(url);
    if(!['/api/generate','/api/video/draft/finalize'].includes(path))return nativeDraftFetch(url,opts);
    const payload=JSON.parse(opts.body);nativeDraftReq.push(payload);
-   const id=path==='/api/generate'?'native-draft':'native-final';
+   const branch=path==='/api/video/draft/finalize'&&payload.resolution==="1080p";
+   if(branch&&branchTransportFailure){branchTransportFailure=false;throw new Error("连接中断");}
+   const id=path==='/api/generate'?'native-draft':branch?'native-branch':'native-final';
    const ref='output:h3studio/'+id+'.mp4';
    jobs.set(id,{state:'done',meta:{mode_name:id,provider:'fixture'},outputs:[{ref,url:'/media?ref='+encodeURIComponent(ref),
      meta:{width:720,height:1280,duration:5},...(id==='native-draft'?{extra:{draft_expires:Date.now()/1000+600}}:{})}]});
@@ -2878,9 +2924,31 @@ async function run(){
  evaluate('switchVersion(nativeDraftNode,0);');
  equal(evaluate('[nativeDraftNode.data.draft,!!$("#ntools [data-a=draft-final]")]'),[true,true],
    'switching back restores the original sample controls');
- evaluate('CAPS_LIST.default_video_draft=false;removeNodes([nativeDraftNode.id])');
+ evaluate(`const sourceBeforeBranch=JSON.stringify(nativeDraftNode);
+   openVideoDraftFinal(nativeDraftNode);draftFinalForm.elements.placement.value="branch";
+   draftFinalForm.dispatchEvent(new Event("submit",{cancelable:true}));`);
+ await ready('$("[data-draft-status]").textContent==="连接中断"','a failed transport leaves the same finalization available to retry');
+ evaluate('closeVideoDraftFinal();openVideoDraftFinal(nativeDraftNode)');
+ assert.equal(evaluate('draftFinalForm.elements.placement.value'),"branch");
+ evaluate('draftFinalForm.dispatchEvent(new Event("submit",{cancelable:true}))');
+ await ready('B.nodes.some(n=>curV(n)?.ref==="output:h3studio/native-branch.mp4")','final branch appears next to the sample',250);
+ equal(nativeDraftReq[2],nativeDraftReq[3],'retry preserves the same provider job key and pinned sample');
+ equal(evaluate(`(()=>{const branch=B.nodes.find(n=>curV(n)?.ref==="output:h3studio/native-branch.mp4");
+   const edge=B.edges.find(e=>e.to===branch.id&&e.from===nativeDraftNode.id);
+   return [JSON.stringify(nativeDraftNode)===sourceBeforeBranch,branch.x>nativeDraftNode.x+size(nativeDraftNode).w,
+     sel.has(branch.id),edge.relation,edge.ref,videoInputs(branch).length,curV(branch).draft_final.source_node===nativeDraftNode.id];})()`),
+   [true,true,true,"draft_final","output:h3studio/native-draft.mp4",0,true]);
+ evaluate(`const draftBranchNode=B.nodes.find(n=>curV(n)?.ref==="output:h3studio/native-branch.mp4");
+   duplicate([nativeDraftNode.id,draftBranchNode.id]);`);
+ equal(evaluate(`(()=>{const [sample,final]=[...sel].map(node);return [
+   curV(final).draft_final.source_node===sample.id,B.edges.some(e=>e.from===sample.id&&e.to===final.id&&e.relation==="draft_final")];})()`),
+   [true,true],'duplicating the pair preserves the copied sample as the finalization source');
+ evaluate('undo()');
+ evaluate('undo();CAPS_LIST.default_video_draft=false');
+ assert.equal(evaluate('B.nodes.some(n=>curV(n)?.ref==="output:h3studio/native-branch.mp4")'),false);
+ evaluate('removeNodes([nativeDraftNode.id])');
  w.fetch=nativeDraftFetch;
- console.log('Video draft and comparison DOM passed: same-node finalization, shared timeline, sound selection and fullscreen entry.');
+ console.log('Video draft and comparison DOM passed: tab and branch finalization, retry, provenance, undo and synchronized comparison.');
  const editTimelineFetch=w.fetch, timelineRequests=[], captionRequests=[];
  let editTimelineFails=true;
  w.fetch=async(url,options)=>{
@@ -3140,6 +3208,10 @@ async function run(){
  const submittedBatches=[];
  let persistedLayout;
  w.fetch=async(url,options)=>{
+  if(String(url)==="/api/generation-cost"){
+   const {requests}=JSON.parse(options.body);
+   return {ok:true,text:async()=>JSON.stringify({amounts:requests.map(r=>r.kind==="image" ? .125*r.count : null)})};
+  }
   if(String(url)!=="/api/generate"){
    if(String(url)==="/api/board/btest"&&options?.method==="PUT")persistedLayout=JSON.parse(options.body).batch_layout;
    return generationFetch(url,options);
@@ -3203,7 +3275,11 @@ async function run(){
   const workflowGroup=ctNewGroup("场景制作",[workflowVideo.id,workflowImage.id,independentImage.id]);drawEdges();
   const workflowButton=$("[data-group-run]",CT_GROUPS.get(workflowGroup.id));
   const approveWorkflow=()=>$("#groupRunConfirm form").dispatchEvent(new Event("submit",{cancelable:true}));
+  selectOnly(workflowImage.id);
   workflowButton.click();`);
+ await ready('$("#groupRunConfirm [data-group-cost]").textContent.includes("¥0.375")','batch quotes retain known subtotal');
+ assert.match(evaluate('$("#groupRunConfirm [data-group-cost]").textContent'),/1 个节点无法估算/);
+ await ready('$("[data-generation-cost]")?.textContent.includes("¥0.25")','node generation quotes include the selected result count');
  equal(evaluate('$$("#groupRunConfirm li strong").map(el=>el.textContent)'),['分镜首帧','分镜视频','场景参考'],'confirmation shows dependency order before submission');
  assert.match(evaluate('$("#groupRunConfirm [data-summary]").textContent'),/3 个节点.*4 项/);
  assert.match(evaluate('$("#groupRunConfirm .group-run-refs").textContent'),/分镜首帧\s*首帧 · 本轮生成/);
@@ -4437,6 +4513,16 @@ async function run(){
  assert.match(evaluate('$(".light-status").textContent'),/历史素材版本已移除/);
  assert.equal(evaluate('snap()===beforeMissingHistory'),true,'a missing input leaves the active draft and graph untouched');
  evaluate('closeLightbox();node(legacyReference.id).versions.unshift(removedHistoryImage);node(legacyReference.id).cur=1;');
+ evaluate(`node(wiredImage.id).versions[0].memory_used=[{id:"historical-asset",name:"旧版设定"}];
+   vtTabMenu(node(wiredImage.id),0,100,100);$("[data-version-replay-assets]").click();`);
+ equal(evaluate('[node(wiredImage.id).data.replay_memory_ref,!!$("[data-replay-assets-clear]")]'),
+  [evaluate("beforeRegeneration"),true],"the reviewed version pins the original asset snapshot");
+ evaluate('$("[data-replay-assets-clear]").click()');
+ assert.equal(evaluate("node(wiredImage.id).data.replay_memory_ref"),undefined);
+ evaluate("undo();selectOnly(wiredImage.id)");
+ await evaluate("generate(node(wiredImage.id))");
+ await ready('node(wiredImage.id).versions.length===3','asset snapshot replay completes',350);
+ assert.equal(wiredPrompts[2].replay_memory_ref,evaluate("beforeRegeneration"));
  evaluate(`const recipeDraftAudio=addNode("audio",650,930,{prompt:"当前文案"},{versions:[
    copyAsset("historical-voice.wav",{seconds:5,audio_recipe:{mode:"tts",prompt:"此前的文案",speed:.9}}),
    copyAsset("latest-voice.wav",{seconds:4})],cur:1});
@@ -5360,13 +5446,15 @@ async function run(){
   [0,0,55,300]);
  console.log('Canvas drag alignment passed: settings, zoom-scaled guides, modifier bypass, undo, pointer cancellation, grid and folded group offsets.');
  const voicePointFetch=w.fetch;
- let failPlacementSend=false, voiceCommand=null, deferNodeTranscript=false, finishNodeTranscript;
+ let failPlacementSend=false, voiceCommand=null, deferNodeTranscript=false, finishNodeTranscript, voiceSignal;
  const voiceStops=[];
  w.fetch=async(url,options={})=>{
-  if(options.method==="POST" && String(url)==="/api/transcription" && voiceCommand!==null)
+  if(options.method==="POST" && String(url).split("?")[0]==="/api/transcription" && voiceCommand!==null) {
+   voiceSignal=options.signal;
    return {ok:true,json:()=>deferNodeTranscript
     ? new Promise(resolve=>{w.__nodeTranscriptPending=true;finishNodeTranscript=()=>resolve({text:voiceCommand});})
     : Promise.resolve({text:voiceCommand})};
+  }
   if(options.method==="POST" && /^\/api\/chat\/runs\/voice-scope-[^/]+\/stop$/.test(String(url))){
    voiceStops.push(String(url));
    return {ok:true,json:async()=>({ok:true})};
@@ -5505,6 +5593,46 @@ async function run(){
  assert.equal(evaluate('acVoiceActive'),null,'switching nodes cancels the pending dictation');
  finishNodeTranscript();delete w.__nodeTranscriptPending;deferNodeTranscript=false;voiceCommand=null;
  equal(evaluate('[node(voicedImage.id).data.prompt,node(voicedAudio.id).data.prompt]'),["","停止"]);
+
+ voiceCommand="预览第一句";
+ evaluate(`const voicePreviewChunk=()=>{
+   acVoiceActive.nextPreviewAt=0;
+   acVoiceActive.recorder.ondataavailable({data:new Blob(["voice"],{type:"audio/webm"})});
+  };
+  selectOnly(voicedImage.id);
+  $("#ppVoiceLive").click();
+  $("#ppVoiceRecord").click();`);
+ await ready('acVoiceActive?.phase==="recording"','live preview recording starts');
+ evaluate('voicePreviewChunk()');
+ await ready('$("#ppVoicePreview").textContent==="预览第一句"','node partial transcript appears before stop');
+ equal(evaluate('[$("#ppVoicePreview").hidden,$("#prompt").value,$("#acVoiceLive").checked]'),[false,"",true]);
+ voiceCommand="更正后的预览";
+ evaluate('voicePreviewChunk()');
+ await ready('$("#ppVoicePreview").textContent==="更正后的预览"','a new partial replaces the previous prefix');
+ voiceCommand="完整转写";
+ evaluate('$("#ppVoiceRecord").click()');
+ await ready('node(voicedImage.id).data.prompt==="完整转写"','only the final transcript enters the prompt');
+ assert.equal(evaluate('$("#ppVoicePreview").hidden'),true);
+
+ voiceCommand="取消后的迟到预览";deferNodeTranscript=true;
+ evaluate('$("#acInput").value="现有草稿";$("#acVoiceRecord").click()');
+ await ready('acVoiceActive?.phase==="recording"','assistant live preview shares the setting');
+ evaluate('voicePreviewChunk()');
+ await ready('window.__nodeTranscriptPending','assistant preview request is in flight');
+ evaluate('$("#acVoiceCancel").click()');
+ assert.equal(voiceSignal.aborted,true);
+ finishNodeTranscript();delete w.__nodeTranscriptPending;deferNodeTranscript=false;
+ await Promise.resolve();
+ equal(evaluate('[$("#acVoicePreview").hidden,$("#acInput").value,acVoiceActive]'),[true,"现有草稿",null]);
+ evaluate('$("#acVoiceLive").click();$("#acVoiceRecord").click()');
+ await ready('acVoiceActive?.phase==="recording"','recording restarts after cancel');
+ evaluate('acVoiceActive.recorder.state="inactive";acVoiceActive.recorder.onstop()');
+ equal(evaluate('[$("#acVoiceStatus").textContent,$("#acInput").value]'),["录音中断，请重试","现有草稿"]);
+ evaluate(`navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException("denied","NotAllowedError");};
+  $("#acVoiceRecord").click();`);
+ await ready('$("#acVoiceStatus").textContent.startsWith("麦克风权限未开启")','microphone denial is reported without uploading');
+ voiceCommand=null;
+ console.log('Live dictation passed: incremental drafts, final result, shared preference, cancelled response, interrupted recording and denied permission.');
  evaluate(`restore(${JSON.stringify(beforeNodeVoice)})`);
  console.log('Node dictation passed: video fields, keyboard recording, audio draft, undo and stale-response isolation.');
  delete w.MediaRecorder;
@@ -5513,7 +5641,7 @@ async function run(){
  console.log('Voice pointing passed: hold gesture, pinned references, position markers, typed placement, cancellation and recoverable submission.');
  const approvalFetch=w.fetch, approvalDecisions=[];
  let approvalRequest, approvalPending=false, approvalRunState='done', finishApproval;
- let approvalMockId='approval-card', approvalPlan={kind:'image',count:2,label:'海报草稿',prompt:'<img src=x> 保留产品配色',references:1,editable:{prompt:3000,count:4}};
+ let approvalMockId='approval-card', approvalPlan={kind:'image',count:2,unit_cost:.125,label:'海报草稿',prompt:'<img src=x> 保留产品配色',references:1,editable:{prompt:3000,count:4}};
  const approvalSid=evaluate('AC.session');
  w.fetch=async(url,options={})=>{
   const path=String(url).split('?')[0];
@@ -5544,6 +5672,7 @@ async function run(){
  await ready('!$("#acApprovals").hidden','the assistant displays a pending generation card');
  equal([approvalRequest.generation_mode,evaluate('localStorage.getItem("h3.chat.generationMode")')],['manual','manual']);
  assert.match(evaluate('$("#acApprovals").textContent'),/海报草稿.*2 张图片/s);
+ assert.match(evaluate('$("#acApprovals").textContent'),/预计费用 ¥0\.25/);
  equal(evaluate('[$$("#acApprovals img").length,$("#acApprovals p").textContent,$("#acStatus").textContent]'),
   [0,'<img src=x> 保留产品配色','等待确认生成方案…']);
  evaluate(`const generationEditForm=$("[data-approval-edit]");
@@ -5554,6 +5683,7 @@ async function run(){
  evaluate('generationEditForm.dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
  await ready('!!$("[data-approval-id=approval-revised]")','saved changes get a fresh confirmation card');
  assert.match(evaluate('$("#acApprovals").textContent'),/3 张图片.*两种暖色排版/s);
+ assert.match(evaluate('$("#acApprovals").textContent'),/预计费用 ¥0\.375/);
  evaluate('$("[data-approval-id][data-decision=approve]").click();$("[data-approval-id][data-decision=skip]").click()');
  equal(approvalDecisions,[{decision:'adjust',parameters:{prompt:'两种暖色排版',count:3}},{decision:'approve'}]);
  assert.equal(evaluate('$("[data-approval-id][data-decision=approve]").disabled'),true);
@@ -5561,6 +5691,22 @@ async function run(){
  await ready('$("#acApprovals").hidden','a successful decision removes the pending card');
  w.fetch=approvalFetch;
  console.log('Assistant generation approval passed: preference snapshot, safe plan display, exclusive decision and confirmation handoff.');
+ evaluate(`const previousApprovals=AC.approvals;
+  const mixedApproval={id:"mixed-review",name:"video_generate",plan:{kind:"video",count:1,prompt:"拍摄",
+    editable:{prompt:3000},reference_review:{duration:8,quality:"1080p",provider:"方舟",model:"Seedance 2.5",
+      assets:["站台参考"],counts:[["图",1,30],["音频",1,10]],
+      inputs:[{name:"<img src=x>",role:"subject"},{name:"站台环境声",role:"audio_ref",start:0,end:2}]}}};
+  AC.approvals=[mixedApproval];acRenderApprovals();`);
+ assert.match(evaluate('$("#acApprovals").textContent'),/8 秒.*1080p.*Seedance 2\.5/s);
+ assert.match(evaluate('$("#acApprovals").textContent'),/站台环境声 · 音频 · 0–2 秒/);
+ assert.equal(evaluate('$("#acApprovals img")'),null);
+ evaluate(`mixedApproval.plan.reference_review=null;
+  mixedApproval.plan.reference_pending=true;acRenderApprovals();
+  const blockedForm=$("[data-approval-edit]");
+  blockedForm.dispatchEvent(new Event("reset",{bubbles:true}));`);
+ assert.equal(evaluate('$("[data-decision=approve]").disabled'),true);
+ evaluate('AC.approvals=previousApprovals;acRenderApprovals()');
+ console.log('Assistant mixed-media approval passed: exact model and inputs, safe labels and pending confirmation lock.');
 
  const fullscreenFetch=w.fetch;
  let fullscreenRequest;

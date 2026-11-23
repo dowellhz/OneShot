@@ -1,6 +1,7 @@
 """Remote HTTP roundtrips: memory ownership, actual generation refs and durable history."""
 import io
 import json
+import wave
 from zipfile import ZipFile
 from unittest.mock import AsyncMock, patch
 from aiohttp import FormData, web
@@ -454,7 +455,8 @@ class MemoryIntegration(ChatFixture):
         reset = await self.client.post("/api/memory",json={"id":a["id"],"mtime":data["mtime"],"generation_images":[]})
         self.assertEqual(reset.status,200,await reset.text())
         self.assertEqual([entry["ref"] for entry in st.prepare(user,model_payload)["images"]],[frame,a["ref"]])
-        with patch.object(st,"historical_references",return_value={a["id"]:[(None,ref) for ref in refs]}), \
+        recorded = {**a,"references":[{"view":None,"ref":ref} for ref in refs]}
+        with patch.object(st,"historical_assets",return_value={a["id"]:recorded}), \
                 patch.object(server,"require_media"):
             replay = st.prepare(user,model_payload,replay_ref=frame)
         self.assertEqual([entry["ref"] for entry in replay["images"]],[frame,*refs])
@@ -466,6 +468,113 @@ class MemoryIntegration(ChatFixture):
         other={**self.board,'name':'Other'};server.board_path('other').write_text(json.dumps(other))
         self.assertFalse(any(a['id']==m['id'] for m in st.list({'id':7,'role':'member'},'other')))
         self.assertEqual((await self.client.post('/api/generate',json={'kind':'image','board':'other','prompt':'@世界观 街道'})).status,400)
+
+    async def test_mixed_asset_references_reach_the_selected_provider_and_history(self):
+        user = {"id":7,"role":"member"}
+        asset = await self.create(name="样品素材",kind="prop",document={"name":"拍摄说明","text":"瓶盖保持红色"})
+        original_image = asset["ref"]
+        video, video_ref = server.film._new(server.COMFY_DIR,"input","memory-guide",".mp4")
+        server.film.encode_silent(video,(Image.new("RGB",(64,64),"blue") for _ in range(384)),
+                                  64,64,24,lambda:False,lambda _:None)
+        audio, audio_ref = server.film._new(server.COMFY_DIR,"input","memory-sound",".wav")
+        with wave.open(str(audio),"wb") as file:
+            file.setparams((1,2,16000,0,"NONE",""))
+            file.writeframes(b"\x80\x01" * 48000)
+        server.grant_media(user,video_ref,audio_ref)
+        for ref in (video_ref,audio_ref):
+            response = await self.client.post("/api/memory",json={"id":asset["id"],"ref":ref})
+            self.assertEqual(response.status,200,await response.text())
+        refs = [video_ref,original_image,audio_ref]
+        response = await self.client.post("/api/memory",json={"id":asset["id"],"generation_media":refs})
+        self.assertEqual((await response.json())["generation_media"],refs)
+        request = {"board":"test","kind":"video","prompt":"展示 @样品素材","duration":5}
+        unconfigured = await self.client.post("/api/preview",json=request)
+        self.assertEqual(unconfigured.status,400)
+        model = "doubao-seedance-2-5-260628"
+        limited = "doubao-seedance-2-0-fixture"
+        provider = server.providers.save(None,"ark","Seedance 测试",
+                                         {"motion_origin":"https://oneshot.example","models":{"video":model}},
+                                         {"api_key":"test-key"},True)
+        server.providers.set_route("video",[{"provider_id":provider,"model":limited}])
+        preview = await self.client.post("/api/preview",json=request)
+        self.assertEqual(preview.status,200,await preview.text())
+        planned = await preview.json()
+        self.assertIn("瓶盖保持红色",planned["prompt"])
+        self.assertIn("@视频1",planned["prompt"])
+        self.assertIn("@音频1",planned["prompt"])
+        self.assertIn("@图片1",planned["prompt"])
+        self.assertIn(model,planned["mode"])
+        self.assertEqual([(entry["role"],entry["ref"],entry.get("end")) for entry in planned["inputs"]],
+                         [("image_ref",original_image,None),("video_ref",video_ref,16),("audio_ref",audio_ref,3)])
+        with patch.object(server,"start_remote") as submit:
+            rejected = await self.client.post("/api/generate",json={**request,"provider":"local_h3"})
+            self.assertEqual(rejected.status,400,await rejected.text())
+            rejected = await self.client.post("/api/generate",json={**request,"provider":provider,"selected_model":limited})
+            self.assertEqual(rejected.status,400,await rejected.text())
+            submit.assert_not_called()
+            response = await self.client.post("/api/generate",json={**request,"reference_preview":planned["reference_preview"]})
+        self.assertEqual(response.status,200,await response.text())
+        receipt = await response.json()
+        queued_request = submit.call_args.args[-1]
+        self.assertEqual(queued_request["audio_refs"],[(audio,3)])
+        self.assertEqual(submit.call_args.kwargs["video_refs"][0]["path"],video)
+        upstream = await server.remote.ark_video_body(model,{**queued_request,"video_urls":["https://oneshot.example/fixture"]})
+        self.assertEqual([item.get("role") for item in upstream["content"]],
+                         [None,"reference_image","reference_video","reference_audio"])
+        self.assertEqual([entry["ref"] for entry in receipt["memory_used"][0]["references"]],refs)
+        self.assertEqual(receipt["reference_context"]["audio_refs"][0]["end"],3)
+        self.assertEqual(receipt["reference_context"]["selected_model"],model)
+        self.assertEqual(receipt["memory_used"][0]["document_excerpt"],"瓶盖保持红色")
+        store = self.app["creative_memory"]
+        output_ref = "output:h3studio/mixed-result.mp4"
+        store.observe(user,{receipt["ids"][0]:{"state":"done","outputs":[{"ref":output_ref}]}})
+        server.grant_media(user,output_ref)
+        recorded = store.historical_assets(user,output_ref)[asset["id"]]
+        self.assertEqual([entry["ref"] for entry in recorded["references"]],refs)
+        reset = await self.client.post("/api/memory",json={"id":asset["id"],"generation_media":[original_image]})
+        self.assertEqual(reset.status,200,await reset.text())
+        with patch.object(server,"start_remote") as submit:
+            stale = await self.client.post("/api/generate",json={**request,"reference_preview":planned["reference_preview"]})
+            self.assertEqual(stale.status,409,await stale.text())
+            submit.assert_not_called()
+        replay = store.prepare(user,request,replay_ref=output_ref)
+        self.assertEqual(replay["audio_refs"][0]["ref"],audio_ref)
+        self.assertEqual(replay["video_refs"][0]["ref"],video_ref)
+        image = store.prepare(user,{**request,"kind":"image"},replay_ref=output_ref)
+        self.assertEqual([entry["ref"] for entry in image["images"]],[original_image])
+        self.assertEqual(image["memory_used"][0]["omitted_media_count"],2)
+        self.assertNotIn("video_refs",image)
+        self.assertNotIn("audio_refs",image)
+
+    async def test_replay_freezes_text_only_assets_and_cannot_be_claimed_by_another_user(self):
+        user = {"id":7,"role":"member"}
+        asset = await self.create(name="旧剧本",kind="document",ref="",desc="原设定",constraints="沿用红色",
+                                  document={"name":"本集故事","text":"她带走蓝色钥匙"})
+        request = {"board":"test","kind":"image","prompt":"根据 @旧剧本 绘制站台"}
+        store = self.app["creative_memory"]
+        original = store.prepare(user,request)
+        output = image_editor.save(server.COMFY_DIR,Image.new("RGB",(64,64),"blue"))
+        store.track(user,original,{"ids":["old-doc-job"]})
+        store.observe(user,{"old-doc-job":{"state":"done","outputs":[output]}})
+        updated = await self.client.post("/api/memory",json={"id":asset["id"],"name":"新剧本","desc":"新设定",
+            "constraints":"改用灰色","ref":self.source["ref"],"source_board":"test",
+            "document":{"name":"本集故事","text":"她带走黑色钥匙"}})
+        self.assertEqual(updated.status,200,await updated.text())
+
+        with patch.object(server,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit:
+            response = await self.client.post("/api/generate",json={**request,"replay_memory_ref":output["ref"]})
+            self.assertEqual(response.status,200,await response.text())
+            payload = submit.await_args.args[1]
+            self.assertIn("原设定；约束：沿用红色",payload["prompt"])
+            self.assertIn("她带走蓝色钥匙",payload["prompt"])
+            self.assertNotIn("黑色钥匙",payload["prompt"])
+            self.assertEqual(payload["images"],[])
+            self.assertEqual(payload["memory_used"][0]["generation_context"],original["memory_used"][0]["generation_context"])
+            server.grant_media({"id":8},output["ref"])
+            guest = await self.client.post("/api/generate",headers={"X-Uid":"8"},
+                json={**request,"prompt":"画一张图","replay_memory_ref":output["ref"]})
+            self.assertEqual(guest.status,400,await guest.text())
+            submit.assert_awaited_once()
 
     async def test_ambiguous_and_unknown_mentions_never_submit(self):
         a=await self.create();b=await self.create()

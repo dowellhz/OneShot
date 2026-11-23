@@ -661,14 +661,16 @@ function vtTabMenu(n,index,x,y){
   closeMenus();let m=$("#videoTabMenu");if(!m){m=document.createElement("div");m.id="videoTabMenu";m.className="menu";document.body.append(m);}
   m.innerHTML=`<div class="mt">${TYPE_CN[n.type]}版本 ${index+1}</div><button data-version-copy>${ico("copy")}复制此版本为独立节点</button>`+
     (hasGenerationDraft(n,n.versions[index])?`<button data-version-draft>${ico("edit")}用此版本改稿</button>`:"")+
+    (canReuseGenerationAssets(n,n.versions[index])?`<button data-version-replay-assets>${ico("assets")}沿用原资产改稿</button>`:"")+
     (canvasCanEdit()&&n.versions[index]?.ref?`<button data-version-reference>${ico("script")}引用此版本到创作助手</button>
       <button data-version-new-session>${ico("script")}用此版本发起新对话</button>`:"")+
     (vtCanCopyVersion(n,index)&&vtReferenceUpdates(n,n.versions[index]).length?`<button data-version-update>${ico("next")}更新下游引用…</button>`:"")+
     (n.type==="video"&&!n.data.film?`<button data-split>${ico("next")}拆出这个 Tab</button><button data-all>${ico("assets")}拆开所有 Tab</button>`:"");
   const version=n.versions[index];
   $$("button",m).forEach(b=>{
-    if(b.hasAttribute("data-version-draft")){
-      b.onclick=()=>{closeMenus(); if (loadGenerationDraft(n,version)) focusNodePrompt(n);};
+    if(b.hasAttribute("data-version-draft") || b.hasAttribute("data-version-replay-assets")){
+      const reuseAssets=b.hasAttribute("data-version-replay-assets");
+      b.onclick=()=>{closeMenus();if (loadGenerationDraft(n,version,toast,{reuseAssets})) focusNodePrompt(n);};
       return;
     }
     if(b.hasAttribute("data-version-new-session")){

@@ -1,10 +1,12 @@
 """Run HTTP integration tests on the deployment host; uses an isolated database and media."""
 import asyncio
 import copy
+import io
 import json
 import tempfile
 import time
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -18,6 +20,7 @@ import agent_chat as chat
 import db
 import fields
 import image_editor
+import providers
 import server
 
 
@@ -561,7 +564,29 @@ class ChatIntegration(ChatFixture):
         states = db.q("SELECT name,state,result FROM chat_calls WHERE run_id=?",rid)
         self.fail(f"generation did not pause for approval: {db.one('SELECT state,error FROM chat_runs WHERE id=?',rid)}, {states}")
 
+    async def test_generation_cost_uses_the_selected_route_model_and_duration(self):
+        video = providers.save(None,"kling","Video fixture",{"generation_rates":"video kling-2.6 hd 0.25"}, {}, True)
+        providers.set_route("video",[{"provider_id":video,"model":"kling-2.6"}])
+        image = providers.save(None,"ark","Image fixture",{"generation_rates":"image custom-image 0.125",
+            "models":{"image":"custom-image"}}, {}, True)
+        with self.assertRaisesRegex(providers.ProviderError,"重复"):
+            providers.save(image,"ark","Image fixture",{"generation_rates":"image custom-image 1\nimage custom-image 2"}, {}, True)
+        video_request = {"kind":"video","duration":8,"quality":"hd","count":2}
+        requests = [
+            video_request, {**video_request,"quality":"std"}, {**video_request,"video_refs":True},
+            {"kind":"image","provider":image,"selected_model":"custom-image","count":4},
+            {"kind":"image","provider":image,"selected_model":"unavailable"},
+            {"kind":"image","count":2},
+        ]
+        response = await self.client.post("/api/generation-cost",json={"requests":requests})
+        self.assertEqual(response.status,200,await response.text())
+        self.assertEqual((await response.json())["amounts"],[5,None,None,.5,None,0])
+        self.assertFalse(server.JOBS)
+        self.assertFalse(db.q("SELECT id FROM tasks"))
+
     async def test_manual_generation_waits_and_recovers_across_worker_restart(self):
+        provider = providers.save(None,"ark","Image fixture",{"generation_rates":"image custom-image 0.125"}, {}, True)
+        providers.set_route("image",[{"provider_id":provider,"model":"custom-image"}])
         endpoint = f"/api/chat/sessions/{self.sid}/messages"
         self.svc.model.side_effect = [call("image_generate",{"prompt":"先审阅这张海报","count":1}),answer(),answer()]
         result = image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),"blue"))
@@ -578,6 +603,7 @@ class ChatIntegration(ChatFixture):
             approval = await self.pending_generation(rid)
             self.assertEqual(approval["plan"]["prompt"],"先审阅这张海报")
             self.assertEqual(approval["plan"]["count"],1)
+            self.assertEqual(approval["plan"]["unit_cost"],.125)
             submit.assert_not_awaited()
             original_url = f"/api/chat/runs/{rid}/approvals/{approval['id']}"
             for parameters in ({"count":5},{"count":True},{"provider":"unexpected"},{"prompt":"   "}):
@@ -587,6 +613,7 @@ class ChatIntegration(ChatFixture):
             self.assertEqual(adjusted.status,200,await adjusted.text())
             approval = await self.pending_generation(rid)
             self.assertEqual((approval["plan"]["count"],approval["plan"]["prompt"]),(2,"改成暖色海报"))
+            self.assertEqual(approval["plan"]["unit_cost"],.125)
             self.assertEqual((await self.client.post(original_url,json={"decision":"approve"})).status,409)
             submit.assert_not_awaited()
             queued = await self.client.post(endpoint,json={"text":"继续","request_key":"after-approval","enqueue":True})
@@ -610,6 +637,76 @@ class ChatIntegration(ChatFixture):
             self.assertEqual((submit.await_args.args[1]["count"],submit.await_args.args[1]["prompt"]),(2,"改成暖色海报"))
         self.assertEqual(len(self.load()["nodes"]),4)
         self.assertEqual(self.load()["nodes"][-1]["versions"][0]["prompt"],"改成暖色海报")
+
+    async def test_video_approval_reviews_adjusted_assets_and_stops_when_they_change(self):
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        asset = store.put(user,{"board":"test","name":"站台参考","kind":"scene","ref":self.source["ref"],"source_board":"test"})
+        audio, sound = server.film._new(server.COMFY_DIR,"input","approval-sound",".wav")
+        with wave.open(str(audio),"wb") as recording:
+            recording.setparams((1,2,8000,0,"NONE",""))
+            recording.writeframes(b"\x00\x08"*16000)
+        server.grant_media(user,sound)
+        store.put(user,{"id":asset["id"],"ref":sound,"generation_media":[self.source["ref"],sound]})
+        provider = providers.save(None,"ark","方舟测试",{},{"api_key":"test"},True)
+        providers.set_route("video",[{"provider_id":provider,"model":"doubao-seedance-2-5-fixture"}])
+        endpoint = f"/api/chat/sessions/{self.sid}/messages"
+        pending = asyncio.Event()
+        refresh = asyncio.Event()
+        original_review = server.asset_reference_review
+
+        async def review(req,payload):
+            if payload["prompt"].startswith("改为"):
+                pending.set()
+                await refresh.wait()
+            return await original_review(req,payload)
+
+        self.svc.model.side_effect = [call("video_generate",{"prompt":"空镜头","duration":5}),answer()]
+        with patch.object(server,"asset_reference_review",side_effect=review),patch.object(server,"start_remote") as submit:
+            started = await self.client.post(endpoint,json={"text":"生成空镜头","request_key":"asset-review-edit","generation_mode":"manual"})
+            rid = (await started.json())["id"]
+            approval = await self.pending_generation(rid)
+            url = f"/api/chat/runs/{rid}/approvals/"
+            self.assertIsNone(approval["plan"]["reference_review"])
+            adjusted = await self.client.post(url+approval["id"],json={"decision":"adjust","parameters":{"prompt":"改为 @站台参考"}})
+            self.assertEqual(adjusted.status,200,await adjusted.text())
+            revised = (await adjusted.json())["approval_id"]
+            await asyncio.wait_for(pending.wait(),2)
+            blocked = await self.client.post(url+revised,json={"decision":"approve"})
+            self.assertEqual(blocked.status,409)
+            refresh.set()
+            for _ in range(100):
+                approval = await self.pending_generation(rid)
+                if approval["plan"].get("reference_review"):
+                    break
+                await asyncio.sleep(.02)
+            shown = approval["plan"]["reference_review"]
+            self.assertNotIn("key",shown)
+            self.assertEqual((shown["provider"],shown["model"],shown["duration"]),("方舟测试","doubao-seedance-2-5-fixture",5))
+            self.assertEqual([(entry["role"],entry.get("end")) for entry in shown["inputs"]],[("subject",None),("audio_ref",2)])
+            store.put(user,{"id":asset["id"],"generation_media":[self.source["ref"]]})
+            self.assertEqual((await self.client.post(url+revised,json={"decision":"approve"})).status,200)
+            await self.wait(rid)
+            submit.assert_not_called()
+            self.assertIn("参考素材已变化",db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+
+        store.put(user,{"id":asset["id"],"generation_media":[self.source["ref"],sound]})
+        self.svc.model.side_effect = [call("video_generate",{"prompt":"参考 @站台参考","duration":5}),answer()]
+
+        def finish_placeholder(_app,job,*args,**kwargs):
+            job.update(state="done",outputs=[])
+
+        with patch.object(server,"start_remote",side_effect=finish_placeholder) as submit:
+            started = await self.client.post(endpoint,json={"text":"生成有站台声的镜头","request_key":"asset-review-unchanged",
+                                                           "generation_mode":"manual"})
+            rid = (await started.json())["id"]
+            approval = await self.pending_generation(rid)
+            self.assertEqual(approval["plan"]["reference_review"]["assets"],["站台参考"])
+            response = await self.client.post(f"/api/chat/runs/{rid}/approvals/{approval['id']}",json={"decision":"approve"})
+            self.assertEqual(response.status,200,await response.text())
+            await self.wait(rid,timeout=5)
+            submit.assert_called_once()
+            self.assertEqual(submit.call_args.args[-1]["audio_refs"],[(audio,2)])
 
     async def test_image_set_recovers_known_jobs_without_issuing_the_unconfirmed_submission_again(self):
         plan = {"name":"插图","items":[{"name":"首页","prompt":"简洁封面","aspect":"16:9"},
@@ -798,7 +895,7 @@ class ChatIntegration(ChatFixture):
         async def submit(req,raw):
             seen.append(raw)
             return web.json_response({"ids":[]})
-        route = {"provider":{"id":"seedance-qa"},"model":"doubao-seedance-2-5"}
+        route = {"provider":{"id":"seedance-qa","kind":"ark"},"model":"doubao-seedance-2-5"}
         self.svc.model.side_effect = [call("video_regenerate",{"node_id":"n3"}),answer()]
         with patch.object(server,"generate_request",side_effect=submit),patch.object(server,"reference_routes",return_value=[route]):
             rid = await self.send("用这条配方重生成",selected=["n3"])
@@ -1609,6 +1706,24 @@ class ChatIntegration(ChatFixture):
         self.assertEqual(await response.json(), {"text": "把这张图调暖"})
         self.assertEqual([(c.args[1]["id"], c.args[2]) for c in transcribe.await_args_list],
                          [(primary, "gpt-transcribe"), (backup, "backup-model")])
+        self.assertFalse(db.q("SELECT id FROM chat_runs"))
+
+        sample = io.BytesIO()
+        with wave.open(sample, "wb") as audio:
+            audio.setparams((2,2,48000,0,"NONE",""))
+            audio.writeframes(b"\x12\x01\x20\x01" * 48000)
+        preview = AsyncMock(return_value="初步转写")
+        with patch.object(provider,"transcribe",preview):
+            response = await self.client.post("/api/transcription?preview=1",data=form(b"RIFF0000WAVE"))
+            self.assertEqual(response.status,400)
+            preview.assert_not_awaited()
+            response = await self.client.post("/api/transcription?preview=1",data=form(sample.getvalue()))
+        self.assertEqual(await response.json(),{"text":"初步转写"})
+        _, _, _, payload, extension, content_type = preview.await_args.args
+        self.assertEqual((extension,content_type),(".wav","audio/wav"))
+        with wave.open(io.BytesIO(payload),"rb") as audio:
+            self.assertEqual((audio.getnchannels(),audio.getframerate()),(1,16000))
+            self.assertGreater(audio.getnframes(),15000)
         self.assertFalse(db.q("SELECT id FROM chat_runs"))
 
     async def test_chat_history_idempotency_and_privacy(self):

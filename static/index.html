@@ -6,7 +6,7 @@
 <title>OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
 <link rel="stylesheet" href="/static/type.css?v=1">
-<link rel="stylesheet" href="/static/canvas.css?v=73">
+<link rel="stylesheet" href="/static/canvas.css?v=75">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
@@ -341,6 +341,7 @@
     <header><strong id="videoDraftFinalTitle">生成定稿</strong><button type="button" data-draft-close aria-label="关闭">×</button></header>
     <p data-draft-name></p>
     <label>分辨率 <select name="resolution"><option value="1080p">1080p</option><option value="4k">4K</option></select></label>
+    <label>结果位置 <select name="placement"><option value="tab">原节点的新版本</option><option value="branch">相连的新节点</option></select></label>
     <p>沿用所选样片的提示词与参考素材。定稿会产生一项新的生成任务。</p>
     <p data-draft-status role="status"></p>
     <footer><button type="submit">生成定稿</button></footer>
@@ -355,7 +356,9 @@
     <div id="ppVoice" hidden>
       <button type="button" class="pill" id="ppVoiceRecord" aria-pressed="false" title="点击开始录音，或聚焦后按住空格">语音输入</button>
       <button type="button" class="pill" id="ppVoiceCancel" hidden>取消录音</button>
+      <label class="voice-live-setting" title="录音时会额外调用转写服务，可能产生额外费用"><input type="checkbox" id="ppVoiceLive">实时预览</label>
       <span id="ppVoiceStatus" role="status"></span>
+      <output class="voice-live-preview" id="ppVoicePreview" aria-label="实时转写草稿" hidden></output>
     </div>
     <div class="ctl" id="ctl"></div>
   </div>
@@ -500,16 +503,16 @@
 <iframe name="assetTransferDownload" title="素材下载" hidden></iframe>
 <script src="/static/canvas-groups.js?v=13"></script>
 <script src="/static/canvas-tools.js?v=14"></script>
-<script src="/static/video-tabs.js?v=41"></script>
+<script src="/static/video-tabs.js?v=42"></script>
 <link rel="stylesheet" href="/static/agent-chat.css?v=42">
 <link rel="stylesheet" href="/static/creative-skills.css?v=1">
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
 <script src="/static/agent-markdown.js?v=3"></script>
-<script src="/static/agent-voice.js?v=6"></script>
+<script src="/static/agent-voice.js?v=7"></script>
 <script src="/static/creative-skills.js?v=2"></script>
 <script src="/static/creative-profile.js?v=1"></script>
-<script src="/static/agent-chat.js?v=113"></script>
+<script src="/static/agent-chat.js?v=116"></script>
 <script src="/static/canvas-conflicts.js?v=3"></script>
 <link rel="stylesheet" href="/static/canvas-document.css?v=3">
 <script src="/static/canvas-document.js?v=4"></script>
@@ -517,16 +520,16 @@
 <script src="/static/tools.js?v=36"></script>
 <link rel="stylesheet" href="/static/creative-memory.css?v=9">
 <script src="/static/character-views.js?v=3"></script>
-<script src="/static/creative-memory.js?v=24"></script>
+<script src="/static/creative-memory.js?v=26"></script>
 <link rel="stylesheet" href="/static/asset-library.css?v=7">
-<script src="/static/asset-library.js?v=22"></script>
+<script src="/static/asset-library.js?v=23"></script>
 <script src="/static/film-titles.js?v=3"></script>
 <script src="/static/film-cutaways.js?v=1"></script>
 <script src="/static/film-playlists.js?v=3"></script>
 <script src="/static/film.js?v=40"></script>
 <script src="/static/wizard.js?v=12"></script>
 <script src="/static/settings.js?v=3t"></script>
-<script src="/static/account.js?v=6"></script>
+<script src="/static/account.js?v=7"></script>
 <link rel="stylesheet" href="/static/video-remake.css?v=11">
 <script src="/static/video-remake.js?v=38"></script>
 <link rel="stylesheet" href="/static/shot-list.css?v=11">
@@ -540,18 +543,18 @@
 <script src="/static/canvas-live.js?v=3"></script>
 <script src="/static/canvas-review-region.js?v=1"></script>
 <link rel="stylesheet" href="/static/image-panorama.css?v=1">
-<script src="/static/canvas.js?v=121"></script>
+<script src="/static/canvas.js?v=127"></script>
 <script src="/static/image-panorama.js?v=1"></script>
-<script src="/static/canvas-generation.js?v=37"></script>
-<script src="/static/canvas-group-run.js?v=22"></script>
-<script src="/static/video-extension.js?v=3"></script>
+<script src="/static/canvas-generation.js?v=43"></script>
+<script src="/static/canvas-group-run.js?v=23"></script>
+<script src="/static/video-extension.js?v=4"></script>
 <script src="/static/video-object.js?v=2"></script>
-<script src="/static/video-drafts.js?v=2"></script>
+<script src="/static/video-drafts.js?v=4"></script>
 <script src="/static/video-compare.js?v=2"></script>
 <script src="/static/video-segment.js?v=7"></script>
 <script src="/static/video-trim.js?v=1"></script>
 <script src="/static/video-gif.js?v=3"></script>
-<script src="/static/audio-node.js?v=13"></script>
+<script src="/static/audio-node.js?v=14"></script>
 <script src="/static/audio-transcript.js?v=4"></script>
 <script src="/static/audio-separation.js?v=2"></script>
 <link rel="stylesheet" href="/static/workflow-templates.css?v=8">

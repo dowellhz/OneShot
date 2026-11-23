@@ -254,9 +254,10 @@ class BoardReview:
         if edit_source:
             add(node["id"] if any(key[0] == node["id"] for key in self.sources.get(text(edit_source, 300), [])) else None,
                 edit_source, "edit", "编辑记录")
-        draft_ref = obj(v.get("draft_final")).get("source_ref")
+        draft = obj(v.get("draft_final"))
+        draft_ref = draft.get("source_ref")
         if draft_ref and draft_ref != v.get("ref"):
-            add(node["id"], draft_ref, "draft", "样片任务")
+            add(draft.get("source_node") or node["id"], draft_ref, "draft", "样片任务")
         origin = remake or obj(v.get("capture"))
         if origin.get("source_ref"):
             add(origin.get("source_node"), origin["source_ref"], "remake" if remake else "reference", "版本记录", origin.get("at"))
@@ -307,6 +308,8 @@ class BoardReview:
             source = edge.get("from")
             if isinstance(source, str) and source not in covered:
                 relation = edge.get("relation")
+                if relation == "draft_final":
+                    relation = "draft"
                 if relation == "seed_audio_ref" and audio_recipe:
                     continue
                 if relation == "seed_audio_ref" and self.nodes.get(source, {}).get("type") == "image":

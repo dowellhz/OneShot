@@ -6,8 +6,11 @@ const acVoiceFormats = [
  ["audio/ogg", ".ogg"],
 ];
 const acVoiceLimit = 8 * 1024 * 1024;
+const voicePreviewInterval = 9000;
+const voicePreviewMaxRequests = 6;
 let acVoiceActive = null;
 let acVoiceAvailable = false, acVoiceHold = null;
+let voicePreviewEnabled = localStorage.getItem("h3.voice.livePreview") === "true";
 let acVoiceChoosingKey = false;
 const acVoiceKeys = {KeyR:"R",Space:"空格",off:"关闭"};
 const acVoiceKeyValid = code => Object.hasOwn(acVoiceKeys,code) || /^(?:Key[A-Z]|Digit[0-9])$/.test(code);
@@ -59,12 +62,32 @@ function acVoiceRender(message = "") {
   status.hidden = !message;
  }
  nodeVoiceRender(active?.target ? message : undefined);
+ renderVoicePreview();
  acVoicePoints();
  acRenderPlacement();
 }
 
+function renderVoicePreview() {
+ const active = acVoiceActive;
+ for (const [setting,output,isNode] of [
+  [$("#acVoiceLive"),$("#acVoicePreview"),false],
+  [$("#ppVoiceLive"),$("#ppVoicePreview"),true]
+ ]) {
+  if (setting) {
+   setting.checked = voicePreviewEnabled;
+   setting.disabled = !!active;
+  }
+  if (output) {
+   const text = active && !!active.target === isNode ? active.previewText : "";
+   output.textContent = text || "";
+   output.hidden = !text;
+  }
+ }
+}
+
 function acVoiceRelease(active) {
  clearTimeout(active.timer);
+ active.previewController?.abort();
  active.stream?.getTracks().forEach(track => track.stop());
  active.stream = null;
 }
@@ -107,6 +130,35 @@ function acVoiceBegin(phase) {
  return acVoiceActive;
 }
 
+async function voiceTranscription(blob, filename, signal, preview = false) {
+ const form = new FormData();
+ form.append("file", blob, filename);
+ const response = await fetch(preview ? "/api/transcription?preview=1" : "/api/transcription", {method:"POST", body:form, signal});
+ const result = await response.json();
+ if (!response.ok) throw new Error(result.error || "转写失败，请重试");
+ if (typeof result.text !== "string") throw new Error("转写服务返回异常，请重试");
+ return result.text.trim();
+}
+
+async function requestVoicePreview(active, chunks, mimeType, filename) {
+ if (!active.livePreview || active.phase !== "recording" || active.previewController ||
+     active.previewRequests >= voicePreviewMaxRequests || performance.now() < active.nextPreviewAt) return;
+ const controller = active.previewController = new AbortController();
+ active.previewRequests++;
+ active.nextPreviewAt = performance.now() + voicePreviewInterval;
+ try {
+  const text = await voiceTranscription(new Blob(chunks,{type:mimeType}),filename,controller.signal,true);
+  if (acVoiceActive === active && active.phase === "recording" && !controller.signal.aborted && text) {
+   active.previewText = text;
+   renderVoicePreview();
+  }
+ } catch {
+  // A growing recording can be unreadable until the recorder finishes.
+ } finally {
+  active.previewController = null;
+ }
+}
+
 async function acVoiceSubmit(active, blob, filename) {
  if (acVoiceActive !== active) return;
  if (!blob.size) return acVoiceEnd(active, "没有收到音频，请重新录制或选择文件");
@@ -114,18 +166,12 @@ async function acVoiceSubmit(active, blob, filename) {
  active.phase = "transcribing";
  active.controller = new AbortController();
  acVoiceRender("正在转写…");
- const form = new FormData();
- form.append("file", blob, filename);
  let message, send = false;
  try {
-  const response = await fetch("/api/transcription", {method:"POST", body:form, signal:active.controller.signal});
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "转写失败，请重试");
+  const transcript = await voiceTranscription(blob,filename,active.controller.signal);
   if (acVoiceActive !== active) return;
   if (active.target ? !nodeVoiceCurrent(active) :
       !AC.open || active.session !== AC.session || active.board !== boardId || active.epoch !== AC.epoch) return;
-  if (typeof result.text !== "string") throw new Error("转写服务返回异常，请重试");
-  const transcript = result.text.trim();
   if (!transcript) {
    message = "没有识别到语音";
    return;
@@ -215,7 +261,11 @@ async function voiceRecord(active, format) {
   if (active.target && !nodeVoiceCurrent(active)) return acVoiceEnd(active);
   if (active.hold && acVoiceHold !== active.hold) return acVoiceEnd(active,"请再次按住说话");
   const [mimeType, extension] = format;
+  const filename = "voice" + extension;
   const recorder = active.recorder = new MediaRecorder(active.stream, {mimeType, audioBitsPerSecond:64000});
+  active.livePreview = voicePreviewEnabled;
+  active.previewRequests = 0;
+  active.nextPreviewAt = performance.now() + 4000;
   const chunks = [];
   let size = 0;
   recorder.ondataavailable = event => {
@@ -223,11 +273,14 @@ async function voiceRecord(active, format) {
    size += event.data.size;
    if (size > acVoiceLimit) return acVoiceEnd(active, "音频文件不能超过 8 MB");
    chunks.push(event.data);
+   if (active.livePreview) void requestVoicePreview(active,chunks,mimeType,filename);
   };
   recorder.onerror = () => acVoiceEnd(active, "录音中断，请重试");
   recorder.onstop = () => {
    acVoiceRelease(active);
-   if (acVoiceActive === active) acVoiceSubmit(active, new Blob(chunks, {type:mimeType}), "voice" + extension);
+   if (acVoiceActive !== active) return;
+   if (active.phase !== "transcribing") return acVoiceEnd(active,"录音中断，请重试");
+   void acVoiceSubmit(active,new Blob(chunks,{type:mimeType}),filename);
   };
   recorder.start(1000);
   active.phase = "recording";
@@ -448,7 +501,9 @@ function acVoiceInit() {
   <label class="ac-voice-key">按住说话 <select id="acVoiceKey" aria-label="按住说话快捷键"></select></label>
   <button type="button" id="acVoiceCancel" title="取消录音或转写" hidden>取消</button>
   <input type="file" id="acVoiceFile" accept=".wav,.webm,.ogg,.m4a,.mp4,.mp3,.flac" hidden>
-  <span id="acVoiceStatus" role="status" hidden></span>`;
+  <label class="voice-live-setting" title="录音时会额外调用转写服务，可能产生额外费用"><input type="checkbox" id="acVoiceLive">实时预览</label>
+  <span id="acVoiceStatus" role="status" hidden></span>
+  <output class="voice-live-preview" id="acVoicePreview" aria-label="实时转写草稿" hidden></output>`;
  $("#agentChat .ac-composer").append(box);
  const picker = $("#acVoiceFile");
  $("#acVoiceRecord").onclick = () => acVoiceRecord();
@@ -459,6 +514,12 @@ function acVoiceInit() {
   else nodeVoiceStart();
  };
  $("#ppVoiceCancel").onclick = acVoiceCancel;
+ for (const setting of [$("#acVoiceLive"),$("#ppVoiceLive")]) setting.onchange = () => {
+  voicePreviewEnabled = setting.checked;
+  localStorage.setItem("h3.voice.livePreview",String(voicePreviewEnabled));
+  renderVoicePreview();
+ };
+ renderVoicePreview();
  const shortcut = $("#acVoiceKey");
  acVoiceKeyOptions();
  shortcut.onchange = () => {

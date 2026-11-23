@@ -139,6 +139,29 @@ class SegmentEdit(ChatFixture):
         self.assertEqual([(v["node"], v["version"]) for v in report["steps"][-1]["inputs"] if v["role"] == "定稿样片"],
                          [("n4", 1)])
 
+        self.svc.model.side_effect = [
+            call("video_draft_finalize", {"node_id":"n4","version":1,"placement":"branch"}, "branch"), answer()]
+        with patch.object(server.providers,"get",return_value=provider), \
+             patch.object(server.remote,"json_req",side_effect=[
+                 {"id":"branch-final"}, {"status":"succeeded","content":{"video_url":"https://provider.example/final.mp4"}}]), \
+             patch.object(server.remote,"_save_video",return_value={"files":[final]}):
+            branched_run = await self.send("把第一版样片做成并排定稿",key="draft-branch",selected=["n4"])
+            await self.wait(branched_run)
+        branch_result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",branched_run)["result"])
+        self.assertTrue(branch_result.get("nodes"),branch_result)
+        branched = self.load()
+        self.assertEqual(next(item for item in branched["nodes"] if item["id"]=="n4"),node)
+        branch = branched["nodes"][-1]
+        self.assertNotEqual(branch["id"],"n4")
+        self.assertGreater(branch["x"],node["x"])
+        self.assertEqual(branched["edges"],[sample_edge,
+            {"from":"n4","to":branch["id"],"relation":"draft_final","ref":sample["ref"]}])
+        self.assertEqual((branch["cur"],branch["versions"][0]["ref"]),(0,final["ref"]))
+        branch_report = server.workflow_review.build(branched,branch["id"],1)
+        self.assertFalse(branch_report["has_cycle"])
+        self.assertEqual([(v["node"],v["version"]) for v in branch_report["steps"][-1]["inputs"]
+                          if v["role"]=="定稿样片"],[("n4",1)])
+
     async def test_agent_can_read_a_saved_box_and_change_replacement_using_an_older_version(self):
         film = server.film
         source, ref = film._new(server.COMFY_DIR,"input","agent-object",".mp4")

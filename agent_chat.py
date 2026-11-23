@@ -407,7 +407,7 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 用户要求在指定时段插入已有素材作补画面或空镜并保留主片声音时，用video_cutaways_edit，优先使用明确引用的图片、视频节点和版本，或明确指定的素材库资产。start与duration使用成片秒数，in是补画面素材中的入点。无明确素材时先找已有资产或向用户确认，不猜测素材节点。查询或修改已有补画面先用video_cutaways_get读取编号。同一请求需要标题和补画面时，把标题修改一并放在video_cutaways_edit的title_changes里，只提交一次渲染。
 用户要求整理一组视频或建立审片列表时，用video_playlist_create，按用户要求的顺序和源版本保存。调整已保存列表前用video_playlist_read读取编号与revision，再用video_playlist_edit。裁剪时间按各自源视频的秒数。只有用户要求合成或导出时调用video_playlist_export，可以沿用刚保存的revision。仅创建、浏览或编辑播放列表时不提交渲染。
 用户要求复用上传视频或成片中的动作、运镜或构图时，在video_generate或video_regenerate的video_refs里传入相应节点、版本和指定的入点/出点秒数，提示词用@视频1、@视频2依顺序引用。普通生成采用白模时，白模排在参考视频之前。普通视频参考只使用画面。
-用户明确要求复现旧版视频沿用当时的角色或资产参考图时，用video_regenerate指定原版本并设置reuse_asset_references=true。用户想用新的已定稿视角时，使用memory_views。
+用户明确要求复现旧版视频并沿用原资产时，用video_regenerate指定原版本并设置reuse_asset_references=true，保留原素材及文字设定。用户想用新的已定稿视角时，使用memory_views。
 用户明确要求补拍原视频之前或接着往后拍时使用video_extend，传入原视频的节点或明确指定的版本以及方向。只修改已经生成的续拍片段时，使用video_regenerate在原续拍节点增加版本。续拍时原视频为@视频1。
 用户要求修改某个时间区间里的视频画面或内容时，明确区间后调用video_edit_segment。指定修改区间和原视频版本，结果可在剪辑台与原片前后段核对。用户要求在原片段修改节点重生成时用video_regenerate。
 用户要求重拍指定区间的机位、景别或运镜时也用video_edit_segment，填写camera_plan。固定机位只填start；切换机位或连续运镜需填写start和end。调整已生成的重拍结果时，用video_regenerate传入更新的camera_plan并在原节点保留版本。机位方案是给生成模型的指令，具体画面须查看生成结果。
@@ -1142,6 +1142,8 @@ class AgentService:
                         if receipt is not None:
                             if metadata.get("model"):
                                 receipt["settings"]["provider_model"] = metadata["model"]
+                            if metadata.get("resolution"):
+                                receipt["settings"]["resolution"] = metadata["resolution"]
                             receipt["service"] = metadata.get("provider") or receipt.get("service")
                             receipt["effective_prompt"] = metadata.get("prompt") or receipt.get("effective_prompt")
                         versions.append({"ref": out["ref"], "url": "/media?ref=" + quote(out["ref"], safe=""),
@@ -1647,9 +1649,9 @@ class AgentService:
             result.update(mode="调整像素尺寸",edit={"source":v["ref"],"mode":"local","resize":size})
         return self.add_results(run, user, cid, [{**result, "source": "edit", "prompt": "", "agent_source": v["ref"]}], n.get("name", "图片") + " · " + ("抠图" if name == "image_cutout" else "调整"), target_id=n["id"])
 
-    async def await_generation_approval(self, run, cid, kind, count, plan, editable):
+    async def await_generation_approval(self, run, cid, kind, count, plan, editable, pricing_request, reference_review):
         signature = hashlib.sha256(json.dumps([kind,count,plan],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
-        exposed = {key:plan[key] for key in ("label","prompt","provider","model","aspect","ar","quality","resolution","duration","mode","voice")
+        exposed = {key:plan[key] for key in ("label","prompt","provider","model","aspect","ar","quality","resolution","duration","mode","voice","placement")
                    if isinstance(plan.get(key),(str,int,float)) and not isinstance(plan.get(key),bool)}
         if "prompt" in exposed:
             exposed["prompt"] = str(exposed["prompt"])[:8000]
@@ -1658,18 +1660,34 @@ class AgentService:
         if "relight" in plan:
             exposed["light_summary"] = image_relight.instructions(image_relight.validate(plan["relight"]))
         refs = self.host.media_references(plan)
-        shown = {**exposed,"kind":kind,"count":count,"references":len(refs),"editable":editable}
+        cost = self.host.generation_unit_cost(pricing_request) if pricing_request is not None else None
+        shown = {**exposed,"kind":kind,"count":count,"references":len(refs),"editable":editable,"unit_cost":cost}
         if "items" in plan:
             shown["items"] = plan["items"]
             shown["asset_count"] = len(plan.get("memory_ids",[]))
+        approval = db.one("SELECT * FROM chat_approvals WHERE call_id=?",cid)
+        previous_plan = json.loads(approval["plan"]) if approval and approval["fingerprint"] == signature else None
+        needs_review = reference_review is not None and (
+            not (previous_plan or {}).get("reference_checked") or previous_plan.get("editable") != editable)
+
+        async def refresh_references(draft):
+            draft.pop("reference_review",None)
+            draft.pop("reference_error",None)
+            try:
+                draft["reference_review"] = await reference_review(draft.get("overrides",{}))
+            except ToolError as error:
+                draft["reference_error"] = str(error)
+
+        if needs_review:
+            changes = (previous_plan or {}).get("overrides",{})
+            shown.update(reference_checked=True,overrides=changes)
+            await refresh_references(shown)
         with db.transaction():
             if self.stopped(run):
                 raise ToolError("用户已停止本轮任务")
-            approval = db.one("SELECT * FROM chat_approvals WHERE call_id=?",cid)
-            previous_plan = json.loads(approval["plan"]) if approval and approval["fingerprint"] == signature else None
-            if previous_plan is not None and "editable" not in previous_plan:
+            if previous_plan is not None and "editable" not in previous_plan and not needs_review:
                 db.run("UPDATE chat_approvals SET plan=? WHERE call_id=?",dumps(shown),cid)
-            elif previous_plan is None or previous_plan["editable"] != editable:
+            elif previous_plan is None or previous_plan.get("editable") != editable or needs_review:
                 db.run("""INSERT INTO chat_approvals(call_id,id,fingerprint,plan,decision) VALUES(?,?,?,?,NULL)
                        ON CONFLICT(call_id) DO UPDATE SET id=excluded.id,fingerprint=excluded.fingerprint,plan=excluded.plan,decision=NULL""",
                        cid,ident("approval"),signature,dumps(shown))
@@ -1679,13 +1697,20 @@ class AgentService:
             self.validate_external_task(run,check_board=False)
             if time.time() - run["data"].get("started_at",run["created"]) > MAX_RUN_SECONDS:
                 raise ToolError("等待生成确认超时，请重新提交指令")
-            approval = db.one("SELECT decision,plan FROM chat_approvals WHERE call_id=?",cid)
+            approval = db.one("SELECT id,decision,plan FROM chat_approvals WHERE call_id=?",cid)
+            stored = json.loads(approval["plan"])
             if approval["decision"] == "approve":
                 self.update(run,"running")
-                return json.loads(approval["plan"]).get("overrides",{})
+                changes = stored.get("overrides",{})
+                if stored.get("reference_checked"):
+                    changes["_reference_preview"] = (stored.get("reference_review") or {}).get("key")
+                return changes
             if approval["decision"] == "skip":
                 self.update(run,"running")
                 raise ToolError("用户跳过了这次生成，请等待新的修改要求")
+            if reference_review and stored.pop("reference_pending",False):
+                await refresh_references(stored)
+                db.run("UPDATE chat_approvals SET plan=? WHERE id=? AND decision IS NULL",dumps(stored),approval["id"])
             await asyncio.sleep(.2)
         raise ToolError("用户已停止本轮任务")
 
@@ -1766,7 +1791,8 @@ class AgentService:
         views = run["data"].get("memory_views", [])
         reference_views = {"memory_views":views} if views else {}
         await self.begin_generation(run,cid,"image",len(plan),{"label":label,"prompt":style,
-                                     "items":plan,"images":images,"memory_ids":memory,**reference_views},force_confirmation=True)
+                                     "items":plan,"images":images,"memory_ids":memory,**reference_views},
+                                    force_confirmation=True,pricing_request={"kind":"image"})
         batch = [{**item,"state":"unsubmitted"} for item in plan]
         pending = {"ids":[],"name":label,"prompt":style,"kind":"image","batch":batch}
         for item in batch:
@@ -1901,7 +1927,7 @@ class AgentService:
         return nid
 
     async def begin_generation(self, run, cid, kind, count, plan, *, target_id=None, edit_prompt=False, edit_count=False,
-                               force_confirmation=False):
+                               force_confirmation=False, pricing_request=None,reference_review=None):
         self.validate_external_task(run)
         counter, limit = self.check_generation_budget(run, kind, count)
         mode = run["data"].get("generation_mode","auto")
@@ -1912,7 +1938,7 @@ class AgentService:
                 editable["prompt"] = PROMPT["maxLength"]
             if edit_count:
                 editable["count"] = limit - run["data"].get(counter,0)
-            overrides = await self.await_generation_approval(run,cid,kind,count,plan,editable)
+            overrides = await self.await_generation_approval(run,cid,kind,count,plan,editable,pricing_request,reference_review)
             if not target_id and plan.get("node"):
                 board = self.board({"id":run["user_id"]},run["board_id"])
                 if not any(node["id"] == plan["node"] for node in board["nodes"]):
@@ -1966,7 +1992,8 @@ class AgentService:
             raise ToolError("请提供配音文案或声音描述")
         label=args.get("name") or (target["name"] if target else {"tts":"助手配音","music":"助手音乐","sfx":"助手音效",
                                                                 "seed_audio":"助手参考音频"}[payload["mode"]])
-        changes = await self.begin_generation(run,cid,"audio",1,{**payload,"label":label,"node":nid},target_id=nid,edit_prompt=True)
+        changes = await self.begin_generation(run,cid,"audio",1,{**payload,"label":label,"node":nid},target_id=nid,
+                                              edit_prompt=True,pricing_request={**payload,"kind":"audio"})
         payload.update(changes)
         request=InternalRequest(self,user,{**payload,"label":label,"board":run["board_id"],"node":nid,"request_key":cid})
         result=await self.read_response(self.host.generate_audio(request))
@@ -1998,10 +2025,29 @@ class AgentService:
                 payload["memory_views"] = creative_memory.view_selections({**chosen, **creative_memory.requested_views(views)})
         simple_video = kind == "video" and not replay_ref and not any(payload.get(key) for key in
             ("fields","images","video_refs","audio_refs","previs_guide","camera_plan","object_edit","memory_ids","memory_views"))
+
+        async def inspect_references(changes):
+            review_payload = {**payload,"board":run["board_id"],**changes}
+            request = InternalRequest(self,user,review_payload)
+            request["replay_memory_ref"] = replay_ref
+            request["connector_own_assets"] = bool(run["data"].get("external_tool"))
+            try:
+                return await self.host.asset_reference_review(request,review_payload)
+            except web.HTTPException as error:
+                try:
+                    message = json.loads(error.text).get("error")
+                except (TypeError,ValueError):
+                    message = None
+                raise ToolError(message or error.reason) from None
+
         changes = await self.begin_generation(run,cid,kind,count,{**payload,"label":name,"node":target_id},
                                               target_id=target_id,
                                               edit_prompt=kind == "image" or simple_video,
-                                              edit_count=kind == "image" and not target_id and fn == self.host.generate_request)
+                                              edit_count=kind == "image" and not target_id and fn == self.host.generate_request,
+                                              pricing_request=payload if fn == self.host.generate_request and not replay_ref else None,
+                                              reference_review=inspect_references if kind == "video" and fn == self.host.generate_request else None)
+        reference_reviewed = "_reference_preview" in changes
+        reference_preview = changes.pop("_reference_preview",None)
         payload.update(changes)
         if composition_ref:
             target = next((n for n in self.board(user,run["board_id"])["nodes"] if n["id"]==target_id),None)
@@ -2012,6 +2058,8 @@ class AgentService:
             target_data = {**target_data,"prompt":changes["prompt"],"pmode":"free"}
         payload.update(board=run["board_id"], label=name)
         request = InternalRequest(self,user,payload)
+        if reference_reviewed:
+            request.update(reference_reviewed=True,reference_preview=reference_preview)
         if replay_ref:
             request["replay_memory_ref"] = replay_ref
         if run["data"].get("external_tool"):
@@ -2667,6 +2715,11 @@ async def get_session(req):
     for approval in approvals:
         plan = json.loads(approval["plan"])
         overrides = plan.pop("overrides",{})
+        plan.pop("reference_checked",None)
+        if plan.get("reference_pending") or plan.get("reference_error"):
+            plan.pop("reference_review",None)
+        elif review := plan.get("reference_review"):
+            review.pop("key",None)
         approval["plan"] = {**plan,**overrides}
     level = db.one("""SELECT json_extract(data,'$.thinking_level') AS level FROM chat_runs
                       WHERE session_id=? AND json_type(data,'$.chat_model') IS NOT NULL ORDER BY rowid DESC LIMIT 1""",s["id"])
@@ -2968,8 +3021,10 @@ async def decide_generation(req):
             return web.json_response({"ok":True})
         if not row or row["decision"] or row["call_state"] != "approval" or row["run_state"] != "waiting_approval":
             return web.json_response({"error":"该生成方案已变更或处理完成"},status=409)
+        plan = json.loads(row["plan"])
+        if decision == "approve" and (plan.get("reference_pending") or plan.get("reference_error")):
+            return web.json_response({"error":plan.get("reference_error") or "正在核对生成参考，请稍后再确认"},status=409)
         if decision == "adjust":
-            plan = json.loads(row["plan"])
             editable, parameters = plan.get("editable",{}), payload.get("parameters")
             if not isinstance(parameters,dict) or not parameters or set(parameters) - editable.keys():
                 return web.json_response({"error":"此生成方案不支持调整这些参数"},status=400)
@@ -2985,6 +3040,9 @@ async def decide_generation(req):
                     return web.json_response({"error":f"数量必须为 1–{editable['count']} 的整数"},status=400)
                 changes["count"] = count
             plan["overrides"] = {**plan.get("overrides",{}),**changes}
+            if plan.get("reference_checked"):
+                plan["reference_pending"] = True
+                plan.pop("reference_error",None)
             revision = ident("approval")
             db.run("UPDATE chat_approvals SET id=?,plan=? WHERE id=?",revision,dumps(plan),aid)
             return web.json_response({"ok":True,"approval_id":revision})

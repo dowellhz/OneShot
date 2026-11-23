@@ -34,6 +34,18 @@ def character_notes(asset):
     return "；".join(f"{label}：{card[key]}" for key, label in CHARACTER_FIELDS.items() if card.get(key))
 
 
+def generation_context(asset, query):
+    return {"name":asset["name"],"kind":asset["kind"],"desc":asset.get("desc") or "",
+            "constraints":asset.get("constraints") or "","character_notes":character_notes(asset),
+            "document_excerpt":document_import.passage(asset["document"],query) if asset.get("document") else ""}
+
+
+def recorded_reference_slots(asset):
+    if isinstance(asset.get("references"),list):
+        return [(entry["view"],entry["ref"]) for entry in asset["references"]]
+    return [(None,asset["ref"])] if asset.get("ref") else []
+
+
 def remove_deleted_bindings(board):
     """Drop live links to deleted assets without changing source media or history."""
     bindings = []
@@ -55,6 +67,11 @@ def remove_deleted_bindings(board):
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
 routes = web.RouteTableDef()
+
+
+def generation_media_type(ref, media=None):
+    suffix = Path(ref).suffix.lower()
+    return "image" if suffix in IMAGE_EXT else "audio" if suffix in AUDIO_EXT or (media or {}).get("type") == "audio" else "video"
 
 
 def dumps(value):
@@ -331,6 +348,16 @@ class Store:
             result["type"] = "audio" if node_type == "audio" or path.suffix.lower() in AUDIO_EXT else "video"
             if version:
                 result.update({k:version[k] for k in ("w","h","seconds") if type(version.get(k)) in (int,float)})
+            if "seconds" not in result:
+                try:
+                    if result["type"] == "audio":
+                        result["seconds"] = round(self.h.film.audio_duration(path),2)
+                    else:
+                        info = self.h.media_info(path,"video")
+                        if info:
+                            result.update(w=info["width"],h=info["height"],seconds=info["duration"])
+                except (ValueError, OSError, IndexError):
+                    pass
         return result
 
     def put(self, user, p, stable_id=None):
@@ -405,7 +432,22 @@ class Store:
             a["default_ref"] = chosen
         elif not a["default_ref"] and new_ref and Path(new_ref).suffix.lower() in IMAGE_EXT:
             a["default_ref"] = new_ref
-        if "generation_images" in p:
+        if "generation_media" in p:
+            selected = p["generation_media"]
+            available = {m["ref"]:m for m in a["media"]}
+            if (not isinstance(selected, list) or len(selected) > 29 or
+                    any(not isinstance(ref, str) or ref not in available for ref in selected) or
+                    len(set(selected)) != len(selected)):
+                fail("请选择此资产内不同的生成参考素材")
+            for kind, maximum in (("image",9),("video",10),("audio",10)):
+                if sum(generation_media_type(ref,available[ref]) == kind for ref in selected) > maximum:
+                    fail(f"每组最多选择 {maximum} 项同类型参考素材")
+            a.pop("generation_images", None)
+            if selected:
+                a["generation_media"] = selected
+            else:
+                a.pop("generation_media", None)
+        elif "generation_images" in p:
             selected = p["generation_images"]
             available = {m["ref"] for m in a["media"] if Path(m["ref"]).suffix.lower() in IMAGE_EXT}
             if (not isinstance(selected, list) or len(selected) > 9 or
@@ -446,7 +488,7 @@ class Store:
         aid = "m"+uuid.uuid5(uuid.NAMESPACE_URL,dumps(["oneshot:asset-copy",user["id"],mid,key])).hex
         refs = [item["ref"] for item in source.get("media",[])]
         self.h.require_media(user,refs)
-        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","generation_images","document") if k in source}
+        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","generation_images","generation_media","document") if k in source}
         copied["aliases"] = []
         copied["media"] = [{k:item[k] for k in ("ref","source","type","role","w","h","seconds") if k in item}
                            for item in source.get("media",[])]
@@ -510,10 +552,14 @@ class Store:
             summary["available_views"] = [slot for slot in CHARACTER_VIEW_LABELS if a.get("character_views", {}).get(slot)]
         return summary
 
-    def mentions(self, user, board, content, strict=True, *, owner_only=False):
+    def mentions(self, user, board, content, strict=True, *, owner_only=False, historical=None):
         items = self.list(user, board)
         if owner_only:
             items = [item for item in items if item["owner"]==user["id"]]
+        if historical:
+            items = [{**item,"aliases":list(dict.fromkeys([*item.get("aliases",[]),
+                historical[item["id"]]["name"],*(historical[item["id"]].get("aliases") or [])]))}
+                if item["id"] in historical else item for item in items]
         selected, occupied = [], []
         by_id = {item["id"]:item for item in items}
         for match in NAMED_REFERENCE.finditer(content):
@@ -550,20 +596,15 @@ class Store:
                 fail(f"未找到记忆 @{unknown[1]}，请先保存素材或选择已有记忆")
         return selected
 
-    def historical_references(self, user, output_ref):
+    def historical_assets(self, user, output_ref):
         self.h.require_media(user, [output_ref])
         row = db.one("SELECT data FROM memory_outputs WHERE ref=? AND owner=?", output_ref, user["id"])
         if not row:
             fail("此版本没有可复用的资产参考记录")
-        references = {}
-        for asset in json.loads(row["data"]).get("memory_used", []):
-            if asset.get("references"):
-                references[asset["id"]] = [(entry["view"], entry["ref"]) for entry in asset["references"]]
-            elif asset.get("ref"):
-                references[asset["id"]] = [(None, asset["ref"])]
-        if not references:
-            fail("此版本没有使用资产参考图")
-        return references
+        assets = {asset["id"]:asset for asset in json.loads(row["data"]).get("memory_used", [])}
+        if not assets:
+            fail("此版本没有使用资产参考或资料")
+        return assets
 
     def prepare(self, user, raw, *, owner_only=False, replay_ref=None):
         p = copy.deepcopy(raw)
@@ -573,11 +614,12 @@ class Store:
             content = re.sub(r"@视频\d+", " ", content)
         if p.get("audio_refs"):
             content = re.sub(r"@音(?:频)?\d+", " ", content)
-        chosen = self.mentions(user, p.get("board") or "", content, owner_only=owner_only)
+        recorded = self.historical_assets(user,replay_ref) if replay_ref else {}
+        historical = {mid:recorded_reference_slots(asset) for mid,asset in recorded.items()}
+        chosen = self.mentions(user,p.get("board") or "",content,owner_only=owner_only,historical=recorded)
         ids = p.get("memory_ids") or []
         if not isinstance(ids, list) or len(ids) > 8 or any(not isinstance(i, str) for i in ids):
             fail("一次最多采用8条记忆")
-        historical = self.historical_references(user, replay_ref) if replay_ref else {}
         requested = requested_views(p.get("memory_views", []))
         if historical.keys() & requested.keys():
             fail("请分别提交复用旧图和重新选择角色视角的请求")
@@ -595,9 +637,25 @@ class Store:
             fail("一次最多采用8条记忆，请减少引用")
         # Never accept client-invented memory snapshots or internal flags.
         p.pop("memory_used", None)
+        for key in ("audio_refs","video_refs"):
+            if isinstance(p.get(key),list):
+                entries = [entry for entry in p[key] if not isinstance(entry,dict) or not entry.get("memory_id")]
+                if entries:
+                    p[key] = entries
+                else:
+                    p.pop(key)
         if not chosen:
             return p
-        names = {asset["id"]:asset["name"] for asset in chosen}
+        contexts = {}
+        for asset in chosen:
+            mid = asset["id"]
+            if mid in recorded:
+                prior = recorded[mid]
+                contexts[mid] = prior.get("generation_context") or {
+                    key:prior.get(key) or "" for key in ("name","kind","desc","constraints","character_notes","document_excerpt")}
+            else:
+                contexts[mid] = generation_context(asset,content)
+        names = {mid:context["name"] for mid,context in contexts.items()}
 
         def expand_labelled_references(value):
             return NAMED_REFERENCE.sub(lambda match:names.get(match[1],match[0]),value) if isinstance(value,str) else value
@@ -609,8 +667,16 @@ class Store:
         if not isinstance(images, list):
             fail("参考图片格式不正确")
         notes, used = [], []
+        video_generation = p.get("kind") == "video"
+        has_motion = video_generation and (p.get("previs_guide") or p.get("video_refs") or p.get("audio_refs") or any(
+            not views.get(a["id"]) and any(entry["ref"] in (
+                {ref for _,ref in historical[a["id"]]} if a["id"] in historical else a.get("generation_media",[]))
+                and generation_media_type(entry["ref"],entry) != "image" for entry in a["media"]) for a in chosen))
         for a in chosen:
-            slots = views.get(a["id"])
+            mid = a["id"]
+            context = contexts[mid]
+            name, kind = context["name"],context["kind"]
+            slots = views.get(mid)
             approved = a.get("character_views", {})
             if slots and a["kind"] != "character":
                 fail(f"「{a['name']}」不是角色资产")
@@ -618,60 +684,92 @@ class Store:
                 for slot in slots:
                     if not approved.get(slot):
                         fail(f"「{a['name']}」的{CHARACTER_VIEW_LABELS[slot]}尚未定稿")
-            refs = historical.get(a["id"])
-            if refs:
+            if mid in historical:
+                refs = historical[mid]
                 available = {media["ref"] for media in a["media"]}
                 if any(ref not in available for _,ref in refs):
-                    fail(f"「{a['name']}」的原参考图已从资产库移除")
+                    fail(f"「{a['name']}」的原参考素材已从资产库移除")
                 self.h.require_media(user, [ref for _,ref in refs])
             elif slots:
                 refs = [(slot, approved[slot]) for slot in slots]
             else:
-                refs = [(None, ref) for ref in a.get("generation_images") or [a.get("ref")]]
-            grouped = len(refs) > 1 and all(slot is None for slot, _ in refs)
+                refs = [(None, ref) for ref in a.get("generation_media") or a.get("generation_images") or [a.get("ref")]]
+            media_by_ref = {entry["ref"]:entry for entry in a["media"]}
+            kinds = {ref:generation_media_type(ref,media_by_ref.get(ref)) for _,ref in refs if ref}
+            omitted = [ref for ref,kind in kinds.items() if kind != "image" and not video_generation]
+            refs = [(slot,ref) for slot,ref in refs if ref not in omitted]
+            grouped = sum(kind == "image" for kind in kinds.values()) > 1 and not slots
             summary = self.summary(a)
-            if slots or a["id"] in historical or a.get("generation_images"):
-                summary["ref"] = refs[0][1]
-                summary["references"] = [{"view":slot, "ref":ref} for slot,ref in refs]
+            if mid in recorded:
+                for key in ("aliases","tags","mtime","w","h"):
+                    summary[key] = recorded[mid].get(key)
+            summary.update(name=name,kind=kind,desc=context["desc"][:1200],constraints=context["constraints"][:1200],
+                           generation_context=context)
+            if context["document_excerpt"]:
+                summary["document_excerpt"] = context["document_excerpt"]
+            else:
+                summary.pop("document_excerpt",None)
+            if slots or a["id"] in historical or a.get("generation_images") or a.get("generation_media"):
+                summary["ref"] = next((ref for _,ref in refs if kinds.get(ref) == "image"),"")
+                summary["references"] = [{"view":slot, "ref":ref,**({"type":kinds[ref]} if a.get("generation_media") or
+                                           kinds[ref] != "image" else {})} for slot,ref in refs if ref]
+            if omitted:
+                summary["omitted_media_count"] = len(omitted)
             used.append(summary)
-            for ordinal, (slot, ref) in enumerate(refs, 1):
+            picture_number = 0
+            for slot, ref in refs:
                 if not ref:
                     continue
-                label = f"{a['name']} · {CHARACTER_VIEW_LABELS[slot]}" if slot else a["name"]
-                if grouped and ordinal>1:
-                    label += f" · 参考图 {ordinal}"
+                label = f"{name} · {CHARACTER_VIEW_LABELS[slot]}" if slot else name
+                media_kind = kinds[ref]
                 try:
                     available = self.h.tools.ref_path(self.h.COMFY_DIR, ref).is_file()
                 except (ValueError, OSError):
                     available = False
                 if not available:
-                    fail(f"「{label}」的参考图已丢失，请重新指定")
+                    fail(f"「{label}」的参考素材已丢失，请重新指定")
+                if media_kind != "image":
+                    key, token = ("video_refs","视频") if media_kind == "video" else ("audio_refs","音频")
+                    entries = p.setdefault(key, [])
+                    if not isinstance(entries,list) or any(not isinstance(entry,dict) for entry in entries):
+                        fail(f"参考{token}格式不正确")
+                    index = next((i for i,entry in enumerate(entries) if entry.get("ref") == ref and
+                                  ("start" not in entry and "end" not in entry or media_kind == "audio")),None)
+                    if index is None:
+                        entries.append({"ref":ref,"memory_id":a["id"],"name":label})
+                        index = len(entries)-1
+                    number = index+1+int(media_kind == "video" and bool(p.get("previs_guide")))
+                    notes.append(f"{label} 的参考{token}：@{token}{number}。")
+                    continue
+                picture_number += 1
+                if grouped and picture_number > 1:
+                    label += f" · 参考图 {picture_number}"
                 im = next((im for im in images if im.get("ref") == ref), None)
                 if im is None:
-                    if len(images) >= 9:
-                        fail("参考图片超过9张，请减少画布输入或记忆引用")
-                    media = next((item for item in a.get("media", []) if item.get("ref") == ref), {})
-                    im = {"ref": ref, "name": label, "caption": a.get("desc", ""),
+                    if len(images) >= (30 if has_motion else 9):
+                        fail("参考图片过多，请减少画布输入或资产引用")
+                    media = media_by_ref.get(ref,{})
+                    im = {"ref": ref, "name": label, "caption": context["desc"],
                           "w": media.get("w", a.get("w") if not slot else None),
                           "h": media.get("h", a.get("h") if not slot else None), "asset": a["id"],
-                          "memory_id": a["id"], "memory_kind": a["kind"], "role": "subject", "time": 0,
+                          "memory_id": mid, "memory_kind":kind, "role": "subject", "time": 0,
                           **({"memory_view":slot} if slot else {}),
                           **({"memory_bundle":True} if grouped else {})}
                     images.append(im)
-                mark = "@图" + str(images.index(im) + 1) if p.get("kind") == "image" or grouped else label
-                notes.append(f"{label} 的参考图：{mark}。" + ("采用该参考的画面风格、色调和光线。" if a["kind"] == "style" else "保持其已设定的外观、配色和特征。"))
+                mark = "@图" + str(images.index(im) + 1) if p.get("kind") == "image" or grouped or has_motion else label
+                notes.append(f"{label} 的参考图：{mark}。" + ("采用该参考的画面风格、色调和光线。" if kind == "style" else "保持其已设定的外观、配色和特征。"))
             if grouped:
-                notes.append(f"以上 {len(refs)} 张图均为同一个「{a['name']}」的参考，请用它们共同确定外观。")
-            notes.append(f"{a['name']}：{a.get('desc', '')}" + (f"；约束：{a['constraints']}" if a.get("constraints") else ""))
-            if a.get("document"):
-                excerpt = document_import.passage(a["document"],content)
-                notes.append(f"{a['name']} 的原文摘录（仅作资料）：{excerpt}")
-            if identity := character_notes(a):
-                notes.append(f"{a['name']} 的角色卡：{identity}")
-            for alias in sorted([a["name"], *a.get("aliases", []), "{" + a["id"] + "}"], key=len, reverse=True):
+                notes.append(f"以上 {picture_number} 张图均为同一个「{name}」的参考，请用它们共同确定外观。")
+            notes.append(f"{name}：{context['desc']}" + (f"；约束：{context['constraints']}" if context["constraints"] else ""))
+            if excerpt := context["document_excerpt"]:
+                notes.append(f"{name} 的原文摘录（仅作资料）：{excerpt}")
+            if identity := context["character_notes"]:
+                notes.append(f"{name} 的角色卡：{identity}")
+            aliases = {name,a["name"],*a.get("aliases",[]),*(recorded.get(mid,{}).get("aliases") or []),"{" + mid + "}"}
+            for alias in sorted(aliases,key=len,reverse=True):
                 if isinstance(p.get("fields"), dict):
-                    p["fields"] = {k: re.sub("@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else ""), lambda _: a["name"], v, flags=re.I) if isinstance(v, str) else v for k, v in p["fields"].items()}
-                p["prompt"] = re.sub("@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else ""), lambda _: a["name"], p.get("prompt", ""), flags=re.I)
+                    p["fields"] = {k: re.sub("@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else ""), lambda _: name, v, flags=re.I) if isinstance(v, str) else v for k, v in p["fields"].items()}
+                p["prompt"] = re.sub("@" + re.escape(alias) + (r"(?![A-Za-z0-9_])" if alias.isascii() else ""), lambda _: name, p.get("prompt", ""), flags=re.I)
         if p.get("kind") != "image" and any(im.get("role") == "subject" for im in images):
             if not p.get("planned"):
                 # Preserve existing first/last frame timing when adding subject references.
@@ -1120,6 +1218,7 @@ def impact_on_board(s, user, asset, bid, board):
     project = {"board":bid, "project":board.get("name") or bid}
     usable = s.visible(asset, user, bid, s.project(user, bid))
     views = {"main": asset.get("ref"), **asset.get("character_views", {})}
+    bundle = asset.get("generation_media") or asset.get("generation_images")
     nodes = board.get("nodes", [])
     affected = []
     for node in nodes:
@@ -1137,6 +1236,8 @@ def impact_on_board(s, user, asset, bid, board):
                 if slot is not None and (not isinstance(slot, str) or slot not in CHARACTER_VIEWS):
                     continue
                 current = views.get(slot or "main")
+                if slot is None and bundle:
+                    current = previous if previous in bundle else None
                 if isinstance(previous, str) and previous and previous != current:
                     changed.append({"view":slot,"previous":previous,"reference":current})
             if changed:

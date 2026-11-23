@@ -66,11 +66,11 @@ def connect_inputs(board, nid, recipe):
                      for v in n.get("versions", [])) for n in board["nodes"]):
         board["edges"].append({"from":guide["node_id"], "to":nid, "relation":"previs", "ref":guide["ref"]})
     for sound in recipe.get("audio_refs", []):
-        if any(n["id"] == sound["node_id"] and n.get("type") == "audio" and
+        if any(n["id"] == sound.get("node_id") and n.get("type") == "audio" and
                any(v.get("ref") == sound["ref"] for v in n.get("versions", [])) for n in board["nodes"]):
             board["edges"].append({"from":sound["node_id"], "to":nid, "relation":"audio_ref", "ref":sound["ref"],**reference_slot(sound)})
     for index, clip in enumerate(recipe.get("video_refs", [])):
-        if any(n["id"] == clip["node_id"] and n.get("type") == "video" and
+        if any(n["id"] == clip.get("node_id") and n.get("type") == "video" and
                any(v.get("ref") == clip["ref"] for v in n.get("versions", [])) for n in board["nodes"]):
             edge = {"from":clip["node_id"],"to":nid,"relation":"video_ref","ref":clip["ref"],
                     **reference_slot(clip),
@@ -131,7 +131,16 @@ def queued_node(s, run, user, cid, pending):
                  "versions": [], "cur": -1, "agent_call": cid}
             b["nodes"].append(n)
             if kind=="video":
-                connect_inputs(b, nid, recipe)
+                if draft := pending.get("draft_branch"):
+                    source = next((item for item in b["nodes"] if item["id"] == draft["source_node"]), None)
+                    n["data"] = copy.deepcopy(version_history["node_data"])
+                    if source:
+                        previous = {item["id"] for item in b["nodes"] if item is not n}
+                        s.place_new_nodes(b,previous,{"x":source["x"]+s.placement_size(source)[0]+110,"y":source["y"]})
+                        if any(v.get("ref")==draft["source_ref"] for v in source["versions"]):
+                            b["edges"].extend(copy.deepcopy(version_history["input_edges"]))
+                else:
+                    connect_inputs(b, nid, recipe)
                 if source := pending.get("broll_source"):
                     if any(item["id"] == source["node"] and any(v.get("ref")==source["ref"] for v in item.get("versions",[])) for item in b["nodes"]):
                         b["edges"].append({"from":source["node"],"to":nid,"relation":"broll","ref":source["ref"]})
@@ -181,7 +190,8 @@ def register(tool, prop, node, prompt):
         "lens":prop("integer",enum=list(image_camera.LENSES)), "sensor":prop("string",enum=list(image_camera.SENSORS)),
         "optics":prop("string",enum=list(image_camera.OPTICS)), "aperture":prop("string",enum=list(image_camera.APERTURES)),
     },additionalProperties=False)
-    options = {"prompt": prompt, "duration": prop("number", minimum=2, maximum=30), "quality": prop("string", enum=["hd", "std"]),
+    options = {"prompt": prompt, "duration": prop("number", minimum=2, maximum=30),
+               "quality": prop("string", enum=["hd","std","480p","4k"],description="选择当前模型支持的分辨率。480p 与 4k 为显式档位。"),
                "draft": prop("boolean"),
                "video_optics":optics,
                "memory_views":creative_memory.view_selection_schema(prop),
@@ -214,8 +224,9 @@ def register(tool, prop, node, prompt):
         ["node_id","start","end"])
     tool("video_object_settings", "读取物体编辑节点已保存的原片区间、框选位置及替换参考图。可读取还未生成的草稿或指定历史版本。", guide["properties"], ["node_id"])
     tool("video_draft_status", "列出视频节点中实际生成过的 480p 样片及其定稿有效期；普通视频不会列为样片。", {"node_id":node}, ["node_id"])
-    tool("video_draft_finalize", "把已生成的原生 480p 样片交给原生成服务定稿。同一节点保留样片并追加定稿 Tab。version 选定样片版本，默认当前引用；resolution 默认 1080p。", {
-        **guide["properties"],"resolution":prop("string",enum=["1080p","4k"])}, ["node_id"])
+    tool("video_draft_finalize", "把已生成的原生 480p 样片交给原生成服务定稿。placement=branch 把定稿放到相连的新节点，默认 tab 在原节点追加定稿版本。version 选定样片版本，默认当前引用；resolution 默认 1080p。", {
+        **guide["properties"],"resolution":prop("string",enum=["1080p","4k"]),
+        "placement":prop("string",enum=["tab","branch"])}, ["node_id"])
     tool("video_titles_get", "读取所选视频版本的时长和可编辑画面标题。标题编号从 1 开始，时间是该版本的成片秒数。", guide["properties"], ["node_id"])
     title = prop("object", properties={"text":prop("string",minLength=1,maxLength=120),
         "start":prop("number",minimum=0),"end":prop("number",minimum=0),
@@ -250,7 +261,7 @@ def register(tool, prop, node, prompt):
         "ping_pong":prop("boolean")},["node_id"])
     tool("video_regenerate", "在同一节点重新生成并追加版本。可选 version 指定旧版。省略 frames 时沿用所选版本的图片；只换个别输入用 replacements，重新指定整组图片用 frames，两者不可同传。物体框选等其他设置仍沿用所选版本。", {
         **options, **guide["properties"], "previs":guide, "audio_refs":sounds, "video_refs":clips, "camera_plan":camera, "object_edit":object_plan,
-        "reuse_asset_references":prop("boolean",description="用户要求复用原参考图或复现旧版时为 true，按原生成记录采用资产旧图"),
+        "reuse_asset_references":prop("boolean",description="用户要求按旧资产复现时为 true，沿用原生成记录里的参考素材和文字设定"),
         "memory_ids":prop("array",items=node,maxItems=8,description="替换从旧版本沿用的资产，空数组可清除继承；省略则沿用。用户本轮或本次提示词的明确引用仍会应用"),
         "frames":prop("array",items=frame,maxItems=30),
         "replacements": prop("array", maxItems=12, items=prop("object", properties={
@@ -515,20 +526,29 @@ async def finalize_draft(s, run, user, cid, args):
     _, recipe, data, inputs = video_edit_snapshot(s,run,board,target,selected["version"])
     recipe.pop("draft",None)
     data.pop("draft",None)
-    recipe["quality"] = data["quality"] = "hd"
     resolution = args.get("resolution","1080p")
+    recipe["quality"] = data["quality"] = "4k" if resolution == "4k" else "hd"
     record = copy.deepcopy(source.get("generation_record") or workflow_review.capture_generation(recipe))
     record.setdefault("settings", {})["resolution"] = resolution
     prompt = source.get("prompt") or recipe.get("prompt") or ""
-    await s.begin_generation(run,cid,"video",1,{"label":target["name"]+" · 定稿","ref":source["ref"],
-                                              "node":target["id"],"resolution":resolution,"prompt":prompt},target_id=target["id"])
+    branch = args.get("placement") == "branch"
+    target_id = None if branch else target["id"]
+    draft_final = {"source_ref":source["ref"],"resolution":resolution}
+    if branch:
+        draft_final["source_node"] = target["id"]
+        inputs = [{"from":target["id"],"to":result_id(cid),"relation":"draft_final","ref":source["ref"]}]
+        data = {**node_data(recipe),**data,"prompt":prompt}
+    name = target["name"][:28]+" · "+resolution.upper()+" 定稿" if branch else target["name"]+" · 定稿"
+    await s.begin_generation(run,cid,"video",1,{"label":name,"ref":source["ref"],
+        "node":target["id"],"resolution":resolution,"prompt":prompt,"placement":"branch" if branch else "tab"},target_id=target_id)
     result = await s.response(s.host.finalize_video_draft,user,{
         "board":run["board_id"],"node":target["id"],"ref":source["ref"],"resolution":resolution,"request_key":cid})
     return await s.wait_submitted_jobs(run,user,cid,{
-        "ids":result["ids"],"name":target["name"]+" · 定稿","prompt":prompt,"kind":"video",
-        "target_id":target["id"],"recipe":recipe,"generation_record":record,
+        "ids":result["ids"],"name":name,"prompt":prompt,"kind":"video",
+        "target_id":target_id,"recipe":recipe,"generation_record":record,
+        **({"draft_branch":draft_final} if branch else {}),
         "memory_used":source.get("memory_used",[]),"version_history":{
-            "input_edges":inputs,"node_data":data,"draft_final":{"source_ref":source["ref"],"resolution":resolution}}})
+            "input_edges":inputs,"node_data":data,"draft_final":draft_final}})
 
 
 def restore_video_snapshot(board, target, version):
@@ -1006,7 +1026,7 @@ async def execute(s, run, user, cid, name, args):
         if not prompt.strip():
             raise ValueError("请提供续拍的动作要求")
         if method == "frame" or (method == "auto" and not args.get("provider") and
-                not s.host.reference_routes(require_motion=True)):
+                not s.host.reference_routes(require_motion=True,extension=True)):
             frames, provider = await local_extension_inputs(s,run,user,cid,args,source,frames)
             args = {**args,"provider":provider,"duration":s.host.engine_video_frames(args.get("duration",5))/24}
         else:
@@ -1104,7 +1124,7 @@ async def execute(s, run, user, cid, name, args):
     if guide or sounds or clips:
         if guide and not (extension or segment) and duration > previs.MAX_SECONDS:
             raise ValueError("白模参考成片最长 14 秒")
-        routes = s.host.reference_routes(require_motion=bool(guide or clips),segment_edit=segment)
+        routes = s.host.reference_routes(require_motion=bool(guide or clips),segment_edit=segment,extension=bool(extension))
         provider = args.get("provider") or data.get("provider")
         chosen = next((r for r in routes if r["provider"]["id"] == provider), None)
         if not chosen and "provider" not in args and routes:
@@ -1112,19 +1132,24 @@ async def execute(s, run, user, cid, name, args):
         if not chosen:
             if segment:
                 raise ValueError("请选择已配置参考视频公网地址的 Seedance 2.5 服务")
-            raise ValueError("请选择已配置参考视频公网地址的 Seedance 2.x 服务" if guide or clips else "请选择支持音频参考的 Seedance 2.x 服务")
+            raise ValueError("请选择已配置公网地址的视频参考服务" if guide or clips else "请选择支持音频参考的视频服务")
         data["provider"] = chosen["provider"]["id"]
-        maximum = 14 if guide and not (extension or segment) else 30 if "2-5" in chosen["model"] else 15
+        durations = s.host.remote.video_durations(chosen["provider"]["kind"],chosen["model"])
+        maximum = 14 if guide and not (extension or segment) else durations[-1]
         if duration > maximum:
             if "duration" in args or "duration" in data:
                 raise ValueError(f"此模式成片最长 {maximum} 秒")
             duration = maximum
         if sample and data.get("aspect", "auto") == "auto" and sample.get("w") and sample.get("h"):
             guide_aspect["aspect"] = f"{sample['w']}:{sample['h']}"
-        duration = max(4, round(duration))
+        duration = max(durations[0],round(duration))
         frames = [{**f, "role":"subject"} for f in frames]
-    elif len(frames) > 12 or duration > 15:
-        raise ValueError("此模式最多接受 12 张画布图片，成片最长 15 秒")
+    else:
+        route = s.host.requested_generation_route(data,"video")
+        maximum = (s.host.remote.video_durations(route["provider"]["kind"],route["model"])[-1]
+                   if route and route["provider"]["kind"] != "local_h3" else 15)
+        if len(frames) > 12 or duration > maximum:
+            raise ValueError(f"此模式最多接受 12 张画布图片，成片最长 {maximum} 秒")
     special = bool(extension or segment)
     payload = plan_payload(s, run, user, frames, duration, {**data, **guide_aspect}, prompt,
                            sounds=sounds,clips=clips,guide=bool(guide),special=special)
