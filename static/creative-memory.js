@@ -3,7 +3,18 @@
 const CM={loaded:0,board:null,items:[],epoch:0,popup:null,target:null,start:0,index:0,matches:[],timer:null,editor:null};
 let cmFolderCache = null;
 let cmFolderSelection = null;
-async function cmList(force=false){const bid=boardId;if(!force&&CM.board===bid&&Date.now()-CM.loaded<15000)return CM.items;const epoch=++CM.epoch;const r=await fetch('/api/memory?board='+encodeURIComponent(bid));if(!r.ok)throw new Error('读取创作记忆失败');const items=await r.json();if(bid!==boardId||epoch!==CM.epoch)return [];CM.board=bid;CM.loaded=Date.now();CM.items=items;return items;}
+async function cmList(force=false) {
+ const bid=boardId;
+ if(!force&&CM.board===bid&&Date.now()-CM.loaded<15000)return CM.items;
+ const epoch=++CM.epoch, url='/api/memory?board='+encodeURIComponent(bid);
+ const [current, available]=await Promise.all([boardRequest(url+'&scope=current'),boardRequest(url)]);
+ if(bid!==boardId||epoch!==CM.epoch)return [];
+ const items=new Map([...available,...current].map(asset=>[asset.id,asset]));
+ CM.board=bid;
+ CM.loaded=Date.now();
+ CM.items=[...items.values()];
+ return CM.items;
+}
 function cmInvalidate(){CM.board=null;CM.epoch++;libCache=null;cmFolderCache=null;}
 function cmKind(a){return KIND_CN[a.kind]||'资料';}
 const CM_DOCUMENT_EXT = /\.(txt|md|markdown|csv|json|docx|pdf)$/i;

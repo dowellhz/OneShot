@@ -98,7 +98,13 @@ w.fetch=async(url,options={})=>{
     if(p.character_view==='main')result.ref=result.default_ref=p.ref;
    }
    w.__memories=(w.__memories||[]).filter(a=>a.id!==result.id).concat(result);
-  }else result=w.__memories||[];
+  }else{
+   const scope=u.searchParams.get('scope'), bid=u.searchParams.get('board');
+   result=(w.__memories||[]).filter(asset=>scope==='current' ? asset.board===bid || asset.team===w.__currentAssetTeam&&!!asset.team :
+    scope==='personal' ? !asset.board&&!asset.project&&!asset.team&&(asset.owner==null||asset.owner===1) :
+    scope==='shared' ? asset.shared : scope?.startsWith('team:') ? asset.team===scope.slice(5) : true);
+   if(!scope && w.__limitedMemoryList)result=result.filter(asset=>!asset.board);
+  }
  }
  else if(pathname==='/api/memory/search'){
   w.__semanticSearch=JSON.parse(options.body);
@@ -696,11 +702,13 @@ async function run(){
  evaluate('CM.items.push({...CM.items[0],id:"person2"});document.getElementById("acInput").value="";document.getElementById("acInput").setSelectionRange(0,0);cmInsert(document.getElementById("acInput"),CM.items[0])');
  equal(evaluate('document.getElementById("acInput").value'),'@{person1|林森} ','duplicate names preserve a readable label and a stable asset ID');
  w.__memories=[{...w.__memories[0],id:'personal-lin',board:''}, {...w.__memories[0],id:'canvas-lin',board:'btest'}];
+ w.__limitedMemoryList=true;
  evaluate(`cmInvalidate();
    const scopePrompt=$("#acInput");scopePrompt.value="@林森";scopePrompt.focus();scopePrompt.setSelectionRange(3,3);
    scopePrompt.dispatchEvent(new Event("input",{bubbles:true}));`);
  await ready('!CM.popup.hidden && CM.matches.filter(a=>a.id.endsWith("-lin")).length===2','same-name assets are offered across visible scopes');
  equal(evaluate('CM.matches.filter(a=>a.id.endsWith("-lin")).map(a=>a.id)'),['canvas-lin','personal-lin'],'current library sorts ahead of personal results');
+ delete w.__limitedMemoryList;
  evaluate('cmClose()');
  await evaluate('cmEdit(null,"document")');
  equal(evaluate('document.querySelector("#memoryEditor [name=kind]").value'),'document','background memory editor');
@@ -717,7 +725,7 @@ async function run(){
  w.__memoryHistory=[{ref:'output:h3studio/history.png',board:'btest'}];
  const nodesBeforeLibrary=evaluate('B.nodes.length');
  evaluate('ME_USER={id:1,role:"member"};document.getElementById("assetLibraryBtn").click()');
- await ready('AL.items.length===5 && document.getElementById("alLoading").hidden','asset library entry');
+ await ready('AL.items.length===3 && document.getElementById("alLoading").hidden','asset library fetches only the current scope');
  equal(evaluate('document.getElementById("assetLibrary").hidden'),false,'dedicated workspace opens');
  evaluate(`$("#alSearch").value="这部片子讲什么，谁戴眼镜";$("#alSearch").dispatchEvent(new Event("input"));$("#alSemantic").click();`);
  await ready('$("#alSemanticStatus").textContent==="按描述匹配" && $("#alSort").value==="relevance"','description search shows the result status and sort');
@@ -741,14 +749,19 @@ async function run(){
  evaluate('document.querySelector("#alCategories [data-kind=all]").click();document.getElementById("alSearch").value="小林";document.getElementById("alSearch").dispatchEvent(new Event("input"))');
  equal(evaluate('document.querySelector("#alGrid .al-card").dataset.id'),'char','alias search');
  evaluate('$("#alScope").value="personal";$("#alScope").dispatchEvent(new Event("change"));document.getElementById("alSearch").value="树林";document.getElementById("alSearch").dispatchEvent(new Event("input"))');
+ await ready('$("#alGrid .al-card")?.dataset.id==="scene" && $("#alLoading").hidden','personal scope is loaded on selection');
  equal(evaluate('document.querySelector("#alGrid .al-card").dataset.id'),'scene','tag search');
  evaluate('document.getElementById("alSearch").value="";document.getElementById("alSearch").dispatchEvent(new Event("input"));document.getElementById("alSource").value="generated";document.getElementById("alSource").dispatchEvent(new Event("change"))');
  equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'generated source filter');
  evaluate('document.getElementById("alReset").click();document.getElementById("alScope").value="shared";document.getElementById("alScope").dispatchEvent(new Event("change"))');
+ await ready('$("#alGrid .al-card")?.dataset.id==="public" && $("#alLoading").hidden','shared scope loads after rapid scope changes');
  equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'shared scope is selected separately');
  evaluate('document.getElementById("alScope").value="personal";document.getElementById("alScope").dispatchEvent(new Event("change"))');
+ await ready('$("#alGrid .al-card")?.dataset.id==="scene" && $("#alLoading").hidden','personal scope restores the personal assets');
  equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'personal scope excludes another owner');
- evaluate('document.getElementById("alReset").click();document.querySelector("#alGrid [data-id=char] .al-card-main").click()');
+ evaluate('document.getElementById("alReset").click()');
+ await ready('!!$("#alGrid [data-id=char] .al-card-main") && $("#alLoading").hidden','reset reloads the current library');
+ evaluate('$("#alGrid [data-id=char] .al-card-main").click()');
  await ready('document.querySelector("#alDetail [name=name]")?.value==="林森" && document.querySelector("#alDetail .cm-history img")','integrated detail and history');
  await ready('!!$("#alDetail .al-impact")','asset impact disclosure is available');
  evaluate('$("#alDetail .al-impact").open=true;$("#alDetail .al-impact").ontoggle()');
@@ -767,7 +780,9 @@ async function run(){
  w.__memorySaveFailure=false;
  evaluate('document.querySelector("#alGrid [data-id=clip] .al-card-main").click()');
  await ready('document.querySelector("#alDetail .cm-hero video")?.controls===true','playable video asset');
- evaluate('$("#alScope").value="shared";$("#alScope").dispatchEvent(new Event("change"));document.querySelector("#alGrid [data-id=public] .al-card-main").click()');
+ evaluate('$("#alScope").value="shared";$("#alScope").dispatchEvent(new Event("change"))');
+ await ready('!!$("#alGrid [data-id=public] .al-card-main") && $("#alLoading").hidden','shared card is loaded');
+ evaluate('$("#alGrid [data-id=public] .al-card-main").click()');
  await ready('document.querySelector("#alDetail [name=name]")?.value==="共享画风"','shared asset detail');
  equal(evaluate('document.querySelector("#alDetail [name=name]").disabled'),true,'foreign shared asset read only');
  equal(evaluate('document.querySelector("#alDetail [type=submit]").hidden'),true,'shared asset hides write action');
@@ -829,6 +844,7 @@ async function run(){
  evaluate('$("#alReset").click();alClose()');
  w.__memories=w.__memories.filter(a=>a.document?.name!=='现场记录.md');
  w.__assetTeams=[{id:'asset-team',name:'短片组',managed:true}];
+ w.__currentAssetTeam='asset-team';
  w.__memories.push({id:'team-style',name:'团队画风',kind:'style',team:'asset-team',owner:2,media:[]});
  evaluate('B.team="asset-team";$("#assetLibraryBtn").click()');
  await ready('!$("#alLoading").hidden || $("#alTitle").textContent==="当前资产库 · 短片组"','team canvas opens the library');
@@ -839,6 +855,7 @@ async function run(){
  assert.equal(evaluate('$("#memoryEditor select[name=board]").value'),'team:asset-team','new assets default to the library that is open');
  evaluate('delete B.team;alBoardChanged()');
  delete w.__assetTeams;
+ delete w.__currentAssetTeam;
  w.__memories=w.__memories.filter(a=>a.id!=='team-style');
  w.__memories.push({id:"bundle-qa",name:"样品瓶",kind:"prop",owner:1,ref:"input:h3studio/bottle-front.png",
   media:[{ref:"input:h3studio/bottle-front.png",type:"image"},{ref:"input:h3studio/bottle-side.png",type:"image"},
@@ -1544,7 +1561,9 @@ async function run(){
     result={...payload,id:'projectAsset',owner:1,media:[],mtime:1,ref:''};projectAssets.push(result);
    }else{
     const bid=u.searchParams.get('board');
-    result=projectAssets.filter(a=>!a.project||a.project===projectMembership.get(bid));
+    const scope=u.searchParams.get('scope');
+    result=projectAssets.filter(a=>scope==='current' ? !!a.project&&a.project===projectMembership.get(bid) :
+     scope==='personal' ? !a.project : !a.project||a.project===projectMembership.get(bid));
    }
   } else if(u.pathname==='/api/board/btest/comments'){
    if(method==='POST'){
@@ -1666,6 +1685,7 @@ async function run(){
  equal(evaluate('[$("#alTitle").textContent,$("#alGrid .al-card strong")?.textContent ?? null]'),
   ['当前资产库 · '+evaluate('B.name'),null],'the canvas library excludes assets moved to the personal library after the project was dissolved');
  evaluate('$("#alScope").value="personal";$("#alScope").dispatchEvent(new Event("change"))');
+ await ready('$("#alGrid .al-card strong")?.textContent==="城市设定" && $("#alLoading").hidden','migrated asset loads only from the personal library');
  assert.equal(evaluate('$("#alGrid .al-card strong")?.textContent'),'城市设定');
  evaluate('alClose()');
  const saveFetch=w.fetch, previousName=evaluate('B.name');

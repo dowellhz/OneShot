@@ -43,7 +43,7 @@ function alBaseItems() {
   for(const [id,a] of found)items.set(id,a);
   const ranked = AL.semantic?.ids;
   const candidates = ranked ? ranked.map(id=>items.get(id)).filter(Boolean) : [...items.values()];
-  return candidates.filter(a => (ranked || !q || found.has(a.id) ||
+  return candidates.filter(a => (ranked || !q || found.get(a.id)?.document_match ||
     [a.name,a.desc,a.document?.name,a.document?.text||a.document?.excerpt,...(a.aliases||[]),...(a.tags||[])].join(' ').toLocaleLowerCase().includes(q))
     && (AL.scope === 'current' && alInCurrent(a) ||
       AL.scope === 'personal' && alPersonal(a) || AL.scope === 'shared' && a.shared || AL.scope.startsWith('team:') && a.team === AL.scope.slice(5))
@@ -82,15 +82,15 @@ async function alFindByDescription() {
 }
 function alSearchDocuments() {
   clearTimeout(AL.documentTimer);
-  const bid=boardId, query=AL.query.trim().toLocaleLowerCase();
+  const bid=boardId, scope=AL.scope, query=AL.query.trim().toLocaleLowerCase();
   AL.documentQuery="";AL.documentResults=new Map();
   if (!query) return;
   AL.documentTimer=setTimeout(async()=>{
     try{
-      const result=await boardRequest("/api/memory?board="+encodeURIComponent(bid)+"&q="+encodeURIComponent(query));
-      if(!AL.open||bid!==boardId||query!==AL.query.trim().toLocaleLowerCase()||!Array.isArray(result))return;
+      const result=await boardRequest("/api/memory?"+new URLSearchParams({board:bid,scope,q:query}));
+      if(!AL.open||bid!==boardId||scope!==AL.scope||query!==AL.query.trim().toLocaleLowerCase()||!Array.isArray(result))return;
       AL.documentQuery=query;
-      AL.documentResults=new Map(result.filter(a=>a.document_match).map(a=>[a.id,a]));
+      AL.documentResults=new Map(result.map(a=>[a.id,a]));
       alRender();
     }catch{}
   },220);
@@ -174,7 +174,7 @@ function alRender() {
   }
   $('#alCount').textContent = `${list.length} 项资产`;
   $('#alHeading').textContent = AL_KINDS[AL.kind];
-  $('#alGrid').replaceChildren(); $('#alEmpty').hidden = !!list.length;
+  $('#alGrid').replaceChildren(); $('#alEmpty').hidden = !!list.length || !$('#alLoading').hidden;
   const filtered = AL.query || AL.scope !== 'current' || AL.source !== 'all';
   $('#alEmptyTitle').textContent = filtered ? '没有匹配的资产' : AL.folder!=='all' ? '这个文件夹暂无资产' : `还没有${AL.kind === 'all' ? '资产' : AL_KINDS[AL.kind]}`;
   $('#alEmptyText').textContent = filtered ? '试试其他关键词，或重置筛选条件。' : AL.folder!=='all' ? '从全部资产选择要归档的素材，再移动到此文件夹。' : '上传素材、从画布收录，或新建一份背景资料。';
@@ -205,11 +205,11 @@ function alRender() {
 }
 async function alRefresh() {
   alClearSemantic();
-  const epoch = ++AL.epoch, bid = boardId; $('#alError').hidden = true; $('#alLoading').hidden = false;
+  const epoch = ++AL.epoch, bid = boardId, scope = AL.scope; $('#alError').hidden = true; $('#alLoading').hidden = false;
   $("#alSemantic").disabled = true;
   const team = alFolderTeam();
   try {
-    const [r,folders,teams,teamFolders] = await Promise.all([fetch('/api/memory?board=' + encodeURIComponent(bid)),
+    const [r,folders,teams,teamFolders] = await Promise.all([fetch('/api/memory?' + new URLSearchParams({board:bid,scope})),
       boardRequest("/api/asset-folders").catch(()=>null),boardRequest("/api/canvas-teams").catch(()=>null),
       team ? boardRequest(alFolderURL("",team)).catch(()=>null) : null]);
     const items = await r.json();
@@ -224,7 +224,10 @@ async function alRefresh() {
         option.dataset.teamScope="";
         picker.add(option);
       }
-      if(AL.scope.startsWith("team:") && !teams.some(t=>"team:"+t.id===AL.scope))AL.scope="current";
+      if(scope.startsWith("team:") && !teams.some(t=>"team:"+t.id===scope)){
+        alResetFilters();
+        return await alRefresh();
+      }
       picker.value=AL.scope;
     }
     if(Array.isArray(folders))AL.folders=folders;
@@ -240,13 +243,12 @@ async function alRefresh() {
     AL.items = items; AL.board = bid; cmInvalidate(); alRender();
     if(AL.query.trim())alSearchDocuments();
     await refreshCharacterResults(items, bid);
-    if (AL.open && AL.epoch === epoch && bid === boardId) alRender();
   } catch (e) {
     if (AL.open && AL.epoch === epoch) { $('#alError').textContent = e.message + '，可点击刷新重试。'; $('#alError').hidden = false; }
   } finally {
     if (AL.epoch === epoch) {
       $("#alLoading").hidden = true;
-      $("#alSemantic").disabled = !alCanFindByDescription();
+      alRender();
     }
   }
 }
@@ -405,6 +407,8 @@ function alAssetActions(fields, asset, bid) {
       AL.query = $('#alSearch').value = '';
       AL.marked.clear();
       alChanged(copied);
+      await alRefresh();
+      if (!AL.open || bid!==boardId || AL.scope!=='personal') return;
       await alSelect(copied);
       toast('已复制到个人素材库');
     } catch (error) {
@@ -743,18 +747,16 @@ function initAssetLibrary() {
   $('#alSearch').onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();void alFindByDescription();}};
   $('#alSemantic').onclick=alFindByDescription;
   $('#alScope').onchange=e=>{
-    const previous=alFolderTeam();
+    if(AL.scope===e.target.value)return;
     AL.scope=e.target.value;
-    alClearSemantic();
-    if(previous!==alFolderTeam()){
-      AL.folder='all'; AL.marked.clear(); AL.filing=false; $("#alFolderEditor").replaceChildren();
-      void alRefresh();
-    }
+    AL.folder='all'; AL.marked.clear(); AL.filing=false; $("#alFolderEditor").replaceChildren();
+    alSearchDocuments();
+    void alRefresh();
     alRender();
   };
   for(const [id,field] of [['alSource','source'],['alSort','sort']])$('#'+id).onchange=e=>{AL[field]=e.target.value;alRender();};
   $$('#alCategories [data-kind]').forEach(b=>b.onclick=()=>{AL.kind=b.dataset.kind;alClearSemantic();alRender();});
-  $('#alReset').onclick=()=>{alResetFilters();alRender();};
+  $('#alReset').onclick=()=>{const changed=AL.scope!=="current";alResetFilters();if(changed)void alRefresh();alRender();};
   $('#alFromCanvas').onclick=$('#alImportBtn').onclick=alImportMenu;
   $('#alUpload').onclick=()=>$('#alFile').click();$('#alFile').onchange=e=>{const file=e.target.files[0];if(file)alNew({file,kind:CM_DOCUMENT_EXT.test(file.name)?'document':undefined,preset:{name:file.name.replace(/\.[^.]+$/,'')}});e.target.value='';};
   $('#alTemplate').onclick=openWorkflowTemplates;

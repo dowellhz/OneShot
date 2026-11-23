@@ -386,6 +386,28 @@ class MemoryIntegration(ChatFixture):
         matching = await (await self.client.get("/api/memory?board=shots")).json()
         self.assertEqual([(a["id"],a["project"],a["shared"],a["ref"]) for a in matching], [(asset["id"],"",False,asset["ref"])])
 
+    async def test_library_limits_and_search_are_applied_within_the_requested_scope(self):
+        project = (await (await self.client.post("/api/canvas-projects",json={"name":"短片","board":"test"})).json())["id"]
+        await self.client.put("/api/board/shots",params={"project":project},json={"nodes":[]})
+        await self.client.put("/api/board/standalone",json={"nodes":[]})
+        project_asset = await self.create(board="",project=project,name="项目剧本",kind="document",ref="")
+        sibling_asset = await self.create(name="旧画布素材",ref="")
+        db.run("""WITH RECURSIVE numbers(n) AS (
+                    VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<305)
+                  INSERT INTO creative_memories(id,owner,kind,name,data,updated)
+                  SELECT 'personal-'||n,7,'document','个人剧本 '||n,'{}',?+n FROM numbers""",sibling_asset["mtime"])
+
+        async def browse(board, **filters):
+            reply = await self.client.get("/api/memory",params={"board":board,**filters})
+            self.assertEqual(reply.status,200,await reply.text())
+            return await reply.json()
+
+        self.assertEqual(len(await browse("shots",scope="personal")),300)
+        current = await browse("shots",scope="current")
+        self.assertEqual({asset["id"] for asset in current},{project_asset["id"],sibling_asset["id"]})
+        self.assertEqual([asset["id"] for asset in await browse("shots",scope="current",q="剧本")],[project_asset["id"]])
+        self.assertEqual(await browse("standalone",scope="current"),[])
+
     async def test_explicit_mention_reaches_generation_and_records_history(self):
         a = await self.create(aliases=['小林'], constraints='眼镜不能消失')
         output = image_editor.save(server.COMFY_DIR, Image.new('RGB',(64,48),'orange'))

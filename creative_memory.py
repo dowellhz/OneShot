@@ -203,6 +203,23 @@ class Store:
             return {"team":team}
         return {"board":bid}
 
+    def scope_filter(self, user, bid, scope):
+        if scope == "current":
+            target = self.default_scope(user,bid)
+            boards = {bid} | self.project_boards(target.get("project"))
+            return lambda asset: asset.get("board") in boards or any(
+                asset.get(key) == value for key,value in target.items()
+            )
+        if scope == "personal":
+            return lambda asset: asset["owner"] in (None,user["id"]) and not (
+                asset.get("board") or asset.get("project") or asset.get("team")
+            )
+        if scope == "shared":
+            return lambda asset: asset.get("shared",False)
+        if scope.startswith("team:"):
+            return lambda asset: asset.get("team") == scope[5:]
+        return lambda asset: scope == "available"
+
     def board(self, user, bid):
         if not isinstance(bid, str) or not re.fullmatch(r"[\w-]{1,80}", bid):
             fail("画布编号无效")
@@ -251,24 +268,8 @@ class Store:
         query = query.strip()
         if not query:
             fail("请描述要找的素材")
-        target = self.default_scope(user,bid)
-        siblings = self.project_boards(target.get("project"))
-
-        def in_current(asset):
-            return asset.get("board") == bid or asset.get("board") in siblings or any(
-                asset.get(key) == value for key,value in target.items()
-            )
-
-        def in_scope(asset):
-            if scope == "current":
-                return in_current(asset)
-            if scope == "personal":
-                return asset["owner"] in (None,user["id"]) and not (asset.get("board") or asset.get("project") or asset.get("team"))
-            if scope == "shared":
-                return asset.get("shared",False)
-            if scope.startswith("team:"):
-                return asset.get("team") == scope[5:]
-            return scope == "available"
+        in_current = self.scope_filter(user,bid,"current")
+        in_scope = in_current if scope == "current" else self.scope_filter(user,bid,scope)
 
         def accessible():
             return [asset for asset in self.list(user,bid,kind=kind) if in_scope(asset)]
@@ -946,7 +947,14 @@ def asset_list_entries(items, user, query):
 @routes.get("/api/memory")
 async def listing(req):
     s,user,query = store(req),req["user"],req.query.get("q","")
-    items = s.list(user,req.query.get("board") or None,query,req.query.get("kind"))[:300]
+    bid, scope = req.query.get("board") or None, req.query.get("scope")
+    if scope is not None and (not bid or not valid_library_scope(scope)):
+        fail("请选择有效的画布和资产范围")
+    items = s.list(user,bid,query,req.query.get("kind"))
+    if scope is not None:
+        in_scope = s.scope_filter(user,bid,scope)
+        items = [asset for asset in items if in_scope(asset)]
+    items = items[:300]
     s.character_drafts(user,items)
     asset_list_entries(items,user,query)
     return web.json_response(items,headers={"Cache-Control":"no-store"})
@@ -967,6 +975,12 @@ def folder_name(payload):
     if not isinstance(raw,str) or not 1 <= len(raw.strip()) <= 60 or "\n" in raw or "\r" in raw:
         fail("请输入 1–60 字的文件夹名称")
     return raw.strip()
+
+
+def valid_library_scope(scope):
+    return isinstance(scope,str) and (
+        scope in ("current","personal","shared") or re.fullmatch(r"team:[\w-]{1,80}",scope)
+    )
 
 
 def folder_scope(user, team=None, *, manage=False):
@@ -1125,7 +1139,7 @@ async def search_assets(req):
     query, scope, kind = payload.get("query"), payload.get("scope","current"), payload.get("kind")
     if not isinstance(query,str) or not 1<=len(query.strip())<=1000:
         fail("请输入 1–1000 字的素材描述")
-    if not isinstance(scope,str) or not (scope in ("current","personal","shared") or re.fullmatch(r"team:[\w-]{1,80}",scope)):
+    if not valid_library_scope(scope):
         fail("请选择有效的资产范围")
     if kind is not None and (not isinstance(kind,str) or kind not in KINDS):
         fail("请选择有效的资产分类")
