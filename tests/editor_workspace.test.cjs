@@ -3754,13 +3754,16 @@ async function run(){
   {ref:"output:h3studio/voice-old.wav",type:"audio",seconds:2},
   {ref:"input:h3studio/alternate-voice.wav",type:"audio",seconds:7},
   {ref:"input:h3studio/full-interview.wav",type:"audio",seconds:80},
+ ]},{id:"station-motion",name:"站台运镜",kind:"scene",tags:["环绕"],media:[
+  {ref:"input:h3studio/station-motion.mp4",type:"video",w:864,h:480,seconds:9},
  ]}];
  w.fetch=async(url,options={})=>{
   const path=new URL(url,"http://oneshot.test").pathname;
   if(path==="/api/memory")return {ok:true,json:async()=>libraryAudio};
   if(path==="/api/memory/resolve"){
-   resolvedAudioAssets.push(JSON.parse(options.body));
-   return {ok:true,json:async()=>libraryAudio};
+   const payload=JSON.parse(options.body);
+   resolvedAudioAssets.push(payload);
+   return {ok:true,json:async()=>libraryAudio.filter(asset=>payload.ids.includes(asset.id))};
   }
   return audioLibraryFetch(url,options);
  };
@@ -3768,21 +3771,21 @@ async function run(){
   selectOnly(libraryAudioTarget.id);
   const audioLibraryNodeCount=B.nodes.length;
   $("#refs [data-seed-library]").click();`);
- await ready('$("#seedAudioLibrary select").options.length===3','audio picker lists reusable clips under the duration limit');
- evaluate(`const audioLibraryQuery=$("#seedAudioLibrary input");
+ await ready('$("#referenceLibrary select").options.length===3','audio picker lists reusable clips under the duration limit');
+ evaluate(`const audioLibraryQuery=$("#referenceLibrary input");
   audioLibraryQuery.value="渡船";audioLibraryQuery.dispatchEvent(new Event("input"));
   const audioLibraryPick=index=>{
-    const choice=$("#seedAudioLibrary select");choice.selectedIndex=index;
+    const choice=$("#referenceLibrary select");choice.selectedIndex=index;
     choice.dispatchEvent(new Event("change"));
   };
   audioLibraryPick(1);`);
- assert.match(evaluate('$("#seedAudioLibrary audio").src'),/voice-old\.wav/);
- await evaluate('$("#seedAudioLibrary form").onsubmit(new Event("submit"))');
+ assert.match(evaluate('$("#referenceLibrary audio").src'),/voice-old\.wav/);
+ await evaluate('$("#referenceLibrary form").onsubmit(new Event("submit"))');
  equal(evaluate('[B.nodes.length===audioLibraryNodeCount,libraryAudioTarget.data.references[0].node_id===versionCopyAudio.id,libraryAudioTarget.data.references[0].ref,node(versionCopyAudio.id).cur]'),
   [true,true,"output:h3studio/voice-old.wav",1],'reuse the historical canvas version without adding a duplicate or changing the current version');
- await evaluate('openSeedAudioLibrary(libraryAudioTarget)');
- equal(evaluate('$("#seedAudioLibrary select").options.length'),2,'an already linked audio version is omitted');
- await evaluate('audioLibraryPick(1);$("#seedAudioLibrary form").onsubmit(new Event("submit"))');
+ await evaluate('openReferenceLibrary(libraryAudioTarget,"audio")');
+ equal(evaluate('$("#referenceLibrary select").options.length'),2,'an already linked audio version is omitted');
+ await evaluate('audioLibraryPick(1);$("#referenceLibrary form").onsubmit(new Event("submit"))');
  equal(evaluate(`(()=>{
    const ref=libraryAudioTarget.data.references[1], source=node(ref.node_id);
    return [B.nodes.length,source.data.asset.id,curV(source).ref,B.edges.some(e=>e.from===source.id&&e.to===libraryAudioTarget.id&&e.slot===2)];
@@ -3790,8 +3793,33 @@ async function run(){
  assert.deepEqual(resolvedAudioAssets.map(body=>body.ids),[["cast-voice"],["cast-voice"]]);
  evaluate('undo()');
  equal(evaluate('[B.nodes.length===audioLibraryNodeCount,node(libraryAudioTarget.id).data.references.length]'),[true,1]);
+ evaluate(`const libraryVideoTarget=addNode("video",4650,1650);
+   const libraryVideoNodeCount=B.nodes.length;
+   const openLibraryInput=kind=>{
+     openAddMenu(110,150,{to:libraryVideoTarget});
+     $("#addMenu [data-library-reference='"+kind+"']").click();
+   };
+   openLibraryInput("video");`);
+ await ready('$("#referenceLibrary select").options.length===2','video picker lists saved footage');
+ evaluate(`audioLibraryQuery.value="环绕";audioLibraryQuery.dispatchEvent(new Event("input"));audioLibraryPick(1);`);
+ assert.match(evaluate('$("#referenceLibrary video").src'),/station-motion\.mp4/);
+ assert.equal(evaluate('$("#referenceLibrary audio").hidden'),true);
+ await evaluate('$("#referenceLibrary form").onsubmit(new Event("submit"))');
+ equal(evaluate('[B.nodes.length===libraryVideoNodeCount+1,videoInputs(libraryVideoTarget)[0].edge.prompt_slot]'),[true,1]);
+ evaluate('openLibraryInput("audio")');
+ await ready('$("#referenceLibrary select").options.length===4','video node can pick an audio reference');
+ evaluate('audioLibraryPick(1)');
+ await evaluate('$("#referenceLibrary form").onsubmit(new Event("submit"))');
+ equal(evaluate(`(()=>{
+   const request=videoReq(libraryVideoTarget,"沿用 @视频{1} 的运镜和 @音{1} 的旁白");
+   const [clip]=request.video_refs,[sound]=request.audio_refs;
+   return [clip.ref,clip.start,clip.end,clip.prompt_slot,sound.node_id===versionCopyAudio.id,sound.version,sound.prompt_slot,
+     B.nodes.length===libraryVideoNodeCount+1,request.prompt];
+ })()`),["input:h3studio/station-motion.mp4",0,9,1,true,1,1,true,"沿用 @视频1 的运镜和 @音1 的旁白"]);
+ evaluate('undo();undo()');
+ equal(evaluate('[B.nodes.length===libraryVideoNodeCount,videoInputs(node(libraryVideoTarget.id)).length,audioInputs(node(libraryVideoTarget.id)).length]'),[true,0,0]);
  w.fetch=audioLibraryFetch;
- console.log('Library audio DOM passed: search, audition, pinned history reuse, asset import, reference slot and undo.');
+ console.log('Library media references DOM passed: audio and video pickers, preview, pinned versions, request bindings and undo.');
  evaluate('restore(copyFlowBase)');
  console.log('Version copies and references DOM passed: keyboard menu, drag, pinned audio reference, read-only guard, provenance, video inputs and undo.');
  const queueFetch=w.fetch, queueSends=[], queueDeletes=[];

@@ -659,15 +659,15 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .al-group-import label{display:flex;align-items:center;gap:5px}
 .al-group-import select{color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:5px}
 .al-group-import [role=status]{color:var(--dim);font-size:var(--fs-caption);flex:1 1 120px}
-#groupRunConfirm,#groupRunProgress,#versionRefUpdate,#seedAudioLibrary{padding:12px;color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:12px}
-#groupRunConfirm,#versionRefUpdate,#seedAudioLibrary{width:min(490px,calc(100vw - 28px));max-height:calc(100dvh - 28px)}
-:is(#groupRunConfirm,#versionRefUpdate,#seedAudioLibrary)::backdrop{background:#0009}
-#seedAudioLibrary form{display:grid;gap:10px}
-#seedAudioLibrary :is(input,select){min-width:0;background:var(--card);color:var(--text);border:1px solid var(--line2);border-radius:6px;padding:8px}
-#seedAudioLibrary audio{width:100%}
-#seedAudioLibrary [role=status]{color:var(--dim);font-size:var(--fs-small)}
-#seedAudioLibrary [role=status]:empty{display:none}
-#seedAudioLibrary footer{display:flex;justify-content:flex-end;gap:8px}
+#groupRunConfirm,#groupRunProgress,#versionRefUpdate,#referenceLibrary{padding:12px;color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:12px}
+#groupRunConfirm,#versionRefUpdate,#referenceLibrary{width:min(490px,calc(100vw - 28px));max-height:calc(100dvh - 28px)}
+:is(#groupRunConfirm,#versionRefUpdate,#referenceLibrary)::backdrop{background:#0009}
+#referenceLibrary form{display:grid;gap:10px}
+#referenceLibrary :is(input,select){min-width:0;background:var(--card);color:var(--text);border:1px solid var(--line2);border-radius:6px;padding:8px}
+#referenceLibrary :is(audio,video){width:100%;max-height:40vh}
+#referenceLibrary [role=status]{color:var(--dim);font-size:var(--fs-small)}
+#referenceLibrary [role=status]:empty{display:none}
+#referenceLibrary footer{display:flex;justify-content:flex-end;gap:8px}
 #groupRunProgress{position:fixed;left:14px;bottom:62px;width:min(340px,calc(100vw - 28px));z-index:38;box-shadow:0 8px 28px #0006}
 :is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) :is(header,footer){display:flex;justify-content:space-between;align-items:center;gap:8px}
 :is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) footer{justify-content:flex-end}

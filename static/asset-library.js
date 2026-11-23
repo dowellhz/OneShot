@@ -513,7 +513,11 @@ async function openReferenceLibrary(target, kind) {
   $("#referenceLibraryTitle",form).textContent="从资产库选用"+label;
   apply.textContent="添加参考"+label;
   let choices=[], busy=false;
-  const stopPreview=()=>{preview.pause();preview.removeAttribute("src");};
+  const stopPreview=()=>{
+    preview.pause();
+    preview.removeAttribute("src");
+    preview.hidden=true;
+  };
   const close=()=>{
     if(dialog.close)dialog.close();
     else dialog.removeAttribute("open");

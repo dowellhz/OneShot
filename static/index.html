@@ -6,7 +6,7 @@
 <title>OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
 <link rel="stylesheet" href="/static/type.css?v=1">
-<link rel="stylesheet" href="/static/canvas.css?v=65">
+<link rel="stylesheet" href="/static/canvas.css?v=66">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
@@ -294,14 +294,15 @@
     <button type="button" data-panorama-reset>重置视角</button>
     <button type="button" data-panorama-capture>视角放入画布</button></footer>
 </dialog>
-<dialog id="seedAudioLibrary" aria-labelledby="seedAudioLibraryTitle">
+<dialog id="referenceLibrary" aria-labelledby="referenceLibraryTitle">
   <form>
-    <strong id="seedAudioLibraryTitle">选择参考音频</strong>
-    <input type="search" aria-label="搜索音频资产" placeholder="搜索名称、别名或标签">
-    <select aria-label="资产音频版本"></select>
+    <strong id="referenceLibraryTitle">选用参考素材</strong>
+    <input type="search" aria-label="搜索资产" placeholder="搜索名称、别名或标签">
+    <select aria-label="资产版本"></select>
     <audio controls preload="metadata" hidden></audio>
+    <video controls preload="metadata" playsinline hidden></video>
     <div role="status"></div>
-    <footer><button type="button" data-cancel>取消</button><button type="submit" disabled>添加参考音频</button></footer>
+    <footer><button type="button" data-cancel>取消</button><button type="submit" disabled>添加参考</button></footer>
   </form>
 </dialog>
 <dialog id="frameCapture" aria-labelledby="frameCaptureTitle">
@@ -502,7 +503,7 @@
 <script src="/static/character-views.js?v=3"></script>
 <script src="/static/creative-memory.js?v=22"></script>
 <link rel="stylesheet" href="/static/asset-library.css?v=7">
-<script src="/static/asset-library.js?v=21"></script>
+<script src="/static/asset-library.js?v=22"></script>
 <script src="/static/film-titles.js?v=3"></script>
 <script src="/static/film-cutaways.js?v=1"></script>
 <script src="/static/film-playlists.js?v=3"></script>
@@ -523,7 +524,7 @@
 <script src="/static/canvas-live.js?v=3"></script>
 <script src="/static/canvas-review-region.js?v=1"></script>
 <link rel="stylesheet" href="/static/image-panorama.css?v=1">
-<script src="/static/canvas.js?v=103"></script>
+<script src="/static/canvas.js?v=104"></script>
 <script src="/static/image-panorama.js?v=1"></script>
 <script src="/static/canvas-generation.js?v=32"></script>
 <script src="/static/canvas-group-run.js?v=16"></script>
@@ -534,7 +535,7 @@
 <script src="/static/video-segment.js?v=7"></script>
 <script src="/static/video-trim.js?v=1"></script>
 <script src="/static/video-gif.js?v=3"></script>
-<script src="/static/audio-node.js?v=11"></script>
+<script src="/static/audio-node.js?v=12"></script>
 <script src="/static/audio-transcript.js?v=4"></script>
 <script src="/static/audio-separation.js?v=2"></script>
 <link rel="stylesheet" href="/static/workflow-templates.css?v=8">
