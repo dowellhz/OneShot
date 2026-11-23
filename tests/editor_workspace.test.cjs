@@ -5948,6 +5948,13 @@ async function run(){
  assert.equal(evaluate('$("[data-decision=approve]").disabled'),true);
  evaluate('AC.approvals=previousApprovals;acRenderApprovals()');
  console.log('Assistant mixed-media approval passed: exact model and inputs, safe labels and pending confirmation lock.');
+ evaluate(`AC.approvals=[{id:"set-review",name:"image_generate_set",plan:{kind:"image",count:2,items:[
+   {name:"远景",prompt:"站台",aspect:"auto",assets:["林森（标准主图）","车站 <img src=x>"]},
+   {name:"特写",prompt:"头肩",aspect:"auto",assets:["林森（正面头肩）"]}]}}];acRenderApprovals();`);
+ equal(evaluate('$$("#acApprovals .ac-approval-items li small").map(row=>row.textContent)'),
+  ['参考资产 · 林森（标准主图）、车站 <img src=x>','参考资产 · 林森（正面头肩）']);
+ assert.equal(evaluate('$("#acApprovals img")'),null);
+ evaluate('AC.approvals=previousApprovals;acRenderApprovals()');
 
  const fullscreenFetch=w.fetch;
  let fullscreenRequest;

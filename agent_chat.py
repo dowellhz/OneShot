@@ -321,9 +321,11 @@ tool("image_export_gif", "从一张宫格序列帧图生成可下载的循环 GI
 IMAGE_ASPECT = prop("string", enum=["auto", "1:1", "3:4", "4:3", "9:16", "16:9"])
 IMAGE_SET_ITEMS = prop("array",minItems=2,maxItems=4,items=prop("object",properties={
     "name":prop("string",minLength=1,maxLength=40),
-    "prompt":prop("string",minLength=1,maxLength=1400),"aspect":IMAGE_ASPECT},
+    "prompt":prop("string",minLength=1,maxLength=1400),"aspect":IMAGE_ASPECT,
+    "memory_ids":prop("array",items=NODE,maxItems=8,description="设置这张图需要的自动资产。省略时沿用本轮已采用资产，空数组清除自动资产。用户明确 @ 的资产会保留。"),
+    "memory_views":creative_memory.view_selection_schema(prop)},
     required=["name","prompt"],additionalProperties=False))
-tool("image_generate_set","生成 2–4 张内容不同但共享风格和参考图的图片，例如商品白底／场景／细节图或演示文稿插图。",
+tool("image_generate_set","生成 2–4 张共享风格和画布参考的图片。每张可以指定自己的资产及定稿视角，用户通过确认卡检查实际引用。",
      {"name":NODE,"style":prop("string",maxLength=1000),"aspect":IMAGE_ASPECT,
       "reference_ids":prop("array",items=NODE,maxItems=4),"items":IMAGE_SET_ITEMS},["items"])
 tool("image_edit", "以文字编辑图片，在原节点追加历史版本。局部修改须提供真实已有mask_ref；需要保护主体时先获取选区，不能假装已保护。", {
@@ -1794,22 +1796,58 @@ class AgentService:
                 "ar":ar,"images":copy.deepcopy(images),"quality":"4mp","turbo":True,"seed":-1,
                 **({"memory_views":args["memory_views"]} if "memory_views" in args else {})}
 
+    def image_set_assets(self, run, user, payload):
+        try:
+            prepared = self.app["creative_memory"].prepare(user,payload,
+                owner_only=bool(run["data"].get("external_tool")))
+        except web.HTTPException as error:
+            try:
+                message = json.loads(error.text).get("error")
+            except (TypeError,ValueError,AttributeError):
+                message = None
+            raise ToolError(message or error.reason) from None
+        return prepared.get("memory_used",[])
+
     async def submit_image_set(self, run, user, cid, args, images):
         label = (args.get("name") or "").strip() or "图片套图"
         style = args.get("style","").strip()
-        plan = [{"name":item["name"].strip(),"prompt":item["prompt"].strip(),
-                 "aspect":item.get("aspect",args.get("aspect","auto"))} for item in args["items"]]
-        if any(not item["name"] or not item["prompt"] for item in plan):
-            raise ToolError("每张图都需要名称和提示词")
-        memory = run["data"].get("memory_ids",[])
-        views = run["data"].get("memory_views", [])
-        reference_views = {"memory_views":views} if views else {}
+        data = run["data"]
+        memory = data.get("memory_ids",[])
+        explicit = data.get("explicit_memory_ids",memory)
+        explicit_views = creative_memory.requested_views(data.get("memory_views",[]))
+        plan, requests, snapshots = [], [], []
+        for item in args["items"]:
+            name, prompt = item["name"].strip(), item["prompt"].strip()
+            if not name or not prompt:
+                raise ToolError("每张图都需要名称和提示词")
+            aspect = item.get("aspect",args.get("aspect","auto"))
+            full_prompt = style+"\n\n本张画面："+prompt if style else prompt
+            payload = self.image_request({"prompt":full_prompt,"aspect":aspect},images)
+            payload.update(board=run["board_id"],label=name,
+                memory_ids=list(dict.fromkeys([*explicit,*item.get("memory_ids",memory)])))
+            views = {**creative_memory.requested_views(item.get("memory_views",[])),**explicit_views}
+            if views:
+                payload["memory_views"] = creative_memory.view_selections(views)
+            used = self.image_set_assets(run,user,payload)
+            assets = []
+            for asset in used:
+                angles = [creative_memory.CHARACTER_VIEW_LABELS[ref["view"]]
+                          for ref in asset.get("references",[]) if ref.get("view")]
+                assets.append(asset["name"] + ("（"+"、".join(angles)+"）" if angles else ""))
+            plan.append({"name":name,"prompt":prompt,"aspect":aspect,"assets":assets})
+            requests.append(payload)
+            snapshots.append(used)
         await self.begin_generation(run,cid,"image",len(plan),{"label":label,"prompt":style,
-                                     "items":plan,"images":images,"memory_ids":memory,**reference_views},
+                                     "items":plan,"images":images,
+                                     "memory_ids":list(dict.fromkeys(a["id"] for used in snapshots for a in used)),
+                                     "asset_fingerprint":hashlib.sha256(dumps(snapshots).encode()).hexdigest()},
                                     force_confirmation=True,pricing_request={"kind":"image"})
+        for payload, used in zip(requests,snapshots):
+            if self.image_set_assets(run,user,payload) != used:
+                raise ToolError(f"「{payload['label']}」的参考资产已更新。请重新检查并确认套图。")
         batch = [{**item,"state":"unsubmitted"} for item in plan]
         pending = {"ids":[],"name":label,"prompt":style,"kind":"image","batch":batch}
-        for item in batch:
+        for item, payload, used in zip(batch,requests,snapshots):
             if self.stopped(run):
                 if pending["ids"]:
                     await self.cancel_jobs(run,user,pending["ids"])
@@ -1818,14 +1856,13 @@ class AgentService:
                 self.validate_external_task(run)
                 for image in images:
                     self.source(run,user,image["node_id"],pinned_ref=image["ref"])
+                if pending["ids"] and self.image_set_assets(run,user,payload) != used:
+                    raise ToolError("参考资产已更新，请重新检查后再生成这张图")
             except ToolError as exc:
                 item["error"] = str(exc)
                 break
             item["state"] = "submitting"
             db.run("UPDATE chat_calls SET result=?,updated=? WHERE id=?",dumps(pending),time.time(),cid)
-            prompt = style+"\n\n本张画面："+item["prompt"] if style else item["prompt"]
-            payload = self.image_request({**item,"prompt":prompt},images)
-            payload.update(board=run["board_id"],label=item["name"],memory_ids=memory,**reference_views)
             item["record"] = workflow_review.capture_generation(payload)
             request = InternalRequest(self,user,payload)
             if run["data"].get("external_tool"):
@@ -1839,7 +1876,7 @@ class AgentService:
             except (ToolError,ValueError,TypeError,OSError,aiohttp.ClientError,asyncio.TimeoutError):
                 item.update(state="uncertain",error="提交结果待核实，可在任务中心查看；其余图片尚未提交")
                 break
-            item.update(state="queued",id=ids[0],effective_prompt=prompt,memory_used=result.get("memory_used",[]))
+            item.update(state="queued",id=ids[0],effective_prompt=payload["prompt"],memory_used=result.get("memory_used",[]))
             if isinstance(result.get("memory_context"),dict):
                 item["record"] = workflow_review.capture_generation({**payload,**result["memory_context"]})
             pending["ids"].extend(ids)

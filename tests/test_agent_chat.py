@@ -762,6 +762,58 @@ class ChatIntegration(ChatFixture):
         self.assertEqual([node["name"] for node in value["nodes"]],["首页"])
         self.assertEqual([node["name"] for node in self.load()["nodes"] if node["id"].startswith("a")],["首页"])
 
+    async def test_image_set_previews_each_asset_selection_and_rechecks_it_before_submission(self):
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        face = image_editor.save(server.COMFY_DIR,Image.new("RGB",(64,64),"cyan"))
+        b = self.load()
+        b["nodes"][0]["versions"].append(face)
+        server.write_board(server.board_path("test"),b)
+        hero = store.put(user,{"board":"test","kind":"character","name":"林森","ref":self.source["ref"],
+                              "source_board":"test","character_view":"main"})
+        store.put(user,{"id":hero["id"],"ref":face["ref"],"source_board":"test","character_view":"face"})
+        station = store.put(user,{"board":"test","kind":"scene","name":"车站","desc":"窗外有雨"})
+        plan = {"name":"双镜头套图","reference_ids":["n1"],"items":[
+            {"name":"远景","prompt":"拍摄站台","memory_views":[{"memory_id":hero["id"],"views":["main"]}]},
+            {"name":"特写","prompt":"拍摄脸部","memory_ids":[],"memory_views":[{"memory_id":hero["id"],"views":["face"]}]},
+        ]}
+        seen = []
+
+        async def submit(_req,payload):
+            seen.append(payload)
+            jid = f"e{len(seen):012x}"
+            output = image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),(10,len(seen),0)))
+            server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[output]}
+            return web.json_response({"ids":[jid]})
+
+        async def review(key, change=False):
+            self.svc.model.side_effect = [call("memory_use",{"memory_ids":[station["id"]]},"station"),
+                                          call("image_generate_set",plan,"set"),answer()]
+            rid = await self.send(text="用 @林森 生成两张图",key=key)
+            approval = await self.pending_generation(rid)
+            self.assertEqual([item["assets"] for item in approval["plan"]["items"]],
+                             [["林森（标准主图）","车站"],["林森（正面头肩）"]])
+            self.assertEqual(approval["plan"]["asset_count"],2)
+            if change:
+                store.put(user,{"id":station["id"],"desc":"修改为晴天"})
+            url = f"/api/chat/runs/{rid}/approvals/{approval['id']}"
+            self.assertEqual((await self.client.post(url,json={"decision":"approve"})).status,200)
+            await self.wait(rid)
+            call_row = db.one("SELECT result FROM chat_calls WHERE run_id=? AND name='image_generate_set'",rid)
+            return json.loads(call_row["result"])
+
+        with patch.object(server,"_generate_request",submit):
+            stale = await review("stale-set-assets",change=True)
+            self.assertIn("参考资产已更新",stale["error"])
+            self.assertEqual(seen,[])
+            finished = await review("fresh-set-assets")
+        self.assertEqual([item["state"] for item in finished["batch"]],["done","done"])
+        self.assertEqual([[asset["id"] for asset in payload["memory_used"]] for payload in seen],
+                         [[hero["id"],station["id"]],[hero["id"]]])
+        self.assertEqual([payload["memory_used"][0]["references"][0]["ref"] for payload in seen],
+                         [self.source["ref"],face["ref"]])
+        self.assertTrue(all(payload["images"][0]["node_id"]=="n1" for payload in seen))
+
     async def test_smart_generation_skips_extra_submission_without_spending_budget(self):
         endpoint = f"/api/chat/sessions/{self.sid}/messages"
         self.svc.model.side_effect = [call("image_generate",{"prompt":"两张草稿","count":2}),

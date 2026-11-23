@@ -1590,7 +1590,8 @@ function acRenderApprovals() {
    ${review?.assets?.length?`<small>资产 · ${esc(review.assets.join("、"))}</small>`:""}
    ${plan.camera_summary||plan.light_summary?`<p>${esc(plan.camera_summary||plan.light_summary)}</p>`:""}
    ${plan.prompt?`<details${graphics?" open":""}><summary>${graphics?"B-roll 画面方案":plan.items?"整组风格":plan.kind==="audio"?"文案或描述":"提示词"}</summary><p>${esc(plan.prompt)}</p></details>`:""}
-   ${plan.items?`<ol class="ac-approval-items">${plan.items.map(item=>`<li><details><summary>${esc(item.name)} · ${esc(item.aspect==="auto"?"沿用参考比例":item.aspect)}</summary><p>${esc(item.prompt)}</p></details></li>`).join("")}</ol>`:""}
+   ${plan.items?`<ol class="ac-approval-items">${plan.items.map(item=>`<li><details><summary>${esc(item.name)} · ${esc(item.aspect==="auto"?"沿用参考比例":item.aspect)}</summary><p>${esc(item.prompt)}</p></details>
+    ${item.assets?.length?`<small>参考资产 · ${esc(item.assets.join("、"))}</small>`:""}</li>`).join("")}</ol>`:""}
    ${form}
    <div class="ac-approval-actions"><button type="button" data-approval-id="${esc(id)}" data-decision="approve"${blocked?" disabled":""}>确认生成</button>
    <button type="button" data-approval-id="${esc(id)}" data-decision="skip">跳过</button></div></article>`;
