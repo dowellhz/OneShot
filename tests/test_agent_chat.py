@@ -825,6 +825,96 @@ class ChatIntegration(ChatFixture):
         self.assertEqual([node["name"] for node in value["nodes"]],["首页"])
         self.assertEqual([node["name"] for node in self.load()["nodes"] if node["id"].startswith("a")],["首页"])
 
+    async def test_image_set_retries_only_confirmed_failures_with_original_asset_versions(self):
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        asset = store.put(user,{"board":"test","kind":"character","name":"林森","ref":self.source["ref"],
+                               "source_board":"test","character_view":"main"})
+        plan = {"items":[{"name":"成功图","prompt":"场景全景"},{"name":"失败图","prompt":"拍摄 @林森"},
+                         {"name":"取消图","prompt":"留白"}]}
+        self.svc.model.side_effect = [call("image_generate_set",plan),answer()]
+        requests = []
+
+        async def submit(req,payload,*,fixed_route=None):
+            requests.append((copy.deepcopy(payload),fixed_route))
+            req["generation_route"] = {"provider":None,"model":None}
+            jid = f"e{len(requests):012x}"
+            state,error = {2:("error","服务生成失败"),3:("error","已取消")}.get(len(requests),("done",None))
+            db.task_start(id=jid,user_id=7,board_id="test",capability="image",state=state)
+            outputs = [image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),(0,0,len(requests))))] if state=="done" else []
+            server.JOBS[jid] = {"state":state,"created":1,"meta":{"uid":7},"outputs":outputs,"error":error}
+            return web.json_response({"ids":[jid]})
+
+        with patch.object(server,"_generate_request",side_effect=submit):
+            rid = await self.send("生成三张套图")
+            approval = await self.pending_generation(rid)
+            await self.client.post(f"/api/chat/runs/{rid}/approvals/{approval['id']}",json={"decision":"approve"})
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            session_url = f"/api/chat/sessions/{self.sid}"
+            session = await (await self.client.get(session_url)).json()
+            failed = next(event["data"] for event in session["events"] if event["run_id"]==rid and event["kind"]=="tool_end")
+            self.assertEqual(failed["retry_count"],1)
+            self.assertEqual([row["state"] for row in failed["result"]["batch"]],["done","error","error"])
+            retry_url = f"{session_url}/calls/{failed['call_id']}/retry"
+            fresh = image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),"purple"),"input")
+            b = self.load()
+            b["nodes"][0]["versions"].append(fresh)
+            server.write_board(server.board_path("test"),b)
+            store.put(user,{"id":asset["id"],"ref":fresh["ref"],"source_board":"test","character_view":"main"})
+            responses = await asyncio.gather(self.client.post(retry_url,json={}),self.client.post(retry_url,json={}))
+            self.assertEqual([response.status for response in responses],[200,200])
+            retries = [(await response.json())["id"] for response in responses]
+            self.assertEqual(retries[0],retries[1])
+            self.assertEqual((await self.wait(retries[0]))["state"],"done")
+        self.assertEqual(len(requests),4)
+        self.assertEqual(requests[-1],(requests[1][0],{"provider":None,"model":None}))
+        self.assertEqual(requests[-1][0]["images"][0]["ref"],self.source["ref"])
+        self.assertEqual([node["name"] for node in self.load()["nodes"] if node["versions"] and node["id"]!="n1"],
+                         ["成功图","失败图"])
+
+    async def test_image_set_retry_recovers_known_jobs_without_resubmitting_after_restart(self):
+        plan = {"items":[{"name":"图一","prompt":"景别一"},{"name":"图二","prompt":"景别二"}]}
+        self.svc.model.side_effect = [call("image_generate_set",plan),answer()]
+        stalled = asyncio.Event()
+        calls = []
+
+        async def submit(req,payload,*,fixed_route=None):
+            calls.append((payload["label"],fixed_route))
+            req["generation_route"] = {"provider":None,"model":None}
+            phase = len(calls)
+            if phase==4:
+                stalled.set()
+                await asyncio.Future()
+            jid = f"e{phase:012x}"
+            state = "error" if phase<3 else "done"
+            outputs = [image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),"blue"))] if phase==3 else []
+            db.task_start(id=jid,user_id=7,board_id="test",capability="image",state=state)
+            server.JOBS[jid] = {"state":state,"created":1,"meta":{"uid":7},"outputs":outputs}
+            return web.json_response({"ids":[jid]})
+
+        with patch.object(server,"_generate_request",side_effect=submit):
+            rid = await self.send("做两张套图")
+            approval = await self.pending_generation(rid)
+            await self.client.post(f"/api/chat/runs/{rid}/approvals/{approval['id']}",json={"decision":"approve"})
+            await self.wait(rid)
+            original = db.one("SELECT id FROM chat_calls WHERE run_id=?",rid)
+            url = f"/api/chat/sessions/{self.sid}/calls/{original['id']}/retry"
+            response = await self.client.post(url,json={})
+            self.assertEqual(response.status,200,await response.text())
+            retry = (await response.json())["id"]
+            await asyncio.wait_for(stalled.wait(),3)
+            self.svc.closing = True
+            worker = self.svc.tasks[retry]
+            worker.cancel()
+            await asyncio.gather(worker,return_exceptions=True)
+            self.svc.closing = False
+            await self.svc.work(retry)
+            self.assertEqual((await self.wait(retry))["state"],"done")
+        self.assertEqual([name for name,_ in calls],["图一","图二","图一","图二"])
+        result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",retry)["result"])
+        self.assertEqual([row["state"] for row in result["batch"]],["done","uncertain"])
+        self.assertEqual([node["name"] for node in result["nodes"]],["图一"])
+
     async def test_image_set_previews_each_asset_selection_and_rechecks_it_before_submission(self):
         user = {"id":7,"role":"member"}
         store = self.app["creative_memory"]

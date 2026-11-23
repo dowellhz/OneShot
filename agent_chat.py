@@ -1227,12 +1227,7 @@ class AgentService:
         snapshot = pending.get("retry_snapshot")
         if not snapshot or self.stopped(run):
             return
-        count = sum(
-            state.get("state") == "error" and not state.get("outputs") and
-            state.get("error") != "已取消" and bool(db.one(
-                "SELECT 1 FROM tasks WHERE id=? AND user_id=? AND state='error'", jid, run["user_id"]))
-            for jid, state in states.items() if jid in pending["ids"]
-        )
+        count = sum(self.retryable_job(run,jid,state) for jid,state in states.items() if jid in pending["ids"])
         if not count:
             return
         if pending["kind"] == "image" and len(pending["ids"]) == 1:
@@ -1242,6 +1237,27 @@ class AgentService:
         if not recipe.get("target_id") and recipe["kind"] in ("audio","video"):
             recipe["target_id"] = agent_video.result_id(cid)
         retry = {**snapshot,"count":count,"pending":recipe,"placement":run["data"].get("placement")}
+        db.run("INSERT OR IGNORE INTO chat_retries(call_id,snapshot) VALUES(?,?)",cid,dumps(retry))
+
+    @staticmethod
+    def retryable_job(run, jid, state):
+        return (state.get("state")=="error" and not state.get("outputs") and state.get("error")!="已取消"
+                and bool(db.one("SELECT 1 FROM tasks WHERE id=? AND user_id=? AND state='error'",jid,run["user_id"])))
+
+    def record_image_set_retry(self, run, cid, pending, states):
+        if self.stopped(run):
+            return
+        items = []
+        for item in pending["batch"]:
+            jid = item.get("id")
+            if item.get("retry_snapshot") and jid in states and self.retryable_job(run,jid,states[jid]):
+                fresh = {key:item[key] for key in ("name","aspect","prompt","assets","effective_prompt","record","retry_snapshot") if key in item}
+                items.append({**fresh,"state":"unsubmitted"})
+        if not items:
+            return
+        refs = sorted({ref for item in items for ref in item["retry_snapshot"]["refs"]})
+        retry = {"count":len(items),"refs":refs,"placement":run["data"].get("placement"),
+                 "pending":{**pending,"ids":[],"batch":items}}
         db.run("INSERT OR IGNORE INTO chat_retries(call_id,snapshot) VALUES(?,?)",cid,dumps(retry))
 
     def finish_call(self, run, cid, name, result):
@@ -1924,27 +1940,38 @@ class AgentService:
             except ToolError as exc:
                 item["error"] = str(exc)
                 break
-            item["state"] = "submitting"
-            db.run("UPDATE chat_calls SET result=?,updated=? WHERE id=?",dumps(pending),time.time(),cid)
             item["record"] = workflow_review.capture_generation(payload)
             request = InternalRequest(self,user,payload)
             if run["data"].get("external_tool"):
                 request["connector_own_assets"] = True
-            try:
-                result = await self.read_response(self.host.generate_request(request,payload))
-                ids = result.get("ids")
-                if (not isinstance(ids,list) or len(ids)!=1 or not isinstance(ids[0],str) or
-                        not ids[0] or ids[0] in pending["ids"]):
-                    raise ToolError("生成服务未返回独立任务编号")
-            except (ToolError,ValueError,TypeError,OSError,aiohttp.ClientError,asyncio.TimeoutError):
-                item.update(state="uncertain",error="提交结果待核实，可在任务中心查看；其余图片尚未提交")
+            if not await self.submit_image_set_item(cid,pending,item,request,payload):
                 break
-            item.update(state="queued",id=ids[0],effective_prompt=payload["prompt"],memory_used=result.get("memory_used",[]))
-            if isinstance(result.get("memory_context"),dict):
-                item["record"] = workflow_review.capture_generation({**payload,**result["memory_context"]})
-            pending["ids"].extend(ids)
-            db.run("UPDATE chat_calls SET result=?,updated=? WHERE id=?",dumps(pending),time.time(),cid)
         return await self.collect_image_set(run,user,cid,pending)
+
+    async def submit_image_set_item(self, cid, pending, item, request, payload, *, retry=False):
+        item["state"] = "submitting"
+        db.run("UPDATE chat_calls SET result=?,updated=? WHERE id=?",dumps(pending),time.time(),cid)
+        try:
+            generation = (self.host.submit_prepared_generation(request,payload,fixed_route=item["retry_snapshot"].get("route"))
+                          if retry else self.host.generate_request(request,payload))
+            result = await self.read_response(generation)
+            ids = result.get("ids")
+            if (not isinstance(ids,list) or len(ids)!=1 or not isinstance(ids[0],str) or
+                    not ids[0] or ids[0] in pending["ids"]):
+                raise ToolError("生成服务未返回独立任务编号")
+        except (ToolError,ValueError,TypeError,OSError,aiohttp.ClientError,asyncio.TimeoutError):
+            item.update(state="uncertain",error="提交结果待核实，可在任务中心查看；其余图片尚未提交")
+            return False
+        item.setdefault("effective_prompt",payload["prompt"])
+        item.update(state="queued",id=ids[0],memory_used=result.get("memory_used",[]))
+        if isinstance(result.get("memory_context"),dict):
+            item["record"] = workflow_review.capture_generation({**payload,**result["memory_context"]})
+        if prepared := request.get("generation_snapshot"):
+            item["retry_snapshot"] = {"generation":prepared,"route":request.get("generation_route"),
+                                      "refs":sorted(self.host.media_references(prepared))}
+        pending["ids"].extend(ids)
+        db.run("UPDATE chat_calls SET result=?,updated=? WHERE id=?",dumps(pending),time.time(),cid)
+        return True
 
     async def collect_image_set(self, run, user, cid, pending):
         for item in pending["batch"]:
@@ -1987,6 +2014,7 @@ class AgentService:
             if entry["state"]=="done":
                 entry["node_id"] = next(ready)["id"]
         errors = [entry["name"]+" · "+entry["error"] for entry in summary if entry.get("error")]
+        self.record_image_set_retry(run,cid,pending,states)
         return {**result,"batch":summary,**({"errors":errors} if errors else {}),
                 **({"error":"这组图片没有生成可用结果"} if not versions else {})}
 
@@ -2230,6 +2258,23 @@ class AgentService:
         if any(not self.host.tools.ref_path(self.host.COMFY_DIR,ref).is_file() for ref in refs):
             raise ToolError("原任务引用的素材或遮罩已丢失，无法重试")
 
+    async def retry_image_set(self, run, user, cid, pending):
+        for item in pending["batch"]:
+            if self.stopped(run):
+                if pending["ids"]:
+                    await self.cancel_jobs(run,user,pending["ids"])
+                raise ToolError("已停止重试")
+            snapshot = item["retry_snapshot"]
+            try:
+                self.validate_retry(run,user,{**snapshot,"pending":pending})
+            except ToolError as error:
+                item["error"] = str(error)
+                break
+            payload = snapshot["generation"]
+            if not await self.submit_image_set_item(cid,pending,item,InternalRequest(self,user,payload),payload,retry=True):
+                break
+        return await self.collect_image_set(run,user,cid,pending)
+
     async def retry_work(self, run, user):
         rid, sid = run["id"], run["session_id"]
         cid = run["data"]["retry_call"]
@@ -2241,6 +2286,8 @@ class AgentService:
                 result = saved
             elif call["state"] == "waiting":
                 result = await self.wait_jobs(run,user,cid,saved)
+            elif call["state"] == "submitting" and saved and "batch" in saved:
+                result = await self.collect_image_set(run,user,cid,saved)
             elif call["state"] == "submitting":
                 raise ToolError("服务在提交重试时中断，请在任务中心核对提交状态")
             else:
@@ -2252,19 +2299,22 @@ class AgentService:
                     self.reserve_node_write(run,cid,pending.get("target_id"))
                     self.update(run,"running")
                     db.run("UPDATE chat_calls SET state='submitting',updated=? WHERE id=?",time.time(),cid)
-                if "generation" in snapshot:
-                    payload = {**snapshot["generation"],"count":snapshot["count"]}
-                    req = InternalRequest(self,user)
-                    response = self.host.submit_prepared_generation(req,payload,fixed_route=snapshot.get("route"))
+                if "batch" in pending:
+                    result = await self.retry_image_set(run,user,cid,pending)
                 else:
-                    payload = {**pending["audio_recipe"],"board":run["board_id"],"node":pending.get("target_id"),
-                               "label":pending["name"],"request_key":cid}
-                    req = InternalRequest(self,user,payload)
-                    req["fixed_audio_model"] = snapshot["audio_model"]
-                    response = self.host.generate_audio(req)
-                submitted = await self.read_response(response)
-                recipe = {k:v for k,v in snapshot.items() if k not in ("pending","count","placement")}
-                result = await self.wait_submitted_jobs(run,user,cid,{**pending,"ids":submitted["ids"],"retry_snapshot":recipe})
+                    if "generation" in snapshot:
+                        payload = {**snapshot["generation"],"count":snapshot["count"]}
+                        req = InternalRequest(self,user)
+                        response = self.host.submit_prepared_generation(req,payload,fixed_route=snapshot.get("route"))
+                    else:
+                        payload = {**pending["audio_recipe"],"board":run["board_id"],"node":pending.get("target_id"),
+                                   "label":pending["name"],"request_key":cid}
+                        req = InternalRequest(self,user,payload)
+                        req["fixed_audio_model"] = snapshot["audio_model"]
+                        response = self.host.generate_audio(req)
+                    submitted = await self.read_response(response)
+                    recipe = {k:v for k,v in snapshot.items() if k not in ("pending","count","placement")}
+                    result = await self.wait_submitted_jobs(run,user,cid,{**pending,"ids":submitted["ids"],"retry_snapshot":recipe})
         except (ToolError, ValueError, TypeError, OSError, aiohttp.ClientError, asyncio.TimeoutError) as e:
             result = {"error":str(e)[:400] or "重试未完成"}
         with db.transaction():
