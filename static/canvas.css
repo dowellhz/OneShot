@@ -640,16 +640,16 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .al-group-import label{display:flex;align-items:center;gap:5px}
 .al-group-import select{color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:5px}
 .al-group-import [role=status]{color:var(--dim);font-size:var(--fs-caption);flex:1 1 120px}
-#groupRunConfirm,#groupRunProgress{padding:12px;color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:12px}
-#groupRunConfirm{width:min(490px,calc(100vw - 28px));max-height:calc(100dvh - 28px)}
-#groupRunConfirm::backdrop{background:#0009}
+#groupRunConfirm,#groupRunProgress,#versionRefUpdate{padding:12px;color:var(--text);background:var(--panel);border:1px solid var(--line2);border-radius:12px}
+#groupRunConfirm,#versionRefUpdate{width:min(490px,calc(100vw - 28px));max-height:calc(100dvh - 28px)}
+:is(#groupRunConfirm,#versionRefUpdate)::backdrop{background:#0009}
 #groupRunProgress{position:fixed;left:14px;bottom:62px;width:min(340px,calc(100vw - 28px));z-index:38;box-shadow:0 8px 28px #0006}
-:is(#groupRunConfirm,#groupRunProgress) header,:is(#groupRunConfirm,#groupRunProgress) footer{display:flex;justify-content:space-between;align-items:center;gap:8px}
-:is(#groupRunConfirm,#groupRunProgress) footer{justify-content:flex-end}
-:is(#groupRunConfirm,#groupRunProgress) p{color:var(--dim);font-size:var(--fs-small);margin:10px 0}
-:is(#groupRunConfirm,#groupRunProgress) ol{padding:0;margin:8px 0;max-height:min(34vh,240px);overflow:auto;list-style:none}
-:is(#groupRunConfirm,#groupRunProgress) li{display:grid;gap:3px;padding:6px 4px;border-bottom:1px solid var(--line);overflow-wrap:anywhere;font-size:var(--fs-small)}
-:is(#groupRunConfirm,#groupRunProgress) li span{color:var(--dim)}
+:is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) :is(header,footer){display:flex;justify-content:space-between;align-items:center;gap:8px}
+:is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) footer{justify-content:flex-end}
+:is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) p{color:var(--dim);font-size:var(--fs-small);margin:10px 0}
+:is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) ol{padding:0;margin:8px 0;max-height:min(34vh,240px);overflow:auto;list-style:none}
+:is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) li{display:grid;gap:3px;padding:6px 4px;border-bottom:1px solid var(--line);overflow-wrap:anywhere;font-size:var(--fs-small)}
+:is(#groupRunConfirm,#groupRunProgress,#versionRefUpdate) li span{color:var(--dim)}
 #groupRunConfirm label{display:flex;align-items:center;gap:8px;margin-top:10px}
 #groupRunConfirm select{background:var(--card);border:1px solid var(--line2);border-radius:6px;color:var(--text);padding:5px}
 #groupGalleryItems{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-top:10px}

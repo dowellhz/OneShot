@@ -95,9 +95,12 @@
 #imageEditor .ie-top { flex-wrap:wrap; }
 #imageEditor .ie-tabs button:last-child { grid-column:1 / -1; }
 #imageEditor .ie-camera-orbit { position:relative; width:min(100%,170px); aspect-ratio:1; margin:0 auto 10px; border:1px solid var(--line2); border-radius:50%; background:var(--card); touch-action:none; cursor:grab; }
-#imageEditor .ie-camera-orbit::before { content:""; position:absolute; inset:16%; border:1px dashed var(--line2); border-radius:50%; pointer-events:none; }
+#imageEditor .ie-camera-orbit::before { content:""; position:absolute; inset:31.5% 16%; border:1px dashed var(--line2); border-radius:50%; pointer-events:none; }
+#imageEditor .ie-camera-orbit:active { cursor:grabbing; }
 #imageEditor .ie-camera-subject { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); color:var(--dim); font-size:var(--fs-caption); pointer-events:none; }
+#imageEditor .ie-camera-height { position:absolute; border-left:1px dashed var(--c-image); opacity:.7; pointer-events:none; }
 #imageEditor .ie-camera-orbit i { position:absolute; width:13px; height:16px; background:var(--c-image); clip-path:polygon(50% 0,100% 100%,0 100%); pointer-events:none; }
+#imageEditor .ie-camera-gesture { text-align:center; margin-top:0; }
 #imageEditor .ie-camera-presets { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
 #iePixelSize { margin-top:12px; padding:8px; border:1px solid var(--line2); border-radius:8px; }
 #iePixelSize summary { cursor:pointer; color:var(--text); }

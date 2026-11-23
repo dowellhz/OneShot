@@ -150,7 +150,44 @@ function drawShowcase(entries) {
     ${entry.reason ? `<p>${esc(entry.reason)}</p>` : ""}
     ${entry.state === "approved" ? `<a href="/showcase/${encodeURIComponent(entry.token)}" target="_blank" rel="noopener">查看作品</a>` : ""}
     <button type="button" data-withdraw="${esc(entry.token)}">撤回</button>
+    ${entry.state==="approved" && entry.can_link_template ? `<details data-showcase-template-editor="${esc(entry.token)}">
+      <summary>${entry.template_name ? (entry.template_published ? "工作流 · "+esc(entry.template_name) : "工作流 · 已取消共享") : "关联工作流"}</summary>
+      <form class="share-form"><select aria-label="已共享的工作流模板" disabled></select><button type="submit" disabled>保存链接</button></form>
+    </details>` : ""}
   </li>`).join("");
+  for(const details of $$("[data-showcase-template-editor]",$("#shareShowcaseEntries"))){
+    const token=details.dataset.showcaseTemplateEditor, entry=entries.find(item=>item.token===token);
+    const form=$("form",details), select=$("select",form), saveLink=$("button",form), bid=boardId;
+    const sync=()=>{saveLink.disabled=select.disabled || select.value===(entry.template_id||"");};
+    details.ontoggle=async()=>{
+      if(!details.open)return;
+      select.disabled=true;sync();
+      try { await populateShowcaseTemplates(select,entry); }
+      catch(error){if(boardId===bid&&details.isConnected)$("#shareStatus").textContent=error.message;}
+      sync();
+    };
+    select.onchange=sync;
+    form.onsubmit=event=>{
+      event.preventDefault();
+      if(boardId===bid && !saveLink.disabled)void changeShowcase("PUT",token,{template:select.value||null});
+    };
+  }
+}
+
+async function populateShowcaseTemplates(select, linked=null) {
+  const bid=boardId, options=await boardRequest("/api/canvas-templates");
+  if(bid!==boardId || !select.isConnected)return;
+  select.replaceChildren(new Option("不附工作流",""));
+  for(const row of options.filter(item=>item.published))select.add(new Option(row.name,row.id));
+  if(linked?.template_id){
+    if(![...select.options].some(option=>option.value===linked.template_id)){
+      const unavailable=new Option("当前模板已取消共享",linked.template_id);
+      unavailable.disabled=true;
+      select.add(unavailable);
+    }
+    select.value=linked.template_id;
+  }
+  select.disabled=select.options.length<2;
 }
 
 function setupShowcaseForm() {
@@ -160,6 +197,7 @@ function setupShowcaseForm() {
   const options = values => values.map((value,i)=>`<option value="${i}">${esc(value.label)}</option>`).join("");
   const video = $("#shareShowcaseVideo");
   const cover = $("#shareShowcaseCover");
+  const template = $("#shareShowcaseTemplate");
   const videoInput = $("#shareShowcaseVideoFile"), coverInput = $("#shareShowcaseCoverFile");
   const upload = '<option value="upload">从本地上传</option>';
   video.innerHTML = options(videos) + upload;
@@ -177,6 +215,9 @@ function setupShowcaseForm() {
   $("#shareShowcaseDescription").value = "";
   $("#shareShowcaseAttach").checked = false;
   $("#shareShowcaseForm").hidden = false;
+  template.replaceChildren(new Option("不附工作流",""));
+  template.disabled = true;
+  populateShowcaseTemplates(template).catch(()=>{});
   $("#shareShowcaseForm").onsubmit = e=>{
     e.preventDefault();
     const choice = values => ({node:values.node,ref:values.ref});
@@ -190,7 +231,7 @@ function setupShowcaseForm() {
       video:videoFile ? null : choice(videos[Number(video.value)]),
       cover:coverFile || cover.value === "" ? null : choice(images[Number(cover.value)]),
       title:$("#shareShowcaseTitle").value,description:$("#shareShowcaseDescription").value,
-      attach_canvas:$("#shareShowcaseAttach").checked,confirmed:true
+      attach_canvas:$("#shareShowcaseAttach").checked,template:template.value || null,confirmed:true
     },{video:videoFile,cover:coverFile});
   };
   $("#shareShowcaseTitle").focus();
@@ -235,13 +276,15 @@ async function changeShowcase(method, token, payload, files={}) {
         if (value === 100) $("#shareStatus").textContent = "正在检查成片和封面…";
       });
     } else {
-      await boardRequest(token ? url+"/"+encodeURIComponent(token) : url,method,body);
+      const target=token?url+"/"+encodeURIComponent(token):url;
+      await boardRequest(method==="PUT"?target+"/template":target,method,body);
     }
     const entries = await boardRequest(url);
     if (bid !== boardId || $("#canvasShare").hidden) return;
     drawShowcase(entries);
     if (method === "POST") $("#shareShowcaseForm").hidden = true;
-    $("#shareStatus").textContent = method === "DELETE" ? "作品已撤回" : "作品已提交审核";
+    if(method==="PUT")$("[data-showcase-template-editor='"+token+"'] summary")?.focus();
+    $("#shareStatus").textContent = method === "PUT" ? "工作流链接已更新" : method === "DELETE" ? "作品已撤回" : "作品已提交审核";
   } catch (error) {
     if (bid === boardId) $("#shareStatus").textContent = error.message;
   } finally {
@@ -462,6 +505,7 @@ function initCanvasShare() {
         <label>标题<input id="shareShowcaseTitle" maxlength="80" required></label>
         <label>简介<textarea id="shareShowcaseDescription" maxlength="500" rows="3"></textarea></label>
         <label class="share-team"><input type="checkbox" id="shareShowcaseAttach">附上可公开查看和复制的画布</label>
+        <label>已共享的工作流模板<select id="shareShowcaseTemplate"></select></label>
         <p>审核通过后，访客可观看视频。勾选附上画布时，访客也能查看画布中的文本和当前素材。</p>
         <progress id="shareShowcaseProgress" max="100" value="0" aria-label="上传进度" hidden></progress>
         <div class="share-form"><button type="submit" id="shareShowcasePublish">提交审核</button>

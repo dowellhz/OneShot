@@ -1383,7 +1383,7 @@ async function run(){
     const fragment={nodes:b.nodes.filter(n=>ids.has(n.id)),edges:b.edges.filter(e=>ids.has(e.from)&&ids.has(e.to)),
      groups:b.groups.filter(g=>g.nodes.every(id=>ids.has(id)))};
     result={id:'qa-template',name:payload.name,nodes:fragment.nodes.length};
-    workflow={row:result,fragment};
+    workflow={row:result,fragment,includeUpstream:payload.include_upstream};
    }else result=workflow?[workflow.row]:[];
   } else if(u.pathname==='/api/canvas-templates/qa-template/fragment'){
    result=workflow.fragment;
@@ -1394,7 +1394,7 @@ async function run(){
    workflow.row.published=1;
    result={ok:true};
   } else if(u.pathname==='/api/canvas-templates/qa-template/preview'){
-   result={name:workflow.row.name,edges:workflow.fragment.edges,nodes:workflow.fragment.nodes.map((n,i)=>(
+   result={name:workflow.row.name,edges:workflow.fragment.edges.map(edge=>({...edge,version:1,media:2})),nodes:workflow.fragment.nodes.map((n,i)=>(
     {id:n.id,type:n.type,name:n.name,prompt:n.data.prompt,media:i}))};
   } else if(u.pathname.startsWith('/api/board/')){
    const id=u.pathname.split('/').at(-1);
@@ -1622,13 +1622,16 @@ async function run(){
   sel=new Set([qaFrom.id,qaTo.id]);updateSel();ctGroup();
   ctxMenu({target:els.get(qaFrom.id),clientX:150,clientY:150});$("#ctxMenu [data-a=template]").click();`);
  await ready('!$("#workflowTemplates").hidden && $("#templateScope").value==="selection" && !$("#templateStatus").textContent','right-click opens a selection template');
- evaluate('$("#templateName").value="可复用镜头";$("#templateSave").click()');
+ evaluate('$("#templateScope").value="upstream";$("#templateName").value="可复用镜头";$("#templateSave").click()');
  await ready('$("#templateRows strong")?.textContent==="可复用镜头"','selection is saved as a private template');
  assert.equal(workflow.row.nodes,2);
+ assert.equal(workflow.includeUpstream,true);
  evaluate('$("#templateRows [data-template-action=preview]").click()');
  await ready('!!$("#templatePreview [data-template-action=confirm]")','private preview opens before sharing');
  assert.equal(evaluate('$("#templatePreview .template-preview-nodes p").textContent'),'沿河移动');
  assert.equal(evaluate('$("#templatePreview video").getAttribute("src")'),'/api/canvas-templates/qa-template/preview/media/1');
+ assert.match(evaluate('$("#templatePreview .template-preview-edges summary").textContent'),/首帧 · 版本 1/);
+ assert.equal(evaluate('$("#templatePreview .template-preview-edges img").getAttribute("src")'),'/api/canvas-templates/qa-template/preview/media/2');
  evaluate('$("#templatePreview [data-template-action=confirm]").click()');
  assert.equal(evaluate('$("#templatePublishConfirm").hidden'),false);
  assert.equal(workflow.row.published,undefined);
@@ -2503,6 +2506,17 @@ async function run(){
   const copiedAudio=node([...sel][0]);`);
  equal(evaluate('[versionCopyAudio.cur,copiedAudio.type,curV(copiedAudio).ref,curV(copiedAudio).seconds,copiedAudio.data.mode,copiedAudio.data.prompt,copiedAudio.data.voice,$(".version-drag-label")]'),
  [1,"audio","output:h3studio/voice-old.wav",2,"tts","历史对白","v1",null],'dragging copies the historical audio recipe and leaves the current version selected on the source');
+ evaluate(`const seedVersionTarget=addNode("audio",3600,900,{mode:"seed_audio"});
+  document.elementFromPoint=()=>$(".card",els.get(seedVersionTarget.id));
+  const beforeVersionDrop=B.nodes.length;
+  historicalAudio.dispatchEvent(new MouseEvent("pointerdown",{button:0,bubbles:true,clientX:100,clientY:100}));
+  window.dispatchEvent(new MouseEvent("pointermove",{clientX:520,clientY:470}));`);
+ assert(evaluate('$(".version-drag-label.can-drop")?.textContent==="用作参考 · 版本 1"'));
+ evaluate(`window.dispatchEvent(new MouseEvent("pointerup",{clientX:520,clientY:470}));
+  document.elementFromPoint=hitTestBefore;`);
+ equal(evaluate(`[versionCopyAudio.cur,B.nodes.length===beforeVersionDrop,
+  seedVersionTarget.data.references[0].ref,B.edges.find(e=>e.to===seedVersionTarget.id).ref]`),
+ [1,true,"output:h3studio/voice-old.wav","output:h3studio/voice-old.wav"],'dropping a historical tab on reference generation pins that version without copying or switching the source');
  evaluate(`const versionCopyVideo=node(useImage.id);versionCopyVideo.versions=[
   copyAsset("video-old.mp4",{w:640,h:480,seconds:5,input_edges:[{from:copyGuide.id,to:versionCopyVideo.id,role:"first"}],node_data:{...versionCopyVideo.data,prompt:"旧镜头"}}),
   copyAsset("video-new.mp4",{w:640,h:480,seconds:8})];versionCopyVideo.cur=1;render(versionCopyVideo);
@@ -2511,11 +2525,68 @@ async function run(){
  equal(evaluate('[versionCopyVideo.cur,copiedVideo.data.prompt,curV(copiedVideo).input_edges[0].to===copiedVideo.id,typeof readOnlyCopy]'),
  [1,"旧镜头",true,"boolean"],'copying a historical video keeps the live source separate and retargets the copied input');
  assert.equal(evaluate('readOnlyCopy'),false);
+ evaluate(`const dropVersionOn=(source,index,target)=>{
+  document.elementFromPoint=()=>$(".card",els.get(target.id));
+  const tab=$(".vtabs button[data-i='"+index+"']",els.get(source.id));
+  tab.dispatchEvent(new MouseEvent("pointerdown",{button:0,bubbles:true,clientX:100,clientY:100}));
+  window.dispatchEvent(new MouseEvent("pointermove",{clientX:520,clientY:470}));
+  const accepted=!!$(".version-drag-label.can-drop");
+  window.dispatchEvent(new MouseEvent("pointerup",{clientX:520,clientY:470}));
+  document.elementFromPoint=hitTestBefore;
+  return accepted;
+ };
+ const imageRefTarget=addNode("image",3650,950);
+ const firstImageDrop=dropVersionOn(originalImage,0,imageRefTarget);
+ const videoRefTarget=addNode("video",3650,1200);
+ link(versionCopyVideo,videoRefTarget,true);
+ const videoRefEdge=videoInputs(videoRefTarget)[0].edge;
+ Object.assign(videoRefEdge,{start:1,end:3,prompt_slot:3});
+ const historicalVideoDrop=dropVersionOn(versionCopyVideo,0,videoRefTarget);
+ `);
+ equal(evaluate(`[firstImageDrop,historicalVideoDrop,originalImage.cur,imageInputs(imageRefTarget)[0].version.ref,
+  versionCopyVideo.cur,videoInputs(videoRefTarget).length,videoRefEdge.ref,videoRefEdge.prompt_slot,
+  Object.hasOwn(videoRefEdge,"start"),Object.hasOwn(videoRefEdge,"end")]`),
+ [true,true,1,"output:h3studio/image-original.png",1,1,"output:h3studio/video-old.mp4",3,false,false],
+ 'image and video drops pin the historical source, retain an existing reference slot, and clear an old video range');
+ evaluate(`selectOnly(imageRefTarget.id);
+  const versionMention=$("#prompt");
+  versionMention.focus();versionMention.value="@"+originalImage.id+"#";
+  versionMention.setSelectionRange(versionMention.value.length,versionMention.value.length);`);
+ await evaluate('cmSuggest(versionMention)');
+ equal(evaluate('CM.matches.map(item=>item.version)'),[2,1],'a trailing hash browses the source history');
+ evaluate(`versionMention.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true,cancelable:true}));
+  versionMention.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));`);
+ equal(evaluate('[versionMention.value,imageInputs(imageRefTarget)[0].version.ref,originalImage.cur]'),
+ ['@图{1} ','output:h3studio/image-original.png',1],'completion inserts a stable reference to the chosen image');
+ evaluate(`selectOnly(seedVersionTarget.id);versionMention.focus();versionMention.value="@"+versionCopyAudio.id+"#2";
+  versionMention.setSelectionRange(versionMention.value.length,versionMention.value.length);`);
+ await evaluate('cmSuggest(versionMention)');
+ equal(evaluate('CM.matches.map(item=>item.version)'),[2],'a numbered search returns the requested audio version');
+ evaluate('versionMention.dispatchEvent(new KeyboardEvent("keydown",{key:"Tab",bubbles:true,cancelable:true}))');
+ equal(evaluate('[versionMention.value,seedVersionTarget.data.references.map(item=>item.ref)]'),
+ ['@音频2 ',['output:h3studio/voice-old.wav','output:h3studio/music-now.wav']],'Seed Audio completion inserts the correct numbered reference');
+ evaluate(`const pinnedVoice={node_id:versionCopyAudio.id,ref:versionCopyAudio.versions[0].ref,kind:"audio"};
+  const seedBulkTarget=addNode("audio",3660,1050,{mode:"seed_audio",references:[pinnedVoice]},
+    {versions:[copyAsset("recorded-dialogue.wav",{audio_recipe:{mode:"seed_audio",references:[pinnedVoice]}})],cur:0});
+  drawEdges();
+  vtTabMenu(versionCopyAudio,1,120,120);
+  $("#videoTabMenu [data-version-update]").click();`);
+ assert.match(evaluate('$("#versionRefUpdate [data-summary]").textContent'),/版本 2 · 更新 1 个节点/);
+ evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}))');
+ equal(evaluate(`[seedBulkTarget.data.references[0].ref,curV(seedBulkTarget).audio_recipe.references[0].ref,
+  seedVersionTarget.data.references.map(ref=>ref.ref)]`),
+ ['output:h3studio/music-now.wav','output:h3studio/voice-old.wav',['output:h3studio/voice-old.wav','output:h3studio/music-now.wav']],
+ 'bulk reference update preserves the generation recipe and skips a target using multiple versions of the source');
+ evaluate('vtOpenReferenceUpdate(versionCopyVideo,1)');
+ assert.match(evaluate('$("#versionRefUpdate [data-summary]").textContent'),/更新 1 个节点/);
+ evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}))');
+ equal(evaluate('[videoRefEdge.ref,videoRefEdge.prompt_slot,versionCopyVideo.cur]'),
+ ['output:h3studio/video-new.mp4',3,1],'bulk update keeps the stable slot while pinning the chosen video');
  evaluate(`const focusedVersion=$(".vtabs button.on",els.get(versionCopyVideo.id));focusedVersion.focus();
   focusedVersion.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowUp",bubbles:true,cancelable:true}));`);
  equal(evaluate('[versionCopyVideo.cur,document.activeElement.dataset.i,document.activeElement.tabIndex]'),[0,"0",0],'arrow navigation keeps keyboard focus on the activated tab');
  evaluate('restore(copyFlowBase)');
- console.log('Version copies DOM passed: keyboard menu, drag, read-only guard, provenance, video inputs and undo.');
+ console.log('Version copies and references DOM passed: keyboard menu, drag, pinned audio reference, read-only guard, provenance, video inputs and undo.');
  const queueFetch=w.fetch, queueSends=[], queueDeletes=[];
  const uiQueue=[];
  w.fetch=async(url,options={})=>{
@@ -3111,9 +3182,11 @@ async function run(){
   const left=structuredClone(lightSample), right=structuredClone(lightSample);
   relightApply(left,relightMap(lightSample,{...neutral,key:80}),60);
   relightApply(right,relightMap(lightSample,{...neutral,key:80,x:100}),-60);
+  const front=relightMap(lightSample,{...neutral,key:80,depth:100});
+  const back=relightMap(lightSample,{...neutral,key:80,depth:-100});
   return [unchanged.data.every((v,i)=>v===lightSample.data[i]),left.data[0]>left.data[8],right.data[0]<right.data[8],
-   left.data[0]>left.data[2],right.data[0]<right.data[2],left.data[7],right.data[7]];
- })()`),[true,true,true,true,true,140,140],'relighting changes direction and temperature while retaining alpha');
+   left.data[0]>left.data[2],right.data[0]<right.data[2],left.data[7],right.data[7],front.field[1]>back.field[1]];
+ })()`),[true,true,true,true,true,140,140,true],'relighting changes position, depth and temperature while retaining alpha');
  await evaluate(`const sourcePortrait=addNode("image",200,300,{}, {name:"布光原图",versions:[copyAsset("portrait.png",{w:512,h:384})],cur:0});
   nodeAction(sourcePortrait,"relight")`);
  assert.equal(evaluate('IMAGE_EDITOR.mode'),'relight');
@@ -3123,18 +3196,39 @@ async function run(){
  })()`);
  equal(evaluate('[$("#ieLightX").value,$("#ieLightY").value]'),['50','-50'],'dragging the light uses image coordinates');
  evaluate(`$("#ieLightX").value="65";$("#ieLightX").dispatchEvent(new Event("input",{bubbles:true}));
-   $("#ieLightTemperature").value="-50";$("#ieLightTemperature").dispatchEvent(new Event("input",{bubbles:true}));`);
+   $("#ieLightTemperature").value="-50";$("#ieLightTemperature").dispatchEvent(new Event("input",{bubbles:true}));
+   $("#ieLightDepth").value="-75";$("#ieLightDepth").dispatchEvent(new Event("input",{bubbles:true}));`);
  assert.equal(evaluate('$("#ieLightXValue").textContent'),'65');
+ equal(evaluate('[$("#ieLightTemperatureValue").textContent,$("#ieLightDepthValue").textContent]'),['7550 K','后方 75%']);
  await evaluate('saveRelight();');
  await ready('sourcePortrait.versions.length===2 && !IMAGE_EDITOR.loading && !IMAGE_EDITOR.busy','the adjusted image is saved on the source node');
  equal(evaluate('[sourcePortrait.cur,curV(sourcePortrait).w,curV(sourcePortrait).h,curV(sourcePortrait).edit.source,curV(sourcePortrait).edit.light.x]'),
   [1,512,384,'output:h3studio/portrait.png',65]);
  await evaluate('$("#ieReuse").onclick()');
- equal(evaluate('[IMAGE_EDITOR.mode,sourcePortrait.cur,$("#ieLightX").value,$("#ieLightTemperature").value]'),['relight',0,'65','-50']);
+ equal(evaluate('[IMAGE_EDITOR.mode,sourcePortrait.cur,$("#ieLightX").value,$("#ieLightTemperature").value,$("#ieLightDepth").value]'),
+  ['relight',0,'65','-50','-75']);
  evaluate('$("#ieRelightAI").click()');
- equal(evaluate('[IMAGE_EDITOR.mode,$("#ieAI").hidden]'),['whole',false]);
- assert.match(evaluate('$("#iePrompt").value'),/右侧.*偏冷/);
+ equal(evaluate('[IMAGE_EDITOR.mode,$("#ieAI").hidden,$("#ieSaveLight").hidden]'),['relight_ai',false,true]);
  assert.equal(evaluate('sourcePortrait.versions.length'),2,'preparing AI guidance does not submit a generation');
+ const relightFetch=w.fetch;
+ let modelLightRequest;
+ w.fetch=async(url,options={})=>{
+  if(String(url)!=='/api/image-edit/generate')return relightFetch(url,options);
+  modelLightRequest=JSON.parse(options.body);
+  const id='model-relight-qa', output=copyOutputForRelight(modelLightRequest);
+  jobs.set(id,{state:'done',meta:{mode_name:'图片重新布光'},outputs:[output]});
+  return {ok:true,text:async()=>JSON.stringify({ids:[id]})};
+ };
+ const copyOutputForRelight=recipe=>({ref:'output:h3studio/model-relight.png',url:'/media?ref=output:h3studio/model-relight.png',
+  meta:{width:512,height:384},extra:{source:'edit',edit:{mode:'whole',source:recipe.ref,recipe}}});
+ evaluate('$("#iePrompt").value=""');
+ await evaluate('ieGenerate()');
+ await ready('sourcePortrait.versions.length===3 && !IMAGE_EDITOR.loading && !sourcePortrait.job','structured model lighting saves a version');
+ assert.deepEqual([modelLightRequest.mode,modelLightRequest.backend,modelLightRequest.relight.depth,modelLightRequest.relight.temperature],
+  ['whole','h3',-75,-50]);
+ await evaluate('$("#ieReuse").onclick()');
+ equal(evaluate('[IMAGE_EDITOR.mode,relightSettings().depth,relightSettings().temperature]'),['relight_ai',-75,-50]);
+ w.fetch=relightFetch;
  evaluate('closeImageEditor()');
  console.log('Image relighting passed: deterministic lighting, alpha, in-place version save, reuse and AI handoff.');
  const originalCameraFetch=w.fetch;
@@ -3152,13 +3246,22 @@ async function run(){
  await evaluate(`const cameraPortrait=addNode("image",200,600,{}, {name:"机位原图",versions:[copyAsset("original-angle.png",{w:512,h:384})],cur:0});
   nodeAction(cameraPortrait,"image-camera")`);
  equal(evaluate('[IMAGE_EDITOR.mode,$("#ieBlend").hidden,$("#ieBackend").hidden]'),['camera',true,true]);
- evaluate(`$("[data-camera-preset='0']").click();$("#ieCamPitch").value="25";$("#ieCamPitch").dispatchEvent(new Event("input"));
-  $("#ieCamDistance").value="-40";$("#ieCamLens").value="24";$("#ieCamCount").value="3";`);
+ evaluate(`const orbit=$(".ie-camera-orbit");
+  const orbitPointer=(type,x,y)=>orbit.dispatchEvent(new MouseEvent(type,{clientX:x,clientY:y,button:0,bubbles:true}));
+  orbitPointer("pointerdown",120,120);orbitPointer("pointermove",140,100);orbitPointer("pointerup",140,100);`);
+ equal(evaluate('[imageCameraSettings().yaw,imageCameraSettings().pitch,$(".ie-camera-height").hidden]'),[75,20,false]);
+ evaluate('orbitPointer("pointerdown",140,100);orbitPointer("pointermove",100,140);orbitPointer("pointercancel",100,140)');
+ equal(evaluate('[imageCameraSettings().yaw,imageCameraSettings().pitch]'),[75,20],'cancelled orbit drag restores the starting pose');
+ evaluate(`$("[data-camera-preset='2']").click();orbitPointer("pointerdown",120,120);orbitPointer("pointermove",120,100);orbitPointer("pointerup",120,100);`);
+ equal(evaluate('[imageCameraSettings().yaw,imageCameraSettings().pitch]'),[180,20],'vertical drag preserves the rear heading');
+ evaluate(`$("#ieCamSensor").value="s35";$("#ieCamOptics").value="anamorphic";$("#ieCamAperture").value="2.8";
+  $("[data-camera-preset='0']").click();$("#ieCamPitch").value="25";$("#ieCamPitch").dispatchEvent(new Event("input"));
+  $("#ieCamDistance").value="-40";$("#ieCamLens").value="18";$("#ieCamCount").value="3";`);
  assert.match(evaluate('$(".ie-camera-orbit").getAttribute("aria-label")'),/左环绕 90°.*俯拍 25°/);
  await evaluate('ieGenerate()');
  await ready('cameraPortrait.versions.length===4 && !IMAGE_EDITOR.loading && !cameraPortrait.job','three generated views appear on the same image node',300);
  equal([cameraRequest.mode,cameraRequest.backend,cameraRequest.count,cameraRequest.prompt,cameraRequest.camera_view],
-  ['whole','h3',3,'',{yaw:-90,pitch:25,distance:-40,framing:'中景',lens:24}]);
+  ['whole','h3',3,'',{yaw:-90,pitch:25,distance:-40,framing:'中景',lens:18,sensor:'s35',optics:'anamorphic',aperture:'2.8'}]);
  assert.equal(evaluate('cameraPortrait.versions[0].ref'),cameraRequest.ref);
  await evaluate('$("#ieReuse").onclick()');
  equal(evaluate('[IMAGE_EDITOR.mode,curV(cameraPortrait).ref,imageCameraSettings(),$("#ieCamCount").value]'),
@@ -3538,8 +3641,14 @@ async function run(){
  equal(evaluate('[$("#light").open,$("#agentChat").hidden,document.activeElement===$("[data-light-agent]")]'),[true,true,true]);
  evaluate('$("[data-light-agent]").click()');
  await ready('AC.referencePins.get(previewImage.id)?.ref===previewImage.versions[1].ref','explicitly reattaching updates the pinned version');
- evaluate('$("[data-light-version]").value="0";$("[data-light-version]").dispatchEvent(new Event("change"));$("[data-light-agent]").click()');
- await ready('AC.referencePins.get(previewImage.id)?.ref===previewImage.versions[0].ref','the historical preview can be reattached');
+ evaluate(`const historicalMention=$("#acInput");
+  historicalMention.value="@"+previewImage.id+"#1";
+  historicalMention.setSelectionRange(historicalMention.value.length,historicalMention.value.length);`);
+ await evaluate('cmSuggest(historicalMention)');
+ equal(evaluate('CM.matches.map(item=>item.version)'),[1]);
+ evaluate('historicalMention.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}))');
+ assert.match(evaluate('historicalMention.value'),/版本 1/);
+ await ready('AC.referencePins.get(previewImage.id)?.ref===previewImage.versions[0].ref','historical completion pins the version for the assistant');
  await evaluate('acSend()');
  equal(fullscreenRequest.selected_versions,[{node_id:evaluate('previewImage.id'),ref:'output:h3studio/preview-first.png'}]);
  evaluate('$("#acInput").value="继续分析";closeLightbox()');
@@ -3802,7 +3911,9 @@ async function run(){
  console.log('Image shortcuts passed: required reference, filtering, Tab activation, preserved draft and ordered grid splits.');
  const historyFetch=w.fetch;
  const recoveryItems=[
-  {id:'qa-history-image',type:'image',label:'找回海报',width:480,height:800,seed:24,ref:'output:h3studio/recovery-image.png'},
+  {id:'qa-history-image',type:'image',label:'找回海报',width:480,height:800,seed:24,ref:'output:h3studio/recovery-image.png',source:'edit',
+   image_edit:{source:'input:h3studio/recovery-source.png',recipe:{ref:'input:h3studio/recovery-source.png',mode:'whole',relight:{depth:-75}},
+    layer:{ref:'output:h3studio/recovery-layer.png',w:480,h:800}}},
   {id:'qa-history-video',type:'video',label:'找回镜头',width:640,height:360,seconds:3,ref:'output:h3studio/recovery-video.mp4'},
   {id:'qa-history-audio',type:'audio',label:'找回旁白',seconds:4,ref:'output:h3studio/recovery-audio.wav'},
  ].map(item=>({...item,available:true,url:'/media?ref='+encodeURIComponent(item.ref)}));
@@ -3817,6 +3928,7 @@ async function run(){
  evaluate(`const historyKind=kind=>{const picker=gh("[data-gh-kind]");picker.value=kind;picker.dispatchEvent(new Event("change"));};
   historyKind("image");`);
  await ready('ghCards().length===1 && ghCards()[0]._historyItem.type==="image"','history image filter loads');
+ assert.match(evaluate('ghCards()[0].textContent'),/可复用编辑参数和图层/);
  evaluate('gh("[data-gh-select-visible]").click();historyKind("video");');
  await ready('ghCards().length===1 && ghCards()[0]._historyItem.type==="video"','history video filter loads');
  equal(evaluate('gh("[data-gh-count]").textContent'),'已选 1 · 筛选外 1','selection survives media filters');
@@ -3825,8 +3937,28 @@ async function run(){
  evaluate('gh("[data-gh-select-visible]").click();gh("[data-gh-apply]").click();');
  equal(evaluate('B.nodes.slice(-3).map(n=>[n.type,n.versions[0].seed??null,n.versions[0].seconds??null])'),
   [['image',24,null],['video',null,3],['audio',null,4]],'mixed history restore keeps generation settings and media metadata');
+ equal(evaluate('curV(B.nodes.at(-3)).edit'),recoveryItems[0].image_edit,'restored image keeps both its lighting recipe and editable layer');
  evaluate('undo()');
  equal(evaluate('B.nodes.length'),evaluate('historyCanvasSize'),'mixed history restore uses one undo step');
+ const recoveredSound=recoveryItems[2];
+ recoveredSound.audio_recipe={mode:'seed_audio',prompt:'跟随 @音频2',references:[
+  {node_id:'prior-voice',ref:'output:h3studio/recovery-ref-a.wav',kind:'audio'},
+  {node_id:'removed-voice',ref:'output:h3studio/recovery-ref-b.wav',kind:'audio'},
+ ]};
+ evaluate(`const reusableHistoryVoice=addNode("audio",700,850,{}, {versions:[
+  {ref:"output:h3studio/recovery-ref-a.wav",url:"/media?ref=output:h3studio/recovery-ref-a.wav"},
+  {ref:"output:h3studio/new-voice.wav",url:"/media?ref=output:h3studio/new-voice.wav"}],cur:1});
+  const seedHistorySize=B.nodes.length;ghOpen();historyKind("audio");`);
+ await ready('ghCards().length===1 && ghCards()[0]._historyItem.audio_recipe?.mode==="seed_audio"','history lists a reference generation');
+ evaluate('$(".gh-card-actions [data-gh-card-apply]",ghCards()[0]).click()');
+ equal(evaluate(`[B.nodes.length-seedHistorySize,reusableHistoryVoice.cur,sel.size,
+  B.edges.filter(e=>e.relation==="seed_audio_ref"&&sel.has(e.to)).map(e=>[e.ref,e.from===reusableHistoryVoice.id]),
+  curV(node([...sel][0])).audio_recipe.references.map(r=>r.ref)]`),
+ [2,1,1,[['output:h3studio/recovery-ref-a.wav',true],['output:h3studio/recovery-ref-b.wav',false]],
+  ['output:h3studio/recovery-ref-a.wav','output:h3studio/recovery-ref-b.wav']],
+ 'history restores both reference pins, reusing an existing version and creating just one missing source');
+ evaluate('undo()');
+ equal(evaluate('B.nodes.length'),evaluate('seedHistorySize'),'restoring history with inputs uses one undo step');
  w.fetch=historyFetch;
  evaluate(`const historySearchNode=addNode("image",420,80,{}, {name:"重复名称",versions:[
   {ref:"output:h3studio/search-old.png",url:"/media?ref=output%3Ah3studio%2Fsearch-old.png",prompt:"旧版港口灯光"},

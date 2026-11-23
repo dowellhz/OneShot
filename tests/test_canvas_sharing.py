@@ -185,6 +185,13 @@ class CanvasSharing(ChatFixture):
             url = "/api/board/test/showcase"
             payload = {"title":"公开成片","confirmed":True,"revision":board["rev"],
                        "video":{"node":"n3","ref":versions[0]["ref"]},"attach_canvas":True}
+            saved = await client.post("/api/canvas-templates",json={"board":"test","name":"公开工作流"},headers=owner)
+            self.assertEqual(saved.status,201,await saved.text())
+            template = (await saved.json())["id"]
+            template_url = "/api/canvas-templates/"+template
+            payload["template"] = template
+            self.assertEqual((await client.post(url,json=payload,headers=owner)).status,400)
+            self.assertEqual((await client.put(template_url+"/publication",json={"confirmed":True},headers=owner)).status,200)
             self.assertEqual((await client.post(url,json=payload,headers=viewer)).status,404)
             self.assertEqual((await client.post(url,json={**payload,"revision":0},headers=owner)).status,409)
             result = await client.post(url,json=payload,headers=owner)
@@ -214,6 +221,36 @@ class CanvasSharing(ChatFixture):
             repeated = await (await client.post(url,json={**payload,"description":"完成说明"},headers=owner)).json()
             self.assertEqual((repeated["token"],repeated["state"]),(token,"pending"))
             self.assertEqual((await client.patch(moderation,json={"state":"approved"},headers=admin)).status,200)
+            detail = await (await client.get(published)).json()
+            self.assertEqual(detail["template"],{"id":template,"name":"公开工作流"})
+            self.assertEqual((await client.get(template_url+"/preview")).status,401)
+            base = "/?template="+template
+            redirect = await client.get(base,allow_redirects=False)
+            self.assertEqual(redirect.status,302)
+            self.assertIn("template",redirect.headers["Location"])
+            copied = await client.post(template_url+"/open",json={"request_key":"showcase-template-copy"},headers=viewer)
+            self.assertEqual(copied.status,201,await copied.text())
+            template_copy = (await copied.json())["id"]
+            self.assertEqual((await client.delete(template_url+"/publication",headers=owner)).status,200)
+            self.assertNotIn("template",await (await client.get(published)).json())
+            self.assertEqual((await client.get(template_url+"/preview",headers=viewer)).status,404)
+            self.assertEqual((await client.get("/api/board/"+template_copy,headers=viewer)).status,200)
+            self.assertEqual((await client.put(template_url+"/publication",json={"confirmed":True},headers=owner)).status,200)
+            manage = url+"/"+token+"/template"
+            self.assertEqual((await client.put(manage,json={"template":None},headers=admin)).status,404)
+            alternate = await client.post("/api/canvas-templates",json={"board":"test","name":"另一套公开工作流"},headers=owner)
+            self.assertEqual(alternate.status,201,await alternate.text())
+            new_template = (await alternate.json())["id"]
+            self.assertEqual((await client.put(manage,json={"template":new_template},headers=owner)).status,400)
+            self.assertEqual((await client.put("/api/canvas-templates/"+new_template+"/publication",
+                                               json={"confirmed":True},headers=owner)).status,200)
+            self.assertEqual((await client.put(manage,json={"template":new_template},headers=owner)).status,200)
+            updated = await (await client.get(published)).json()
+            self.assertEqual(updated["template"],{"id":new_template,"name":"另一套公开工作流"})
+            self.assertEqual(updated["published"],detail["published"])
+            self.assertEqual((await client.put(manage,json={"template":None},headers=owner)).status,200)
+            self.assertNotIn("template",await (await client.get(published)).json())
+            self.assertEqual((await client.put(manage,json={"template":template},headers=owner)).status,200)
             feed = await (await client.get(listing+"?q=完成")).json()
             self.assertEqual([(item["token"],item["has_canvas"]) for item in feed["items"]],[(token,1)])
             creator = feed["items"][0]["creator"]
@@ -237,7 +274,7 @@ class CanvasSharing(ChatFixture):
             cloned = await (await client.get("/api/board/"+copy["id"],headers=viewer)).json()
             self.assertEqual(next(n for n in cloned["nodes"] if n["id"]==video["id"])["versions"][0]["ref"],versions[0]["ref"])
 
-            only_video = {**payload,"video":{"node":"n3","ref":versions[1]["ref"]},"attach_canvas":False}
+            only_video = {**payload,"video":{"node":"n3","ref":versions[1]["ref"]},"attach_canvas":False,"template":None}
             other = await (await client.post(url,json=only_video,headers=owner)).json()
             token2 = other["token"]
             self.assertEqual([item["token"] for item in (await (await client.get(profile_url)).json())["items"]],[token])
@@ -248,6 +285,7 @@ class CanvasSharing(ChatFixture):
             self.assertEqual((await (await client.get(listing+"/"+token2)).json())["has_canvas"],0)
             self.assertEqual((await client.get("/api/share/"+token2)).status,404)
             self.assertEqual((await client.delete(url+"/"+token,headers=owner)).status,200)
+            self.assertIsNone(db.one("SELECT 1 FROM showcase_template_links WHERE token=?",token))
             self.assertEqual((await client.get(published+"/video")).status,404)
             self.assertEqual((await client.get(snapshot)).status,404)
             self.assertEqual((await client.get("/api/board/"+copy["id"],headers=viewer)).status,200)

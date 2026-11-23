@@ -62,7 +62,8 @@ function wrStep(step) {
       const meta = document.createElement("span");
       const end = input.end == null ? "" : "–" + Number(input.end.toFixed(3));
       const time = input.time == null ? "" : " · " + Number(input.time.toFixed(3)) + end + " 秒";
-      meta.textContent = [input.role + time,input.transition,input.speed ? input.speed + "×" : "",input.evidence,input.ambiguous ? "多处引用" : ""].filter(Boolean).join(" · ");
+      const reference = input.token ? input.role + " " + input.token : input.role;
+      meta.textContent = [reference + time,input.transition,input.speed ? input.speed + "×" : "",input.evidence,input.ambiguous ? "多处引用" : ""].filter(Boolean).join(" · ");
       row.append(label, meta);
       if (input.text) row.append(wrText("生成时的文字输入", input.text));
       list.append(row);

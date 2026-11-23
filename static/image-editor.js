@@ -226,13 +226,17 @@ function ieMode(mode, force=false) {
   const E=IMAGE_EDITOR; if (!E || (E.busy && !force)) return;
   if(E.agentSelection&&mode!=="region")return ieStatus("请先发送当前选区，或收起窗口后在聊天中停止本轮任务");
   E.mode=mode; E.drawing=null; E.movingLight=false;
-  $$("[data-mode]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.mode===mode));
-  $$("[data-section]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.section===mode));
-  const camera=mode==="camera";
-  $("#ieAI").hidden=["local","layers","relight"].includes(mode); $("#ieBlend").hidden=mode==="outpaint"||camera;
-  $("#iePresets").hidden=$("#ieBackend").hidden=$('label[for="ieBackend"]').hidden=camera;
-  $('label[for="iePrompt"]').textContent = camera ? "补充要求（可选）" : "修改要求";
-  $("#iePrompt").placeholder=camera ? "例如：保持原来的灯光方向" : "例如：把选中的衣服改为深蓝色，保留布料质感和光影";
+  const modelLight=mode==="relight_ai", section=modelLight?"relight":mode;
+  $$("[data-mode]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.mode===section));
+  $$("[data-section]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.section===section));
+  const camera=mode==="camera", structured=camera||modelLight;
+  $("#ieSaveLight").hidden=modelLight;
+  $("#ieRelightAI").textContent=modelLight?"返回手动布光":"交给模型重打光";
+  $("#ieAI").hidden=["local","layers","relight"].includes(mode); $("#ieBlend").hidden=mode==="outpaint"||structured;
+  $("#iePresets").hidden=$("#ieBackend").hidden=$('label[for="ieBackend"]').hidden=structured;
+  $('label[for="iePrompt"]').textContent = structured ? "补充要求（可选）" : "修改要求";
+  $("#iePrompt").placeholder=modelLight?"例如：保留眼睛里的高光":camera?"例如：保持原来的灯光方向":
+    "例如：把选中的衣服改为深蓝色，保留布料质感和光影";
   ewBackend();
   if(typeof aeEditorControls==="function")aeEditorControls();
   ieDraw();
@@ -319,23 +323,27 @@ async function ieLocal(extra={}) {
 
 async function ieGenerate() {
   const E=IMAGE_EDITOR; if (!E?.image || E.busy || E.n.job || E.agentSelection || !canvasCanEdit()) return;
-  const camera=E.mode==="camera", prompt=$("#iePrompt").value.trim(); if (!prompt && !camera) return ieStatus("请填写修改要求",true);
+  const camera=E.mode==="camera", modelLight=E.mode==="relight_ai", structured=camera||modelLight;
+  const prompt=$("#iePrompt").value.trim(); if (!prompt && !structured) return ieStatus("请填写修改要求",true);
   if (E.mode==="region" && !E.strokes.length) return ieStatus("请先选择要修改的区域",true);
   const board=B, sourceRef=E.ref;
   E.busy=true; ieSync(); ieStatus("正在提交编辑任务…");
   try {
     const ref=await ewFlatten(E);
-    if (camera && (B!==board || node(E.n.id)!==E.n || curV(E.n)?.ref!==sourceRef || !canvasCanEdit()))
-      throw new Error("图片版本或编辑权限已变更，请重新打开换机位");
+    if (structured && (B!==board || node(E.n.id)!==E.n || curV(E.n)?.ref!==sourceRef || !canvasCanEdit()))
+      throw new Error("图片版本或编辑权限已变更，请重新打开编辑器");
     const p={ref,mode:E.mode,prompt,backend:$("#ieBackend").value,denoise:+$("#ieDenoise").value/100,steps:+$("#ieSteps").value,seed:+$("#ieSeed").value,strength:+$("#ieStrength").value/100,feather:+$("#ieFeather").value,padding:iePadding(),provider:$("#ieProvider").value,board:boardId,label:E.n.name+" · 图像编辑"};
     if (camera) Object.assign(p,{mode:"whole",backend:"h3",strength:1,camera_view:imageCameraSettings(),
       count:+$("#ieCamCount").value,quality:E.n.data.quality || "4mp",label:E.n.name+" · 换机位"});
+    if (modelLight) Object.assign(p,{mode:"whole",backend:"h3",strength:1,relight:relightSettings(),
+      quality:E.n.data.quality || "4mp",label:E.n.name+" · 重新布光"});
     if (E.mode==="region") p.mask=(await ewExportMask(E)).ref;
     E.n.data.lastImageEdit={...p}; save(); ewScheduleDraft(true);
     const r=await api("/api/image-edit/generate",p);
-    if (camera && (B!==board || node(E.n.id)!==E.n)) return;
+    if (structured && (B!==board || node(E.n.id)!==E.n)) return;
     E.n.data.lastImageEdit.seed=r.meta?.seed ?? p.seed;
-    E.n.job={ids:r.ids,prompt:camera?imageCameraPrompt(p.camera_view)+(prompt?"。"+prompt:""):prompt,t0:Date.now(),st:{}}; save(); render(E.n); showPanel(); poll();
+    const description= camera?imageCameraPrompt(p.camera_view)+(prompt?"。"+prompt:""):prompt;
+    E.n.job={ids:r.ids,prompt:description||(modelLight?"重新布光":""),t0:Date.now(),st:{}}; save(); render(E.n); showPanel(); poll();
     if (IMAGE_EDITOR===E) ieStatus("已排队，可返回画布继续工作；完成后会保存为新版本");
   } catch(e) { ieStatus(e.message,true); }
   finally { E.busy=false; ieSync(); }

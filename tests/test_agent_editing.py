@@ -41,24 +41,30 @@ class EditingIntegration(ChatFixture):
         return image_editor.save(server.COMFY_DIR, rgba)
 
     async def test_image_camera_request_uses_structured_instructions_and_preserves_recipe(self):
-        view = {"yaw":-90,"pitch":30,"distance":-35,"lens":24,"framing":"全景"}
+        view = {"yaw":-90,"pitch":30,"distance":-35,"lens":24,"framing":"全景",
+                "sensor":"s35","optics":"anamorphic","aperture":"2.8"}
         payload = {"ref":self.source["ref"],"mode":"whole","camera_view":view,"count":3,"prompt":""}
 
         async def generate(_req, raw):
             self.assertEqual(raw["count"],3)
-            for instruction in ("向左环绕 90°", "俯拍 30°", "靠近主体", "24 mm 广角", "全景"):
+            for instruction in ("90 degrees to the left", "look down 30 degrees", "closer to", "24 mm lens", "wide shot",
+                                "Super 35", "oval bokeh", "f/2.8", "shallow depth of field"):
                 self.assertIn(instruction,raw["prompt"])
             spec = raw["_image_edit"]
             self.assertEqual((spec["recipe"]["ref"],spec["recipe"]["camera_view"]),(payload["ref"],view))
             output = image_editor.composite(server.COMFY_DIR,spec,[self.source])[0]
             self.assertEqual(output["extra"]["edit"]["recipe"]["camera_view"],view)
             rows = server.workflow_review.argument_rows(output["extra"],{}, {})
-            self.assertIn("24 mm",next(row["value"] for row in rows if row["label"]=="图片机位"))
+            camera_row = next(row["value"] for row in rows if row["label"]=="图片机位")
+            self.assertIn("24 mm",camera_row)
+            self.assertIn("f/2.8",camera_row)
             return web.json_response({"ids":["camera-qa"]})
 
         url = "/api/image-edit/generate"
         with patch.object(server,"generate_request",side_effect=generate) as called:
-            for invalid in ({"count":5},{"backend":"native"},{"strength":.5},{"camera_view":{**view,"yaw":181}}):
+            for invalid in ({"count":5},{"backend":"native"},{"strength":.5},
+                            *({"camera_view":{**view,key:value}} for key,value in
+                              (("yaw",181),("aperture","0.8"),("sensor","unknown"),("optics",[])))):
                 self.assertEqual((await self.client.post(url,json={**payload,**invalid})).status,400)
             called.assert_not_awaited()
             response = await self.client.post(url,json=payload)
@@ -76,6 +82,102 @@ class EditingIntegration(ChatFixture):
         jid = "e" + str(len(self.generated)).zfill(12)
         server.JOBS[jid] = {"created": 1, "state": "done", "meta": {"uid": 7, "seed": 123}, "outputs": outputs}
         return web.json_response({"ids": [jid]})
+
+    async def test_assistant_camera_uses_pinned_version_approval_and_reusable_optics(self):
+        self.generated = []
+        old = self.source["ref"]
+        newer = image_editor.save(server.COMFY_DIR,Image.new("RGBA",(128,96),"navy"),"input")
+        node = self.board["nodes"][0]
+        node["versions"].append(newer)
+        node["cur"] = 1
+        server.write_board(server.board_path("test"),self.board)
+        camera = {"yaw":-90,"pitch":20,"distance":0,"lens":85,"framing":"近景","sensor":"full-frame","aperture":"1.4"}
+        self.svc.model.side_effect = [call("image_camera",{"node_id":"n1","camera_view":camera}),answer(),
+                                      call("image_reuse",{"node_id":"n1","version_index":2}),answer()]
+        session = f"/api/chat/sessions/{self.sid}"
+        with patch.object(server,"image_edit_generate",side_effect=self.fake_generation) as generate:
+            response = await self.client.post(session+"/messages",json={"text":"把旧版从左侧拍一张近景",
+                "request_key":"assistant-camera-pin","generation_mode":"manual","selected":["n1"],
+                "selected_versions":[{"node_id":"n1","ref":old}]})
+            self.assertEqual(response.status,200,await response.text())
+            rid = (await response.json())["id"]
+            for _ in range(120):
+                state = await (await self.client.get(session)).json()
+                if state["approvals"]:
+                    break
+                await asyncio.sleep(.01)
+            approval, = state["approvals"]
+            self.assertIn("85 mm",approval["plan"]["camera_summary"])
+            self.assertIn("f/1.4",approval["plan"]["camera_summary"])
+            generate.assert_not_awaited()
+            approval_url = f"/api/chat/runs/{rid}/approvals/{approval['id']}"
+            self.assertEqual((await self.client.post(approval_url,json={"decision":"approve"})).status,200)
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            self.assertEqual(len(self.load()["nodes"][0]["versions"]),3)
+            rid = await self.send("用刚才的镜头参数再生成",key="assistant-camera-reuse")
+            self.assertEqual((await self.wait(rid))["state"],"done")
+        self.assertEqual([(req["ref"],req["camera_view"],req["prompt"]) for req in self.generated],
+                         [(old,camera,""),(old,camera,"")])
+        versions = self.load()["nodes"][0]["versions"]
+        self.assertEqual(len(versions),4)
+        for v in versions[-2:]:
+            self.assertEqual(v["edit"]["recipe"]["camera_view"],camera)
+
+    async def test_assistant_relight_persists_and_reuses_structured_lighting(self):
+        self.generated = []
+        settings = {"x":70,"y":-55,"depth":-75,"key":55,"exposure":0,"temperature":-50,"rim":35}
+        self.svc.model.side_effect = [call("image_relight",{"node_id":"n1","relight":settings}),answer(),
+                                      call("image_reuse",{"node_id":"n1","version_index":1}),answer()]
+        with patch.object(server,"image_edit_generate",side_effect=self.fake_generation):
+            self.assertEqual((await self.wait(await self.send("用冷色背光重新布光")))["state"],"done")
+            self.assertEqual((await self.wait(await self.send("用同样参数再来一版",key="relight-reuse")))["state"],"done")
+        self.assertEqual([(req["ref"],req["relight"],req["prompt"]) for req in self.generated],
+                         [(self.source["ref"],settings,"")]*2)
+        prepared = image_editor.prepare(server.COMFY_DIR,self.generated[0])
+        self.assertIn("right, above and behind the subject",prepared["prompt"])
+        self.assertIn("7550 K",prepared["prompt"])
+        self.assertIn("Do not add lettering",prepared["prompt"])
+        versions = self.load()["nodes"][0]["versions"]
+        self.assertEqual(len(versions),3)
+        self.assertEqual(versions[-1]["edit"]["recipe"]["relight"],settings)
+        rows = server.workflow_review.argument_rows(versions[-1],{}, {})
+        self.assertIn("7550 K",next(row["value"] for row in rows if row["label"]=="图片布光"))
+        with self.assertRaisesRegex(ValueError,"需要使用整图编辑"):
+            image_editor.prepare(server.COMFY_DIR,{**self.generated[0],"mode":"region"})
+
+    async def test_completed_image_edit_restores_recipe_and_layer_after_job_cache_loss(self):
+        raw = image_editor.prepare(server.COMFY_DIR,{"ref":self.source["ref"],"mode":"whole",
+                                  "relight":{"depth":-75,"temperature":-50},"seed":42})
+        jid = "e123456789abc"
+        db.task_start(id=jid,user_id=7,board_id="test",capability="image",state="running")
+        job = {"id":jid,"kind":"image","state":"running","created":time.time(),"meta":{
+            "uid":7,"seed":42,"mode_name":"图片重新布光","image_edit":raw["_image_edit"]}}
+        await server.complete_outputs(job,[self.source])
+        self.assertEqual(job["state"],"done",job.get("error"))
+        output, = job["outputs"]
+        denied = await self.client.get("/api/jobs",params={"ids":jid},headers={"X-Uid":"8"})
+        self.assertEqual(await denied.json(),{})
+        response = await self.client.get("/api/jobs",params={"ids":jid})
+        self.assertEqual(response.status,200,await response.text())
+        restored = (await response.json())[jid]
+        self.assertEqual(restored["outputs"][0]["extra"],output["extra"])
+        self.assertEqual((restored["meta"]["seed"],restored["meta"]["mode_name"]),(42,"图片重新布光"))
+        history = "/api/generation-history?kind=image"
+        item, = (await (await self.client.get(history)).json())["items"]
+        edit = output["extra"]["edit"]
+        self.assertEqual(item["image_edit"],edit)
+        self.assertEqual((item["source"],item["width"],item["height"]),("edit",128,96))
+        for ref in (edit["base"],edit["layer"]["ref"]):
+            self.assertEqual((await self.client.get("/media",params={"ref":ref})).status,200)
+            self.assertEqual((await self.client.get("/media",params={"ref":ref},headers={"X-Uid":"8"})).status,404)
+        without_source = self.load()
+        without_source["nodes"] = []
+        server.write_board(server.board_path("test"),without_source)
+        item, = (await (await self.client.get(history)).json())["items"]
+        self.assertTrue(item["available"])
+        self.assertTrue(item["image_edit_unavailable"])
+        self.assertNotIn("image_edit",item)
+        self.assertEqual((await self.client.get("/media",params={"ref":edit["base"]})).status,404)
 
     async def wait_input(self, rid):
         for _ in range(100):

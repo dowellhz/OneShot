@@ -148,9 +148,13 @@ function ghCard(item) {
     `<video src="${esc(item.url)}" controls muted playsinline preload="none" aria-label="${title}"></video>` :
     `<audio src="${esc(item.url)}" controls preload="none" aria-label="${title}"></audio>`;
   const date = Number.isFinite(item.created) ? new Date(item.created*1000).toLocaleString() : "";
+  const references = seedAudioRefs({data:item.audio_recipe}).length, missing = item.missing_audio_references || 0;
   card.innerHTML = `<div class="gh-preview">${preview}</div><strong title="${title}">${title}</strong>
     <span>${esc([kind,item.model,date].filter(Boolean).join(" · "))}</span>
     ${item.prompt ? `<p title="${esc(item.prompt)}">${esc(item.prompt)}</p>` : ""}
+    ${item.image_edit ? "<span>可复用编辑参数和图层</span>" : item.image_edit_unavailable ? "<span>编辑来源或图层已不可用</span>" : ""}
+    ${references ? `<span>随结果恢复 ${references} 个参考</span>` : ""}
+    ${missing ? `<span>${esc(missing)} 个参考已不可用</span>` : ""}
     <div class="gh-card-actions"><label><input type="checkbox" aria-label="选择 ${title}" ${item.available ? "" : "disabled"}>选择</label>
     ${item.available || item.favorite ? `<button type="button" data-gh-favorite>${ico("star")}</button>` : ""}
     <button type="button" data-gh-card-apply ${item.available && canvasCanEdit() ? "" : "disabled"}>放入画布</button></div>`;
@@ -188,6 +192,7 @@ function ghApply(items) {
     const version = {ref:item.ref,url:item.url,prompt:item.prompt,source:item.source || "gen",mode_name:item.model,w:width,h:height,
       seconds:item.seconds>0?item.seconds:undefined};
     if (item.broll_recipe) version.broll_recipe = item.broll_recipe;
+    if (item.image_edit) version.edit = item.image_edit;
     const data = {prompt:item.prompt,...(item.type==="video"?{aspect:"auto"}:{})};
     if (item.audio_recipe) {
       version.audio_recipe = item.audio_recipe;
@@ -201,9 +206,42 @@ function ghApply(items) {
     return {type:item.type,name:item.label,data,versions:[version],cur:0};
   });
   if(!specs.length)return;
+  const resultCount=specs.length, bindings=[];
+  const sources=new Map();
+  const key=(type,ref)=>JSON.stringify([type,ref]);
+  B.nodes.forEach(n=>n.versions.forEach(v=>sources.set(key(n.type,v.ref),n)));
+  specs.forEach((spec,index)=>sources.set(key(spec.type,spec.versions[0].ref),sources.get(key(spec.type,spec.versions[0].ref))??index));
+  for(const [index,spec] of specs.slice().entries()){
+    if(spec.data.mode!=="seed_audio")continue;
+    const refs=seedAudioRefs(spec);
+    spec.data.references=[];
+    spec.versions[0].audio_recipe={...spec.versions[0].audio_recipe,references:[]};
+    for(const ref of refs){
+      const identity=key(ref.kind,ref.ref), original=node(ref.node_id);
+      let source=original?.type===ref.kind&&original.versions.some(v=>v.ref===ref.ref)?original:sources.get(identity);
+      if(source===undefined || source===index){
+        source=specs.length;
+        const version={ref:ref.ref,url:"/media?ref="+encodeURIComponent(ref.ref),source:"history"};
+        specs.push({type:ref.kind,name:ref.kind==="audio"?"参考音频":"参考图",data:{},versions:[version],cur:0});
+        sources.set(identity,source);
+      }
+      bindings.push({index,source,ref});
+    }
+  }
   const placed=placeCanvasNodeBatch(specs,origin);
+  for(const {index,source,ref} of bindings){
+    const target=placed[index], from=typeof source==="number"?placed[source]:source;
+    const bound={...ref,node_id:from.id};
+    target.data.references.push(bound);
+    curV(target).audio_recipe.references.push(bound);
+  }
+  if(bindings.length){
+    sel=new Set(placed.slice(0,resultCount).map(n=>n.id));
+    updateSel();drawEdges();save();
+  }
   ghClose();
-  toast(`已放入 ${placed.length} 个素材`);
+  const added=placed.length-resultCount;
+  toast(`已放入 ${resultCount} 个素材${added?`，并恢复 ${added} 个参考素材`:""}`);
 }
 
 async function ghDownload() {

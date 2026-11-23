@@ -242,13 +242,13 @@ function size(n) {
   if (n.type === "image") { const area = 300 * 380; let w = Math.sqrt(area * ar); w = Math.max(220, Math.min(460, w)); return { w: Math.round(w), h: Math.round(w / ar) }; }
   const area = 440 * 250; let w = Math.sqrt(area * ar); w = Math.max(240, Math.min(520, w)); return { w: Math.round(w), h: Math.round(w / ar) };
 }
-function canLink(a, b) {
+function canLink(a, b, version=curV(a)) {
   if (!a || !b || a.id === b.id) return false;
   if (b.data?.previs) return false;
-  if (isSeedAudio(b)) return canSeedAudioReference(b,a,curV(a));
+  if (isSeedAudio(b)) return canSeedAudioReference(b,a,version);
   if (B.edges.some(e => (e.from === a.id && e.to === b.id) || (e.from === b.id && e.to === a.id))) return false;
-  if (a.type === "audio") return b.type === "video" && !b.data?.film && !!curV(a);
-  if (a.type === "video") return b.type === "video" && !b.data?.film && curV(a)?.source !== "previs" && !!curV(a);
+  if (a.type === "audio") return b.type === "video" && !b.data?.film && !!version;
+  if (a.type === "video") return b.type === "video" && !b.data?.film && !!version && version.source !== "previs";
   return (a.type === "text" && b.type !== "text" && b.type !== "audio") || (a.type === "image" && (b.type === "video" || b.type === "image" || b.type === "script"));
 }
 function why(a, b) {
@@ -260,18 +260,18 @@ function why(a, b) {
   return "这两个节点不能这样连接";
 }
 function link(a, b, quiet, binding) {
+  const version=binding?.ref?a?.versions.find(v=>v.ref===binding.ref):curV(a);
   if (isSeedAudio(b)) {
-    const version=binding?.ref?a?.versions.find(v=>v.ref===binding.ref):curV(a);
     if (addSeedAudioReference(b,a,version,!quiet)) return true;
     if (!quiet && a && a!==b) toast(why(a,b));
     return false;
   }
-  if (!canLink(a, b)) { if (!quiet && a && b && a.id !== b.id) toast(why(a, b)); return false; }
+  if ((binding?.ref&&!version) || !canLink(a, b, version)) { if (!quiet && a && b && a.id !== b.id) toast(why(a, b)); return false; }
   if (!quiet) checkpoint();   // quiet callers checkpoint before creating the node
   const e = { from: a.id, to: b.id, ...binding };
   if (a.data.asset?.kind === "character" && b.type === "video") e.role = "subject";   // new links from a library character default to 人物设定
   if (a.type === "audio" || a.type === "video") {
-    Object.assign(e,{relation:a.type+"_ref",ref:binding?.ref||curV(a).ref});
+    Object.assign(e,{relation:a.type+"_ref",ref:version.ref});
     rememberVideoVersion(b);
     B.edges.push(e);
     const routes=referenceServices(b);
@@ -298,18 +298,27 @@ function promptMediaInputs(type,target){
   return type==="audio"?audioInputs(target):videoInputs(target);
 }
 function canPromptMedia(source,target,ref=curV(source)?.ref) {
-  if(!canvasCanEdit()||!ref||!Object.hasOwn(PROMPT_MEDIA_TAG,source?.type)||
-     !["image","video"].includes(target?.type)||target.data.previs||target.data.film)return false;
+  if(!canvasCanEdit()||!ref||!Object.hasOwn(PROMPT_MEDIA_TAG,source?.type))return false;
+  const version=source.versions.find(v=>v.ref===ref);
+  if(!version || source.type==="video"&&version.source==="previs")return false;
+  if(isSeedAudio(target))return canSeedAudioReference(target,source,version);
+  if(!["image","video"].includes(target?.type)||target.data.previs||target.data.film)return false;
   if(target.type==="image"&&(source.type!=="image"||target.data.model==="h3video"))return false;
-  if(source.type==="video"&&source.versions.find(v=>v.ref===ref)?.source==="previs")return false;
   const prior=promptMediaInputs(source.type,target).find(input=>input.source===source)?.edge;
-  return prior?(!(prior.segment_edit||prior.extension)||prior.ref===ref):canLink(source,target);
+  return prior?(!(prior.segment_edit||prior.extension)||prior.ref===ref):canLink(source,target,version);
 }
 function attachPromptMedia(ta,source,ref) {
   const target=canvasPromptNode(ta);
   if(!canPromptMedia(source,target,ref) || !sel.has(target.id) || sel.size!==1)return "";
   if(target.job||prepping.has(target.id)){toast("请等当前生成完成后再修改参考素材");return "";}
-  if(!source.versions.some(v=>v.ref===ref)){toast("素材版本已移除，请重新选择");return "";}
+  if(isSeedAudio(target)){
+    const version=source.versions.find(v=>v.ref===ref);
+    if(!addSeedAudioReference(target,source,version))return "";
+    return source.type==="audio"?"@音频"+seedAudioRefs(target).length:"参考图";
+  }
+  return bindPromptMedia(source,target,ref);
+}
+function bindPromptMedia(source,target,ref) {
   const list=promptMediaInputs(source.type,target), prior=list.find(input=>input.source===source)?.edge;
   const sequence=source.type+"_ref_seq";
   const slot=promptSlot(prior?.prompt_slot) || 1+Math.max(promptSlot(target.data[sequence]),...list.map(input=>promptSlot(input.edge.prompt_slot)));
@@ -317,7 +326,7 @@ function attachPromptMedia(ta,source,ref) {
   target.data[sequence]=Math.max(promptSlot(target.data[sequence]),slot);
   if(prior){
     if(source.type==="video"&&prior.ref!==ref){delete prior.start;delete prior.end;}
-    Object.assign(prior,{ref,prompt_slot:slot});refresh(target);
+    Object.assign(prior,{ref,prompt_slot:slot});refresh(target);save();
   }
   else link(source,target,true,{ref,prompt_slot:slot});
   return promptMediaToken(source.type,slot);

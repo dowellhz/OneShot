@@ -50,7 +50,7 @@ async function ewRestoreDraft(E) {
         E.pixelAnchor=draft.pixelSize.anchor;E.pixelBasis=null;
       }
       E.tool=["brush","rect","erase","smart"].includes(draft.tool) ? draft.tool : "brush";
-      ieMode(["region","whole","outpaint","local","layers","relight","camera"].includes(draft.mode) ? draft.mode : "region");
+      ieMode(["region","whole","outpaint","local","layers","relight","relight_ai","camera"].includes(draft.mode) ? draft.mode : "region");
       await ewPreload(E,[...E.layers.map(x=>x.ref),...[...E.strokes,...E.redo].filter(x=>x.tool==="mask").map(x=>x.ref)]);
       ieRebuildMask(); $("#ieDraftState").textContent="已恢复编辑草稿";
     } else $("#ieDraftState").textContent="草稿自动保存";
@@ -96,7 +96,7 @@ function ewDrawEditor() {
   if(E.compare) c.drawImage(im,0,0);
   else {
     if(E.mode==="local") c.filter=`brightness(${$("#ieBrightness").value}%) contrast(${$("#ieContrast").value}%) saturate(${$("#ieSaturation").value}%)`;
-    if(E.mode==="relight") {
+    if(E.mode==="relight"||E.mode==="relight_ai") {
       try { c.drawImage(relightPreview(E),0,0,im.naturalWidth,im.naturalHeight); }
       catch {
         ewDrawLayers(E,c);
@@ -107,7 +107,7 @@ function ewDrawEditor() {
     c.filter="none";
     if(E.compareMode==="wipe" && !split && E.original) {c.save();c.beginPath();c.rect(0,0,im.naturalWidth*E.split/100,im.naturalHeight);c.clip();c.drawImage(E.original,0,0);c.restore();c.strokeStyle="#fff";c.lineWidth=2/scale;c.beginPath();c.moveTo(im.naturalWidth*E.split/100,0);c.lineTo(im.naturalWidth*E.split/100,im.naturalHeight);c.stroke();}
     if(E.compareMode==="off") {
-      if(E.mode==="relight") {
+      if(E.mode==="relight"||E.mode==="relight_ai") {
         const {x,y}=relightSettings();
         c.beginPath();c.arc(im.naturalWidth*(x+100)/200,im.naturalHeight*(y+100)/200,8/scale,0,2*Math.PI);
         c.fillStyle="#f3e6c8";c.fill();c.strokeStyle="#19191c";c.lineWidth=2/scale;c.stroke();
@@ -151,7 +151,7 @@ function ewPointer(e,phase) {
   if(phase==="down" && e.button!==0) return;
   const p=ewPoint(E,e),inside=p.x>=0 && p.y>=0 && p.x<E.image.naturalWidth && p.y<E.image.naturalHeight;
   if(phase==="down" && !inside) return;
-  if(E.mode==="relight") { relightPointer(E,e,phase,p);return; }
+  if(E.mode==="relight"||E.mode==="relight_ai") { relightPointer(E,e,phase,p);return; }
   if(phase==="down" && E.mode==="region" && E.tool==="smart") {e.preventDefault();ewSmartPoint(E,p,e.shiftKey ? 0 : 1);return;}
   if(E.mode==="layers") {
     if(phase==="down") {const l=E.layers.find(x=>x.id===E.activeLayer);if(!l)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);E.layerDrag={p,layer:l,x:l.x,y:l.y};}
@@ -199,7 +199,7 @@ async function ewUtility(tool) {
 }
 async function ewCommitLayers() {const E=IMAGE_EDITOR;if(!E?.image || E.busy || E.n.job)return;E.busy=true;ieSync();ieStatus("正在合并图层…");try{const r=await api("/api/image-edit/layers",{ref:E.ref,layers:E.layers});ewScheduleDraft(true);addVersion(E.n,mediaVersion(r,{source:"edit",mode:"图层合并",layer_stack:{base_ref:E.layerBaseRef||E.ref,layers:JSON.parse(JSON.stringify(E.layers))},edit:{source:E.ref,mode:"layers"}}));ieLoad(curV(E.n));ieHistory();loadAssets();ieStatus("已保存为新的 PNG 版本，透明通道已保留");}catch(err){ieStatus(err.message,true);}finally{E.busy=false;ieSync();}}
 function ewRefreshControls() {for(const [key,unit]of [["Brush"," px"],["Feather"," px"],["Strength","%"],["Brightness","%"],["Contrast","%"],["Saturation","%"],["Denoise","%"]])$("#ie"+key+"Value").textContent=$("#ie"+key).value+unit;ewBackend();$$("[data-tool]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.tool===IMAGE_EDITOR?.tool));}
-function ewBackend() {const native=IMAGE_EDITOR?.mode!=="camera" && $("#ieBackend").value==="native";$("#ieNativeSettings").hidden=!native;$("#ieProvider").disabled=native;}
+function ewBackend() {const native=!["camera","relight_ai"].includes(IMAGE_EDITOR?.mode) && $("#ieBackend").value==="native";$("#ieNativeSettings").hidden=!native;$("#ieProvider").disabled=native;}
 function ewUpdateHistoryActions() {const E=IMAGE_EDITOR;if(!E)return;const edit=curV(E.n)?.edit;$("#ieReuse").disabled=!(edit?.recipe||edit?.light);$("#ieRetry").hidden=!E.n.data.lastImageEdit || !!E.n.job;$("#ieResultLayer").disabled=!edit?.layer;}
 async function ewApplyRecipe(recipe) {
   const E=IMAGE_EDITOR;if(!E || !recipe || E.busy || E.n.job || E.agentSelection)return;ewScheduleDraft(true);await ewFlushDraft(E);
@@ -212,7 +212,8 @@ async function ewApplyRecipe(recipe) {
   for(const side of ["left","right","top","bottom"])$("#iePad"+side[0].toUpperCase()+side.slice(1)).value=recipe.padding?.[side] || 0;
   E.strokes=[];E.redo=[];if(recipe.mask){await ewAsset(E,recipe.mask);E.strokes=[{tool:"mask",ref:recipe.mask,replace:true,luminance:true}];}
   if(recipe.camera_view)imageCameraSet(recipe.camera_view,recipe.count);
-  ieMode(recipe.camera_view ? "camera" : recipe.mode || "region");ieRebuildMask();ewRefreshControls();ewScheduleDraft(true);ieStatus("已复用原图、选区和生成参数");
+  if(recipe.relight)relightSet(recipe.relight);
+  ieMode(recipe.camera_view ? "camera" : recipe.relight ? "relight_ai" : recipe.mode || "region");ieRebuildMask();ewRefreshControls();ewScheduleDraft(true);ieStatus("已复用原图、选区和生成参数");
 }
 function ewInitEditor(host) {
   $("#ieZoomIn").onclick=()=>ewZoom(1.25);$("#ieZoomOut").onclick=()=>ewZoom(.8);$("#ieActualSize").onclick=()=>{const E=IMAGE_EDITOR;if(E?.view)ewZoom(1/E.view.scale);};

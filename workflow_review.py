@@ -5,6 +5,7 @@ import re
 import camera_plan
 import image_camera
 import image_editor
+import image_relight
 
 KINDS = {"text":"文字", "script":"分镜脚本", "image":"图片", "video":"视频", "audio":"音频"}
 SOURCES = {"upload":"上传", "gen":"生成", "edit":"编辑", "frame":"截帧", "tile":"宫格拆分",
@@ -14,7 +15,7 @@ ROLES = {"first":"首帧", "last":"尾帧", "frame":"关键帧", "keyframe":"关
          "subject":"参考图", "text":"文字输入", "remake":"原片", "depth":"深度参考", "previs":"白模动作参考",
          "edit":"编辑源图", "clip":"剪辑片段", "cutaway":"补画面", "reference":"参考素材", "script":"分镜来源", "draft":"定稿样片",
          "bgm":"配乐", "narration":"旁白", "audio":"音频片段", "audio_ref":"音频参考", "video_ref":"视频参考", "original_sound":"原声",
-         "version_copy":"复制自版本"}
+         "version_copy":"复制自版本", "seed_audio_ref":"音频参考"}
 TRANSITIONS = {"cut":"硬切", "fade":"叠化", "black":"黑场"}
 SETTINGS = {
     "model":"模型", "provider_model":"模型", "provider":"服务", "backend":"编辑后端", "quality":"质量",
@@ -107,6 +108,12 @@ def argument_rows(v, receipt, remake):
     if image_view:
         try:
             values.append({"label":"图片机位", "value":image_camera.instructions(image_camera.validate(image_view))})
+        except ValueError:
+            pass
+    edit = obj(v.get("edit"))
+    if light := obj(edit.get("recipe")).get("relight") or edit.get("light"):
+        try:
+            values.append({"label":"图片布光", "value":image_relight.instructions(image_relight.validate(light))})
         except ValueError:
             pass
     resize = obj(v.get("edit")).get("resize")
@@ -210,13 +217,23 @@ class BoardReview:
             found.setdefault(key, {**link, **metadata})
 
         captured = obj(v.get("generation_record"))
+        audio_recipe = obj(v.get("audio_recipe"))
+        seed_refs = audio_recipe.get("references") if audio_recipe.get("mode") == "seed_audio" else None
         copied = obj(v.get("copied_from"))
         source, ref = copied.get("node"), text(copied.get("ref"),300)
         if isinstance(source,str) and source != node["id"] and ref and any(
             source == nid for nid,_ in self.sources.get(ref,[])
         ):
             add(source, ref, "version_copy", "版本记录", version=copied.get("version"))
-        entries = [entry for entry in items(captured.get("inputs")) + items(receipt.get("images")) if isinstance(entry, dict)]
+        if isinstance(seed_refs, list):
+            for slot, entry in enumerate(seed_refs, 1):
+                if isinstance(entry, dict) and entry.get("ref"):
+                    role = "audio_ref" if entry.get("kind") == "audio" else "subject"
+                    add(entry.get("node_id"), entry["ref"], role, "版本配方",
+                        token=f"@音频{slot}" if role == "audio_ref" else None)
+            entries = []
+        else:
+            entries = [entry for entry in items(captured.get("inputs")) + items(receipt.get("images")) if isinstance(entry, dict)]
         frame_order = [i for i, entry in enumerate(entries) if entry.get("role") == "frame"]
         for i, entry in enumerate(entries):
             role = text(entry.get("role")) or "reference"
@@ -284,6 +301,10 @@ class BoardReview:
             source = edge.get("from")
             if isinstance(source, str) and source not in covered:
                 relation = edge.get("relation")
+                if relation == "seed_audio_ref" and audio_recipe:
+                    continue
+                if relation == "seed_audio_ref" and self.nodes.get(source, {}).get("type") == "image":
+                    relation = "subject"
                 ref = edge.get("ref") or edge.get("source_ref")
                 clip_range = {"end":number(edge.get("end"))} if relation == "video_ref" else {}
                 add(source, ref, text(relation or edge.get("role")) or
@@ -377,7 +398,8 @@ def markdown(report):
             event = f" · {item['time']:g}{end} 秒" if item["time"] is not None else ""
             trans = f" · {item['transition']}" if item.get("transition") else ""
             rate = f" · {item['speed']:g}×" if item.get("speed") else ""
-            lines.append(f"- {item['role']} · {plain(item['name'])}{upstream}{event}{trans}{rate}（{item['evidence']}）")
+            token = f" {item['token']}" if item.get("token") else ""
+            lines.append(f"- {item['role']}{token} · {plain(item['name'])}{upstream}{event}{trans}{rate}（{item['evidence']}）")
             if item["text"]:
                 lines.extend(block(item["text"]))
         if step["memory"]:

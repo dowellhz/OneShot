@@ -21,6 +21,8 @@ AC_STATES.waiting_approval="等待确认生成方案…";
 AC.approvals=[];
 const acDecidedApprovals=new Set();
 AC_LABELS.canvas_workflow_review="读取制作复盘";
+AC_LABELS.image_camera="图片换机位";
+AC_LABELS.image_relight="图片重新布光";
 AC_LABELS.web_search="搜索公开资料";
 AC_LABELS.web_save_references="保存公开资料";
 
@@ -952,6 +954,7 @@ function acRenderApprovals() {
     <div class="ac-approval-actions"><button type="submit">保存参数</button><button type="reset">放弃更改</button></div></form></details>`:"";
   return `<article><strong>确认生成</strong><div>${esc(plan.label || AC_LABELS[name] || "生成方案")} · ${esc(plan.count)} ${esc(units[plan.kind]||"个结果")}</div>
    ${details?`<small>${esc(details)}</small>`:""}
+   ${plan.camera_summary||plan.light_summary?`<p>${esc(plan.camera_summary||plan.light_summary)}</p>`:""}
    ${plan.prompt?`<details${graphics?" open":""}><summary>${graphics?"B-roll 画面方案":plan.items?"整组风格":plan.kind==="audio"?"文案或描述":"提示词"}</summary><p>${esc(plan.prompt)}</p></details>`:""}
    ${plan.items?`<ol class="ac-approval-items">${plan.items.map(item=>`<li><details><summary>${esc(item.name)} · ${esc(item.aspect==="auto"?"沿用参考比例":item.aspect)}</summary><p>${esc(item.prompt)}</p></details></li>`).join("")}</ol>`:""}
    ${form}

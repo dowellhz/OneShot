@@ -15,6 +15,8 @@ from aiohttp import web
 from PIL import Image, ImageChops, ImageFilter, ImageOps
 
 import db
+import image_camera
+import image_relight
 
 routes = web.RouteTableDef()
 SCHEMA = """
@@ -24,7 +26,7 @@ CREATE TABLE IF NOT EXISTS chat_selections (
 CREATE INDEX IF NOT EXISTS chat_selections_session ON chat_selections(session_id, created);
 CREATE INDEX IF NOT EXISTS chat_calls_run ON chat_calls(run_id);
 """
-NAMES = {"image_select", "image_segment", "image_edit", "image_layers_get", "image_layers_edit", "image_extract", "image_history", "image_reuse", "image_compare"}
+NAMES = {"image_select", "image_segment", "image_edit", "image_camera", "image_relight", "image_layers_get", "image_layers_edit", "image_extract", "image_history", "image_reuse", "image_compare"}
 
 
 def register(tools, tool, prop, node, text, prompt):
@@ -37,6 +39,19 @@ def register(tools, tool, prop, node, text, prompt):
         if fn["name"] == "image_edit":
             fn["parameters"]["properties"].update(params,review_id=node)
             fn["description"] = "编辑图片并在原节点追加历史版本。区域批注自动限制修改范围，可传 review_id 指定其中一条。用户只改背景/主体时指定target=background/foreground；指定selection使用选区ID。"
+    tool("image_camera", "从本轮引用的图片版本重新构图，保留主体和场景，在原节点追加版本。正yaw向右环绕，正pitch为俯拍，负distance靠近主体。可设置焦段、光圈及镜头质感。", {
+        "node_id":node, "camera_view":prop("object", additionalProperties=False, minProperties=1, properties={
+            "yaw":prop("integer", minimum=-180, maximum=180), "pitch":prop("integer", minimum=-60, maximum=60),
+            "distance":prop("integer", minimum=-100, maximum=100), "lens":prop("integer", enum=list(image_camera.LENSES)),
+            "framing":prop("string", enum=list(image_camera.FRAMINGS)), "sensor":prop("string", enum=list(image_camera.SENSORS)),
+            "optics":prop("string", enum=list(image_camera.OPTICS)), "aperture":prop("string", enum=list(image_camera.APERTURES)),
+        }), "prompt":prompt, "count":prop("integer", minimum=1, maximum=4), "provider":params["provider"],
+    }, ["node_id","camera_view"])
+    tool("image_relight", "按参数为本轮引用的图片重新布光，在原节点追加版本。x 正值偏右，y 正值偏下，depth 正值在主体前方。temperature 负值偏冷、0 对应 5600 K、正值偏暖。", {
+        "node_id":node, "relight":prop("object",additionalProperties=False,properties={
+            key:prop("integer",minimum=low,maximum=high) for key,(low,high,_) in image_relight.CONTROLS.items()
+        }), "prompt":prompt, "provider":params["provider"],
+    }, ["node_id","relight"])
     tool("image_select", "生成并保存可跨轮复用的选区。foreground/background自动识别主体；manual等待用户在编辑器画区域；existing复用已保存选区。", {
         "node_id": node, "mode": prop("string", enum=["foreground", "background", "manual", "existing"]),
         "selection_id": node, "instruction": text}, ["node_id", "mode"])
@@ -219,6 +234,21 @@ async def execute(s, run, user, cid, name, args):
                 raise ValueError("指定的区域批注不属于本轮引用的图片版本")
     n, version = s.source(run, user, args["node_id"], pinned_ref=reviews[0]["source_ref"] if reviews else None)
     source_ref = version["ref"]
+    if name in ("image_camera","image_relight"):
+        camera = name == "image_camera"
+        field = "camera_view" if camera else "relight"
+        if camera and not args[field]:
+            raise ValueError("请至少指定一项机位或镜头参数")
+        settings = (image_camera if camera else image_relight).validate(args[field])
+        action = "换机位" if camera else "重新布光"
+        payload = {"ref":source_ref,"mode":"whole","backend":"h3","strength":1,"prompt":args.get("prompt",""),
+                   field:settings,"quality":n.get("data",{}).get("quality") or "4mp"}
+        if camera:
+            payload["count"] = args.get("count",1)
+        if args.get("provider"):
+            payload["provider"] = args["provider"]
+        return await s.submit_generation(run,user,cid,payload,n.get("name","图片")+" · "+action,
+                                         h.image_edit_generate,target_id=n["id"])
     if name == "image_select":
         mode = args["mode"]
         if mode == "existing":
@@ -273,7 +303,7 @@ async def execute(s, run, user, cid, name, args):
                 raise ValueError("历史版本已不存在")
             version = n["versions"][args["version_index"]]
         recipe = copy.deepcopy((version.get("edit") or {}).get("recipe"))
-        if not isinstance(recipe, dict) or not recipe.get("ref") or not recipe.get("prompt"):
+        if not isinstance(recipe, dict) or not recipe.get("ref") or not any(recipe.get(key) for key in ("prompt","camera_view","relight")):
             raise ValueError("这个版本没有可复用的编辑参数")
         allowed = reachable_refs(s.board(user, run["board_id"]))
         if recipe["ref"] not in allowed or recipe.get("mask") and recipe["mask"] not in allowed:
@@ -281,6 +311,13 @@ async def execute(s, run, user, cid, name, args):
         keys = ("ref", "mask", "mode", "prompt", "backend", "strength", "feather", "denoise", "steps", "seed", "provider", "padding")
         payload = {k: recipe[k] for k in keys if k in recipe}
         payload.update({k: args[k] for k in keys if k in args})
+        if "camera_view" in recipe:
+            payload.update(camera_view=image_camera.validate(recipe["camera_view"]),count=recipe.get("count",1),
+                           quality=recipe.get("quality","4mp"))
+            payload.setdefault("prompt","")
+        if "relight" in recipe:
+            payload.update(relight=image_relight.validate(recipe["relight"]),quality=recipe.get("quality","4mp"))
+            payload.setdefault("prompt","")
         return await s.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 重试", h.image_edit_generate, target_id=n["id"])
     if name == "image_compare":
         before = source_ref

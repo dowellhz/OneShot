@@ -183,6 +183,16 @@ CREATE TABLE IF NOT EXISTS canvas_templates (
 CREATE INDEX IF NOT EXISTS canvas_templates_owner ON canvas_templates(owner,updated);
 CREATE TABLE IF NOT EXISTS canvas_template_publications (
  template_id TEXT PRIMARY KEY, published REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS showcase_template_links (
+ token TEXT PRIMARY KEY, template_id TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS showcase_template_unlink AFTER DELETE ON showcase_entries
+BEGIN
+  DELETE FROM showcase_template_links WHERE token=OLD.token;
+END;
+CREATE TRIGGER IF NOT EXISTS deleted_template_unlink AFTER DELETE ON canvas_templates
+BEGIN
+  DELETE FROM showcase_template_links WHERE template_id=OLD.id;
+END;
 CREATE TRIGGER IF NOT EXISTS canvas_template_unpublish AFTER DELETE ON canvas_templates
 BEGIN
   DELETE FROM canvas_template_publications WHERE template_id=OLD.id;

@@ -33,6 +33,9 @@
 #shareShowcaseEntries { list-style: none; display: grid; padding: 0; margin: 8px 0 0; gap: 6px; }
 #shareShowcaseEntries li { padding: 6px; overflow-wrap: anywhere; background: var(--card-hi); border-radius: 6px; }
 #shareShowcaseEntries span { display: block; margin-bottom: 4px; }
+#shareShowcaseEntries details { margin-top: 6px; }
+#shareShowcaseEntries details summary { cursor: pointer; }
+#shareShowcaseEntries details select { flex: 1; }
 #shareTeamTarget { flex: 1; }
 #shareTeamEditor { margin: 8px 0; }
 #shareTeamEditor summary { cursor: pointer; }

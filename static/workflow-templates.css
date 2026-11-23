@@ -35,3 +35,7 @@
 .template-preview-nodes p { margin: 4px 0 0; white-space: pre-wrap; max-height: 5em; overflow: auto; }
 .template-preview-nodes img, .template-preview-nodes video, .template-preview-nodes audio { display: block; width: 100%; margin-top: 5px; }
 .template-preview-nodes img, .template-preview-nodes video { height: 85px; object-fit: contain; }
+.template-preview-edges li { padding-block: 4px; overflow-wrap: anywhere; }
+.template-preview-edges summary { cursor: pointer; }
+.template-preview-edges :is(img,video,audio) { display: block; width: min(100%,280px); margin-top: 6px; }
+.template-preview-edges :is(img,video) { max-height: 180px; object-fit: contain; }

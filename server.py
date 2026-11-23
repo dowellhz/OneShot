@@ -469,8 +469,13 @@ def attach_image_edit(j, p):
     spec = p.get("_image_edit")
     if spec:
         j["meta"]["image_edit"] = spec
-        j["meta"]["mode_name"] = "图片换机位" if (spec.get("recipe") or {}).get("camera_view") else {
-            "region": "局部重绘", "whole": "整图编辑", "outpaint": "智能扩图"}[spec["mode"]]
+        recipe = spec.get("recipe") or {}
+        mode_name = {"region":"局部重绘","whole":"整图编辑","outpaint":"智能扩图"}[spec["mode"]]
+        if recipe.get("camera_view"):
+            mode_name = "图片换机位"
+        elif recipe.get("relight"):
+            mode_name = "图片重新布光"
+        j["meta"]["mode_name"] = mode_name
         if spec.get("recipe", {}).get("backend") == "native":
             j["meta"]["mode_name"] += " · 原生遮罩"
         EDIT_JOBS.mkdir(parents=True, exist_ok=True)
@@ -1251,6 +1256,12 @@ async def showcase_detail(req):
                      WHERE s.token=? AND s.state='approved'""", req.match_info["token"])
     if not row:
         raise web.HTTPNotFound(headers=public_canvas.HEADERS)
+    template = db.one("""SELECT t.id,t.name FROM showcase_template_links l
+                         JOIN showcase_entries s ON s.token=l.token AND s.state='approved'
+                         JOIN canvas_templates t ON t.id=l.template_id AND t.owner=s.owner
+                         JOIN canvas_template_publications p ON p.template_id=t.id WHERE l.token=?""",row["token"])
+    if template:
+        row["template"] = template
     return web.json_response(row, headers=public_canvas.HEADERS)
 
 
@@ -1276,8 +1287,12 @@ async def showcase_public_media(req):
 @routes.get("/api/board/{bid}/showcase")
 async def board_showcase(req):
     path, _ = board_to_share(req)
-    rows = db.q("""SELECT token,title,state,reason FROM showcase_entries
-                   WHERE board_id=? ORDER BY submitted DESC,token""", path.stem)
+    rows = db.q("""SELECT s.token,s.title,s.state,s.reason,s.owner=? AS can_link_template,
+                          l.template_id,t.name AS template_name,p.published AS template_published
+                   FROM showcase_entries s LEFT JOIN showcase_template_links l ON l.token=s.token
+                   LEFT JOIN canvas_templates t ON t.id=l.template_id
+                   LEFT JOIN canvas_template_publications p ON p.template_id=t.id
+                   WHERE s.board_id=? ORDER BY s.submitted DESC,s.token""", req["user"]["id"],path.stem)
     return web.json_response(rows, headers=public_canvas.HEADERS)
 
 
@@ -1316,6 +1331,8 @@ async def store_showcase(req, path, board, payload, files):
     if payload.get("revision") != board.get("rev"):
         return auth.err(409,"画布已更新，请重新选择要发布的版本")
     uid = req["user"]["id"]
+    template = payload.get("template")
+    validate_showcase_template(template,uid)
     event = None
     if "event" in payload:
         event = creative_events.find_event(creative_events.field(payload,"event",21,required=True))
@@ -1353,7 +1370,8 @@ async def store_showcase(req, path, board, payload, files):
         os.replace(video_path,destination)
     try:
         with db.transaction():
-            row = insert_showcase(path.stem,uid,node_id,video_ref,title.strip(),description.strip(),jpg,snapshot)
+            validate_showcase_template(template,uid)
+            row = insert_showcase(path.stem,uid,node_id,video_ref,title.strip(),description.strip(),jpg,snapshot,template)
             if event:
                 row["event_entry"], _ = creative_events.store_entry(event,uid,row["token"],track)
     except Exception:
@@ -1362,18 +1380,30 @@ async def store_showcase(req, path, board, payload, files):
     return web.json_response(row, status=201, headers=public_canvas.HEADERS)
 
 
-def insert_showcase(bid,uid,node_id,video_ref,title,description,jpg,snapshot):
+def insert_showcase(bid,uid,node_id,video_ref,title,description,jpg,snapshot,template=None):
     token = secrets.token_urlsafe(32)
-    db.run("""INSERT INTO showcase_entries
+    changed = db.one("""INSERT INTO showcase_entries
               (token,board_id,owner,node_id,video_ref,cover,title,description,state,submitted,snapshot)
               VALUES(?,?,?,?,?,?,?,?,'pending',?,?)
               ON CONFLICT(board_id,node_id,video_ref) DO UPDATE SET cover=excluded.cover,title=excluded.title,
                 description=excluded.description,state='pending',reason='',submitted=excluded.submitted,
-                snapshot=excluded.snapshot WHERE showcase_entries.state='rejected'""",
+                snapshot=excluded.snapshot WHERE showcase_entries.state='rejected'
+              RETURNING token,title,state,reason""",
            token,bid,uid,node_id,video_ref,jpg,title,description,time.time(),
            json.dumps(snapshot,ensure_ascii=False) if snapshot else None)
+    if changed:
+        set_showcase_template(changed["token"],template)
+        return changed
     return db.one("SELECT token,title,state,reason FROM showcase_entries WHERE board_id=? AND node_id=? AND video_ref=?",
                   bid,node_id,video_ref)
+
+
+def set_showcase_template(token, template):
+    if template:
+        db.run("""INSERT INTO showcase_template_links VALUES(?,?) ON CONFLICT(token)
+                  DO UPDATE SET template_id=excluded.template_id""",token,template)
+    else:
+        db.run("DELETE FROM showcase_template_links WHERE token=?",token)
 
 
 def discard_showcase_video(ref):
@@ -1394,6 +1424,33 @@ async def withdraw_showcase(req):
     path, _ = board_to_share(req)
     delete_showcase_entries(path.stem,req.match_info["token"])
     return web.json_response({"ok":True}, headers=public_canvas.HEADERS)
+
+
+def validate_showcase_template(template, uid):
+    if template is None:
+        return
+    if not isinstance(template,str) or not re.fullmatch(r"t[a-f0-9]{20}",template):
+        raise bad("工作流模板编号无效")
+    if not db.one("""SELECT 1 FROM canvas_templates t JOIN canvas_template_publications p ON p.template_id=t.id
+                     WHERE t.id=? AND t.owner=?""",template,uid):
+        raise bad("请选择自己已共享的工作流模板")
+
+
+@routes.put(r"/api/board/{bid}/showcase/{token:[A-Za-z0-9_-]{43}}/template")
+async def update_showcase_template(req):
+    path, _ = board_to_share(req)
+    uid, token = req["user"]["id"],req.match_info["token"]
+    payload = await req.json()
+    if not isinstance(payload,dict) or "template" not in payload:
+        raise bad("请选择要关联的工作流模板")
+    template = payload["template"]
+    with db.transaction():
+        if not db.one("SELECT 1 FROM showcase_entries WHERE board_id=? AND token=? AND owner=? AND state='approved'",
+                      path.stem,token,uid):
+            raise web.HTTPNotFound()
+        validate_showcase_template(template,uid)
+        set_showcase_template(token,template)
+    return web.json_response({"ok":True},headers=public_canvas.HEADERS)
 
 
 def require_showcase_admin(req):
@@ -1543,7 +1600,10 @@ async def save_template(req):
         ids = {n["id"] for n in board["nodes"]}
         if not isinstance(selected,list) or not selected or any(not isinstance(nid,str) or nid not in ids for nid in selected):
             raise bad("选中的模板节点不存在")
-    template = board_store.workflow_template(board, selected)
+    include_upstream = payload.get("include_upstream",False)
+    if type(include_upstream) is not bool:
+        raise bad("模板依赖选项无效")
+    template = board_store.workflow_template(board, selected, include_upstream=include_upstream)
     template["template_description"] = template_description(payload)
     refs = media_references(template)
     require_media(user,refs)
@@ -1592,28 +1652,54 @@ async def unpublish_template(req):
     return web.json_response({"ok":True})
 
 
-@routes.get("/api/canvas-templates/{tid}/preview")
-async def preview_template(req):
-    row = readable_template(req)
+def capture_template_preview(row):
     template = row["data"]
     preview = public_canvas.capture({**template, "name":row["name"]}, COMFY_DIR)
-    preview.pop("media")
+    media = {ref:index for index,ref in enumerate(preview["media"])}
     preview["description"] = row["description"]
     node_ids = {node["id"] for node in preview["nodes"]}
-    preview["edges"] = [{key:public_canvas.string(edge[key],80) for key in ("from","to","role","relation") if key in edge}
-                        for edge in template.get("edges",[]) if edge["from"] in node_ids and edge["to"] in node_ids]
-    data_by_node = {item["id"]:item.get("data") for item in template["nodes"]}
+    nodes = {item["id"]:item for item in template["nodes"]}
+    edges = []
+    for edge in board_store.seed_audio_edges(template):
+        source_id, target_id = edge.get("from"), edge.get("to")
+        if source_id not in node_ids or target_id not in node_ids:
+            continue
+        summary = {key:public_canvas.string(edge[key],80) for key in ("from","to","role","relation") if key in edge}
+        source = nodes[source_id]
+        ref = edge.get("source_ref") if edge.get("relation") in public_canvas.SOURCE_RELATIONS else edge.get("ref")
+        if isinstance(ref,str) and ref and source["type"] in ("image","audio","video"):
+            versions = source.get("versions") or []
+            number = next((i for i,v in enumerate(versions,1) if isinstance(v,dict) and v.get("ref")==ref),None)
+            if number and public_canvas.media_path(COMFY_DIR,ref,source["type"]):
+                summary.update(version=number,media=media.setdefault(ref,len(media)))
+            else:
+                summary["reference_unavailable"] = True
+        for key in ("start","end","time","at"):
+            if (value := public_canvas.number(edge.get(key),None,0,86_400)) is not None:
+                summary[key] = value
+        for key in ("slot","prompt_slot"):
+            if type(edge.get(key)) is int and 0 < edge[key] <= 5000:
+                summary[key] = edge[key]
+        edges.append(summary)
+    preview["edges"] = edges
+    preview["media"] = list(media)
     for node in preview["nodes"]:
-        data = data_by_node[node["id"]]
+        data = nodes[node["id"]].get("data")
         if isinstance(data,dict) and isinstance(data.get("prompt"),str):
             node["prompt"] = data["prompt"][:20_000]
+    return preview
+
+
+@routes.get("/api/canvas-templates/{tid}/preview")
+async def preview_template(req):
+    preview = capture_template_preview(readable_template(req))
+    preview.pop("media")
     return web.json_response(preview, headers=public_canvas.HEADERS)
 
 
 @routes.get(r"/api/canvas-templates/{tid}/preview/media/{index:\d{1,6}}")
 async def preview_template_media(req):
-    row = readable_template(req)
-    preview = public_canvas.capture(row["data"], COMFY_DIR)
+    preview = capture_template_preview(readable_template(req))
     index = int(req.match_info["index"])
     if index >= len(preview["media"]):
         raise web.HTTPNotFound()
@@ -1831,7 +1917,7 @@ def grant_media(user, *refs):
             db.run("INSERT OR IGNORE INTO media_grants VALUES(?,?)", ref, user["id"])
 
 
-def can_read_media(user, ref):
+def can_read_media(user, ref, *, seen=frozenset()):
     if user["role"] == "admin":
         return True
     uid = user["id"]
@@ -1841,6 +1927,22 @@ def can_read_media(user, ref):
             or db.one("""SELECT 1 FROM tasks, json_each(CASE WHEN json_valid(tasks.outputs) THEN tasks.outputs END)
                          WHERE user_id=? AND json_each.value=? LIMIT 1""", uid, ref)):
         return True
+    if ref in seen:
+        return False
+    if re.fullmatch(r"(?:input:h3studio/editbase|output:h3studio/edit-layer)_[^/]+\.png",ref):
+        for row in db.q("SELECT request FROM tasks WHERE user_id=? AND capability='image' AND state='done' AND instr(request,?)>0",uid,ref):
+            edits = task_settings(row["request"]).get("image_edits")
+            if not isinstance(edits,dict):
+                continue
+            for edit in edits.values():
+                if not isinstance(edit,dict):
+                    continue
+                layer = edit.get("layer")
+                if ref != edit.get("base") and (not isinstance(layer,dict) or ref != layer.get("ref")):
+                    continue
+                source = edit.get("source")
+                if isinstance(source,str) and source != ref and can_read_media(user,source,seen=seen | {ref}):
+                    return True
     for row in db.q("SELECT board,data FROM video_remakes WHERE owner=? AND instr(data,?)>0", uid, ref):
         board = board_meta(board_path(row["board"]))
         if board and can_see(user, board) and ref in media_references(json.loads(row["data"])):
@@ -1989,6 +2091,48 @@ HISTORY_CAPABILITIES = {"image": ("image",), "video": ("video","render"), "audio
 HISTORY_EXTENSIONS = {"image": creative_memory.IMAGE_EXT, "video": tools.VIDEO_EXT, "audio": AUDIO_MEDIA_EXT}
 
 
+def readable_history_image_edit(edit, user, permitted):
+    if not isinstance(edit,dict):
+        return None
+    for ref in media_references(edit):
+        key = (ref,"image")
+        if key not in permitted:
+            try:
+                permitted[key] = tools.ref_path(COMFY_DIR,ref).is_file() and can_read_media(user,ref)
+            except (OSError,ValueError):
+                permitted[key] = False
+        if not permitted[key]:
+            return None
+    return edit
+
+
+def history_seed_refs(recipe, user, permitted):
+    selected = set()
+    selected_kind = None
+
+    def keep(item):
+        nonlocal selected_kind
+        ref, kind, ident = item.get("ref"), item.get("kind"), item.get("node_id")
+        if not isinstance(ref,str) or kind not in ("audio","image") or not isinstance(ident,str) or not _ID.fullmatch(ident):
+            return False
+        if ref in selected or selected_kind not in (None,kind) or len(selected) >= (3 if kind=="audio" else 1):
+            return False
+        key = (ref,kind)
+        if key not in permitted:
+            try:
+                path = tools.ref_path(COMFY_DIR,ref)
+                permitted[key] = path.suffix.lower() in HISTORY_EXTENSIONS[kind] and path.is_file() and can_read_media(user,ref)
+            except (OSError,ValueError):
+                permitted[key] = False
+        if not permitted[key]:
+            return False
+        selected.add(ref)
+        selected_kind = kind
+        return True
+
+    return board_store.prune_seed_audio_refs(recipe,keep)
+
+
 def task_settings(serialized):
     try:
         value = json.loads(serialized or "{}")
@@ -2013,13 +2157,19 @@ def generation_history_metadata(job):
     settings = {key: meta[key] for key in ("seed", "width", "height") if type(meta.get(key)) is int}
     if meta.get("prompt"):
         settings["prompt"] = clean(meta["prompt"])[:2000]
-    if not settings:
+    image_edits = {output["ref"]:output["extra"]["edit"] for output in job.get("outputs") or []
+                   if job["kind"]=="image" and output.get("ref") and isinstance(output.get("extra",{}).get("edit"),dict)}
+    if not settings and not image_edits:
         return {}
     task = db.one("SELECT request FROM tasks WHERE id=?", job["id"])
     if not task:
         return {}
     request = task_settings(task["request"])
     request["history"] = settings
+    if image_edits:
+        request["image_edits"] = image_edits
+        if meta.get("mode_name"):
+            settings["mode_name"] = meta["mode_name"]
     return {"request": json.dumps(request, ensure_ascii=False)}
 
 
@@ -2053,7 +2203,7 @@ async def generation_history(req):
     page_size = 24
     rows = db.q("SELECT rowid AS cursor,id,label,model,capability,finished,created,outputs,request FROM tasks WHERE " +
                 " AND ".join(conditions) + " ORDER BY rowid DESC LIMIT ?", *params, page_size+1)
-    items = []
+    items, permitted = [], {}
     for task in rows[:page_size]:
         try:
             refs = json.loads(task["outputs"])
@@ -2065,6 +2215,7 @@ async def generation_history(req):
         history, recipe = (request.get(key) for key in ("history", "recipe"))
         history = history if isinstance(history, dict) else {}
         recipe = recipe if isinstance(recipe, dict) else {}
+        edits = request.get("image_edits")
         graphics = request.get("broll") if task["capability"]=="render" else None
         graphics_prompt = (graphics.get("title") or "\n".join(graphics.get("lines",[]))) if graphics else ""
         prompt = clean(graphics_prompt or history.get("prompt") or recipe.get("prompt") or request.get("prompt") or request.get("text"))[:2000]
@@ -2072,6 +2223,7 @@ async def generation_history(req):
         audio = {key: recipe[key] for key in AUDIO_SETTINGS if key in recipe}
         if item_kind == "audio":
             audio.update(mode=task["capability"], prompt=clean(recipe.get("prompt"))[:3000] or prompt)
+        missing = history_seed_refs(audio,user,permitted)
         ext = HISTORY_EXTENSIONS[item_kind]
         for index, ref in enumerate(refs):
             if not isinstance(ref, str):
@@ -2083,15 +2235,25 @@ async def generation_history(req):
             if file.suffix.lower() not in ext:
                 continue
             available = file.is_file()
+            saved_edit = edits.get(ref) if item_kind=="image" and isinstance(edits,dict) else None
+            image_edit = readable_history_image_edit(saved_edit,user,permitted) if available else None
+            dimensions = {key:history[key] for key in ("width","height") if type(history.get(key)) is int}
+            if image_edit and isinstance(layer := image_edit.get("layer"),dict):
+                for key, source in (("width","w"),("height","h")):
+                    if type(layer.get(source)) is int:
+                        dimensions[key] = layer[source]
             items.append({"id": f"{task['id']}:{index}", "type": item_kind, "ref": ref, "available": available,
                           "url": "/media?ref=" + quote(ref, safe="") if available else None,
                           "label": task["label"] or file.stem, "model": "B-roll" if graphics else task["model"], "prompt": prompt,
                           "created": task["finished"] or task["created"],
                           **({"source":"broll","broll_recipe":graphics} if graphics else {}),
+                          **({"source":"edit","image_edit":image_edit} if image_edit else {}),
+                          **({"image_edit_unavailable":True} if available and saved_edit and not image_edit else {}),
                           **({"audio_recipe": audio} if item_kind == "audio" else {}),
+                          **({"missing_audio_references":missing} if missing else {}),
                           **({"audio_transcript":request["audio_transcript"]}
                              if item_kind == "audio" and isinstance(request.get("audio_transcript"),dict) else {}),
-                          **{key: history[key] for key in ("seed", "width", "height") if type(history.get(key)) is int}})
+                          **({"seed":history["seed"]} if type(history.get("seed")) is int else {}), **dimensions})
     if items:
         saved = {row["ref"] for row in db.q("SELECT ref FROM media_favorites WHERE user_id=? AND ref IN (SELECT value FROM json_each(?))",
                                              user["id"], json.dumps([item["ref"] for item in items]))}
@@ -2126,14 +2288,17 @@ async def list_media_favorites(req):
     page_size = 24
     rows = db.q("SELECT rowid AS cursor,ref,kind,label,data,created FROM media_favorites WHERE " +
                 " AND ".join(filters) + " ORDER BY rowid DESC LIMIT ?", *params, page_size+1)
-    items = []
+    items, permitted = [], {}
     for row in rows[:page_size]:
         ref = row["ref"]
         try:
             available = tools.ref_path(COMFY_DIR,ref).is_file() and can_read_media(user,ref)
         except (ValueError,OSError):
             available = False
-        items.append({**task_settings(row["data"]), "id":ref, "ref":ref, "label":row["label"], "type":row["kind"],
+        data = task_settings(row["data"])
+        missing = data.pop("missing_audio_references",0) + history_seed_refs(data.get("audio_recipe"),user,permitted)
+        items.append({**data, **({"missing_audio_references":missing} if missing else {}),
+                      "id":ref, "ref":ref, "label":row["label"], "type":row["kind"],
                       "created":row["created"], "favorite":True, "available":available,
                       "url":"/media?ref=" + quote(ref,safe="") if available else None})
     return web.json_response({"items":items,"next":rows[page_size-1]["cursor"] if len(rows)>page_size else None}, headers=headers)
@@ -2172,6 +2337,12 @@ async def update_media_favorite(req):
             data["audio_recipe"]["speed"] = recipe["speed"]
         if mode in ("tts","seed_audio") and recipe.get("subtitles") is True:
             data["audio_recipe"]["subtitles"] = True
+        if mode == "seed_audio" and isinstance(recipe.get("references"),list):
+            keys = ("node_id","ref","kind")
+            data["audio_recipe"]["references"] = [{key:item.get(key) for key in keys} if isinstance(item,dict) else None
+                                                   for item in recipe["references"][:3]]
+            if missing := history_seed_refs(data["audio_recipe"],user,{}):
+                data["missing_audio_references"] = missing
         output = recipe.get("audio_format")
         rate = recipe.get("sample_rate")
         if isinstance(output,str) and output in film.AUDIO_OUTPUT_RATES and type(rate) is int and rate in film.AUDIO_OUTPUT_RATES[output]:
@@ -4305,6 +4476,10 @@ def restore_logged_job(app, row):
             refs = []
         outputs = []
         request = task_settings(row.get("request"))
+        history = request.get("history")
+        if isinstance(history,dict):
+            job["meta"].update({key:history[key] for key in ("seed","mode_name") if key in history})
+        image_edits = request.get("image_edits")
         for index, ref in enumerate(refs if isinstance(refs,list) else []):
             if not isinstance(ref, str):
                 continue
@@ -4325,6 +4500,8 @@ def restore_logged_job(app, row):
                          if isinstance(request.get(source),dict)}
                 if extra:
                     outputs[-1]["extra"] = extra
+            if job["kind"]=="image" and isinstance(image_edits,dict) and isinstance(image_edits.get(ref),dict):
+                outputs[-1]["extra"] = {"source":"edit","edit":image_edits[ref]}
             if stem:
                 outputs[-1]["extra"] = {"stem":stem}
             if draft := db.one("SELECT expires FROM video_drafts WHERE ref=? AND job_id=?", ref, jid):

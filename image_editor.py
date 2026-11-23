@@ -12,6 +12,7 @@ from urllib.parse import quote
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
 import image_camera
+import image_relight
 from tools import _new, ref_path
 
 MAX_PIXELS = 32 * 1024 * 1024
@@ -164,8 +165,11 @@ def prepare(root: Path, p: dict) -> dict:
     if mode not in ("region", "whole", "outpaint"):
         raise ValueError("未知图像编辑模式")
     camera = image_camera.validate(p["camera_view"]) if "camera_view" in p else None
+    light = image_relight.validate(p["relight"]) if "relight" in p else None
+    if camera is not None and light is not None:
+        raise ValueError("请分别提交换机位和重新布光")
     prompt = str(p.get("prompt") or "").strip()
-    if (not prompt and camera is None) or len(prompt) > 8000:
+    if (not prompt and camera is None and light is None) or len(prompt) > 8000:
         raise ValueError("请输入 1–8000 字的修改要求")
     strength = number(p.get("strength"), 0.01, 1, "结果融合比例", 1)
     feather = number(p.get("feather"), 0, 128, "边缘羽化", 8)
@@ -173,6 +177,8 @@ def prepare(root: Path, p: dict) -> dict:
     if backend not in ("h3", "native"):
         raise ValueError("未知重绘引擎")
     count = 1
+    if light is not None and (mode != "whole" or backend != "h3" or strength != 1):
+        raise ValueError("重新布光需要使用整图编辑并采用完整生成结果")
     if camera is not None:
         if mode != "whole" or backend != "h3" or strength != 1:
             raise ValueError("换机位需要使用整图编辑并采用完整生成结果")
@@ -224,11 +230,13 @@ def prepare(root: Path, p: dict) -> dict:
     elif mode == "outpaint":
         instruction = "扩展 @图1 的画面：把四周灰色留白补成连贯自然的场景，保持原有主体的位置、比例、细节和光线。要求："
     elif camera is not None:
-        instruction = ("@图1 提供原始机位、主体、服装和场景。以同一时刻的新相机视角重新构图，"
-                       "保持主体身份、姿态、画风、场景结构和光照一致。"
-                       + image_camera.instructions(camera) + "。合理补足新机位下可见的部分，不添加文字、边框或分镜格。")
+        instruction = image_camera.generation_prompt(camera)
         if prompt:
-            instruction += "补充要求："
+            instruction += " Additional camera request: "
+    elif light is not None:
+        instruction = image_relight.generation_prompt(light)
+        if prompt:
+            instruction += " Additional lighting request: "
     else:
         instruction = "根据要求编辑 @图1，保持未要求修改的内容和构图一致。要求："
     spec = {"base": base_ref, "mask": mask_ref, "bounds": list(bounds), "strength": strength,
@@ -237,6 +245,8 @@ def prepare(root: Path, p: dict) -> dict:
     spec["recipe"].setdefault("backend", backend)
     if camera is not None:
         spec["recipe"].update(camera_view=camera,count=count,quality=p.get("quality","4mp"))
+    if light is not None:
+        spec["recipe"].update(relight=light,quality=p.get("quality","4mp"))
     native = None
     if backend == "native":
         native = {"image": context_ref, "mask": save(root, mask.crop(bounds), "native-mask", "input")["ref"],

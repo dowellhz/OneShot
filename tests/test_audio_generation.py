@@ -28,6 +28,29 @@ class AudioGeneration(ChatFixture):
             out.writeframes(b"\x00\x04" * 24000)
         return path, ref
 
+    async def test_audio_history_and_favorites_restore_only_accessible_seed_references(self):
+        missing, available, result = [self.tone()[1] for _ in range(3)]
+        user = {"id":7}
+        server.grant_media(user,missing,available)
+        refs = [{"node_id":f"source-{i}","ref":ref,"kind":"audio"} for i,ref in enumerate((missing,available),1)]
+        recipe = {"mode":"seed_audio","prompt":"使用 @音频2","references":refs}
+        db.task_start(id="seed-restore",user_id=7,board_id="test",capability="seed_audio",state="done",
+                      request={"recipe":recipe},outputs=[result])
+        history = "/api/generation-history?kind=audio"
+        favorites = "/api/media-favorites"
+        before, = (await (await self.client.get(history)).json())["items"]
+        self.assertEqual(before["audio_recipe"],recipe)
+        starred = await self.client.post(favorites,json={"ref":result,"favorite":True,"audio_recipe":recipe})
+        self.assertEqual(starred.status,200,await starred.text())
+        db.run("DELETE FROM media_grants WHERE ref=? AND user_id=7",missing)
+        for api in (history,favorites+"?kind=audio"):
+            item, = (await (await self.client.get(api)).json())["items"]
+            self.assertEqual(item["missing_audio_references"],1)
+            self.assertEqual(item["audio_recipe"],{"mode":"seed_audio","prompt":"使用 @音频1","references":refs[1:]}
+                             if api==history else {"mode":"seed_audio","voice":"","provider":"",
+                                                   "prompt":"使用 @音频1","references":refs[1:]})
+            self.assertNotIn(missing,json.dumps(item))
+
     async def check_job(self, jid, state):
         for _ in range(280):
             j = server.JOBS[jid]
@@ -91,6 +114,33 @@ class AudioGeneration(ChatFixture):
         copy = server.public_canvas.copy_board(snapshot,7)
         copied_audio = next(n for n in copy["nodes"] if n["id"]==edge["to"])
         self.assertEqual(copied_audio["data"]["references"],[{**image,"kind":"image"}])
+
+    async def test_workflow_review_traces_seed_audio_recipe_before_current_connections(self):
+        refs = [self.tone()[1] for _ in range(4)]
+        reference_list = [{"node_id":"voice","ref":ref,"kind":"audio"} for ref in refs[:2]]
+        self.board["nodes"].extend([
+            {"id":"voice","type":"audio","name":"人声","data":{},"versions":[{"ref":ref} for ref in refs[:2]],"cur":1},
+            {"id":"result","type":"audio","name":"对白","cur":0,"data":{"mode":"seed_audio",
+                "references":[{"node_id":"n1","ref":self.source["ref"],"kind":"image"}]},
+             "versions":[{"ref":refs[2],"source":"audio_gen",
+                 "audio_recipe":{"mode":"seed_audio","prompt":"对照 @音频1 和 @音频2","references":reference_list}},
+                 {"ref":refs[3],"source":"audio_gen","audio_recipe":{"mode":"seed_audio","references":[]}}]},
+        ])
+        self.board["edges"] = server.board_store.seed_audio_edges(self.board)
+        server.write_board(server.board_path("test"),self.board)
+        api = "/api/board/test/workflow-review?node=result"
+        report = await (await self.client.get(api)).json()
+        self.assertEqual([(step["node"],step["version"]) for step in report["steps"]],
+                         [("voice",1),("voice",2),("result",1)])
+        inputs = report["steps"][-1]["inputs"]
+        self.assertEqual([(row["ref"],row["token"],row["evidence"]) for row in inputs],
+                         [(ref,f"@音频{i}","版本配方") for i,ref in enumerate(refs[:2],1)])
+        self.assertIn("音频参考 @音频1 · 人声 版本 1",report["markdown"])
+        self.assertNotIn(self.board["nodes"][0]["name"],report["markdown"])
+        self.board["nodes"][-1]["cur"] = 1
+        server.write_board(server.board_path("test"),self.board)
+        latest = await (await self.client.get(api)).json()
+        self.assertEqual(latest["steps"][-1]["inputs"],[])
 
     async def test_audio_delivery_encodes_requested_format_and_keeps_recipe(self):
         _, ref = self.tone()

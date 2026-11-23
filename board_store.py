@@ -119,11 +119,66 @@ def can_edit(u: dict, b: dict) -> bool:
     return access_role(u, b) in ("owner", "editor")
 
 
-def workflow_template(board, selected=None):
+def prune_seed_audio_refs(data, keep):
+    if not isinstance(data,dict) or data.get("mode")!="seed_audio" or not isinstance(data.get("references"),list):
+        return 0
+    refs, numbers = [], {}
+    for index,item in enumerate(data["references"],1):
+        if not isinstance(item,dict) or not keep(item):
+            continue
+        refs.append(item)
+        if item.get("kind")=="audio":
+            numbers[str(index)] = f"@音频{len(refs)}"
+    removed = len(data["references"]) - len(refs)
+    if removed:
+        data["references"] = refs
+        if isinstance(data.get("prompt"),str):
+            data["prompt"] = re.sub(r"@音频([0-9]+)", lambda m: numbers.get(m[1].lstrip("0"),""),data["prompt"])
+    return removed
+
+
+def template_upstream_nodes(board, nodes, selected):
+    upstream = {}
+
+    def connect(target, source):
+        if isinstance(source,str) and source in nodes:
+            upstream.setdefault(target,set()).add(source)
+
+    for edge in board.get("edges", []):
+        target = edge.get("to")
+        if isinstance(target,str) and target in nodes:
+            connect(target, edge.get("from"))
+    for target, node in nodes.items():
+        recipes = [node.get("data")]
+        for version in node.get("versions", []):
+            edges = version.get("input_edges")
+            if isinstance(edges,list):
+                for edge in edges:
+                    if isinstance(edge,dict):
+                        connect(target, edge.get("from"))
+            recipes.append(version.get("audio_recipe"))
+        for recipe in recipes:
+            if isinstance(recipe,dict) and recipe.get("mode")=="seed_audio" and isinstance(recipe.get("references"),list):
+                for item in recipe["references"]:
+                    if isinstance(item,dict):
+                        connect(target,item.get("node_id"))
+
+    included = set(selected)
+    pending = list(included)
+    while pending:
+        unseen = upstream.get(pending.pop(),set()) - included
+        included.update(unseen)
+        pending.extend(unseen)
+    return included
+
+
+def workflow_template(board, selected=None, include_upstream=False):
     """Copy the editable workflow while dropping permissions and running tasks."""
     snapshot = deepcopy({key:board[key] for key in ("nodes","edges","groups","seq","view","wiz") if key in board})
     nodes = {n["id"]:n for n in board["nodes"]}
     ids = set(nodes) if selected is None else set(selected)
+    if include_upstream and selected is not None:
+        ids = template_upstream_nodes(board,nodes,ids)
 
     def keep_edges(edges):
         return [e for e in edges if e.get("from") in ids and e.get("to") in ids]
@@ -135,6 +190,10 @@ def workflow_template(board, selected=None):
             data["made"] = [{k:v for k,v in item.items() if k not in ("img","vid") or v in ids}
                             for item in data["made"] if item.get("img") in ids or item.get("vid") in ids]
         clean_timeline(data.get("film"))
+        clean_audio_references(data)
+
+    def clean_audio_references(data):
+        prune_seed_audio_refs(data, lambda item: isinstance(item.get("node_id"),str) and item["node_id"] in ids)
 
     def clean_timeline(timeline):
         if not isinstance(timeline,dict):
@@ -167,6 +226,7 @@ def workflow_template(board, selected=None):
             node.pop(key,None)
         clean_data(node.get("data"))
         for version in node.get("versions",[]):
+            clean_audio_references(version.get("audio_recipe"))
             if isinstance(version.get("input_edges"),list):
                 version["input_edges"] = keep_edges(version["input_edges"])
             origin = version.get("copied_from")
@@ -184,6 +244,7 @@ def workflow_template(board, selected=None):
             clean_data(version.get("node_data"))
             if isinstance(version.get("film_recipe"), dict):
                 clean_timeline(version["film_recipe"].get("timeline"))
+    snapshot["edges"] = seed_audio_edges(snapshot)
     return snapshot
 
 

@@ -115,7 +115,7 @@ function cmInsert(ta,a,start=ta.selectionStart,end=ta.selectionStart){
    if(!n || !acAttachNodeReference(n,a.ref??null)){cmClose();return;}
    const name=n.name.replaceAll("@","＠").replace(/\s+/g," ");
    const duplicate=B.nodes.some(other=>other!==n&&other.name===n.name);
-   token="「"+name+"」"+(duplicate?"（"+n.id+"）":"");
+   token="「"+name+"」"+(duplicate?"（"+n.id+"）":"")+(a.explicitVersion?" · 版本 "+a.version:"");
   }else{
    token=attachPromptMedia(ta,n,a.ref);
    if(!token){cmClose();return;}
@@ -145,23 +145,41 @@ function cmDraw(){
  CM.target?.setAttribute('aria-activedescendant','cm-option-'+CM.index);
  box.children[CM.index]?.scrollIntoView?.({block:'nearest'});
 }
+function cmCanvasMatches(ta,query,versionQuery,bid){
+ const chat=ta.id==="acInput",target=chat?null:canvasPromptNode(ta);
+ if(chat&&(AC.board!==bid||!AC.session))return [];
+ const matching=B.nodes.filter(n=>n.name.toLocaleLowerCase().includes(query)||n.id.toLocaleLowerCase().includes(query));
+ const results=[];
+ for(const n of matching){
+  const indexes=versionQuery===undefined?[n.cur]:versionQuery?[Number(versionQuery)-1]:
+    n.versions.map((_,i)=>n.versions.length-i-1);
+  for(const i of indexes){
+   const ref=n.versions[i]?.ref;
+   if((versionQuery!==undefined&&!ref) || (!chat&&!canPromptMedia(n,target,ref)))continue;
+   results.push({id:n.id,name:n.name,type:n.type,canvasNode:true,ref,version:i+1,
+    explicitVersion:versionQuery!==undefined,duplicate:matching.some(other=>other!==n&&other.name===n.name)});
+   if(results.length===20)return results;
+  }
+ }
+ return results;
+}
 async function cmSuggest(ta,force=false){
  const pos=ta.selectionStart,part=ta.value.slice(0,pos),match=part.match(/@([^@\s，。！？、；：,.!?;:()（）\[\]【】]{0,80})$/);if(!match){cmClose();return;}
  const start=pos-match[0].length;if(start&&/[A-Za-z0-9_.]/.test(part[start-1])){cmClose();return;}cmEnsure();CM.target=ta;CM.start=start;const query=match[1].toLocaleLowerCase(),bid=boardId;
+ const versionSearch=query.match(/^(.+)[#＃](\d*)$/);
  let memoryError;
  const [items, folders]=await Promise.all([cmList(force).catch(error=>{memoryError=error;return [];}),cmFolders().catch(()=>[])]);
  if(boardId!==bid||CM.target!==ta||document.activeElement!==ta||ta.selectionStart!==pos||ta.value.slice(0,pos)!==part)return;
- const target=ta.id==="acInput"?null:canvasPromptNode(ta);
- const canvas=B.nodes.filter(n=>(n.name.toLocaleLowerCase().includes(query)||n.id.toLocaleLowerCase().includes(query))&&
-  (ta.id==="acInput"?AC.board===bid&&!!AC.session:canPromptMedia(n,target)));
- const nodes=canvas.slice(0,20).map(n=>({id:n.id,name:n.name,type:n.type,canvasNode:true,ref:curV(n)?.ref,
-  version:n.cur+1,duplicate:canvas.some(other=>other!==n&&other.name===n.name)}));
+ const nodes=cmCanvasMatches(ta,versionSearch?.[1]??query,versionSearch?.[2],bid);
  const memory=items.filter(a=>[a.name,...(a.aliases||[]),...(a.tags||[])].some(v=>v.toLocaleLowerCase().includes(query)));
  const matchingFolders=folders.filter(folder=>folder.name.toLocaleLowerCase().includes(query)).slice(0,6).map(folder=>({...folder,assetFolder:true}));
  const slots=20-matchingFolders.length;
  const visibleMemory=memory.slice(0,nodes.length?Math.max(8,slots-nodes.length):slots);
- CM.matches=[...matchingFolders,...visibleMemory,...nodes.slice(0,slots-visibleMemory.length)];CM.index=0;cmDraw();
+ CM.matches=(versionSearch?[...nodes,...matchingFolders,...visibleMemory]:
+  [...matchingFolders,...visibleMemory,...nodes]).slice(0,20);
+ CM.index=0;cmDraw();
  if(!CM.matches.length&&memoryError)CM.popup.firstChild.textContent=memoryError.message;
+ if(!CM.matches.length&&versionSearch)CM.popup.firstChild.textContent='没有可引用的版本';
  const r=ta.getBoundingClientRect(),width=Math.min(360,innerWidth-24);
  const host=ta.closest('dialog[open]')||document.body;
  if(CM.popup.parentElement!==host)host.append(CM.popup);

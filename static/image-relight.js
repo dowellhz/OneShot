@@ -3,10 +3,13 @@
 const relightControls = [
   ["LightX","光源左右",-100,100,-55], ["LightY","光源上下",-100,100,-55],
   ["LightKey","主光强度",0,100,55], ["LightExposure","整体曝光",-100,100,0],
-  ["LightTemperature","冷暖",-100,100,0], ["LightRim","轮廓光",0,100,15],
+  ["LightTemperature","色温",-100,100,0], ["LightRim","轮廓光",0,100,15],
+  ["LightDepth","主光前后",-100,100,0],
 ];
 const relightInputIds = relightControls.map(([id])=>"ie"+id);
 const relightClamp = (value,min,max) => Math.min(max,Math.max(min,value));
+const relightKelvin = temperature => 5600-temperature*(temperature>=0?31:39);
+const relightDepthLabel = depth => depth ? (depth>0?"前方 ":"后方 ")+Math.abs(depth)+"%" : "侧向";
 
 function relightHTML() {
   return `<div class="ie-section" data-section="relight"><p class="ie-note">拖动图上的光源，调整方向和强度，再预览照片的明暗变化。</p>
@@ -17,12 +20,12 @@ function relightHTML() {
 }
 
 function relightSettings() {
-  const [x,y,key,exposure,temperature,rim] = relightInputIds.map(id=>+$("#"+id).value);
-  return {x,y,key,exposure,temperature,rim};
+  const [x,y,key,exposure,temperature,rim,depth] = relightInputIds.map(id=>+$("#"+id).value);
+  return {x,y,key,exposure,temperature,rim,depth};
 }
 
 function relightSet(values={}) {
-  ["x","y","key","exposure","temperature","rim"].forEach((key,i)=>{
+  ["x","y","key","exposure","temperature","rim","depth"].forEach((key,i)=>{
     $("#"+relightInputIds[i]).value = values[key] ?? relightControls[i][4];
   });
   relightRefresh();
@@ -30,6 +33,11 @@ function relightSet(values={}) {
 
 function relightRefresh() {
   for(const id of relightInputIds) $("#"+id+"Value").textContent = $("#"+id).value;
+  const temperature=$("#ieLightTemperature"),depth=$("#ieLightDepth");
+  $("#ieLightTemperatureValue").textContent=relightKelvin(+temperature.value)+" K";
+  $("#ieLightDepthValue").textContent=relightDepthLabel(+depth.value);
+  temperature.setAttribute("aria-valuetext",$("#ieLightTemperatureValue").textContent);
+  depth.setAttribute("aria-valuetext",$("#ieLightDepthValue").textContent);
 }
 
 function relightMap({width,height,data}, light) {
@@ -39,6 +47,8 @@ function relightMap({width,height,data}, light) {
     levels[i]=(data[j]*.2126+data[j+1]*.7152+data[j+2]*.0722)*data[j+3]/65025;
   }
   const lx=light.x/100, ly=light.y/100, power=light.key/100, rim=light.rim/100, exposure=2**(light.exposure/100);
+  const depth=(light.depth ?? 0)/100;
+  const front=Math.max(0,depth), back=Math.max(0,-depth);
   for(let y=0;y<height;y++) for(let x=0;x<width;x++) {
     const i=y*width+x, horizontal=Math.max(0,x-2), vertical=Math.max(0,y-2);
     const dx=levels[y*width+Math.min(width-1,x+2)]-levels[y*width+horizontal];
@@ -48,7 +58,8 @@ function relightMap({width,height,data}, light) {
     const falloff=2/(1+.75*distance)-.85;
     const detail=relightClamp(dx*lx+dy*ly,-.35,.35);
     const boundary=relightClamp(Math.abs(dx)+Math.abs(dy),0,.65);
-    field[i]=exposure*(1+power*(.55*falloff+.7*detail)+rim*.62*boundary);
+    const direct=(.55*falloff+.7*detail)*(1-.65*back-.4*front)+.33*front;
+    field[i]=exposure*(1+power*(direct+back*(1.1*boundary-.18))+rim*.62*boundary);
   }
   return {width,height,field};
 }
@@ -125,20 +136,13 @@ async function saveRelight() {
   finally{ E.busy=false;ieSync(); }
 }
 
-function relightPrompt() {
-  const light=relightSettings();
-  const position=[light.x < -15 ? "左侧" : light.x > 15 ? "右侧" : "正面",light.y < -15 ? "偏上" : light.y > 15 ? "偏下" : "与主体齐平"].join("、");
-  const temperature=light.temperature < -15 ? "偏冷" : light.temperature > 15 ? "偏暖" : "中性";
-  return `重新布光。主光来自画面${position}，主光强度 ${light.key}/100，整体曝光 ${light.exposure/100} EV，色温${temperature}，轮廓光强度 ${light.rim}/100。只重建光影，保留原图的构图、人物身份、服装、文字和背景内容。`;
-}
-
 function initRelightControls() {
   for(const id of relightInputIds) $("#"+id).oninput=()=>{relightRefresh();ieDraw();};
   $("#ieResetLight").onclick=()=>{relightSet();ieDraw();ewScheduleDraft();};
   $("#ieSaveLight").onclick=saveRelight;
   $("#ieRelightAI").onclick=()=>{
     const E=IMAGE_EDITOR;if(!E || E.busy || E.n.job || !canvasCanEdit())return;
-    $("#ieBackend").value="h3";ewBackend();ieMode("whole");
-    $("#iePrompt").value=relightPrompt();$("#iePrompt").focus();ewScheduleDraft();
+    if(E.mode==="relight_ai"){ieMode("relight");ewScheduleDraft();return;}
+    ieMode("relight_ai");$("#iePrompt").focus();ewScheduleDraft();
   };
 }

@@ -236,20 +236,24 @@ function vtWireTab(button,n) {
     if(event.button!==0 || !vtCanCopyVersion(n,index))return;
     const board=B, version=n.versions[index], x=event.clientX,y=event.clientY;
     let ghost=null;
-    const dropSurface=e=>{
-      const target=document.elementFromPoint?.(e.clientX,e.clientY);
-      return target===vp||target===world||target===svg;
+    const destination=e=>{
+      const element=document.elementFromPoint?.(e.clientX,e.clientY);
+      if(element===vp || element===world || element===svg)return {copy:true};
+      const target=node(element?.closest(".node")?.dataset.id);
+      if(target && !target.job && !prepping.has(target.id) && canPromptMedia(n,target,version.ref))return {target};
+      return null;
     };
     const move=e=>{
       if(!ghost && Math.hypot(e.clientX-x,e.clientY-y)<6)return;
       if(!ghost) {
         ghost=document.createElement("div");
         ghost.className="version-drag-label";
-        ghost.textContent="版本 "+(index+1);
         ghost.setAttribute("aria-hidden","true");
         document.body.append(ghost);
       }
-      ghost.classList.toggle("can-drop",dropSurface(e));
+      const drop=destination(e);
+      ghost.classList.toggle("can-drop",!!drop);
+      ghost.textContent=drop?.target?"用作参考 · 版本 "+(index+1):"版本 "+(index+1);
       Object.assign(ghost.style,{left:e.clientX+12+"px",top:e.clientY+12+"px"});
     };
     const stop=e=>{
@@ -259,23 +263,112 @@ function vtWireTab(button,n) {
       if(!ghost)return;
       ghost.remove();button._versionDragged=true;
       setTimeout(()=>button._versionDragged=false,0);
-      if(e.type==="pointerup" && B===board && n.versions[index]===version && dropSurface(e)) {
-        vtCopyVersion(n,index,toW(e.clientX,e.clientY));
+      if(e.type!=="pointerup" || B!==board || n.versions[index]!==version || !vtCanCopyVersion(n,index))return;
+      const drop=destination(e);
+      if(drop?.target){
+        if(isSeedAudio(drop.target))addSeedAudioReference(drop.target,n,version);
+        else bindPromptMedia(n,drop.target,version.ref);
       }
+      else if(drop?.copy)vtCopyVersion(n,index,toW(e.clientX,e.clientY));
     };
+    if(Number.isInteger(event.pointerId))button.setPointerCapture(event.pointerId);
     addEventListener("pointermove",move);
     addEventListener("pointerup",stop);
     addEventListener("pointercancel",stop);
   };
 }
 
+function vtReferenceUpdates(source, version) {
+  if(!version?.ref || source.type==="video"&&version.source==="previs")return [];
+  const updates=[];
+  for(const edge of B.edges){
+    if(edge.from!==source.id || edge.ref===version.ref || edge.segment_edit || edge.extension)continue;
+    const target=node(edge.to);
+    if(!target || nodeLocked(target) || target.job || prepping.has(target.id) || target.data.film || target.data.previs)continue;
+    const relation=edge.relation;
+    if(relation==="seed_audio_ref" && isSeedAudio(target)){
+      const refs=seedAudioRefs(target), fromSource=refs.filter(ref=>ref.node_id===source.id);
+      if(fromSource.length!==1 || refs.some(ref=>ref.ref===version.ref))continue;
+      updates.push({target,edge,prior:edge.ref,seedRef:fromSource[0]});
+    }else if((source.type==="image"&&!relation&&["image","video"].includes(target.type)) ||
+             (target.type==="video"&&["audio","video"].includes(source.type)&&relation===source.type+"_ref")){
+      updates.push({target,edge,prior:edge.ref??curV(source)?.ref});
+    }
+  }
+  return updates;
+}
+
+function vtOpenReferenceUpdate(source,index){
+  if(!vtCanCopyVersion(source,index))return;
+  const board=B, version=source.versions[index];
+  let dialog=$("#versionRefUpdate");
+  if(!dialog){
+    document.body.insertAdjacentHTML("beforeend",`<dialog id="versionRefUpdate" aria-labelledby="versionRefTitle"><form>
+      <header><strong id="versionRefTitle">更新下游引用</strong></header>
+      <p data-summary></p><ol></ol>
+      <footer><button type="button" data-cancel>取消</button><button type="submit">应用版本</button></footer>
+    </form></dialog>`);
+    dialog=$("#versionRefUpdate");
+    dialog.onkeydown=event=>event.stopPropagation();
+  }
+  const form=$("form",dialog), list=$("ol",form), summary=$("[data-summary]",form), apply=$('[type="submit"]',form);
+  const cancel=$("[data-cancel]",form);
+  const close=()=>{if(dialog.close)dialog.close();else dialog.removeAttribute("open");};
+  cancel.onclick=close;
+  let updates;
+  const preview=()=>{
+    updates=vtReferenceUpdates(source,version);
+    summary.textContent=updates.length?`${source.name} · 版本 ${index+1} · 更新 ${new Set(updates.map(u=>u.target.id)).size} 个节点`:
+      "没有可更新的下游引用";
+    list.innerHTML=updates.map(({target,edge,prior})=>{
+      const old=source.versions.findIndex(v=>v.ref===prior)+1;
+      const priorLabel=edge.ref?(old?"版本 "+old:"原引用"):"跟随当前版本";
+      const details=[priorLabel+" → 版本 "+(index+1),edge.relation==="video_ref"&&(edge.start!=null||edge.end!=null)?"参考区间将重置":""];
+      return `<li>${esc(target.name)}<span>${esc(details.filter(Boolean).join(" · "))}</span></li>`;
+    }).join("");
+    apply.disabled=!updates.length;
+  };
+  form.onsubmit=event=>{
+    event.preventDefault();
+    if(B!==board || !vtCanCopyVersion(source,index) || source.versions[index]!==version){close();return;}
+    const current=vtReferenceUpdates(source,version);
+    if(current.length!==updates.length || current.some((u,i)=>u.edge!==updates[i].edge||u.prior!==updates[i].prior)){
+      preview();summary.textContent+="。连线已更新，请再次核对。";return;
+    }
+    if(!current.length)return;
+    checkpoint();
+    const changed=new Set();
+    for(const {target,edge,seedRef} of current){
+      if(!changed.has(target))rememberVideoVersion(target);
+      changed.add(target);
+      if(seedRef)target.data.references=seedAudioRefs(target).map(ref=>ref===seedRef?{...ref,ref:version.ref}:ref);
+      else {
+        edge.ref=version.ref;
+        if(edge.relation==="video_ref"){delete edge.start;delete edge.end;}
+      }
+    }
+    changed.forEach(render);
+    if(sel.size===1 && changed.has(node([...sel][0])))showPanel();
+    drawEdges();save();close();
+    toast(`已更新 ${changed.size} 个下游节点的参考`);
+  };
+  preview();
+  if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");
+  cancel.focus();
+}
+
 function vtTabMenu(n,index,x,y){
   closeMenus();let m=$("#videoTabMenu");if(!m){m=document.createElement("div");m.id="videoTabMenu";m.className="menu";document.body.append(m);}
   m.innerHTML=`<div class="mt">${TYPE_CN[n.type]}版本 ${index+1}</div><button data-version-copy>${ico("copy")}复制此版本为独立节点</button>`+
     (canvasCanEdit()&&n.versions[index]?.ref?`<button data-version-reference>${ico("script")}引用此版本到创作助手</button>`:"")+
+    (vtCanCopyVersion(n,index)&&vtReferenceUpdates(n,n.versions[index]).length?`<button data-version-update>${ico("next")}更新下游引用…</button>`:"")+
     (n.type==="video"&&!n.data.film?`<button data-split>${ico("next")}拆出这个 Tab</button><button data-all>${ico("assets")}拆开所有 Tab</button>`:"");
   const version=n.versions[index];
   $$("button",m).forEach(b=>{
+    if(b.hasAttribute("data-version-update")){
+      b.onclick=()=>{closeMenus();if(n.versions[index]===version)vtOpenReferenceUpdate(n,index);};
+      return;
+    }
     if(b.hasAttribute("data-version-reference")){
       b.onclick=boardAction(async()=>{
         closeMenus();

@@ -128,6 +128,7 @@ async function watch() {
   content.append(video(item,"/api/showcase"),creatorLink(item));
   if (item.description) content.append(element("p",item.description));
   if (item.has_canvas) content.append(link("查看或复制制作画布","/share/" + item.token));
+  if (item.template) content.append(link("使用工作流模板 · " + item.template.name,"/?template=" + encodeURIComponent(item.template.id)));
   statusLine.textContent = "";
 }
 

@@ -1,11 +1,70 @@
 """Workflow templates preserve editable data and enforce publication boundaries."""
+import wave
 from urllib.parse import quote
 
 import db
+import server
 from test_agent_chat import ChatFixture
 
 
 class WorkflowTemplates(ChatFixture):
+    async def test_selection_can_keep_pinned_upstream_versions(self):
+        source = self.load()
+
+        def audio(ref_name):
+            path, ref = server.film._new(server.COMFY_DIR,"output",ref_name,".wav")
+            with wave.open(str(path),"wb") as wav:
+                wav.setparams((1,2,8000,0,"NONE",""))
+                wav.writeframes(b"\0\0" * 16000)
+            return {"ref":ref}
+
+        first, old, current, result = [audio(name) for name in ("first","old","current","result")]
+        server.grant_media({"id":7}, *(item["ref"] for item in (first,old,current,result)))
+        refs = [{"node_id":ident,"ref":version["ref"],"kind":"audio"}
+                for ident, version in (("sound-a",first),("sound-b",old))]
+        recipe = {"mode":"seed_audio","prompt":"采用 @音频2","references":refs}
+        source["nodes"].extend([
+            {"id":"sound-a","type":"audio","name":"音频 A","data":{},"versions":[first],"cur":0},
+            {"id":"sound-b","type":"audio","name":"音频 B","data":{},"versions":[old,current],"cur":1},
+            {"id":"result","type":"audio","name":"结果","data":recipe,"versions":[
+                {**result,"audio_recipe":recipe,"input_edges":[{"from":"n1","to":"result","ref":self.source["ref"]}]}
+            ],"cur":0},
+        ])
+        saved_board = await self.client.put("/api/board/test",json=source)
+        self.assertEqual(saved_board.status,200,await saved_board.text())
+        api = "/api/canvas-templates"
+        selection = {"board":"test","name":"声音模板","selected":["sound-b","result"]}
+        for include, ids, expected_refs, prompt in (
+            (False,["sound-b","result"],refs[1:],"采用 @音频1"),
+            (True,["n1","sound-a","sound-b","result"],refs,"采用 @音频2"),
+        ):
+            response = await self.client.post(api,json={**selection,"include_upstream":include})
+            self.assertEqual(response.status,201,await response.text())
+            root = api+"/"+(await response.json())["id"]
+            preview = await (await self.client.get(root+"/preview")).json()
+            self.assertNotIn("media",preview)
+            self.assertNotIn(old["ref"],str(preview))
+            pinned = next(edge for edge in preview["edges"] if edge["from"]=="sound-b")
+            self.assertEqual((pinned["version"],pinned["slot"]),(1,len(expected_refs)))
+            current_media = next(node["media"] for node in preview["nodes"] if node["id"]=="sound-b")
+            self.assertNotEqual(pinned["media"],current_media)
+            media_url = root+"/preview/media/"+str(pinned["media"])
+            historical = await self.client.get(media_url)
+            self.assertEqual(historical.status,200)
+            self.assertEqual(await historical.read(),server.tools.ref_path(server.COMFY_DIR,old["ref"]).read_bytes())
+            self.assertEqual((await self.client.get(media_url,headers={"X-Uid":"8"})).status,404)
+            opened = await self.client.post(root+"/open",json={"request_key":"seed-upstream-test"})
+            bid = (await opened.json())["id"]
+            board = await (await self.client.get("/api/board/"+bid)).json()
+            self.assertEqual([node["id"] for node in board["nodes"]],ids)
+            self.assertEqual(board["nodes"][-2]["cur"],1)
+            draft = board["nodes"][-1]
+            for saved in (draft["data"],draft["versions"][0]["audio_recipe"]):
+                self.assertEqual((saved["references"],saved["prompt"]),(expected_refs,prompt))
+            self.assertEqual([edge["ref"] for edge in board["edges"]], [item["ref"] for item in expected_refs])
+            self.assertEqual([edge["slot"] for edge in board["edges"]],list(range(1,len(expected_refs)+1)))
+            self.assertEqual(bool(draft["versions"][0]["input_edges"]),include)
+
     async def test_template_capture_group_and_create_private_board(self):
         source = self.load()
         source.update(shared=True, seq=4, agent_ops=[{"id":"old"}])

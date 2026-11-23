@@ -66,6 +66,8 @@
 | `media_describe` | 调用视觉模型理解图片 |
 | `image_generate` | 文生图、参考图生成，最多四个结果 |
 | `image_edit` | 整图编辑、已有真实遮罩的局部编辑 |
+| `image_camera` | 按指定机位和镜头参数生成新视角，在原图片节点追加版本 |
+| `image_relight` | 按光位、主光、曝光、色温和轮廓光重新布光，在原图片节点追加版本 |
 | `image_cutout` | 自动抠图并在原节点追加透明图片版本 |
 | `image_segment` | 根据点击坐标生成正向 / 反向选区 |
 | `image_transform` | 裁剪、旋转、翻转和调色 |

@@ -88,6 +88,19 @@ function closeTemplatePreview() {
   $("#templatePreview").hidden = true;
 }
 
+function templateMedia(url,index,type,name,edge=null) {
+  if(!Number.isInteger(index))return "";
+  let src=url+"/preview/media/"+index;
+  if(type==="video" && edge && (Number.isFinite(edge.start)||Number.isFinite(edge.end))){
+    const start=edge.start??0;
+    src+="#t="+start+(Number.isFinite(edge.end)&&edge.end>start?","+edge.end:"");
+  }
+  if(type==="image")return `<img loading="lazy" src="${src}" alt="${esc(name)}">`;
+  if(type==="video")return `<video controls preload="none" src="${src}" aria-label="${esc(name)}"></video>`;
+  if(type==="audio")return `<audio controls preload="none" src="${src}" aria-label="${esc(name)}"></audio>`;
+  return "";
+}
+
 async function showTemplatePreview(row) {
   const epoch = ++WT.previewEpoch;
   const panel = $("#templatePreview");
@@ -97,9 +110,12 @@ async function showTemplatePreview(row) {
   try {
     const preview = await boardRequest(url + "/preview");
     if (epoch !== WT.previewEpoch) return;
-    const names = new Map(preview.nodes.map(n=>[n.id,n.name]));
+    const nodes = new Map(preview.nodes.map(n=>[n.id,n]));
     const types = {text:"文本",image:"图片",video:"视频",audio:"音频",script:"分镜"};
-    const roles = new Map([["first","首帧"],["last","尾帧"],["audio_ref","音频参考"],["video_ref","视频参考"]]);
+    const tokenNames={image:"图",video:"视频",audio:"音"};
+    const roles = new Map([["first","首帧"],["last","尾帧"],["keyframe","关键帧"],["subject","主体参考"],
+      ["audio_ref","音频参考"],["video_ref","视频参考"],["seed_audio_ref","生成参考"],["previs","白模动作参考"],
+      ["trim","裁剪自原片"],["capture","截帧"],["transcript","转写来源"],["audio_cut","音频剪辑来源"]]);
     const canPublish = !row.builtin && (WT.scope === "private" || row.owned);
     panel.innerHTML = `
       <header><strong>${esc(preview.name)}</strong><button type="button" data-template-action="back">关闭预览</button></header>
@@ -113,16 +129,23 @@ async function showTemplatePreview(row) {
           <button type="button" data-template-action="cancel">取消</button>
         </div>
         <ul class="template-preview-nodes">${preview.nodes.map(n=>{
-          const media = Number.isInteger(n.media) ? url + "/preview/media/" + n.media : "";
-          const content = !media ? "" : n.type === "image" ? `<img loading="lazy" src="${media}" alt="${esc(n.name)}">` :
-            n.type === "video" ? `<video controls preload="none" src="${media}"></video>` :
-            `<audio controls preload="none" src="${media}"></audio>`;
+          const content = templateMedia(url,n.media,n.type,n.name);
           return `<li><strong>${esc(n.name)}</strong> <span>${types[n.type] || ""}</span>${content}
             ${n.text || n.prompt ? `<p>${esc(n.text || n.prompt)}</p>` : ""}</li>`;
         }).join("")}</ul>
         ${preview.edges.length ? `<ul class="template-preview-edges" aria-label="节点连线">${preview.edges.map(edge=>{
-          const role = roles.get(edge.relation) || roles.get(edge.role);
-          return `<li>${esc(names.get(edge.from))} → ${esc(names.get(edge.to))}${role ? " · " + role : ""}</li>`;
+          const source=nodes.get(edge.from), target=nodes.get(edge.to), role=roles.get(edge.relation)||roles.get(edge.role);
+          const token=edge.relation==="seed_audio_ref" && source.type==="audio" && edge.slot ?
+            "@音频"+edge.slot : edge.prompt_slot&&tokenNames[source.type]?"@"+tokenNames[source.type]+"{"+edge.prompt_slot+"}":"";
+          const version=edge.version?"版本 "+edge.version:edge.reference_unavailable?"指定版本不可用":"";
+          const seconds=value=>Number(value.toFixed(2));
+          const range=Number.isFinite(edge.end)?seconds(edge.start??0)+"–"+seconds(edge.end)+" 秒":
+            Number.isFinite(edge.start)?seconds(edge.start)+" 秒起":
+            Number.isFinite(edge.time??edge.at)?seconds(edge.time??edge.at)+" 秒":"";
+          const caption=[role,token,version,range].filter(Boolean).join(" · ");
+          const summary=esc(source.name)+" → "+esc(target.name)+(caption?" · "+esc(caption):"");
+          const player=templateMedia(url,edge.media,source.type,source.name+(version?" · "+version:""),edge);
+          return player?`<li><details><summary>${summary}</summary>${player}</details></li>`:`<li>${summary}</li>`;
         }).join("")}</ul>` : ""}
       </div>`;
     panel.querySelector("header button").focus();
@@ -134,7 +157,7 @@ async function showTemplatePreview(row) {
   }
 }
 
-async function openWorkflowTemplates(selectionOnly=false, group=null) {
+async function openWorkflowTemplates(selectionOnly=false, group=null, sharedTemplate=null) {
   closeMenus();
   if ($("#assetLibrary") && !$("#assetLibrary").hidden) alClose();
   const panel = $("#workflowTemplates");
@@ -144,10 +167,16 @@ async function openWorkflowTemplates(selectionOnly=false, group=null) {
   projects.innerHTML = '<option value="">新建独立画布</option>' + canvasProjects.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
   projects.value = currentProject()?.id || "";
   panel.hidden = false;
-  const loading = showTemplateScope(selectionOnly === true ? "private" : "presets");
+  const loading = showTemplateScope(sharedTemplate ? "catalog" : selectionOnly === true ? "private" : "presets");
   $("#templateScope").value = selectionOnly === true && WT.selected.length ? "selection" : "board";
   await loading;
-  if (!panel.hidden) $("#templateClose").focus();
+  if (panel.hidden) return;
+  $("#templateClose").focus();
+  if (sharedTemplate && WT.scope === "catalog") {
+    const row = WT.rows.find(item=>item.id===sharedTemplate);
+    if (row) await showTemplatePreview(row);
+    else if (!$("#templateStatus").textContent) $("#templateStatus").textContent = "此工作流模板已取消共享或不可用";
+  }
 }
 
 async function templateChange(action) {
@@ -173,7 +202,7 @@ function initWorkflowTemplates() {
     </div>
     <form id="templateForm"><label for="templateName">模板名称</label><input id="templateName" maxlength="60" required>
       <label class="template-summary">模板说明 <input id="templateDescription" maxlength="300" placeholder="选填"></label>
-      <select id="templateScope" aria-label="保存模板范围"><option value="board">整张画布</option><option value="selection">选中节点</option></select>
+      <select id="templateScope" aria-label="保存模板范围"><option value="board">整张画布</option><option value="selection">选中节点</option><option value="upstream">选中节点及上游素材</option></select>
       <button type="submit" id="templateSave">保存模板</button><button type="button" id="templateCancel" hidden>取消修改</button></form>
     <label class="template-project">新画布所在项目 <select id="templateProject"></select></label>
     <p id="templateStatus" role="status"></p>
@@ -193,14 +222,16 @@ function initWorkflowTemplates() {
   $("#templateForm").onsubmit = e=>{
     e.preventDefault();
     const name = $("#templateName").value.trim(), description = $("#templateDescription").value.trim(), row = WT.rename;
-    const selected = $("#templateScope").value === "selection" ? WT.selected : null;
+    const scope = $("#templateScope").value;
+    const selected = scope === "board" ? null : WT.selected;
+    const include_upstream = scope === "upstream";
     templateChange(async bid=>{
       if (row) await boardRequest(TEMPLATE_API+"/"+encodeURIComponent(row.id),"PATCH",{name,description});
       else {
         await flushSave();
         if (bid !== boardId) return;
         if (savePending?.id === bid || AC.pending.has(bid)) throw new Error("请先保存当前画布，再创建模板");
-        await boardRequest(TEMPLATE_API,"POST",{name,description,board:bid,selected,revision:B.rev});
+        await boardRequest(TEMPLATE_API,"POST",{name,description,board:bid,selected,include_upstream,revision:B.rev});
       }
       if (bid !== boardId || $("#workflowTemplates").hidden) return;
       setupTemplateForm(); await refreshTemplates();

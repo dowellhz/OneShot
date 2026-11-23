@@ -357,5 +357,7 @@ initAssetLibrary();
   }
   if (qs.get("wizard") && canvasCanEdit()) openWizard();
   if (qs.get("samples")) showGallery();
+  const template = qs.get("template");
+  if (/^t[a-f0-9]{20}$/.test(template || "")) await openWorkflowTemplates(false,null,template);
   status(); setInterval(status, 4000);
 })().catch(error => toast(error.message || "无法读取画布", 5000));
