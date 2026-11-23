@@ -1582,9 +1582,9 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                                 color=lambda tick: (220,30,30) if tick < 24 else (30,30,220))
         server.grant_media(self.user,source)
         before = set(server.COMFY_DIR.rglob("*"))
-        for position,channel in (("first",0),("last",2)):
+        for position,channel,query in (("first",0,{}),("last",2,{}),("time",2,{"at":"1.25"})):
             request = Request(source,self.user)
-            request.query = {"ref":source,"position":position}
+            request.query = {"ref":source,"position":position,**query}
             response = await server.video_frame_preview(request)
             self.assertEqual(response.content_type,"image/png")
             self.assertIn("no-store",response.headers["Cache-Control"])
@@ -1595,6 +1595,10 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         outsider.query = {"ref":source,"position":"last"}
         with self.assertRaises(web.HTTPNotFound):
             await server.video_frame_preview(outsider)
+        for query in ({"position":"time"},{"position":"time","at":"nan"},{"position":"last","at":"1.25"}):
+            request.query = {"ref":source,**query}
+            with self.assertRaises(web.HTTPBadRequest):
+                await server.video_frame_preview(request)
 
     async def test_film_checks_missing_clips_and_replays_an_accepted_export(self):
         source = self.make_clip("checked-film", seconds=1, color=(40,70,90), frequency=440)

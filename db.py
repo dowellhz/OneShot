@@ -181,8 +181,22 @@ INSERT OR IGNORE INTO showcase_creators(owner,slug)
 CREATE TABLE IF NOT EXISTS canvas_templates (
  id TEXT PRIMARY KEY, owner INTEGER NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL, updated REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS canvas_templates_owner ON canvas_templates(owner,updated);
+CREATE TABLE IF NOT EXISTS canvas_template_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, template_id TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL, updated REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS canvas_template_history_latest ON canvas_template_history(template_id,id DESC);
+CREATE TRIGGER IF NOT EXISTS canvas_template_remove_history AFTER DELETE ON canvas_templates
+BEGIN
+  DELETE FROM canvas_template_history WHERE template_id=OLD.id;
+END;
 CREATE TABLE IF NOT EXISTS canvas_template_publications (
  template_id TEXT PRIMARY KEY, published REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS canvas_template_favorites (
+ owner INTEGER NOT NULL, template_id TEXT NOT NULL, added REAL NOT NULL, PRIMARY KEY(owner,template_id));
+CREATE INDEX IF NOT EXISTS canvas_template_favorites_by_template ON canvas_template_favorites(template_id);
+CREATE TRIGGER IF NOT EXISTS canvas_template_remove_favorites AFTER DELETE ON canvas_templates
+BEGIN
+  DELETE FROM canvas_template_favorites WHERE template_id=OLD.id;
+END;
 CREATE TABLE IF NOT EXISTS showcase_template_links (
  token TEXT PRIMARY KEY, template_id TEXT NOT NULL);
 CREATE TRIGGER IF NOT EXISTS showcase_template_unlink AFTER DELETE ON showcase_entries

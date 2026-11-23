@@ -436,6 +436,7 @@ function rebuild() {
   els.forEach(e => e.remove()); els.clear();
   B.nodes.forEach(build); drawEdges(); updateEmpty(); placeOverlays();
   renderNodePinBar();
+  acRenderNodeActivity();
   if (filmPlaylistPicker) paintFilmPlaylistPicker();
 }
 function render(n) {
@@ -1804,6 +1805,7 @@ function ctxMenu(e) {
   const add = (a, icon, label, k = "") => it.push(`<button data-a="${a}">${ico(icon)}${label}${k ? `<span class="k">${k}</span>` : ""}</button>`);
   it.push(`<div class="mt">${many ? `已选 ${sel.size} 个节点` : esc(n.name)}</div>`);
   if (canvasCanEdit()) {
+    add("agent-new", "script", many ? "用选中节点发起新对话" : "用此节点发起新对话");
     it.push(nodePinPalette(selected));
     if (selected.some(m=>!nodeLocked(m))) add("lock-selection","lock",many ? "锁定所选节点" : "锁定节点");
     if (selected.some(nodeLocked)) add("unlock-selection","lock",many ? "解锁所选节点" : "解锁节点");
@@ -1894,6 +1896,7 @@ function ctxMenu(e) {
     if (a === "arrange") ctOpenArrangeMenu(e.clientX, e.clientY);
     else if (a === "comment") ccNode(n);
     else if (a === "template") openWorkflowTemplates(true);
+    else if (a === "agent-new") acNewNodeSession(selected.map(item=>({id:item.id,ref:curV(item)?.ref}))).catch(error=>toast(error.message));
     else if (a === "replace-reference") vtOpenReferenceUpdate(n);
     else if (a === "workflow-review") openWorkflowReview(n.id, n.cur >= 0 ? n.cur + 1 : null);
     else if(a==="merge-tabs")vtMerge(vids.map(m=>m.id),n.id);

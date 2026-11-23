@@ -134,6 +134,8 @@ function evaluate(code){return vm.runInContext(code,dom.getInternalVMContext());
 function equal(actual,expected,label){assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected,label);}
 async function ready(predicate,label,attempts=100){for(let i=0;i<attempts;i++){if(evaluate(predicate))return;await pause(10);}throw new Error('Timed out: '+label);}
 async function run(){
+ let notificationRequests=0;
+ w.Notification={permission:"default",async requestPermission(){notificationRequests++;return this.permission="granted";}};
  const staticFile = url => path.join(root, new URL(url, w.location.href).pathname);
  for (const link of w.document.querySelectorAll('link[rel=stylesheet]')) {
   const style = w.document.createElement('style');
@@ -144,6 +146,14 @@ async function run(){
   evaluate(script.src ? fs.readFileSync(staticFile(script.src), 'utf8') : script.textContent);
  }
  await ready('B?.nodes.length===3','board boot');
+ evaluate('$("#vp").dispatchEvent(new Event("pointerdown",{bubbles:true}));toggleQueue(true)');
+ assert.equal(notificationRequests,0,'canvas interactions do not request browser notification permission');
+ const enableNotifications=evaluate('$("#qp [data-enable-notifications]")');
+ assert.equal(enableNotifications.hidden,false);
+ await enableNotifications.onclick();
+ assert.equal(notificationRequests,1);
+ assert.equal(enableNotifications.hidden,true,'permission is requested only by the explicit queue control');
+ evaluate('toggleQueue(false)');
  evaluate('const nsOriginalView={...B.view}; $("#nodeSearchBtn").click(); const nsInput=$("#nodeSearch input[type=search]");nsInput.value="Hello";nsInput.dispatchEvent(new Event("input"))');
  equal(evaluate('$$("#nodeSearch li button strong").map(x=>x.textContent)'),['Text'],'node search matches text content');
  evaluate('$$(".ns-filters button").find(x=>x.textContent.startsWith("图片")).click()');
@@ -1382,20 +1392,42 @@ async function run(){
     const ids=new Set(payload.selected||b.nodes.map(n=>n.id));
     const fragment={nodes:b.nodes.filter(n=>ids.has(n.id)),edges:b.edges.filter(e=>ids.has(e.from)&&ids.has(e.to)),
      groups:b.groups.filter(g=>g.nodes.every(id=>ids.has(id)))};
-    result={id:'qa-template',name:payload.name,nodes:fragment.nodes.length};
+    result={id:'qa-template',name:payload.name,nodes:fragment.nodes.length,updated:1};
     workflow={row:result,fragment,includeUpstream:payload.include_upstream};
    }else result=workflow?[workflow.row]:[];
   } else if(u.pathname==='/api/canvas-templates/qa-template/fragment'){
-   result=workflow.fragment;
+   result=JSON.parse(JSON.stringify(workflow.fragment));
+   workflow.copyInputs=payload.inputs||[];
+   for(const edit of workflow.copyInputs){
+    const target=result.nodes.find(node=>node.id===edit.node);
+    assert.equal(target.data[edit.field],edit.before);
+    target.data[edit.field]=edit.value;
+   }
+  } else if(u.pathname==='/api/canvas-templates/qa-template/content'){
+   workflow.replacePayload=payload;
+   workflow.row.updated++;
+   result={ok:true};
+  } else if(u.pathname==='/api/canvas-templates/qa-template/history'){
+   result=[{id:12,name:workflow.row.name,updated:1,nodes:2}];
+  } else if(u.pathname==='/api/canvas-templates/qa-template/history/12'){
+   result={nodes:[{name:'旧镜头',type:'video',inputs:{prompt:'前一版提示词'}}]};
+  } else if(u.pathname==='/api/canvas-templates/qa-template/history/12/restore'){
+   workflow.restorePayload=payload;workflow.row.updated++;
+   result={ok:true};
   } else if(u.pathname==='/api/canvas-templates/catalog'){
    result=workflow?.row.published?[{...workflow.row,author:'创作者',owned:1}]:[];
+  } else if(u.pathname==='/api/canvas-templates/favorites'){
+   result=workflow?.row.favorite?[{...workflow.row,author:'创作者',owned:1}]:[];
+  } else if(u.pathname==='/api/canvas-templates/qa-template/favorite'){
+   workflow.row.favorite=method==='PUT';
+   result={favorite:workflow.row.favorite};
   } else if(u.pathname==='/api/canvas-templates/qa-template/publication'){
    assert.equal(payload.confirmed,true);
    workflow.row.published=1;
    result={ok:true};
   } else if(u.pathname==='/api/canvas-templates/qa-template/preview'){
    result={name:workflow.row.name,edges:workflow.fragment.edges.map(edge=>({...edge,version:1,media:2})),nodes:workflow.fragment.nodes.map((n,i)=>(
-    {id:n.id,type:n.type,name:n.name,prompt:n.data.prompt,media:i}))};
+    {id:n.id,type:n.type,name:n.name,prompt:n.data.prompt,inputs:{prompt:n.data.prompt||''},media:i}))};
   } else if(u.pathname.startsWith('/api/board/')){
    const id=u.pathname.split('/').at(-1);
    if(method==='PUT'){
@@ -1637,19 +1669,83 @@ async function run(){
  assert.equal(workflow.row.published,undefined);
  evaluate('$("#templatePublishConfirm [data-template-action=publish]").click()');
  await ready('$("#templateStatus").textContent==="已加入共享模板库"','explicit sharing adds a saved template to the catalog');
+ evaluate('$("#templateRows [data-template-action=replace]").click()');
+ equal(evaluate('[$("#templateReplaceShared").hidden,$("#templateForm").checkValidity()]'),[false,false],
+  'replacing a shared template requires acknowledging that existing links use the update');
+ evaluate('$("#templateReplaceShared input").checked=true;$("#templateSave").click()');
+ await ready('$("#templateStatus").textContent==="原模板内容已更新"','the template is updated in place');
+ equal(workflow.replacePayload.selected,[evaluate('qaFrom.id'),evaluate('qaTo.id')],'the update uses the selected source nodes');
+ assert.equal(workflow.replacePayload.template_updated,1);
+ assert.equal(workflow.replacePayload.confirmed_shared,true);
+ evaluate('$("#templateRows [data-template-action=history]").click()');
+ await ready('!!$(".template-history details")','the author can open template history');
+ await evaluate('const oldTemplateDetails=$(".template-history details");oldTemplateDetails.open=true;oldTemplateDetails.ontoggle()');
+ assert.match(evaluate('$("[data-version-preview]",oldTemplateDetails).textContent'),/前一版提示词/);
+ assert.equal(evaluate('$("form",oldTemplateDetails).checkValidity()'),false);
+ evaluate('$("[name=confirm]",oldTemplateDetails).checked=true;$("form button",oldTemplateDetails).click()');
+ await ready('$("#templateStatus").textContent==="已还原模板版本"','restoring a shared template uses its current revision and explicit confirmation');
+ equal(workflow.restorePayload,{template_updated:2,confirmed_shared:true});
  evaluate('$("#templateScopes [data-scope=catalog]").click()');
  await ready('$("#templateRows article span")?.textContent.includes("创作者")','catalog lists the creator');
  evaluate('$("#templateSearch").value="无匹配";$("#templateSearch").dispatchEvent(new Event("input"))');
  assert.equal(evaluate('$("#templateRows").textContent.includes("没有匹配的模板")'),true);
  evaluate('$("#templateSearch").value="创作者";$("#templateSearch").dispatchEvent(new Event("input"));$("#templateRows [data-template-action=preview]").click()');
  await ready('!!$("#templatePreview [data-template-action=insert]")','matching shared template can be inserted after preview');
+ evaluate('$("#templatePreview [data-template-action=favorite]").click()');
+ await ready('$("#templatePreview [data-template-action=favorite]")?.getAttribute("aria-pressed")==="true"','template can be favorited from preview');
+ evaluate('$("#templateScopes [data-scope=favorites]").click()');
+ await ready('$("#templateRows strong")?.textContent==="可复用镜头"','favorites list includes the saved shared template');
+ evaluate('$("#templateRows [data-template-action=favorite]").click()');
+ await ready('$("#templateRows").textContent.includes("还没有收藏模板")','unfavoriting removes the item from the favorites list');
+ evaluate('$("#templateScopes [data-scope=catalog]").click()');
+ await ready('!!$("#templateRows [data-template-action=favorite]")','return to the shared template listing');
+ evaluate('$("#templateRows [data-template-action=favorite]").click()');
+ await ready('$("#templateStatus").textContent==="已收藏模板"','template can also be favorited directly');
+ evaluate(`closeWorkflowTemplates();
+  const beforeSearchBoard=AC.board;AC.board=boardId;
+  acAppendEvent({kind:"tool_start",data:{name:"workflow_template_search",call_id:"template-lookup"}});
+  acAppendEvent({kind:"tool_end",data:{name:"workflow_template_search",call_id:"template-lookup",result:{
+    workflow_templates:[{id:"qa-template",name:"可复用镜头",scope:"favorites",nodes:2,description:"<雨夜说明>"}]}}});
+  const lookup=$('[data-call="template-lookup"] [data-open-workflow-template]');`);
+ assert.equal(evaluate('lookup.closest("article").querySelector("p").textContent'),'<雨夜说明>');
+ await evaluate('$("#acMessages").onclick({target:lookup})');
+ assert.equal(evaluate('$("#templatePreview strong").textContent'),'可复用镜头');
+ evaluate(`const fillDraft={id:"qa-template",name:"可复用镜头",scope:"favorites",board:boardId,
+   inputs:[{node:qaTo.id,field:"prompt",before:"沿河移动",value:"雨夜沿河推近"}]};
+  const appendFill=(id,plan)=>{
+   acAppendEvent({kind:"tool_start",data:{name:"workflow_template_plan",call_id:id}});
+   acAppendEvent({kind:"tool_end",data:{name:"workflow_template_plan",call_id:id,result:{template_fill_plan:plan}}});
+   return $("[data-template-fill-plan]",AC.calls.get(id));
+  };
+  const outdatedFill=appendFill("stale-template-draft",{...fillDraft,inputs:[{...fillDraft.inputs[0],before:"旧内容"}]});
+  const proposedFill=appendFill("template-draft",fillDraft);`);
+ await evaluate('$("#acMessages").onclick({target:outdatedFill})');
+ assert.match(evaluate('$("#templateStatus").textContent'),/原草稿未填入/);
+ await evaluate('$("#acMessages").onclick({target:proposedFill})');
+ equal(evaluate(`[ $("#templatePreview .template-inputs").open,
+   $$("#templatePreview [data-template-input]").find(input=>input.dataset.templateInput===qaTo.id).value]`),
+   [true,'雨夜沿河推近'],'a matching assistant draft opens with editable values prefilled');
+ evaluate('AC.board=beforeSearchBoard');
+ await ready('!!$("#templateRows [data-template-action=insert]")','favorites can be reused without opening a preview');
  const beforeInsert=evaluate('B.nodes.length');
- evaluate('$("#templatePreview [data-template-action=insert]").click()');
+ evaluate(`const templateEditedPrompt=$$('#templatePreview [data-template-input]').find(input=>input.dataset.templateInput===qaTo.id);
+  templateEditedPrompt.value='夜晚沿河移动';
+  $('#templatePreview [data-template-action=insert-run]').click();`);
  await ready(`$("#workflowTemplates").hidden && B.nodes.length===${beforeInsert+2}`,'inserting a template creates new nodes');
  equal(evaluate('B.edges.filter(e=>sel.has(e.from)&&sel.has(e.to)).map(e=>e.role)'),['first'],'template edges remap to the inserted nodes');
- equal(evaluate('[...sel].map(node).find(n=>n.type==="video").data.prompt'),'沿河移动','template keeps generation settings');
+ equal(evaluate('[...sel].map(node).find(n=>n.type==="video").data.prompt'),'夜晚沿河移动','configured prompt reaches the copied node');
+ assert.equal(workflow.copyInputs.length,1);
+ assert.equal(workflow.fragment.nodes.find(n=>n.type==='video').data.prompt,'沿河移动','the original saved template keeps its prompt');
  equal(evaluate('sel.has([...sel].map(node).find(n=>n.type==="video").versions[0].generation_record.inputs[0].node_id)'),true,'template remaps the receipts to the copied inputs');
  equal(evaluate('B.groups.some(g=>g.nodes.length===2&&g.nodes.every(id=>sel.has(id)))'),true,'template group remaps to the inserted nodes');
+ equal(evaluate(`[$("#groupRunConfirm").open,$("#groupRunConfirm [name=mode]").value,
+   $$("#groupRunConfirm li strong").map(item=>item.textContent),B.nodes.some(n=>sel.has(n.id)&&n.job)]`),
+   [true,"affected",[evaluate('node([...sel].find(id=>node(id).type==="video")).name')],false],
+   'template plan defaults to changed copied nodes and waits for generation approval');
+ evaluate('const templateRunMode=$("#groupRunConfirm [name=mode]");templateRunMode.value="all";templateRunMode.dispatchEvent(new Event("change"))');
+ equal(evaluate('$$("#groupRunConfirm li strong").map(item=>item.textContent).sort()'),
+   [...evaluate('[...sel].map(id=>node(id).name).sort()')],'the all-mode plan cannot pull in original canvas nodes');
+ evaluate('closeCanvasGroupRunDialog()');
  evaluate('undo()');
  assert.equal(evaluate('B.nodes.length'),beforeInsert);
  evaluate('openAddMenu(160,120,{at:{x:120,y:100}});$("#addMenu [data-add=previs]").click()');
@@ -2653,6 +2749,94 @@ async function run(){
  equal(evaluate(`[compare.open,leftCompare.value,rightCompare.value,legacyStoryVideo.cur,newestStoryVideo.cur]`),
   [true,"0","1",1,0],'assistant review reopens the precise old tail and still without switching canvas versions');
  evaluate('closeShotContinuityReview()');
+ evaluate(`openShotContinuityReview(storyNode,1,{
+   left:{node:legacyStoryVideo.id,version:1,ref:legacyStoryVideo.versions[0].ref},
+   right:{node:newestStoryVideo.id,version:1,ref:curV(newestStoryVideo).ref},
+   samples:{left:[{position:"time",at:2.4,seconds:2.38},{position:"last",seconds:2.8}],
+     right:[{position:"first",seconds:0},{position:"time",at:.4,seconds:.4}]}});
+  const motionButtons=$$("[data-left-frame] [data-samples] button",compare);
+  motionButtons[0].click();`);
+ equal(evaluate(`[motionButtons[0].textContent,motionButtons[0].getAttribute("aria-pressed"),
+   compareSources()[0].searchParams.get("position"),compareSources()[0].searchParams.get("at"),
+   compareSources()[0].searchParams.get("ref"),legacyStoryVideo.cur]`),
+   ["2.38s","true","time","2.4","input:h3studio/older.mp4",1],
+   'motion review selects the analyzed timestamp on its pinned historical video');
+ evaluate('leftCompare.value="1";leftCompare.dispatchEvent(new Event("change"))');
+ assert.equal(evaluate('$("[data-left-frame] [data-samples]",compare).hidden'),true);
+ const shotReviewTestFetch=w.fetch, shotReviewRequests=[];
+ w.fetch=(url,options)=>{
+  if(String(url)==='/api/chat/sessions/shot-review-ui/messages'){
+   shotReviewRequests.push(JSON.parse(options.body));
+   const failed=shotReviewRequests.length===1;
+   return Promise.resolve({ok:!failed,json:async()=>failed?{error:'请重试'}:{id:'review-queued',state:'queued'}});
+  }
+  return shotReviewTestFetch(url,options);
+ };
+ evaluate(`const savedReviewAssistant={open:acOpen,poll:acPoll,session:AC.session,draft:$("#acInput").value};
+  acOpen=async()=>{};acPoll=async()=>{};AC.session="shot-review-ui";$("#acInput").value="未发送的草稿";
+  leftCompare.value="0";leftCompare.dispatchEvent(new Event("change"));
+  const requestMotion=$("[data-request-review]",compare);`);
+ await evaluate('requestMotion.onclick()');
+ assert.match(evaluate('$("footer [role=status]",compare).textContent'),/请重试/);
+ await evaluate('requestMotion.onclick()');
+ assert.equal(shotReviewRequests.length,2);
+ assert.equal(shotReviewRequests[0].request_key,shotReviewRequests[1].request_key);
+ equal(shotReviewRequests[1].shot_review,{node_id:evaluate('storyNode.id'),shot:2,current_type:"video",
+  left:{node:evaluate('legacyStoryVideo.id'),ref:"input:h3studio/older.mp4",version:1},
+  right:{node:evaluate('newestStoryVideo.id'),ref:"output:h3studio/shot-two.mp4",version:1}},'direct review sends the chosen historical version and current video');
+ equal(evaluate('[compare.open,$("#acInput").value,legacyStoryVideo.cur]'),[false,"未发送的草稿",1]);
+ evaluate('const reviewRevisionRequest=$("[data-call=visual-shot-review] [data-plan-review-revision]")');
+ await evaluate('$("#acMessages").onclick({target:reviewRevisionRequest})');
+ assert.equal(shotReviewRequests[2].review_revision_call,'visual-shot-review');
+ equal(evaluate('[reviewRevisionRequest.disabled,$("#acInput").value,JSON.stringify([B.nodes,B.edges])===comparisonBoardSnapshot]'),
+  [true,"未发送的草稿",true],'requesting a revision uses the review card and preserves the existing draft and board');
+ evaluate(`acOpen=savedReviewAssistant.open;acPoll=savedReviewAssistant.poll;AC.session=savedReviewAssistant.session;
+   $("#acInput").value=savedReviewAssistant.draft;`);
+ w.fetch=shotReviewTestFetch;
+ evaluate(`const savedRangeShots=storyNode.data.shots.slice(), savedRangeLinks=storyNode.data.made.slice();
+  const savedLatestFilm=localStorage.getItem(filmDraftPrefix()+"latest"), savedRangeSelection=new Set(sel);
+  storyNode.data.shots.push({...storyLast,id:"range-missing"},{...storyLast,id:"range-fourth"});
+  storyNode.data.made.push({shot_id:"range-fourth",vid:legacyStoryVideo.id});
+  selectOnly(storyNode.id);$("#shotListBtn").click();
+  const shotTimeline=$("#shotList"), rangeFrom=$("[data-film-from]",shotTimeline), rangeTo=$("[data-film-to]",shotTimeline);
+  const sendRange=$("[data-film]",shotTimeline);`);
+ equal(evaluate(`[[...rangeFrom.options].map(option=>option.disabled),[...rangeTo.options].map(option=>option.textContent),
+   $$("[data-clip-range]",shotTimeline).length,sendRange.disabled]`),[[false,false,true,false],["镜头 1","镜头 2"],2,false],
+  'completed consecutive shots can be cut before a later shot has generated');
+ evaluate(`sendRange.click();const firstRangeDraft=FILM.key;
+  FILM.spec.clips[0].volume=.3;closeFilm();`);
+ equal(evaluate('JSON.parse(localStorage.getItem(firstRangeDraft)).spec.clips.map(clip=>[clip.node,clip.ref])'),[
+  [evaluate('legacyStoryVideo.id'),evaluate('legacyStoryVideo.versions[1].ref')],
+  [evaluate('newestStoryVideo.id'),'output:h3studio/shot-two.mp4']],'the selected range enters the timeline in storyboard order with pinned references');
+ evaluate('legacyStoryVideo.cur=0;sendRange.click();const secondRangeDraft=FILM.key');
+ equal(evaluate('[firstRangeDraft!==secondRangeDraft,FILM.spec.clips[0].ref,FILM.spec.clips[0].volume]'),
+  [true,"input:h3studio/older.mp4",1],'a new version opens its own timeline draft instead of reusing the old cut');
+ evaluate(`closeFilm();legacyStoryVideo.cur=1;sendRange.click();`);
+ equal(evaluate('[FILM.key===firstRangeDraft,FILM.spec.clips[0].volume]'),[true,.3],'returning to the same versions restores the edited range draft');
+ evaluate(`const clipForSwap=FILM.spec.clips[0], canvasTakeBeforeSwap=legacyStoryVideo.cur;
+  Object.assign(clipForSwap,{in:1,out:4,speed:2,trans:"fade",subs:["手写字幕"],captions:[{start:1.2,end:2.2,text:"原字幕"}]});
+  legacyStoryVideo.versions[0].seconds=8;
+  legacyStoryVideo.versions.push({ref:"input:h3studio/too-short.mp4",seconds:.8});
+  $("#fmV").onloadedmetadata?.();$('[data-update-version]',$('#fmClip')).click();
+  const swapForm=$('.fm-version-picker'), swapPicker=$("select",swapForm), swapApply=$("button",swapForm);
+  swapPicker.value="1";swapPicker.dispatchEvent(new Event("change"));`);
+ equal(evaluate('[swapApply.disabled,clipForSwap.ref]'),[true,'input:h3studio/newer.mp4'],'a version that ends before the cut cannot replace the source');
+ evaluate('legacyStoryVideo.versions[2].seconds=3;swapPicker.dispatchEvent(new Event("change"))');
+ assert.match(evaluate('$(`[role=status]`,swapForm).textContent'),/缩短 0.50 秒/);
+ evaluate(`swapPicker.value="0";swapPicker.dispatchEvent(new Event("change"));
+  $("[data-keep-captions]",swapForm).checked=true;
+  swapForm.dispatchEvent(new Event("submit",{cancelable:true}));`);
+ equal(evaluate(`[clipForSwap.ref,clipForSwap.in,clipForSwap.out,clipForSwap.speed,clipForSwap.trans,clipForSwap.volume,
+  clipForSwap.subs,clipForSwap.captions[0].text,legacyStoryVideo.cur===canvasTakeBeforeSwap]`),
+  ['input:h3studio/older.mp4',1,4,2,'fade',.3,['手写字幕'],'原字幕',true],
+  'applying a historical version keeps the edited range and the selected subtitles without switching the canvas version');
+ evaluate('legacyStoryVideo.versions.pop();legacyStoryVideo.versions[0].seconds=5');
+ evaluate(`closeFilm();rangeFrom.value="range-fourth";rangeFrom.dispatchEvent(new Event("change"));`);
+ equal(evaluate('[...rangeTo.options].map(option=>option.textContent)'),['镜头 4'],'choosing a later shot starts its own contiguous interval');
+ evaluate(`$("#shotList [data-close]").click();storyNode.data.shots=savedRangeShots;storyNode.data.made=savedRangeLinks;
+  sel=savedRangeSelection;updateSel();
+  for(const key of [firstRangeDraft,secondRangeDraft])localStorage.removeItem(key);
+  if(savedLatestFilm)localStorage.setItem(filmDraftPrefix()+"latest",savedLatestFilm);else localStorage.removeItem(filmDraftPrefix()+"latest");`);
  evaluate(`const revisionShot=storyNode.data.shots[1], revisionEdges=JSON.stringify(B.edges);
   const oldAction=newestStoryVideo.data.fields.action;
   const oldDialogue=newestStoryVideo.data.fields.dialogue;
@@ -2686,6 +2870,35 @@ async function run(){
  assert.equal(evaluate('sessionStorage.getItem(groupRunStorageKey(boardId))'),null,'dismissing progress removes the saved receipt');
  w.fetch=generationFetch;
  console.log('Group run DOM passed: confirmation, dependency order, pinned result reuse, failure isolation and stopping later submissions.');
+ evaluate(`const runRangeBase=snap();
+  const runRangeScript=addNode("script",4500,100,{style:"写实",characters:[],shots:[0,1,2,3].map(i=>({...storyLast,id:"range-"+i,characters:[]})),made:[]});
+  const runRangeCount=B.nodes.length;selectOnly(runRangeScript.id);$("#shotListBtn").click();
+  $("#shotList [data-run-range]").click();
+  const runRangePicker=$("#shotRangePicker"), generationFirst=$("[name=first]",runRangePicker), generationLast=$("[name=last]",runRangePicker);
+  generationFirst.value="1";generationFirst.dispatchEvent(new Event("change"));
+  generationLast.value="2";generationLast.dispatchEvent(new Event("change"));`);
+ assert.match(evaluate('$("#shotRangePicker [role=status]").textContent'),/已选 2 镜，其中 2 镜待展开/);
+ assert.equal(evaluate('B.nodes.length===runRangeCount'),true);
+ evaluate('$("#shotRangePicker [type=submit]").click()');
+ equal(evaluate(`[runRangePicker.open,$("#groupRunConfirm").open,scriptShotLinks(runRangeScript).map(pair=>!!pair),
+   $$("#groupRunConfirm li strong").map(item=>item.textContent),B.nodes.length-runRangeCount,B.nodes.some(n=>n.job)]`),
+  [false,true,[false,true,true,false],["镜2 · 分镜图","镜2","镜3 · 分镜图","镜3"],4,false],
+  'shot range expands only the requested shots in order and previews their work before any generation');
+ evaluate('const scopedRunMode=$("#groupRunConfirm [name=mode]");scopedRunMode.value="frame";scopedRunMode.dispatchEvent(new Event("change"))');
+ equal(evaluate('$$("#groupRunConfirm li strong").map(item=>item.textContent)'),['镜2 · 分镜图','镜3 · 分镜图']);
+ evaluate(`closeCanvasGroupRunDialog();const previouslyGeneratedFrame=node(scriptShotLinks(runRangeScript)[1].img);
+  previouslyGeneratedFrame.versions=[rerunMedia("range-already-generated")];previouslyGeneratedFrame.cur=0;
+  const rangeAssistantBoard=AC.board;AC.board=boardId;
+  acAppendEvent({kind:"tool_start",data:{name:"storyboard_range_run_plan",call_id:"scoped-shot-chat"}});
+  acAppendEvent({kind:"tool_end",data:{name:"storyboard_range_run_plan",call_id:"scoped-shot-chat",result:{shot_range_plan:{
+    board:boardId,script:runRangeScript.id,name:runRangeScript.name,first:2,last:3,
+    anchors:[{id:"range-1"},{id:"range-2"}],mode:"missing_frame"}}}});
+  $("[data-call=scoped-shot-chat] [data-open-shot-range]").click();`);
+ equal(evaluate('[generationFirst.value,generationLast.value]'),['1','2'],'the assistant card opens with the planned range');
+ evaluate('$("#shotRangePicker [type=submit]").click()');
+ equal(evaluate('[scopedRunMode.value,$$("#groupRunConfirm li strong").map(item=>item.textContent)]'),
+  ['missing_frame',['镜3 · 分镜图']],'a plan to fill missing frames keeps existing results and skips video generation');
+ evaluate('closeCanvasGroupRunDialog();$("#shotList [data-close]").click();AC.board=rangeAssistantBoard;restore(runRangeBase);save()');
  evaluate(`const copyFlowBase=snap();
   const copyAsset=(filename,fields={})=>({ref:"output:h3studio/"+filename,url:"/media?ref=output:h3studio/"+filename,...fields});
   const copyGuide=addNode("image",1200,700,{}, {versions:[copyAsset("guide.png",{w:512,h:512})],cur:0});
@@ -4169,23 +4382,27 @@ async function run(){
  w.fetch=stemFetch;
  console.log('Audio separation passed: historical version, background receipt recovery, duplicate-safe placement and aligned film tracks.');
 
- const parallelFetch=w.fetch, parallelCalls=[];
+ const parallelFetch=w.fetch, parallelCalls=[], scopedMessages=[];
  const parallelSessions=[
-  {id:'parallel-ui-a',title:'写分镜',run_state:'waiting_approval',queued_count:1},
-  {id:'parallel-ui-b',title:'剪旁白',run_state:'thinking',queued_count:0},
+  {id:'parallel-ui-a',title:'写分镜',run_state:'waiting_approval',queued_count:1,node_activity:{nodes:['n1'],calls:[]}},
+  {id:'parallel-ui-b',title:'剪旁白',run_state:'thinking',queued_count:0,node_activity:{nodes:[evaluate('stemTestVideo.id')],calls:['badge-pending']}},
  ];
- let releaseParallelPoll, holdParallel=false;
+ let releaseParallelPoll, holdParallel=false, parallelCreates=0;
  w.fetch=async(url,options={})=>{
   const request=new URL(String(url),'http://oneshot.test');
   if(request.pathname==='/api/chat/sessions'){
    if(options.method==='POST'){
-    const session={id:'parallel-ui-c',title:'新对话',run_state:null,queued_count:0};
+    const session={id:'parallel-ui-'+['c','d','e'][parallelCreates++],title:'新对话',run_state:null,queued_count:0};
     parallelSessions.unshift(session);
     return {ok:true,json:async()=>({id:session.id})};
    }
    return {ok:true,json:async()=>({sessions:structuredClone(parallelSessions)})};
   }
-  const match=request.pathname.match(/^\/api\/chat\/sessions\/(parallel-ui-[abc])$/);
+  if(request.pathname==='/api/chat/sessions/parallel-ui-e/messages'){
+   scopedMessages.push(JSON.parse(options.body));
+   return {ok:true,json:async()=>({id:'scope-run',state:'done'})};
+  }
+  const match=request.pathname.match(/^\/api\/chat\/sessions\/(parallel-ui-[abcde])$/);
   if(match){
    const session=parallelSessions.find(s=>s.id===match[1]);
    const id=session.id.slice(-1);
@@ -4206,16 +4423,24 @@ async function run(){
   }
   return parallelFetch(url,options);
  };
- evaluate('AC.open=true;$("#agentChat").hidden=false');
+ evaluate('AC.open=false;AC.board=null;$("#agentChat").hidden=true');
+ await evaluate('acRefreshNodeDirectory()');
+ assert.equal(evaluate('$("[data-node-agent-session=parallel-ui-a] span",els.get("n1")).textContent'),'待确认');
+ evaluate('AC.open=true;AC.board=boardId;$("#agentChat").hidden=false');
  await evaluate('acLoadSession("parallel-ui-a")');
  equal(evaluate(`[$("#acNew").disabled,$("#acParallel").hidden,$$("[data-parallel-session]").map(b=>[...b.children].map(e=>e.textContent))]`),
   [false,false,[['写分镜','等待确认生成方案 · 排队 1'],['剪旁白','正在理解与规划']]]);
+ equal(evaluate(`[$("[data-node-agent-session=parallel-ui-a] span",els.get("n1")).textContent,
+   $("[data-node-agent-session=parallel-ui-b] span",els.get(stemTestVideo.id)).textContent]`),['待确认','规划中']);
+ evaluate('const oldNodeJob=node("n1").job;node("n1").job={agent_call:"badge-pending"};acRenderNodeActivity()');
+ assert.ok(evaluate('$("[data-node-agent-session=parallel-ui-b]",els.get("n1"))'));
+ evaluate('node("n1").job=oldNodeJob;acRenderNodeActivity()');
  evaluate('$("#acInput").value="甲的草稿";AC.refs=[];AC.referencePins.clear();acAttachNodeReference(stemTestVideo,stemTestVideo.versions[0].ref)');
  holdParallel=true;
  const oldParallelPoll=evaluate('acPoll()');
  await new Promise(resolve=>setTimeout(resolve,0));
  assert.equal(typeof releaseParallelPoll,'function');
- evaluate('$("[data-parallel-session=parallel-ui-b]").click()');
+ evaluate('$("[data-node-agent-session=parallel-ui-b]",els.get(stemTestVideo.id)).click()');
  await ready('AC.session==="parallel-ui-b"&&$("#acMessages").textContent.includes("助手 b")','second session loads before an older poll returns');
  releaseParallelPoll();
  await oldParallelPoll;
@@ -4223,6 +4448,7 @@ async function run(){
  evaluate('$("#acInput").value="乙的草稿"');
  await evaluate('$("#acStop").onclick()');
  equal(parallelCalls,['/api/chat/runs/parallel-run-b/stop']);
+ assert.equal(evaluate('!!$("[data-node-agent-session=parallel-ui-b]")'),false);
  await evaluate('acLoadSession("parallel-ui-a")');
  equal(evaluate('[$("#acInput").value,AC.referencePins.get(stemTestVideo.id).ref,acActive().state]'),
   ['甲的草稿','output:h3studio/stem-video-old.mp4','waiting_approval']);
@@ -4241,6 +4467,30 @@ async function run(){
  assert.match(evaluate('$("#acInput").value'),/^乙的草稿\n\n创作任务 · 动态字幕与图表/);
  assert.match(evaluate('$("#acInput").value'),/三月 10，四月 20，五月 30/);
  console.log('Creative apps passed: category, example and insertion preserve the running session, draft and pinned version.');
+ evaluate(`const previousAgentDraft=$("#acInput").value, liveStemVersion=stemTestVideo.cur;
+   vtTabMenu(stemTestVideo,0,70,100);`);
+ await evaluate('$("[data-version-new-session]").onclick()');
+ equal(evaluate(`[AC.session,$("#acInput").value,AC.refs,AC.referencePins.get(stemTestVideo.id).ref,stemTestVideo.cur===liveStemVersion]`),
+  ['parallel-ui-d','',[evaluate('stemTestVideo.id')],'output:h3studio/stem-video-old.mp4',true],
+  'opening a new conversation from a historical version preserves the visible version and pins the selected source');
+ await evaluate('acLoadSession("parallel-ui-b")');
+ assert.equal(evaluate('$("#acInput").value===previousAgentDraft'),true);
+ evaluate(`sel=new Set(["n1",stemTestVideo.id]);updateSel();
+   ctxMenu({target:els.get(stemTestVideo.id),clientX:80,clientY:110});$("#ctxMenu [data-a=agent-new]").click();`);
+ await ready('AC.session==="parallel-ui-e"&&AC.refs?.length===2','context menu opens a separate conversation with the full selection');
+ equal(evaluate('[AC.refs,AC.referencePins.get(stemTestVideo.id).ref,$("#acInput").value]'),
+  [['n1',evaluate('stemTestVideo.id')],evaluate('curV(stemTestVideo).ref'),'']);
+ assert.equal(parallelCreates,3);
+ evaluate(`$("#acExecutionScope").value="plan";$("#acExecutionScope").dispatchEvent(new Event("change"));
+   $("#acInput").value="给我一个方案";`);
+ assert.equal(evaluate('$("#acGenerationMode").disabled'),true);
+ await evaluate('acSend()');
+ assert.equal(scopedMessages[0].execution_scope,'plan');
+ assert.equal(scopedMessages[0].generation_mode,undefined);
+ await evaluate('acLoadSession("parallel-ui-b")');
+ assert.equal(evaluate('$("#acExecutionScope").value'),'full');
+ await evaluate('acLoadSession("parallel-ui-e")');
+ assert.equal(evaluate('$("#acExecutionScope").value'),'plan');
  w.fetch=parallelFetch;
  console.log('Parallel assistant passed: live switcher, late-poll isolation, session drafts, new chat during approval and scoped stop.');
 

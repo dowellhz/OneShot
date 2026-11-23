@@ -1,6 +1,8 @@
 """Video tool routing, regeneration inputs and media-type verification."""
 import asyncio
+import base64
 import copy
+import io
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -10,13 +12,14 @@ from PIL import Image
 
 import agent_chat
 import agent_video
+import db
 import image_editor
 import server
 from test_agent_chat import ChatFixture, answer, call
 
 
 class VideoIntegration(ChatFixture):
-    def make_video(self):
+    def make_video(self, blue=80):
         import av
         path, ref = server.tools._new(server.COMFY_DIR, "output", "test-video", ".mp4")
         with av.open(str(path), "w") as out:
@@ -24,12 +27,56 @@ class VideoIntegration(ChatFixture):
             stream.width = stream.height = 64
             stream.pix_fmt = "yuv420p"
             for i in range(12):
-                frame = av.VideoFrame.from_image(Image.new("RGB", (64, 64), (20 * i, 60, 80)))
+                frame = av.VideoFrame.from_image(Image.new("RGB", (64, 64), (20 * i, 60, blue)))
                 for packet in stream.encode(frame):
                     out.mux(packet)
             for packet in stream.encode():
                 out.mux(packet)
         return {"ref": ref, "url": "/media?ref=" + ref, "w": 64, "h": 64, "seconds": 2}
+
+    async def test_direct_motion_review_uses_native_samples_from_the_pinned_versions(self):
+        older, current, following = self.make_video(30), self.make_video(220), self.make_video(120)
+        board = self.load()
+        board["nodes"].extend([
+            {"id":"story","type":"script","name":"连续镜头","data":{
+                "shots":[{"id":"first"},{"id":"second"}],
+                "made":[{"shot_id":"first","vid":"left"},{"shot_id":"second","vid":"right"}]},"versions":[],"cur":-1},
+            {"id":"left","type":"video","name":"前镜","data":{},"versions":[older,current],"cur":1},
+            {"id":"right","type":"video","name":"本镜","data":{},"versions":[following],"cur":0},
+        ])
+        path = server.board_path("test")
+        server.write_board(path,board)
+        baseline = path.read_text()
+        files = set(server.COMFY_DIR.rglob("*"))
+        request = {"text":"检查动作衔接","request_key":"native-motion-review","enqueue":True,
+                   "shot_review":{"node_id":"story","shot":2,"current_type":"video",
+                       "left":{"node":"left","ref":older["ref"],"version":1},
+                       "right":{"node":"right","ref":following["ref"],"version":1}}}
+        vision = AsyncMock(return_value="两个镜头的动作需要接在同一位置。")
+        with patch.object(self.app["llm"],"available",return_value=True), patch.object(self.app["llm"],"chat",vision,create=True):
+            response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages",json=request)
+            self.assertEqual(response.status,200,await response.text())
+            rid = (await response.json())["id"]
+            self.assertEqual((await self.wait(rid))["state"],"done")
+        result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])["shot_review"]
+        self.assertEqual([result[side]["ref"] for side in ("left","right")],[older["ref"],following["ref"]])
+        self.assertEqual([len(result["samples"][side]) for side in ("left","right")],[3,3])
+        pixels = []
+        for part in vision.await_args.args[1]:
+            if part["type"]!="image_url":
+                continue
+            encoded = part["image_url"]["url"].split(",",1)[1]
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+                pixels.append(image.getpixel((32,32)))
+        self.assertEqual(len(pixels),6)
+        self.assertTrue(all(abs(pixel[2]-30)<8 for pixel in pixels[:3]),pixels)
+        self.assertTrue(all(abs(pixel[2]-120)<8 for pixel in pixels[3:]),pixels)
+        for side in (pixels[:3],pixels[3:]):
+            reds = [pixel[0] for pixel in side]
+            self.assertEqual(reds,sorted(set(reds)))
+        self.svc.model.assert_not_awaited()
+        self.assertEqual(path.read_text(),baseline)
+        self.assertEqual(set(server.COMFY_DIR.rglob("*")),files)
 
     async def test_video_generate_routes_as_video_and_creates_playable_video_node(self):
         video = self.make_video()

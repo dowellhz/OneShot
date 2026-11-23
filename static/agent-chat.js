@@ -9,6 +9,8 @@ const AC_THINKING_LEVELS={off:"关闭",low:"轻量",high:"标准",max:"深度"};
 AC.drafts=new Map();
 const AC_REVIEW_LIMIT=8;
 const AC_GENERATION_MODES={auto:"自动生成",smart:"智能确认",manual:"每次确认"};
+const AC_EXECUTION_SCOPES={full:"正常执行",analysis:"仅分析",plan:"仅拟方案"};
+AC.executionScope="full";
 let acGenerationMode=localStorage.getItem("h3.chat.generationMode") || "auto";
 if(!Object.hasOwn(AC_GENERATION_MODES,acGenerationMode))acGenerationMode="auto";
 const AC_LABELS={audio_separate:"人声分离",video_remake_plan:"确认换角计划",video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",video_remake_preview:"提交换角预览",video_remake_generate:"提交重制镜头视频",video_remake_export:"合成并保留原声",video_remake_review:"保存镜头审核决定",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
@@ -23,10 +25,14 @@ const acDecidedApprovals=new Set();
 AC_LABELS.canvas_workflow_review="读取制作复盘";
 AC_LABELS.canvas_reference_plan="准备参考素材替换";
 AC_LABELS.canvas_group_run_plan="准备分组运行";
+AC_LABELS.workflow_template_search="查找工作流模板";
+AC_LABELS.workflow_template_inputs="读取模板填写项";
+AC_LABELS.workflow_template_plan="准备模板填写草稿";
 AC_LABELS.storyboard_context="读取分镜脚本";
 AC_LABELS.storyboard_visual_review="审阅镜头衔接";
 AC_LABELS.storyboard_next_shot_plan="准备下一镜";
 AC_LABELS.storyboard_revision_plan="准备镜头修改";
+AC_LABELS.storyboard_range_run_plan="准备批量生成镜头";
 AC_LABELS.image_camera="图片换机位";
 AC_LABELS.image_relight="图片重新布光";
 AC_LABELS.web_search="搜索公开资料";
@@ -308,6 +314,31 @@ async function acUseNodes(nodes){
  if(nodes.length>1&&refs.length>30)toast("创作助手每条消息最多引用 30 个节点，已选取前 30 个");
 }
 function acUseNode(n){return acUseNodes([n]);}
+async function acNewNodeSession(references){
+ if(!canvasCanEdit() || AC.sending || AC.documentUpload || AC.loadingSessions || AC.newNodeSession)return;
+ const board=boardId;
+ if(!references.length)return;
+ if(references.length>30)throw new Error("每条消息最多引用 30 个画布节点");
+ const available=()=>references.filter(({id,ref})=>{
+  const n=node(id);
+  return n&&(!ref||n.versions.some(version=>version.ref===ref));
+ });
+ AC.newNodeSession=true;
+ try {
+  await flushSave();
+  if(board!==boardId || !canvasCanEdit() || AC.sending || AC.documentUpload || AC.loadingSessions)return;
+  if(!available().length)throw new Error("选中的素材或版本已移除");
+  acShowPane();
+  const session=await acSessions(true);
+  if(!session||session!==AC.session||board!==boardId)return;
+  const remaining=available();
+  AC.refs=remaining.map(({id})=>id);
+  for(const {id,ref} of remaining)if(ref)AC.referencePins.set(id,{ref,name:node(id).name});
+  if(remaining.length!==references.length)toast("部分引用已移除，请核对新对话的素材");
+  acRenderState();
+  if(AC.open)$("#acInput").focus();
+ }finally{AC.newNodeSession=false;}
+}
 async function acAttachReviews(incoming){
  const bid=boardId;
  if(AC.sending)throw new Error("请等当前消息发送完成");
@@ -354,6 +385,27 @@ async function acFocus(ids,editor=false){
 }
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
 function acResultCards(result){
+ if(result.shot_range_plan){
+  const plan=result.shot_range_plan;
+  const modes={missing:"补齐未生成镜头",all:"运行所有选中的节点",missing_frame:"只补齐分镜图",missing_video:"只补齐视频",frame:"重生成分镜图",video:"重生成视频"};
+  return `<section class="ac-storyboard-plan"><strong>${esc(plan.name)} · 第 ${esc(plan.first)}${plan.first===plan.last?"":"–"+esc(plan.last)} 镜</strong>
+    <p>${esc(modes[plan.mode])}</p><button type="button" data-open-shot-range="${esc(JSON.stringify(plan))}">核对生成范围</button></section>`;
+ }
+ if(result.template_fill_plan){
+  const plan=result.template_fill_plan;
+  return `<div class="ac-template-results"><article><strong>${esc(plan.name)}</strong>
+    <small>已填写 ${esc(plan.inputs.length)} 项</small>
+    <button type="button" data-template-fill-plan="${esc(JSON.stringify(plan))}">核对填写草稿</button>
+  </article></div>`;
+ }
+ if(result.workflow_templates?.length){
+  const source={private:"我的模板",catalog:"共享模板",presets:"内置工作流",favorites:"收藏模板"};
+  return `<div class="ac-template-results">${result.workflow_templates.map(row=>`<article>
+   <strong>${esc(row.name)}</strong><small>${esc([source[row.scope],row.category,row.author].filter(Boolean).join(" · "))} · ${esc(row.nodes)} 个节点</small>
+   ${row.description?`<p>${esc(row.description)}</p>`:""}
+   <button type="button" data-open-workflow-template="${esc(row.id)}" data-template-scope="${esc(row.scope)}" aria-label="预览与使用 ${esc(row.name)}">预览与使用</button>
+  </article>`).join("")}</div>`;
+ }
  if(result.shot_revision){
   const p=result.shot_revision;
   const labels={duration:"时长",shot_size:"景别",camera:"机位",scene:"场景",action:"动作",dialogue:"台词",sound:"声音",keyframe:"首帧"};
@@ -367,8 +419,9 @@ function acResultCards(result){
  }
  if(result.shot_review){
   const p=result.shot_review;
-  return `<div class="ac-results"><span>第 ${p.shot-1} 镜尾帧（版本 ${p.left.version}） · 第 ${p.shot} 镜${p.right.kind==="image"?"分镜图":"首帧"}（版本 ${p.right.version}）</span>
-   <button type="button" data-shot-review="${esc(JSON.stringify(p))}">打开双帧对比</button></div>`;
+  return `<div class="ac-results" data-shot-review-card="${esc(JSON.stringify(p))}"><span>第 ${p.shot-1} 镜尾帧（版本 ${p.left.version}） · 第 ${p.shot} 镜${p.right.kind==="image"?"分镜图":"首帧"}（版本 ${p.right.version}）</span>
+   <div class="ac-storyboard-actions"><button type="button" data-shot-review>${p.samples?"查看切点与取样":"打开双帧对比"}</button>
+    ${canvasCanEdit()?'<button type="button" data-plan-review-revision>为当前镜头拟修改</button>':""}</div><span role="status"></span></div>`;
  }
  if(result.storyboard_plan){
   const p=result.storyboard_plan,s=p.shot;
@@ -685,6 +738,10 @@ function acAppendEvent(e,replay=false){
  if(["user","assistant","notice"].includes(e.kind)){
   el=document.createElement("div");el.className="ac-msg "+e.kind;
   if(e.kind!=="notice")acMarkdown(el,e.kind==="user" ? cmReadableReferences(d.text) : d.text);else el.textContent=d.text;
+  if(e.kind==="user"&&d.execution_scope&&Object.hasOwn(AC_EXECUTION_SCOPES,d.execution_scope)){
+   const badge=document.createElement("div");badge.className="ac-sent-skill";
+   badge.textContent=AC_EXECUTION_SCOPES[d.execution_scope];el.append(badge);
+  }
   if(e.kind==="user"&&d.skill){
    const badge=document.createElement("div");
    badge.className="ac-sent-skill";badge.textContent="创作技能 · "+d.skill.name;
@@ -739,11 +796,11 @@ function acAppendEvent(e,replay=false){
   el=AC.calls.get(d.call_id);
   if(!el)return;
   const result=d.result, output=$(".ac-output",el);
-  if(result.previs_node||result.playlist_node||result.workflow||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.remake_plan||result.review_versions?.length||
+  if(result.previs_node||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
      result.preview?.completed?.length||result.video?.completed||d.name==="video_remake_export"&&result.export_ref||
      ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
-  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision?"等待确认":"完成";
+  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.template_fill_plan?"等待确认":"完成";
   $("summary",el).textContent=el.dataset.label+" · "+state;
   $(".ac-progress",el).textContent="";
   const detail=document.createElement("pre");
@@ -911,7 +968,11 @@ function acRenderState(){
  $("#acSend").textContent=active||AC.queue.length?"加入队列":"发送";
  $("#acUndo").hidden=!latest||!!active||!!AC.queue.length;
  $("#acNew").disabled=$("#acSessions").disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
+ $("#acExecutionScope").value=AC.executionScope;
+ $("#acExecutionScope").disabled=AC.sending||!!AC.loadingSessions;
+ $("#acGenerationMode").disabled=AC.executionScope!=="full"||AC.sending||!!AC.loadingSessions;
  acRenderParallel();
+ acRenderNodeActivity();
  $("#acModel").textContent=latest?.model?latest.model.provider+" · "+latest.model.model:"";
  acRenderModelPicker();
  if(typeof aeRenderInputs==="function")aeRenderInputs();
@@ -962,11 +1023,74 @@ function acRenderParallel(){
  if(panel._items!==list){panel._items=list;panel.innerHTML=list;}
 }
 
+function acRenderNodeActivity(){
+ const directory=AC.board===boardId&&AC.session?AC.sessions:AC.nodeDirectory?.board===boardId?AC.nodeDirectory.rows:[];
+ const sessions=directory.filter(session=>session.run_state&&session.node_activity);
+ const calls=new Map(sessions.flatMap(session=>session.node_activity.calls.map(id=>[id,session])));
+ const active=new Map();
+ const attach=(id,session)=>{
+  if(els.has(id)){
+   if(!active.has(id))active.set(id,new Set());
+   active.get(id).add(session);
+  }
+ };
+ for(const session of sessions)for(const id of session.node_activity.nodes)attach(id,session);
+ if(calls.size)for(const n of B.nodes){
+  const session=calls.get(n.job?.agent_call);
+  if(session)attach(n.id,session);
+ }
+ for(const box of $$(".node-agent-activity",world))if(!active.has(box.dataset.nodeId))box.remove();
+ const disabled=AC.sending||AC.documentUpload||AC.loadingSessions;
+ for(const [id,relevant] of active){
+  const element=els.get(id);
+  let box=$(".node-agent-activity",element);
+  if(!box){
+   box=document.createElement("div");box.className="node-agent-activity";box.dataset.nodeId=id;
+   box.addEventListener("pointerdown",event=>event.stopPropagation());
+   box.addEventListener("dblclick",event=>event.stopPropagation());
+   box.onclick=event=>{
+    const btn=event.target.closest("[data-node-agent-session]");
+    if(!btn)return;
+    event.stopPropagation();
+    acOpenNodeSession(btn.dataset.nodeAgentSession).catch(error=>toast(error.message));
+   };
+   $(".card",element).append(box);
+  }
+  const labels={thinking:"规划中",running:"执行中",waiting_approval:"待确认",waiting_input:"待补充",stopping:"正在停止"};
+  const markup=[...relevant].map(session=>`<button type="button" data-node-agent-session="${esc(session.id)}"${disabled?" disabled":""}
+   title="${esc(session.title)}" aria-label="打开对话 ${esc(session.title)} · ${esc(labels[session.run_state]||"")}">
+   ${ico("script")}<span>${esc(labels[session.run_state]||"助手")}</span></button>`).join("");
+  if(box._items!==markup){box._items=markup;box.innerHTML=markup;}
+ }
+}
+
+async function acRefreshNodeDirectory(){
+ const board=boardId;
+ if(!board||AC.nodeDirectoryRequest?.board===board)return;
+ const request=AC.nodeDirectoryRequest={board};
+ try {
+  const data=await acApi("/api/chat/sessions?board="+encodeURIComponent(board));
+  if(board!==boardId||AC.nodeDirectoryRequest!==request)return;
+  AC.nodeDirectory={board,rows:Array.isArray(data.sessions)?data.sessions:[]};
+  acRenderNodeActivity();
+ }catch{}
+ finally{if(AC.nodeDirectoryRequest===request)AC.nodeDirectoryRequest=null;}
+}
+
+async function acOpenNodeSession(id){
+ if(AC.sending||AC.documentUpload||AC.loadingSessions)return;
+ const board=boardId;
+ await acOpen({focus:false});
+ if(board!==boardId || AC.board!==board || !AC.sessions.some(session=>session.id===id))return;
+ if(id!==AC.session)await acLoadSession(id);
+ $("#acInput").focus();
+}
+
 function acRememberDraft(){
  if(!AC.session)return;
  AC.drafts.set(AC.session,{text:$("#acInput").value,refs:AC.refs?.slice()??null,pins:[...AC.referencePins],
   selection:AC.selection,reviews:AC.reviews.slice(),placement:AC.placement,skill:AC.skill,documents:AC.documents.slice(),
-  modelChoice:AC.modelSelection.choice,thinkingLevel:AC.modelSelection.level});
+  modelChoice:AC.modelSelection.choice,thinkingLevel:AC.modelSelection.level,executionScope:AC.executionScope});
 }
 
 function acRestoreDraft(draft){
@@ -979,6 +1103,7 @@ function acRestoreDraft(draft){
  AC.documents=draft.documents;
  AC.modelSelection.choice=draft.modelChoice;
  AC.modelSelection.level=draft.thinkingLevel;
+ AC.executionScope=draft.executionScope||"full";
  csChoose(draft.skill);
 }
 function acRenderApprovals() {
@@ -1036,6 +1161,7 @@ function acResetSession(id){
  AC.epoch++;AC.session=id;AC.cursor=0;AC.events=[];AC.runs=[];AC.queue=[];AC.documents=[];AC.documentUpload=null;AC.inputs=[];AC.refs=null;AC.selection=null;AC.reviews=[];AC.calls.clear();AC.replaying=true;
  AC.referencePins.clear();
  AC.modelSelection={};
+ AC.executionScope="full";
  $("#acMessages").replaceChildren();$("#acInput").value="";
  $("#acModel").textContent="使用平台配置的文本模型";
 }
@@ -1049,7 +1175,7 @@ async function acLoadSession(id){
  try{
   const outbox=JSON.parse(localStorage.getItem("h3.chat.outbox."+id));
   if(outbox?.payload){
-   const {text,selected,selection_id,review_id,review_ids,skill_id,document_ids,selected_versions,placement,generation_mode,chat_model,thinking_level}=outbox.payload;
+   const {text,selected,selection_id,review_id,review_ids,skill_id,document_ids,selected_versions,placement,generation_mode,chat_model,thinking_level,execution_scope}=outbox.payload;
    if(!draft){
     $("#acInput").value=outbox.payload.text;AC.refs=outbox.payload.selected;
     AC.selection=outbox.selection||null;AC.reviews=outbox.reviews||(outbox.review?[outbox.review]:[]);
@@ -1058,9 +1184,10 @@ async function acLoadSession(id){
     AC.documents=outbox.documents||[];
     AC.modelSelection.choice=chat_model;
     AC.modelSelection.level=thinking_level;
+    AC.executionScope=Object.hasOwn(AC_EXECUTION_SCOPES,execution_scope)?execution_scope:"full";
     if(skill_id)csChoose(outbox.skill||{id:skill_id,name:"已选技能"});
    }
-   AC.pending.set(JSON.stringify([boardId,id,text,selected,selection_id,review_ids||(review_id?[review_id]:[]),skill_id,document_ids||[],selected_versions||[],placement||null,generation_mode||"auto",chat_model||"",thinking_level||"off"]),outbox.payload);
+   AC.pending.set(JSON.stringify([boardId,id,text,selected,selection_id,review_ids||(review_id?[review_id]:[]),skill_id,document_ids||[],selected_versions||[],placement||null,generation_mode||"auto",chat_model||"",thinking_level||"off",execution_scope||"full"]),outbox.payload);
   }
  }catch{}
  acRenderRefs();acRenderState();await acPoll();
@@ -1090,6 +1217,7 @@ async function acSessions(fresh=false){
   }
   acSessionDirectory(j.sessions,chosen);
   await acLoadSession(chosen);
+  if(id===boardId&&chosen===AC.session)return chosen;
  }finally{
   if(AC.loadingSessions===loading){AC.loadingSessions=null;acRenderState();}
  }
@@ -1120,7 +1248,9 @@ async function acSend(choiceText){
  const reviewConflict=acCheckReviews(reviews);
  if(reviewConflict){toast(reviewConflict);return;}
  const modelChoice=$("#acModelChoice").value, thinking=$("#acThinkingLevel").value||"off";
- const key=JSON.stringify([id,sid,text,selected,selection?.selection_id,reviewIds,skill?.id,documentIds,selectedVersions,placement,acGenerationMode,modelChoice,thinking]);
+ const scope=typeof choiceText==="string"?(AC.events.findLast(event=>event.kind==="user")?.data.execution_scope||"full"):AC.executionScope;
+ const generation=scope==="full"?acGenerationMode:"auto";
+ const key=JSON.stringify([id,sid,text,selected,selection?.selection_id,reviewIds,skill?.id,documentIds,selectedVersions,placement,generation,modelChoice,thinking,scope]);
  let pending=AC.pending.get(key);
  if(!pending){
   pending={text,selected,request_key:crypto.randomUUID?.()||("req"+Date.now()+Math.random()),enqueue:typeof choiceText!=="string"};
@@ -1131,7 +1261,8 @@ async function acSend(choiceText){
   if(documentIds.length)pending.document_ids=documentIds;
   if(selectedVersions.length)pending.selected_versions=selectedVersions;
   if(placement)pending.placement=placement;
-  if(acGenerationMode!=="auto")pending.generation_mode=acGenerationMode;
+  if(generation!=="auto")pending.generation_mode=generation;
+  if(scope!=="full")pending.execution_scope=scope;
   if(modelChoice)pending.chat_model=modelChoice;
   if(thinking!=="off")pending.thinking_level=thinking;
   AC.pending.set(key,pending);
@@ -1158,8 +1289,23 @@ async function acSend(choiceText){
   await acPoll();acRenderRefs();
  }catch(e){toast(e.message,6000);}finally{AC.sending=false;acRenderState();}
 }
-async function acOpen({focus=true}={}){if(!B)return;AC.open=true;$("#agentChat").hidden=false;$("#chatLaunch").hidden=true;acRenderPlacement();acVoiceRefresh();try{await flushSave();if(AC.board!==boardId||!AC.session)await acSessions();else await acPoll();}catch(e){$("#acError").textContent=e.message;$("#acError").hidden=false;}if(focus&&AC.open)$("#acInput").focus();}
-function acBoardChanged(){cpClose();if(!AC.open)return;acSessions().catch(e=>toast(e.message));}
+function acShowPane(){AC.open=true;$("#agentChat").hidden=false;$("#chatLaunch").hidden=true;acRenderPlacement();acVoiceRefresh();}
+async function acOpen({focus=true}={}){if(!B)return;acShowPane();try{await flushSave();if(AC.board!==boardId||!AC.session)await acSessions();else await acPoll();}catch(e){$("#acError").textContent=e.message;$("#acError").hidden=false;}if(focus&&AC.open)$("#acInput").focus();}
+async function acSendShotRequest(board, payload, expectedSession=null){
+ if(board!==boardId || !canvasCanEdit())throw new Error("请回到对应的可编辑画布");
+ await acOpen({focus:false});
+ if(board!==boardId || AC.board!==board || !AC.session || AC.loadingSessions)throw new Error("对话尚未准备好，请重试");
+ const session=AC.session;
+ if(expectedSession && session!==expectedSession)throw new Error("请回到审阅所属对话");
+ await flushSave();
+ if(board!==boardId || session!==AC.session || AC.pending.has(board))throw new Error("画布或对话已变化，请重试");
+ const sent=await acApi(`/api/chat/sessions/${session}/messages`,payload);
+ if(board===boardId && session===AC.session){
+  if(sent.state==="queued")toast("已加入创作助手队列");
+  await acPoll();
+ }
+}
+function acBoardChanged(){cpClose();if(!AC.open){void acRefreshNodeDirectory();return;}acSessions().catch(e=>toast(e.message));}
 function initAgentChat(){
  const launch=document.createElement("button");launch.id="chatLaunch";launch.innerHTML=`${ico("script")}<span>创作助手</span>`;launch.setAttribute("aria-controls","agentChat");launch.onclick=acOpen;document.body.append(launch);
  const pane=document.createElement("section");pane.id="agentChat";pane.hidden=true;pane.setAttribute("role","region");pane.setAttribute("aria-label","创作助手");pane.innerHTML=`<header class="ac-head"><strong>创作助手</strong><button id="acDock" title="切换停靠 / 浮动" aria-label="切换停靠 / 浮动">${ico("full")}</button><button id="acClose" title="收起，任务继续运行" aria-label="收起助手">×</button></header><div class="ac-subhead"><select id="acSessions" aria-label="对话历史"></select><button id="acNew">新对话</button></div><div id="acModel" class="ac-model">使用平台配置的文本模型</div><div id="acMessages" class="ac-messages" role="log" aria-label="对话与操作记录"></div><div id="acError" class="ac-status" hidden></div><div id="acStatus" class="ac-status" role="status"></div><div class="ac-composer"><div id="acRefs" class="ac-refs"></div><div id="acPicker" class="ac-picker" hidden></div><textarea id="acInput" aria-label="告诉助手要做什么" placeholder="描述你想做什么，输入 @ 引用素材…" maxlength="8000"></textarea><div class="ac-actions"><button id="acReference" title="引用画布节点">@ 引用</button><button id="acUndo" hidden>撤销本轮</button><span class="ac-hint">Enter 发送</span><button id="acStop" hidden>停止</button><button id="acSend" disabled>发送</button></div></div>`;document.body.append(pane);
@@ -1184,7 +1330,9 @@ function initAgentChat(){
  initCreativeProfile();
  $("#acStatus").insertAdjacentHTML("afterend",`<section id="acApprovals" aria-label="待确认的生成方案" aria-live="polite" hidden></section>`);
  $("#acRefs").insertAdjacentHTML("beforebegin",'<section id="acQuestions" aria-label="待填写的创作确认" hidden></section>');
- $(".ac-subhead",pane).insertAdjacentHTML("afterend",`<label class="ac-generation-mode">生成方式 <select id="acGenerationMode" aria-label="生成确认方式" title="智能确认每轮最多自动生成两张图片，超出额度的批次和其他类型会先确认">${Object.entries(AC_GENERATION_MODES).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></label>`);
+ $(".ac-subhead",pane).insertAdjacentHTML("afterend",`<div class="ac-execution-controls"><label class="ac-generation-mode">本轮范围 <select id="acExecutionScope" aria-label="本轮执行范围">${Object.entries(AC_EXECUTION_SCOPES).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></label>
+  <label class="ac-generation-mode">生成方式 <select id="acGenerationMode" aria-label="生成确认方式" title="智能确认每轮最多自动生成两张图片，超出额度的批次和其他类型会先确认">${Object.entries(AC_GENERATION_MODES).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></label></div>`);
+ $("#acExecutionScope").onchange=event=>{AC.executionScope=event.target.value;acRenderState();};
  const generationMode=$("#acGenerationMode");
  generationMode.value=acGenerationMode;
  generationMode.onchange=()=>{acGenerationMode=generationMode.value;localStorage.setItem("h3.chat.generationMode",acGenerationMode);};
@@ -1281,6 +1429,16 @@ function initAgentChat(){
  $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{const rid=AC.runs[0]?.id;if(!rid)return;try{await flushSave();await acApi(`/api/chat/runs/${rid}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=async e=>{
+  const shotRange=e.target.closest("[data-open-shot-range]");
+  if(shotRange){if(AC.board===boardId)openPlannedShotRange(JSON.parse(shotRange.dataset.openShotRange));return;}
+  const template=e.target.closest("[data-open-workflow-template],[data-template-fill-plan]");
+  if(template){
+   const target=template.dataset.templateFillPlan?JSON.parse(template.dataset.templateFillPlan):
+    {id:template.dataset.openWorkflowTemplate,scope:template.dataset.templateScope};
+   if(AC.board!==boardId || target.board&&target.board!==boardId || !["private","catalog","presets","favorites"].includes(target.scope))return;
+   await openWorkflowTemplates(false,null,target);
+   return;
+  }
   const revisionButton=e.target.closest("[data-apply-shot-revision],[data-run-shot-revision]");
   if(revisionButton){
    const card=revisionButton.closest("[data-shot-revision]"), p=JSON.parse(card.dataset.shotRevision), script=node(p.node);
@@ -1307,13 +1465,28 @@ function initAgentChat(){
    }catch(error){status.textContent=error.message;}
    return;
   }
-  const reviewButton=e.target.closest("[data-shot-review]");
+  const reviewButton=e.target.closest("[data-shot-review],[data-plan-review-revision]");
   if(reviewButton){
-   const p=JSON.parse(reviewButton.dataset.shotReview);
+   const card=reviewButton.closest("[data-shot-review-card]"), p=JSON.parse(card.dataset.shotReviewCard);
    if(p.board!==boardId || AC.board!==boardId)return toast("请回到审阅所属画布");
    const script=node(p.script);
    if(script?.type!=="script")return toast("分镜已移除");
-   openShotContinuityReview(script,p.shot-1,p);
+   if(reviewButton.hasAttribute("data-plan-review-revision")){
+    const status=$('[role="status"]',card), call=card.closest("[data-call]").dataset.call;
+    const model=$("#acModelChoice").value, thinking=$("#acThinkingLevel").value;
+    reviewButton.dataset.requestKey ||= crypto.randomUUID?.() || ("revise-review-"+Date.now()+Math.random());
+    reviewButton.disabled=true;status.textContent="正在提交…";
+    try{
+     await acSendShotRequest(p.board,{text:"根据这次审阅，为当前镜头拟一份修改方案。",review_revision_call:call,
+      request_key:reviewButton.dataset.requestKey,enqueue:true,...(model?{chat_model:model}:{}),
+      ...(thinking&&thinking!=="off"?{thinking_level:thinking}:{})},AC.session);
+     status.textContent="已提交修改方案请求";
+    }catch(error){reviewButton.disabled=false;status.textContent=error.message;}
+   }else{
+    const index=p.shot_id?script.data.shots.findIndex(shot=>shot.id===p.shot_id):p.shot-1;
+    if(index<1)return toast("审阅关联的切点已变化，请重新审阅");
+    openShotContinuityReview(script,index,p);
+   }
    return;
   }
   const shotButton=e.target.closest("[data-open-approved-shot],[data-link-previous-shot],[data-run-approved-shot]");
@@ -1461,6 +1634,7 @@ function initAgentChat(){
    else acPoll();
    acRenderRefs();
   }else if(AC.board===boardId&&(acActive()||AC.queue.length||AC.sessions.some(s=>s.run_state||s.queued_count)))acPoll(true);
+  else if(AC.nodeDirectory?.board===boardId&&AC.nodeDirectory.rows.some(session=>session.run_state||session.queued_count))void acRefreshNodeDirectory();
  },1000);
 }
 function acStoreWindow(){const p=$("#agentChat");if(p.parentElement.id==="light")return;const r=p.getBoundingClientRect();try{localStorage.setItem("h3.chat.window",JSON.stringify({floating:p.classList.contains("floating"),left:r.left,top:r.top,width:r.width,height:r.height}));}catch{}}

@@ -776,6 +776,51 @@ class ChatIntegration(ChatFixture):
         self.assertEqual((await self.wait(queued["id"]))["state"],"done")
         self.svc.model.assert_awaited_once()
 
+    async def test_execution_scope_is_enforced_after_queuing(self):
+        endpoint = f"/api/chat/sessions/{self.sid}/messages"
+        already_running, release = asyncio.Event(),asyncio.Event()
+        baseline = server.board_path("test").read_text()
+        traces = {}
+
+        async def model(messages, run):
+            query = run["data"]["memory_query"]
+            if query=="占用当前对话":
+                already_running.set()
+                await release.wait()
+                return answer()
+            if messages[-1]["role"]=="tool":
+                return answer()
+            traces[query]=messages[0]["content"]
+            no_write=call("canvas_create_text",{"text":"不可执行"},"write-attempt")
+            preview=call("workflow_template_plan",{"template_id":"starter-storyboard","changes":[
+                {"node":"n1","field":"text","value":"雨后车站"}]},"template-plan")
+            return {**no_write,"tool_calls":no_write["tool_calls"]+preview["tool_calls"]}
+
+        self.svc.model.side_effect=model
+        first=await self.send("占用当前对话",key="scope-first-run")
+        await asyncio.wait_for(already_running.wait(),2)
+        queued={}
+        for scope in ("analysis","plan"):
+            response=await self.client.post(endpoint,json={"text":scope,"request_key":"scope-"+scope,"execution_scope":scope,"enqueue":True})
+            self.assertEqual(response.status,200,await response.text())
+            queued[scope]=await response.json()
+            self.assertEqual(queued[scope]["state"],"queued")
+        release.set()
+        self.assertEqual((await self.wait(first))["state"],"done")
+        for scope,label in (("analysis","仅分析"),("plan","仅拟方案")):
+            rid=queued[scope]["id"]
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            rejected, draft = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)]
+            self.assertIn(label,rejected["error"])
+            self.assertIn(label,traces[scope])
+            if scope=="analysis":
+                self.assertIn(label,draft["error"])
+            else:
+                self.assertEqual(draft["template_fill_plan"]["inputs"][0]["value"],"雨后车站")
+        self.assertEqual(server.board_path("test").read_text(),baseline)
+        self.assertNotIn("workflow_template_plan",chat.scoped_tools({"execution_scope":"analysis"}))
+        self.assertNotIn("canvas_create_text",chat.scoped_tools({"execution_scope":"plan"}))
+
     async def test_independent_sessions_share_slots_without_blocking_eligible_queue_entries(self):
         sessions = [self.sid]
         for _ in range(3):
@@ -794,7 +839,7 @@ class ChatIntegration(ChatFixture):
 
         async def send(sid, text, key):
             response = await self.client.post(f"/api/chat/sessions/{sid}/messages",
-                json={"text":text,"request_key":key,"enqueue":True})
+                json={"text":text,"request_key":key,"enqueue":True,"selected":["n1"] if key=="parallel-a" else []})
             self.assertEqual(response.status,200,await response.text())
             return await response.json()
 
@@ -813,6 +858,8 @@ class ChatIntegration(ChatFixture):
         self.assertEqual({item["id"] for item in directory if item["run_state"]=="thinking"},set(sessions[:3]))
         self.assertEqual({item["id"]:item["queued_count"] for item in directory if item["queued_count"]},
                          {sessions[0]:1,sessions[3]:1})
+        self.assertEqual(next(item["node_activity"] for item in directory if item["id"]==sessions[0]),{"nodes":["n1"],"calls":[]})
+        self.assertNotIn("node_activity",next(item for item in directory if item["id"]==sessions[3]))
         releases["对话乙"].set()
         self.assertEqual((await self.wait(second["id"]))["state"],"done")
         await asyncio.wait_for(entered["对话丁"].wait(),1)
@@ -1078,13 +1125,22 @@ class ChatIntegration(ChatFixture):
         self.assertEqual((plan["shot"],plan["shot_id"]),(2,"next-shot"))
         self.assertEqual(plan["before"],{"keyframe":next_shot["keyframe"]})
         self.assertEqual(plan["changes"],{"keyframe":"左手握住木盒"})
+        storyboard_range = call("storyboard_range_run_plan",{"node_id":"story","first":1,"last":2,"stage":"frame"},"plan-range")
+        write_attempt = call("canvas_create_text",{"text":"应该等待确认"},"try-before-confirm")
+        self.svc.model.side_effect = [{**storyboard_range,"tool_calls":storyboard_range["tool_calls"]+write_attempt["tool_calls"]},answer()]
+        rid = await self.send("只补第 1 到 2 镜的分镜图",key="plan-shot-range",selected=["story"])
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        prepared, blocked = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)]
+        self.assertEqual(prepared["shot_range_plan"]["anchors"],[{"id":"previous-shot"},{"id":"next-shot"}])
+        self.assertEqual(prepared["shot_range_plan"]["mode"],"missing_frame")
+        self.assertIn("确认运行",blocked["error"])
         self.assertEqual(path.read_text(),baseline)
 
     async def test_visual_continuity_review_uses_pinned_boundary_frames_without_writing(self):
         board = self.load()
         old, current, next_video = ("input:h3studio/previous.mp4","input:h3studio/current.mp4","input:h3studio/next.mp4")
         board["nodes"].extend([
-            {"id":"story","type":"script","name":"分镜","data":{"shots":[{"id":"first"},{"id":"second"}],
+            {"id":"story","type":"script","name":"分镜","data":{"shots":[{"id":"first"},{"id":"second","keyframe":"木盒放在桌边"}],
              "made":[{"shot_id":"first","vid":"previous-video"},{"shot_id":"second","vid":"next-video","img":"n1"}]},"versions":[],"cur":-1},
             {"id":"previous-video","name":"镜1","type":"video","data":{},"versions":[{"ref":old},{"ref":current}],"cur":1},
             {"id":"next-video","name":"镜2","type":"video","data":{},"versions":[{"ref":next_video}],"cur":0},
@@ -1110,6 +1166,65 @@ class ChatIntegration(ChatFixture):
             result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
             self.assertEqual((result["shot_review"]["right"]["kind"],result["shot_review"]["right"]["ref"]),("image",self.source["ref"]))
             self.assertEqual(capture.call_count,3)
+            def sampled_frame(path,position,at=None):
+                seconds = {"first":0,"last":2}.get(position,at)
+                return Image.new("RGB",(24,24),"blue"),seconds
+
+            capture.side_effect = sampled_frame
+            self.svc.model.side_effect = [call("storyboard_visual_review",{**user_args,"motion":True}),answer()]
+            rid = await self.send("核对人物移动方向",key="visual-review-motion",selected=["story"])
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+            review = result["shot_review"]
+            self.assertEqual((review["left"]["ref"],review["right"]["ref"]),(old,next_video))
+            self.assertEqual([[round(frame["seconds"],1) for frame in review["samples"][side]] for side in ("left","right")],
+                             [[1.2,1.6,2],[0,.4,.8]])
+            self.assertEqual([part["type"] for part in vision.await_args.args[1]],["text","image_url"]*6)
+            endpoint = f"/api/chat/sessions/{self.sid}/messages"
+            payload = {"text":"审阅选中的视频版本","request_key":"direct-visual-motion","enqueue":True,
+                       "shot_review":{"node_id":"story","shot":2,"current_type":"video",
+                       "left":{"node":"previous-video","ref":old,"version":2},
+                       "right":{"node":"next-video","ref":next_video,"version":1}}}
+            model_calls = self.svc.model.await_count
+            response = await self.client.post(endpoint,json=payload)
+            self.assertEqual(response.status,200,await response.text())
+            rid = (await response.json())["id"]
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+            self.assertEqual((result["shot_review"]["left"]["ref"],result["shot_review"]["left"]["version"]),(old,1))
+            self.assertIn("samples",result["shot_review"])
+            self.assertEqual(self.svc.model.await_count,model_calls)
+            repeat = await self.client.post(endpoint,json=payload)
+            self.assertEqual((await repeat.json())["id"],rid)
+            source_call = db.one("SELECT id FROM chat_calls WHERE run_id=?",rid)["id"]
+            self.svc.model.side_effect = [
+                call("canvas_create_text",{"text":"不应执行"},"wrong-tool"),
+                call("storyboard_revision_plan",{"node_id":"story","shot":1,"changes":{"keyframe":"改错了镜头"}},"wrong-shot"),
+                call("storyboard_revision_plan",{"node_id":"story","shot":2,"changes":{"keyframe":"木盒一直在右手"}},"right-shot"),answer(),
+            ]
+            revise = await self.client.post(endpoint,json={"text":"按审阅拟修改","request_key":"revise-visual-motion",
+                                                           "review_revision_call":source_call,"enqueue":True})
+            self.assertEqual(revise.status,200,await revise.text())
+            revision_run = (await revise.json())["id"]
+            self.assertEqual((await self.wait(revision_run))["state"],"done")
+            plans = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",revision_run)]
+            self.assertIn("只为已审阅的镜头",plans[0]["error"])
+            self.assertIn("审阅指向的当前镜头",plans[1]["error"])
+            self.assertEqual((plans[2]["shot_revision"]["shot_id"],plans[2]["shot_revision"]["before"]),
+                             ("second",{"keyframe":"木盒放在桌边"}))
+            model_input = self.svc.model.await_args_list[model_calls].args[0][0]["content"]
+            self.assertIn(vision.return_value,model_input)
+            self.assertIn(old,model_input)
+            payload["request_key"] = "direct-visual-stale"
+            payload["shot_review"]["left"]["ref"] = "input:h3studio/removed.mp4"
+            count = vision.await_count
+            removed = await self.client.post(endpoint,json=payload)
+            self.assertEqual(removed.status,200,await removed.text())
+            failed = (await removed.json())["id"]
+            self.assertEqual((await self.wait(failed))["state"],"error")
+            error = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",failed)["result"])["error"]
+            self.assertIn("版本不可用",error)
+            self.assertEqual(vision.await_count,count)
         self.assertEqual(path.read_text(),baseline)
         self.assertEqual(set(server.COMFY_DIR.rglob("*")),before)
 

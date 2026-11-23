@@ -50,7 +50,8 @@
 #acParallel button[aria-current=true]{border-color:var(--line2);background:var(--card)}
 #acVoiceStatus{color:var(--dim);font-size:var(--fs-caption)}
 #acVoiceRecord[aria-pressed=true]{border-color:var(--c-image);color:var(--c-image)}
-.ac-generation-mode{display:flex;align-items:center;gap:8px;padding:0 14px 8px;color:var(--dim);font-size:var(--fs-caption)}
+.ac-execution-controls{display:flex;flex-wrap:wrap;gap:4px 12px;padding:0 14px 8px}
+.ac-generation-mode{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:var(--fs-caption)}
 .ac-generation-mode select{padding:3px 6px;background:var(--card-hi);color:var(--text);border:1px solid var(--line2);border-radius:6px}
 #acApprovals:not([hidden]){padding:8px 12px;border-top:1px solid var(--line);max-height:28vh;overflow:auto}
 #acApprovals article{display:grid;gap:6px;padding:10px;border:1px solid #b5a2c8;border-radius:9px;background:var(--card)}
@@ -124,6 +125,14 @@
 .ac-storyboard-plan dd { margin:0; white-space:pre-wrap; }
 .ac-revision-before { color:var(--dim); }
 .ac-storyboard-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.ac-template-results { display:grid; gap:6px; }
+.ac-template-results article { display:grid; justify-items:start; gap:4px; padding:8px; border:1px solid var(--line); border-radius:8px; overflow-wrap:anywhere; }
+.ac-template-results small,.ac-template-results p { color:var(--dim); }
+.ac-template-results p { margin:0; white-space:pre-wrap; }
+.node-agent-activity { position:absolute; top:8px; right:8px; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; z-index:4; max-width:calc(100% - 16px); pointer-events:none; }
+.node-agent-activity button { display:flex; align-items:center; gap:4px; padding:3px 6px; border:1px solid var(--line2); border-radius:7px; background:var(--panel); color:var(--text); font-size:var(--fs-caption); pointer-events:auto; }
+.node-agent-activity button:hover { background:var(--card-hi); }
+.node-agent-activity svg.i { width:12px; height:12px; }
 .ac-storyboard-plan [role=status]:empty { display:none; }
 
 .ac-choices {

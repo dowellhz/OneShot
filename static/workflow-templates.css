@@ -7,6 +7,7 @@
 #templateForm { margin: 12px 0; flex-wrap: wrap; }
 #templateForm[hidden] { display: none; }
 #templateScope[hidden] { display: none; }
+#templateReplaceShared:not([hidden]) { display:flex; gap:6px; align-items:center; flex-basis:100%; color:var(--dim); }
 #templateName { flex: 1; min-width: 110px !important; }
 .template-summary, .template-filters { display: flex; align-items: center; gap: 6px; }
 .template-summary { flex-basis: 100%; }
@@ -28,6 +29,13 @@
 .template-preview-actions, #templatePublishConfirm { margin-top: 8px; }
 #templatePublishConfirm { padding: 8px; background: var(--card-hi); border-radius: 6px; }
 #templatePublishConfirm p { margin: 0 0 8px; }
+.template-inputs { margin-top: 8px; padding: 7px; background:var(--card); border:1px solid var(--line); border-radius:8px; }
+.template-inputs summary { cursor:pointer; }
+.template-inputs > div,.template-inputs label { display:grid; gap:5px; margin-top:6px; }
+.template-inputs textarea { width:100%; min-width:0; resize:vertical; padding:5px; background:var(--card-hi); color:var(--text); border:1px solid var(--line2); border-radius:6px; font:inherit; }
+.template-history details { padding:7px 0; border-bottom:1px solid var(--line); }
+.template-history summary { cursor:pointer; overflow-wrap:anywhere; }
+.template-history form { display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-top:7px; }
 .template-preview-nodes, .template-preview-edges { list-style: none; padding: 0; margin: 8px 0 0; }
 .template-preview-nodes { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(120px,100%),1fr)); gap: 6px; }
 .template-preview-nodes li { min-width: 0; padding: 7px; background: var(--card-hi); border-radius: 6px; overflow-wrap: anywhere; }

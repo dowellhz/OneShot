@@ -1537,42 +1537,107 @@ def owned_template(req):
     return row
 
 
-def readable_template(req):
-    if preset := workflow_presets.PRESETS.get(req.match_info["tid"]):
+def workflow_template_by_id(uid, tid):
+    if preset := workflow_presets.PRESETS.get(tid):
         return preset
     row = db.one("""SELECT t.* FROM canvas_templates t
                     LEFT JOIN canvas_template_publications p ON p.template_id=t.id
                     WHERE t.id=? AND (t.owner=? OR p.template_id IS NOT NULL)""",
-                 req.match_info["tid"], req["user"]["id"])
+                 tid, uid)
     if row is None:
-        raise web.HTTPNotFound()
+        return None
     board = json.loads(row["data"])
     row.update(data=board,description=board.pop("template_description",""))
     return row
 
 
-@routes.get("/api/canvas-templates")
-async def list_templates(req):
-    rows = db.q("""SELECT t.id,t.name,t.updated,p.published,json_array_length(t.data,'$.nodes') AS nodes,
-                          json_extract(t.data,'$.template_description') AS description
+def readable_template(req):
+    row = workflow_template_by_id(req["user"]["id"],req.match_info["tid"])
+    if row is None:
+        raise web.HTTPNotFound()
+    return row
+
+
+def private_template_summaries(uid):
+    return db.q("""SELECT t.id,t.name,t.updated,p.published,json_array_length(t.data,'$.nodes') AS nodes,
+                          json_extract(t.data,'$.template_description') AS description,f.template_id IS NOT NULL AS favorite
                    FROM canvas_templates t LEFT JOIN canvas_template_publications p ON p.template_id=t.id
-                   WHERE t.owner=? ORDER BY t.updated DESC,t.id""", req["user"]["id"])
-    return web.json_response(rows)
+                   LEFT JOIN canvas_template_favorites f ON f.template_id=t.id AND f.owner=t.owner
+                   WHERE t.owner=? ORDER BY t.updated DESC,t.id""", uid)
 
 
-@routes.get("/api/canvas-templates/catalog")
-async def list_template_catalog(req):
-    rows = db.q("""SELECT t.id,t.name,p.published,json_array_length(t.data,'$.nodes') AS nodes,
+def shared_template_summaries(uid):
+    return db.q("""SELECT t.id,t.name,p.published,json_array_length(t.data,'$.nodes') AS nodes,
                           t.owner=? AS owned, COALESCE(NULLIF(u.name,''),u.username) AS author,
-                          json_extract(t.data,'$.template_description') AS description
+                          json_extract(t.data,'$.template_description') AS description,f.template_id IS NOT NULL AS favorite
                    FROM canvas_template_publications p JOIN canvas_templates t ON t.id=p.template_id
-                   JOIN users u ON u.id=t.owner ORDER BY p.published DESC,t.id""", req["user"]["id"])
-    return web.json_response(rows)
+                   JOIN users u ON u.id=t.owner
+                   LEFT JOIN canvas_template_favorites f ON f.template_id=t.id AND f.owner=?
+                   ORDER BY p.published DESC,t.id""", uid, uid)
 
 
-@routes.get("/api/canvas-templates/presets")
-async def list_template_presets(req):
-    return web.json_response([{k:v for k,v in row.items() if k!="data"} for row in workflow_presets.PRESETS.values()])
+def preset_template_summaries(uid):
+    favorites = {row["template_id"] for row in db.q("SELECT template_id FROM canvas_template_favorites WHERE owner=?",uid)}
+    return [{k:v for k,v in row.items() if k!="data"} | {"favorite":row["id"] in favorites}
+            for row in workflow_presets.PRESETS.values()]
+
+
+def favorite_template_summaries(uid):
+    saved = db.q("""SELECT f.template_id,t.id,t.name,t.updated,p.published,t.owner=? AS owned,
+                           json_array_length(t.data,'$.nodes') AS nodes,COALESCE(NULLIF(u.name,''),u.username) AS author,
+                           json_extract(t.data,'$.template_description') AS description
+                    FROM canvas_template_favorites f LEFT JOIN canvas_templates t ON t.id=f.template_id
+                    LEFT JOIN canvas_template_publications p ON p.template_id=t.id LEFT JOIN users u ON u.id=t.owner
+                    WHERE f.owner=? AND (t.id IS NULL OR t.owner=? OR p.template_id IS NOT NULL)
+                    ORDER BY f.added DESC,f.template_id""", uid, uid, uid)
+    rows = []
+    for row in saved:
+        tid = row.pop("template_id")
+        if preset := workflow_presets.PRESETS.get(tid):
+            row = {k:v for k,v in preset.items() if k!="data"}
+        if row["id"]:
+            rows.append(row | {"favorite":True})
+    return rows
+
+
+TEMPLATE_SUMMARIES = {"private":private_template_summaries,"catalog":shared_template_summaries,
+                      "presets":preset_template_summaries,"favorites":favorite_template_summaries}
+
+
+@routes.get("/api/canvas-templates")
+@routes.get(r"/api/canvas-templates/{scope:catalog|presets|favorites}")
+async def list_templates(req):
+    return web.json_response(TEMPLATE_SUMMARIES[req.match_info.get("scope","private")](req["user"]["id"]))
+
+
+def search_workflow_templates(user, scope, terms):
+    scopes = ("private","catalog","presets") if scope=="all" else (scope,)
+    tokens = set(term.casefold().strip() for term in terms if term.strip())
+    matches = {}
+    for source in scopes:
+        for row in TEMPLATE_SUMMARIES[source](user["id"]):
+            if row["id"] in matches:
+                continue
+            title = row["name"].casefold()
+            details = " ".join(str(row.get(key) or "") for key in ("description","category","author")).casefold()
+            score = sum(3 if token in title else 1 if token in details else 0 for token in tokens)
+            if score or not tokens:
+                matches[row["id"]] = (score,{**row,"scope":source})
+    return [row for _,row in sorted(matches.values(),key=lambda item:(item[0],bool(item[1]["favorite"])),reverse=True)[:10]]
+
+
+@routes.put("/api/canvas-templates/{tid}/favorite")
+async def favorite_template(req):
+    with db.transaction():
+        template = readable_template(req)
+        db.run("INSERT OR IGNORE INTO canvas_template_favorites VALUES(?,?,?)",req["user"]["id"],template["id"],time.time())
+    return web.json_response({"favorite":True})
+
+
+@routes.delete("/api/canvas-templates/{tid}/favorite")
+async def unfavorite_template(req):
+    db.run("DELETE FROM canvas_template_favorites WHERE owner=? AND template_id=?",req["user"]["id"],req.match_info["tid"])
+    return web.json_response({"favorite":False})
 
 
 def template_description(payload):
@@ -1582,10 +1647,7 @@ def template_description(payload):
     return description.strip()
 
 
-@routes.post("/api/canvas-templates")
-async def save_template(req):
-    payload = await req.json()
-    user, name = req["user"], project_name(payload)
+def template_from_board(user, payload):
     board = board_meta(board_path(payload.get("board")))
     if not board or not can_see(user,board):
         raise web.HTTPNotFound()
@@ -1607,6 +1669,14 @@ async def save_template(req):
     template["template_description"] = template_description(payload)
     refs = media_references(template)
     require_media(user,refs)
+    return template, refs
+
+
+@routes.post("/api/canvas-templates")
+async def save_template(req):
+    payload = await req.json()
+    user, name = req["user"], project_name(payload)
+    template, refs = template_from_board(user,payload)
     tid, now = "t"+uuid.uuid4().hex[:20], time.time()
     with db.transaction():
         grant_media(user,*refs)
@@ -1624,6 +1694,75 @@ async def rename_template(req):
     if "description" in payload:
         data = json.dumps({**json.loads(data),"template_description":template_description(payload)},ensure_ascii=False)
     db.run("UPDATE canvas_templates SET name=?,data=?,updated=? WHERE id=?",name,data,time.time(),row["id"])
+    return web.json_response({"ok":True})
+
+
+def template_update_target(req, payload):
+    if not isinstance(payload,dict):
+        raise bad("模板更新参数无效")
+    row = owned_template(req)
+    if payload.get("template_updated")!=row["updated"]:
+        raise web.HTTPConflict(text='{"error":"模板已更新，请刷新模板列表后重试"}',content_type="application/json")
+    if db.one("SELECT 1 FROM canvas_template_publications WHERE template_id=?",row["id"]) and payload.get("confirmed_shared") is not True:
+        raise bad("请确认现有共享链接将使用新模板内容")
+    return row
+
+
+def update_template_content(row, name, data):
+    if row["name"]==name and row["data"]==data:
+        return
+    tid = row["id"]
+    db.run("INSERT INTO canvas_template_history(template_id,name,data,updated) VALUES(?,?,?,?)",
+           tid,row["name"],row["data"],row["updated"])
+    db.run("UPDATE canvas_templates SET name=?,data=?,updated=? WHERE id=?",name,data,time.time(),tid)
+    db.run("""DELETE FROM canvas_template_history WHERE id IN (
+              SELECT id FROM canvas_template_history WHERE template_id=? ORDER BY id DESC LIMIT -1 OFFSET 20)""",tid)
+
+
+@routes.put("/api/canvas-templates/{tid}/content")
+async def replace_template_content(req):
+    payload = await req.json()
+    user, name = req["user"],project_name(payload)
+    with db.transaction():
+        row = template_update_target(req,payload)
+        if "revision" not in payload:
+            raise bad("缺少来源画布版本")
+        template, refs = template_from_board(user,payload)
+        grant_media(user,*refs)
+        update_template_content(row,name,json.dumps(template,ensure_ascii=False))
+    return web.json_response({"ok":True})
+
+
+@routes.get("/api/canvas-templates/{tid}/history")
+async def list_template_history(req):
+    row = owned_template(req)
+    return web.json_response(db.q("""SELECT id,name,updated,json_array_length(data,'$.nodes') AS nodes
+                                     FROM canvas_template_history WHERE template_id=? ORDER BY id DESC""",row["id"]))
+
+
+def template_history_version(req, row):
+    version = db.one("SELECT * FROM canvas_template_history WHERE id=? AND template_id=?",req.match_info["version"],row["id"])
+    if version is None:
+        raise web.HTTPNotFound()
+    return version
+
+
+@routes.get(r"/api/canvas-templates/{tid}/history/{version:\d{1,16}}")
+async def read_template_history(req):
+    version = template_history_version(req,owned_template(req))
+    data = json.loads(version["data"])
+    return web.json_response({"nodes":[{"name":n["name"],"type":n["type"],"inputs":template_node_inputs(n)} for n in data["nodes"]],
+                              "description":data.get("template_description","")})
+
+
+@routes.post(r"/api/canvas-templates/{tid}/history/{version:\d{1,16}}/restore")
+async def restore_template_history(req):
+    payload = await req.json()
+    with db.transaction():
+        row = template_update_target(req,payload)
+        version = template_history_version(req,row)
+        require_media(req["user"],media_references(json.loads(version["data"])))
+        update_template_content(row,version["name"],version["data"])
     return web.json_response({"ok":True})
 
 
@@ -1650,6 +1789,57 @@ async def unpublish_template(req):
     row = owned_template(req)
     db.run("DELETE FROM canvas_template_publications WHERE template_id=?", row["id"])
     return web.json_response({"ok":True})
+
+
+TEMPLATE_VIDEO_INPUTS = ("style","scene","people","camera","action","dialogue","sound","music")
+
+
+def template_node_inputs(node):
+    data = node.get("data",{})
+    if not isinstance(data,dict):
+        return {}
+    if node["type"] == "text":
+        return {"text":str(data.get("text") or "")}
+    if node["type"] == "video" and data.get("pmode") == "fields":
+        fields = data.get("fields")
+        fields = fields if isinstance(fields,dict) else {}
+        return {f"fields.{key}":str(fields.get(key) or "") for key in TEMPLATE_VIDEO_INPUTS}
+    if node["type"] in ("image","video","audio","script"):
+        return {"prompt":str(data.get("prompt") or "")}
+    return {}
+
+
+def template_copy_inputs(row, payload):
+    if not isinstance(payload,dict):
+        raise bad("模板填写内容无效")
+    edits = payload.get("inputs",[])
+    if not isinstance(edits,list) or len(edits)>200:
+        raise bad("一次最多填写 200 项模板内容")
+    if not edits:
+        return row["data"]
+    board = copy.deepcopy(row["data"])
+    nodes = {n["id"]:n for n in board["nodes"]}
+    applied = set()
+    for edit in edits:
+        if not isinstance(edit,dict) or any(not isinstance(edit.get(k),str) for k in ("node","field","before","value")):
+            raise bad("模板填写内容无效")
+        nid, field, old, value = (edit[k] for k in ("node","field","before","value"))
+        node = nodes.get(nid)
+        fields = template_node_inputs(node) if node else {}
+        if field not in fields or (nid,field) in applied or len(value)>20_000 or len(old)>20_000:
+            raise bad("模板填写项不存在、重复或超过 20000 字")
+        if fields[field]!=old:
+            raise web.HTTPConflict(text=json.dumps({"error":"模板内容已更新，请重新打开预览"},ensure_ascii=False),
+                                   content_type="application/json")
+        applied.add((nid,field))
+        data = node.setdefault("data",{})
+        if field.startswith("fields."):
+            if not isinstance(data.get("fields"),dict):
+                data["fields"] = {}
+            data["fields"][field.split(".",1)[1]] = value
+        else:
+            data[field] = value
+    return board
 
 
 def capture_template_preview(row):
@@ -1684,7 +1874,8 @@ def capture_template_preview(row):
     preview["edges"] = edges
     preview["media"] = list(media)
     for node in preview["nodes"]:
-        data = nodes[node["id"]].get("data")
+        original = nodes[node["id"]]
+        data = original.get("data")
         if isinstance(data,dict) and isinstance(data.get("prompt"),str):
             node["prompt"] = data["prompt"][:20_000]
     return preview
@@ -1692,7 +1883,11 @@ def capture_template_preview(row):
 
 @routes.get("/api/canvas-templates/{tid}/preview")
 async def preview_template(req):
-    preview = capture_template_preview(readable_template(req))
+    row = readable_template(req)
+    preview = capture_template_preview(row)
+    inputs = {node["id"]:template_node_inputs(node) for node in row["data"]["nodes"]}
+    for node in preview["nodes"]:
+        node["inputs"] = inputs[node["id"]]
     preview.pop("media")
     return web.json_response(preview, headers=public_canvas.HEADERS)
 
@@ -1712,7 +1907,11 @@ async def preview_template_media(req):
 @routes.post("/api/canvas-templates/{tid}/fragment")
 async def template_fragment(req):
     row = readable_template(req)
-    board = row["data"]
+    try:
+        payload = await req.json() if req.can_read_body else {}
+    except ValueError:
+        raise bad("模板填写内容无效") from None
+    board = template_copy_inputs(row,payload)
     grant_media(req["user"],*media_references(board))
     groups = board["groups"]
     if not groups and len(board["nodes"]) > 1:
@@ -1737,7 +1936,7 @@ async def open_template(req):
         if current.get("owner") != user["id"]:
             raise web.HTTPConflict()
         return web.json_response({"id":bid})
-    board = {**row["data"],"name":row["name"],"owner":user["id"],"shared":False,"rev":1}
+    board = {**template_copy_inputs(row,payload),"name":row["name"],"owner":user["id"],"shared":False,"rev":1}
     grant_media(user,*media_references(board))
     write_board(path,board)
     if project:
@@ -2993,8 +3192,15 @@ async def lastframe(req):
 @routes.get("/api/video/frame-preview")
 async def video_frame_preview(req):
     ref, position = req.query.get("ref",""), req.query.get("position")
-    if position not in ("first","last"):
-        raise bad("请选择首帧或尾帧")
+    raw_at = req.query.get("at")
+    if position not in ("first","last","time") or (position=="time")!=(raw_at is not None):
+        raise bad("请选择首帧、末帧，或指定截帧时间")
+    try:
+        at = float(raw_at) if raw_at is not None else None
+    except ValueError:
+        raise bad("截帧时间无效") from None
+    if at is not None and (not math.isfinite(at) or at<0):
+        raise bad("截帧时间无效")
     try:
         source = tools.ref_path(COMFY_DIR,ref)
     except ValueError:
@@ -3003,7 +3209,7 @@ async def video_frame_preview(req):
         raise web.HTTPNotFound()
 
     def preview():
-        image, _ = film.capture_frame(source,position)
+        image, _ = film.capture_frame(source,position,at)
         image.thumbnail((960,960))
         buffer = io.BytesIO()
         image.save(buffer,format="PNG")

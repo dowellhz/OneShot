@@ -665,7 +665,8 @@ function renderClipBox() {
   const bounds=filmTrimBounds(c),{start:baseIn,end:baseOut}=bounds;
   const volumeLabel = c.audio_ref ? "原片音量" : "原声音量";
   const seekStep = c.remake_shot || c.tight ? 1 / RM_FPS : .1;
-  const updateLabel = c.remake_shot ? "更新这一镜" : "更新素材版本";
+  const source = node(c.node);
+  const alternative = canvasCanEdit() && c.node!==F.target?.id && source?.versions.some(v=>v.ref && v.ref!==c.ref);
   const trimControls = isStill ? "" : '<button class="pill" data-a="in" title="从这里开始 (Q)" aria-keyshortcuts="Q">从这里开始</button><button class="pill" data-a="out" title="到这里结束 (E)" aria-keyshortcuts="E">到这里结束</button><button class="pill" data-a="reset">恢复完整</button><button class="pill" data-split-clip title="在播放头分割 (C)" aria-keyshortcuts="C">在播放头分割</button>' +
     (canvasCanEdit() ? '<button class="pill" data-film-capture>截帧到画布</button>' : "");
   const captionBusy = F.captionRequests?.has(c);
@@ -679,7 +680,7 @@ function renderClipBox() {
     </div>`).join("")}</div>`
     : `<label>手写字幕（一行一句）<textarea data-film-lines rows="2" placeholder="这段没有字幕">${esc(c.subs.join("\n"))}</textarea></label>`;
   box.innerHTML = `<div class="row"><b>第 ${F.sel + 1} 段 · ${esc(c.name || node(c.node)?.name || "")}</b>
-      <span class="grow"></span>${c.ref && (c.remake_shot || (c.node !== F.target?.id && node(c.node))) ? `<button class="pill" data-update-version>${updateLabel}</button>` : ""}${trimControls}</div>
+      <span class="grow"></span>${c.ref && (c.remake_shot || alternative) ? `<button class="pill" data-update-version ${c.remake_shot?"":'aria-expanded="false"'}>${c.remake_shot ? "更新这一镜" : "更换素材版本"}</button>` : ""}${trimControls}</div>
     ${isStill ? `<label class="still-duration">停留时长 <input type="number" min="0.5" max="60" step="0.1" value="${c.duration}"> 秒</label>` : `
     <div class="trim"><span>入点 <b>${(c.in || 0).toFixed(1)}s</b></span><input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${c.in || 0}" data-t="in">
       <input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${out}" data-t="out"><span>出点 <b>${out.toFixed(1)}s</b></span><span class="dim">保留 ${(out - (c.in || 0)).toFixed(1)}s / 原长 ${(baseOut - baseIn).toFixed(1)}s</span></div>`}
@@ -699,9 +700,10 @@ function renderClipBox() {
     $(".row", box).append(locate);
   }
   const update = $("[data-update-version]", box);
-  if (update) update.onclick = async () => {
+  if (update && !c.remake_shot) update.onclick = () => openFilmVersionPicker(F,c,source,box,update);
+  if (update && c.remake_shot) update.onclick = async () => {
     update.disabled = true;
-    try { await updateFilmVersion(F, c); }
+    try { await updateRemakeFilmClip(F, c); }
     catch (error) { toast(error.message); }
     finally { update.disabled = false; }
   };
@@ -783,6 +785,64 @@ function renderClipBox() {
   vid.volume = Math.min(1, c.volume);
   syncFilmOriginal();
 }
+
+function filmVersionReplacement(clip, candidate, source) {
+  if (clip.kind==="image")return {ref:candidate.ref,shorter:0};
+  const length=candidate.seconds || candidate.node_data?.duration || source.data?.duration;
+  if (!Number.isFinite(length) || length<=0)throw new Error("新版本的时长不可用");
+  const next={...clip,media_seconds:length,src_len:undefined};
+  const bounds=filmTrimBounds(next), start=clip.in||0;
+  const out=clip.out??filmTrimBounds(clip).end, end=Math.min(out,bounds.end);
+  if (!(end>start) || end-start+1e-6<bounds.minimum)throw new Error("新版本太短，无法保留当前入点");
+  return {ref:candidate.ref,media_seconds:length,out:end,shorter:(out-end)/filmSpeed(clip)};
+}
+
+function openFilmVersionPicker(F,clip,source,box,button) {
+  const open=$(".fm-version-picker",box);
+  if(open){open.remove();button.setAttribute("aria-expanded","false");return;}
+  const options=source.versions.filter(version=>version.ref&&version.ref!==clip.ref);
+  const form=document.createElement("form");
+  form.className="fm-version-picker";
+  const keepsAudio=!!(clip.audio_ref || clip.audio_start!=null && F.spec.remake_audio);
+  form.innerHTML=`<label>替换为 <select aria-label="替换素材版本"></select></label>
+    ${clip.captions&&!keepsAudio?'<label><input type="checkbox" data-keep-captions> 沿用原时间码字幕</label>':""}
+    <span role="status"></span><button class="pill" type="submit">应用版本</button>`;
+  const picker=$("select",form), status=$("[role=status]",form), apply=$("button",form), captions=$("[data-keep-captions]",form);
+  const active=curV(source);
+  picker.replaceChildren(...options.map((version,index)=>new Option(
+    `版本 ${source.versions.indexOf(version)+1}${version===active?"（画布当前）":""}${version.seconds?` · ${version.seconds.toFixed(1)}s`:""}`,String(index))));
+  if(options.includes(active))picker.value=String(options.indexOf(active));
+  const proposal=()=>{
+    const live=node(clip.node);
+    const requested=options[Number(picker.value)];
+    const version=live?.versions.find(version=>version.ref===requested?.ref);
+    if(!version || version.ref===clip.ref)throw new Error("所选版本已移除，请重新选择");
+    return filmVersionReplacement(clip,version,live);
+  };
+  picker.onchange=()=>{
+    try {
+      const {shorter}=proposal();
+      status.textContent=shorter>1e-6?`片段将缩短 ${shorter.toFixed(2)} 秒`:(clip.kind==="video"?"保留当前剪辑区间":"保留停留时长");
+      if(captions&&!captions.checked)status.textContent+=" · 将清除原时间码字幕";
+      apply.disabled=false;
+    } catch(error){status.textContent=error.message;apply.disabled=true;}
+  };
+  if(captions)captions.onchange=picker.onchange;
+  form.onsubmit=event=>{
+    event.preventDefault();
+    if(!canvasCanEdit() || FILM!==F || F.spec.clips[F.sel]!==clip)return;
+    try {
+      const {shorter,...changes}=proposal(), offset=filmClipOffset(F);
+      if(!keepsAudio && !captions?.checked)delete clip.captions;
+      delete clip.src_len;
+      Object.assign(clip,changes);
+      renderFilm();selectClip(F.sel,Math.min(offset,clipLen(clip)));saveFilmDraft(F);
+    } catch(error){status.textContent=error.message;}
+  };
+  $(".row",box).after(form);button.setAttribute("aria-expanded","true");
+  picker.onchange();picker.focus();
+}
+
 function syncFilmOriginal() {
   const track = $("#fmOriginal"), video = $("#fmV"), clip = FILM?.spec.clips[FILM.sel];
   const ref = clip?.audio_ref || FILM?.spec.remake_audio;
@@ -798,7 +858,7 @@ function syncFilmOriginal() {
   if (video.paused) track.pause();
   else if (track.paused) track.play()?.catch(() => {});
 }
-async function updateFilmVersion(F, clip) {
+async function updateRemakeFilmClip(F, clip) {
   const provenance = clip.remake_shot;
   const bid = boardId;
   if (provenance) {
@@ -817,17 +877,6 @@ async function updateFilmVersion(F, clip) {
     if (clip.ref !== next.ref || clip.audio_start !== next.audio_start) delete clip.captions;
     Object.assign(clip, {ref:next.ref, media_seconds:next.media_seconds, audio_start:next.audio_start, src_len:undefined,
       in:Math.max(next.in, next.in + start), out:Math.min(next.out, next.in + end)});
-  } else {
-    const version = curV(node(clip.node));
-    if (!version) throw new Error("画布上没有可用的镜头版本");
-    if (clip.kind !== "image") {
-      const limit = version.seconds || vlen(node(clip.node));
-      if ((clip.in || 0) >= limit) throw new Error("新版本短于当前入点");
-      clip.media_seconds = limit; delete clip.src_len;
-      if (clip.out != null) clip.out = Math.min(clip.out, limit);
-    }
-    if (clip.ref !== version.ref) delete clip.captions;
-    clip.ref = version.ref;
   }
   renderFilm(); selectClip(F.sel);
 }
@@ -1097,7 +1146,7 @@ async function submitFilm(F,downloadOnly=false) {
 let qOpen = false, qTimer = null;
 const clock = sec => { const d = new Date(Date.now() + sec * 1000); return d.toTimeString().slice(0, 5); };
 async function renderQueue() {
-  const box = $("#qp");
+  const box = $("#qpJobs");
   let q; try { q = await (await fetch("/api/queue")).json(); } catch { box.innerHTML = `<div class="h">连不上画布服务</div>`; return; }
   const byJob = new Map(); B.nodes.forEach(n => n.job?.ids.forEach(i => byJob.set(i, n)));
   box.innerHTML = `<div class="mt">任务队列${q.jobs.length ? ` · 全部完成约 ${fmtT(q.total)}（${clock(q.total)}）` : ""}</div>` +
@@ -1181,6 +1230,9 @@ function initFilm() {
 #fmClip { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 #fmClip .row, #fmClip .trim, #fmClip .row2 { display: flex; align-items: center; gap: 10px; }
 #fmClip .row { flex-wrap: wrap; }
+#fmClip .fm-version-picker { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px; color:var(--dim); border:1px solid var(--line); border-radius:8px; font-size:var(--fs-small); }
+#fmClip .fm-version-picker select { background:var(--card-hi); color:var(--text); border:1px solid var(--line2); border-radius:6px; padding:5px; }
+#fmClip .fm-version-picker [role=status] { flex:1 1 140px; }
 #fmClip .grow { flex: 1; } #fmClip .trim input { flex: 1; accent-color: #ffb36b; }
 #fmClip .row2 label { display: flex; flex-direction: column; gap: 4px; color: var(--dim); font-size: var(--fs-small); flex: 1; }
 #fmClip .row2 { flex-wrap: wrap; }
@@ -1250,6 +1302,8 @@ function initFilm() {
 #qp .qj.running .st { color: #ffcf5a; } #qp .qj .st { color: var(--dim); font-size: var(--fs-caption); white-space: nowrap; }
 #qp .qj .x { border: none; background: none; color: var(--faint); font-size: var(--fs-heading); } #qp .qj .x:hover { color: var(--red); }
 #qp .h { padding: 4px 6px; }
+#qpJobs { display: contents; }
+#qp [data-enable-notifications] { align-self: flex-end; }
 #tr { cursor: pointer; }`;
   document.head.appendChild(css);
   document.body.insertAdjacentHTML("beforeend", `
@@ -1272,7 +1326,7 @@ function initFilm() {
   <audio id="fmA"></audio>
 </div>
 <div class="menu" id="fmAdd"></div><div class="menu" id="playlistClipMenu" aria-label="片段操作"></div>
-<div id="qp"></div>`);
+<div id="qp"><div id="qpJobs"></div><button type="button" data-enable-notifications hidden>开启完成通知</button></div>`);
   $("#fmClose").onclick = closeFilm;
   $("#fmSaveList").onclick = () => { if (FILM) saveFilmPlaylist(FILM); };
   $("#fmPlaylistSources").onclick = () => { if (FILM) downloadFilmPlaylistSources(FILM); };
@@ -1346,6 +1400,16 @@ function initFilm() {
     if (button) { e.preventDefault();e.stopPropagation();button.click(); }
   }, true);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && doneCount) { doneCount = 0; document.title = "OneShot"; } });
-  if (window.Notification && Notification.permission === "default") document.addEventListener("pointerdown", () => { try { Notification.requestPermission(); } catch {} }, { once: true });
+  const enableNotifications = $("#qp [data-enable-notifications]");
+  enableNotifications.hidden = !window.Notification || Notification.permission !== "default";
+  enableNotifications.onclick = async () => {
+    enableNotifications.disabled = true;
+    try { await Notification.requestPermission(); }
+    catch { toast("无法开启通知，请检查浏览器设置"); }
+    finally {
+      enableNotifications.hidden = Notification.permission !== "default";
+      enableNotifications.disabled = false;
+    }
+  };
   setInterval(watchDone, 1500);
 }
