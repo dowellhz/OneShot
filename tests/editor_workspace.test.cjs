@@ -103,7 +103,7 @@ w.fetch=async(url,options={})=>{
    result=(w.__memories||[]).filter(asset=>scope==='current' ? asset.board===bid || asset.team===w.__currentAssetTeam&&!!asset.team :
     scope==='personal' ? !asset.board&&!asset.project&&!asset.team&&(asset.owner==null||asset.owner===1) :
     scope==='shared' ? asset.shared : scope?.startsWith('team:') ? asset.team===scope.slice(5) : true);
-   if(!scope && w.__limitedMemoryList)result=result.filter(asset=>!asset.board);
+   if(!scope && w.__limitedMemoryList)result=result.filter(asset=>asset.id!=='personal-lin');
    if(u.searchParams.has('cursor')){
     const cursor=u.searchParams.get('cursor');
     if(cursor && w.__failAssetPage)return {ok:false,status:503,json:async()=>({error:'加载暂时失败'})};
@@ -111,6 +111,18 @@ w.fetch=async(url,options={})=>{
     result={items:cursor?[extra]:result,next_cursor:extra&&!cursor?'older':null};
    }
   }
+ }
+ else if(pathname==='/api/memory/mentions'){
+  const bid=u.searchParams.get('board'), query=u.searchParams.get('q').toLowerCase(), view=u.searchParams.get('view');
+  const items=(w.__memories||[]).filter(a=>!a.board||a.board===bid);
+  const names=a=>[a.name,...(a.aliases||[])].map(n=>n.toLowerCase());
+  const views={main:'标准主图',face:'正面头肩',side:'全身侧面',back:'全身背面',detail:'固定细节'};
+  result=items.filter(a=>view===null ?
+   [...names(a),...(a.tags||[])].some(value=>value.includes(query)) :
+   names(a).some(value=>value.includes(query))&&Object.keys(a.character_views||{}).some(slot=>slot.includes(view)||views[slot]?.includes(view)));
+  result.sort((a,b)=>2*(Number(names(b).includes(query))-Number(names(a).includes(query)))+
+    Number(b.board===bid)-Number(a.board===bid));
+  result=result.slice(0,20).map(a=>({...a,reference_ambiguous:items.some(other=>other.id!==a.id&&names(other).includes(a.name.toLowerCase()))}));
  }
  else if(pathname==='/api/memory/search'){
   w.__semanticSearch=JSON.parse(options.body);
@@ -705,15 +717,18 @@ async function run(){
  await ready('CM.matches.length===1 && !CM.popup.hidden','tag completion');
  evaluate('document.getElementById("acInput").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))');
  equal(evaluate('CM.popup.hidden'),true,'escape closes completion');
- evaluate('CM.items.push({...CM.items[0],id:"person2"});document.getElementById("acInput").value="";document.getElementById("acInput").setSelectionRange(0,0);cmInsert(document.getElementById("acInput"),CM.items[0])');
- equal(evaluate('document.getElementById("acInput").value'),'@{person1|林森} ','duplicate names preserve a readable label and a stable asset ID');
  w.__memories=[{...w.__memories[0],id:'personal-lin',board:''}, {...w.__memories[0],id:'canvas-lin',board:'btest'}];
  w.__limitedMemoryList=true;
  evaluate(`cmInvalidate();
    const scopePrompt=$("#acInput");scopePrompt.value="@林森";scopePrompt.focus();scopePrompt.setSelectionRange(3,3);
    scopePrompt.dispatchEvent(new Event("input",{bubbles:true}));`);
- await ready('!CM.popup.hidden && CM.matches.filter(a=>a.id.endsWith("-lin")).length===2','same-name assets are offered across visible scopes');
+ await ready('!CM.popup.hidden && CM.matches.filter(a=>a.id.endsWith("-lin")).length===2','same-name assets are offered even when outside the recent list');
  equal(evaluate('CM.matches.filter(a=>a.id.endsWith("-lin")).map(a=>a.id)'),['canvas-lin','personal-lin'],'current library sorts ahead of personal results');
+ evaluate('scopePrompt.value="@尚在查找";scopePrompt.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));$("#memoryMention [data-memory=personal-lin]").click()');
+ equal(evaluate('scopePrompt.value'),'@尚在查找','an old suggestion cannot replace a newer query');
+ evaluate('scopePrompt.value="@林森";scopePrompt.setSelectionRange(3,3)');
+ evaluate('$("#memoryMention [data-memory=personal-lin]").click()');
+ equal(evaluate('scopePrompt.value'),'@{personal-lin|林森} ','the older same-name asset is inserted with its own ID');
  delete w.__limitedMemoryList;
  evaluate('cmClose()');
  await evaluate('cmEdit(null,"document")');

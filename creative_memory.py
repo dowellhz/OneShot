@@ -8,6 +8,7 @@ import math
 import re
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
 
@@ -243,6 +244,34 @@ class Store:
         if not query:
             return items
         return self.keyword_matches(items, query)
+
+    def mention_suggestions(self, user, bid, query, view=None):
+        assets = self.list(user,bid)
+        in_current = self.scope_filter(user,bid,"current")
+        query = query.casefold()
+        candidates, names_in_use = [], Counter()
+        for asset in assets:
+            names = {label.casefold() for label in (asset["name"],*asset.get("aliases",[]))}
+            names_in_use.update(names)
+            if view is not None:
+                labels = names
+                if asset["kind"] != "character" or not any(
+                    asset.get("character_views",{}).get(slot) and (view in slot or view in label)
+                    for slot,label in CHARACTER_VIEW_LABELS.items()
+                ):
+                    continue
+            else:
+                labels = names | {tag.casefold() for tag in asset.get("tags",[])}
+            if any(query in label for label in labels):
+                candidates.append((query in names,in_current(asset),asset))
+        candidates.sort(key=lambda match:match[:2],reverse=True)
+        fields = ("id","name","kind","board","project","team","shared","ref","character_views",
+                  "generation_media","generation_images")
+        return [
+            {**{key:asset[key] for key in fields if key in asset},
+             "desc":(asset.get("desc") or "")[:100], "reference_ambiguous":names_in_use[asset["name"].casefold()] > 1}
+            for _,_,asset in candidates[:20]
+        ]
 
     @staticmethod
     def keyword_matches(items, query):
@@ -983,6 +1012,15 @@ def library_page(items, cursor):
         items = [asset for asset in items if position(asset) < (mtime,mid)]
     page = sorted(items,key=position,reverse=True)[:120]
     return page, dumps(position(page[-1])) if len(items) > len(page) else None
+
+
+@routes.get("/api/memory/mentions")
+async def mention_options(req):
+    bid, query, view = req.query.get("board"), req.query.get("q",""), req.query.get("view")
+    if not bid or len(query) > 80 or view is not None and len(view) > 80:
+        fail("素材引用搜索参数无效")
+    items = store(req).mention_suggestions(req["user"],bid,query.strip(),None if view is None else view.casefold())
+    return web.json_response(items,headers={"Cache-Control":"no-store"})
 
 
 @routes.post("/api/document-import")

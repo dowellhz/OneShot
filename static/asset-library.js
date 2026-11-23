@@ -690,9 +690,12 @@ async function alBatch(action, ids=[...AL.marked], at=null) {
 }
 async function alReference(a) {
   try {
-    const bid=boardId;await cmList(true);if(bid!==boardId)return;alClose();await acOpen();if(bid!==boardId)return;const ta=$('#acInput');
+    const bid=boardId, candidates=await cmReferenceSearch(a.name);
+    if(bid!==boardId)return;
+    const asset = candidates.find(item=>item.id===a.id) || {...a,reference_ambiguous:true};
+    alClose();await acOpen();if(bid!==boardId)return;const ta=$('#acInput');
     if(ta.value&&!/\s$/.test(ta.value))ta.value+=' ';
-    ta.setSelectionRange(ta.value.length,ta.value.length);cmInsert(ta,a);toast('已引用「'+a.name+'」，继续描述创作要求');
+    ta.setSelectionRange(ta.value.length,ta.value.length);cmInsert(ta,asset);toast('已引用「'+a.name+'」，继续描述创作要求');
   }catch(e){toast('引用失败：'+e.message);}
 }
 function alImportMenu() {

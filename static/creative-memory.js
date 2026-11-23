@@ -33,9 +33,14 @@ function cmNewScope(){
 }
 function cmToken(asset) {
  const name = asset.name.toLocaleLowerCase();
- const ambiguous = CM.items.some(other=>other.id!==asset.id && [other.name,...(other.aliases||[])]
-  .some(label=>label.toLocaleLowerCase()===name));
+ const ambiguous = asset.reference_ambiguous ?? CM.items.some(other=>other.id!==asset.id &&
+  [other.name,...(other.aliases||[])].some(label=>label.toLocaleLowerCase()===name));
  return ambiguous ? cmLabelledToken(asset) : "@"+asset.name;
+}
+function cmReferenceSearch(q, view) {
+ const params = new URLSearchParams({board:boardId,q});
+ if(view!==undefined)params.set("view",view);
+ return boardRequest('/api/memory/mentions?'+params);
 }
 async function cmFolders() {
  const bid=boardId;
@@ -143,7 +148,11 @@ function cmInsert(ta,a,start=ta.selectionStart,end=ta.selectionStart){
  if(a.canvasNode&&ta.id!=="acInput")ta._before=snap();
 }
 function cmClose(){if(CM.popup){CM.popup.hidden=true;if(CM.popup.parentElement!==document.body)document.body.append(CM.popup);}CM.target?.setAttribute('aria-expanded','false');CM.target?.removeAttribute('aria-activedescendant');CM.target=null;}
-function cmEnsure(){if(CM.popup)return;const box=document.createElement('div');box.id='memoryMention';box.className='cm-mention';box.role='listbox';box.hidden=true;box.setAttribute('aria-label','素材引用补全');document.body.append(box);CM.popup=box;box.addEventListener('pointerdown',e=>e.preventDefault());box.addEventListener('click',e=>{const b=e.target.closest('[data-option]');if(b&&CM.target){const a=CM.matches[Number(b.dataset.option)];if(a)cmInsert(CM.target,a,CM.start,CM.target.selectionStart);}});}
+function cmCurrentQuery() {
+ const ta=CM.target;
+ return ta && CM.part===ta.value.slice(0,ta.selectionStart);
+}
+function cmEnsure(){if(CM.popup)return;const box=document.createElement('div');box.id='memoryMention';box.className='cm-mention';box.role='listbox';box.hidden=true;box.setAttribute('aria-label','素材引用补全');document.body.append(box);CM.popup=box;box.addEventListener('pointerdown',e=>e.preventDefault());box.addEventListener('click',e=>{const b=e.target.closest('[data-option]');if(b&&cmCurrentQuery()){const a=CM.matches[Number(b.dataset.option)];if(a)cmInsert(CM.target,a,CM.start,CM.target.selectionStart);}});}
 function cmDraw(){
  const box=CM.popup;box.replaceChildren();
  if(!CM.matches.length){const empty=document.createElement('div');empty.className='cm-empty';empty.textContent='没有匹配素材，可在素材库新建记忆';box.append(empty);return;}
@@ -183,32 +192,29 @@ function cmCanvasMatches(ta,query,versionQuery,bid){
  }
  return results;
 }
-async function cmSuggest(ta,force=false){
+async function cmSuggest(ta){
  const pos=ta.selectionStart,part=ta.value.slice(0,pos),match=part.match(/[@＠]([^@＠\s，。！？、；：,.!?;:()（）\[\]【】]{0,80})$/);if(!match){cmClose();return;}
  const start=pos-match[0].length;if(start&&/[A-Za-z0-9_.]/.test(part[start-1])){cmClose();return;}cmEnsure();CM.target=ta;CM.start=start;const query=match[1].toLocaleLowerCase(),bid=boardId;
  const versionSearch=query.match(/^(.+)[#＃](\d*)$/);
  const viewSearch=query.match(/^(.+)[#＃]([^#＃]*)$/);
  let memoryError;
- const [items, folders]=await Promise.all([cmList(force).catch(error=>{memoryError=error;return [];}),cmFolders().catch(()=>[])]);
+ const [items, folders]=await Promise.all([
+  cmReferenceSearch(viewSearch?.[1]??query,viewSearch?.[2]).catch(error=>{memoryError=error;return [];}),
+  cmFolders().catch(()=>[]),
+ ]);
  if(boardId!==bid||CM.target!==ta||document.activeElement!==ta||ta.selectionStart!==pos||ta.value.slice(0,pos)!==part)return;
  const nodes=cmCanvasMatches(ta,versionSearch?.[1]??query,versionSearch?.[2],bid);
- const memory=items.map(asset=>{
-  const names=[asset.name,...(asset.aliases||[])].map(label=>label.toLocaleLowerCase());
-  const matches=[...names,...(asset.tags||[]).map(tag=>tag.toLocaleLowerCase())].some(label=>label.includes(query));
-  return {asset,matches,score:2*Number(names.includes(query))+Number(!!alInCurrent(asset))};
- }).filter(entry=>entry.matches).sort((a,b)=>b.score-a.score).map(entry=>entry.asset);
  const targetType=canvasPromptNode(ta)?.type;
  const views = viewSearch && (ta.id==="acInput" || targetType==="image" || targetType==="video")
-  ? items.filter(asset=>asset.kind==="character" && [asset.name,...(asset.aliases||[])]
-    .some(name=>name.toLocaleLowerCase().includes(viewSearch[1])))
-    .flatMap(asset=>Object.entries(CHARACTER_VIEWS)
+  ? items.flatMap(asset=>Object.entries(CHARACTER_VIEWS)
      .filter(([slot,[label]])=>asset.character_views?.[slot] && (slot.includes(viewSearch[2])||label.includes(viewSearch[2])))
      .map(([slot])=>({...asset,characterView:slot,ref:asset.character_views[slot]}))) : [];
  const matchingFolders=folders.filter(folder=>folder.name.toLocaleLowerCase().includes(query)).slice(0,6).map(folder=>({...folder,assetFolder:true}));
  const slots=20-matchingFolders.length;
- const visibleMemory=memory.slice(0,nodes.length?Math.max(8,slots-nodes.length):slots);
+ const visibleMemory=viewSearch?[]:items.slice(0,nodes.length?Math.max(8,slots-nodes.length):slots);
  CM.matches=(viewSearch?[...views,...nodes,...matchingFolders,...visibleMemory]:
   [...matchingFolders,...visibleMemory,...nodes]).slice(0,20);
+ CM.part=part;
  CM.index=0;cmDraw();
  if(!CM.matches.length&&memoryError)CM.popup.firstChild.textContent=memoryError.message;
  if(!CM.matches.length&&viewSearch&&!memoryError)CM.popup.firstChild.textContent='没有可引用的角色视角或画布版本';
@@ -228,7 +234,20 @@ function cmInit(){
  folderPicker.addEventListener('keydown',event=>event.stopPropagation());
  const mentionInput=target=>target.matches('#prompt,#acInput,#pfields textarea[data-k]');
  document.addEventListener('input',e=>{if(!mentionInput(e.target))return;clearTimeout(CM.timer);CM.timer=setTimeout(()=>cmSuggest(e.target),60);});
- document.addEventListener('keydown',e=>{if(e.target!==CM.target||CM.popup?.hidden||e.isComposing)return;if(['ArrowDown','ArrowUp','Enter','Tab','Escape'].includes(e.key)){e.stopImmediatePropagation();e.preventDefault();if(e.key==='Escape'){cmClose();return;}if(e.key==='Enter'||e.key==='Tab'){const a=CM.matches[CM.index];if(a)cmInsert(e.target,a,CM.start,e.target.selectionStart);return;}if(CM.matches.length){CM.index=(CM.index+(e.key==='ArrowDown'?1:-1)+CM.matches.length)%CM.matches.length;cmDraw();}}},true);
+ document.addEventListener('keydown',e=>{
+  if(e.target!==CM.target||CM.popup?.hidden||e.isComposing||!['ArrowDown','ArrowUp','Enter','Tab','Escape'].includes(e.key))return;
+  e.stopImmediatePropagation();
+  e.preventDefault();
+  if(e.key==='Escape'){cmClose();return;}
+  if(!cmCurrentQuery())return;
+  if(e.key==='Enter'||e.key==='Tab'){
+   const asset=CM.matches[CM.index];
+   if(asset)cmInsert(e.target,asset,CM.start,e.target.selectionStart);
+  }else if(CM.matches.length){
+   CM.index=(CM.index+(e.key==='ArrowDown'?1:-1)+CM.matches.length)%CM.matches.length;
+   cmDraw();
+  }
+ },true);
  document.addEventListener('compositionend',e=>{if(mentionInput(e.target))cmSuggest(e.target);});
  document.addEventListener('pointerdown',e=>{if(!e.target.closest('#memoryMention')&&e.target!==CM.target)cmClose();});
  window.addEventListener('resize',cmClose);document.addEventListener('scroll',e=>{if(!e.target.closest?.('#memoryMention'))cmClose();},true);

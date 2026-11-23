@@ -425,6 +425,36 @@ class MemoryIntegration(ChatFixture):
         response = await self.client.get("/api/memory",params={"board":"shots","scope":"personal","cursor":"bad"})
         self.assertEqual(response.status,400)
 
+    async def test_mention_suggestions_search_beyond_recent_assets_and_bind_the_chosen_identity(self):
+        personal = await self.create(board="",name="林森",aliases=["林导"],tags=["主角"])
+        current = await self.create(name="林森",character_view="main")
+        await self.client.put("/api/board/another",json={"nodes":[]})
+        await self.create(board="another",name="其他画布的主角",tags=["主角"])
+        db.run("""WITH RECURSIVE numbers(n) AS (
+                    VALUES(1) UNION ALL SELECT n+1 FROM numbers WHERE n<305)
+                  INSERT INTO creative_memories(id,owner,kind,name,data,updated)
+                  SELECT 'recent-'||n,7,'document','近期素材 '||n,'{}',?+n FROM numbers""",current["mtime"])
+
+        async def suggestions(query, **filters):
+            response = await self.client.get("/api/memory/mentions",params={"board":"test","q":query,**filters})
+            self.assertEqual(response.status,200,await response.text())
+            return await response.json()
+
+        recent = await (await self.client.get("/api/memory?board=test")).json()
+        self.assertNotIn(personal["id"], [item["id"] for item in recent])
+        found = await suggestions("林")
+        self.assertEqual([item["id"] for item in found],[current["id"],personal["id"]])
+        self.assertTrue(all(item["reference_ambiguous"] for item in found))
+        self.assertEqual([item["id"] for item in await suggestions("林导")],[personal["id"]])
+        self.assertEqual([item["id"] for item in await suggestions("主角")],[personal["id"]])
+        self.assertEqual([item["id"] for item in await suggestions("林",view="主图")],[current["id"]])
+        self.assertEqual(await suggestions("林",view="背面"),[])
+        self.assertTrue(all(item["kind"]=="character" for item in found))
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        selected = store.mentions(user,"test","@{"+personal["id"]+"|林森} 出场")
+        self.assertEqual([item["id"] for item in selected],[personal["id"]])
+
     async def test_explicit_mention_reaches_generation_and_records_history(self):
         a = await self.create(aliases=['小林'], constraints='眼镜不能消失')
         output = image_editor.save(server.COMFY_DIR, Image.new('RGB',(64,48),'orange'))
