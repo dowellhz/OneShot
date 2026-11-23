@@ -23,6 +23,57 @@ function sendRemakeToFilm(video, source, session) {
   showFilm(remakeTimelineSpec(video, source, session));
 }
 
+function closeShotContinuityReview() {
+  const dialog=$("#shotContinuityReview");
+  if(!dialog?.open)return;
+  if(dialog.close)dialog.close();else dialog.removeAttribute("open");
+}
+
+function openShotContinuityReview(script,index,evidence=null) {
+  if(node(script.id)!==script||index<1)return;
+  const links=scriptShotLinks(script);
+  const previous=node(links[index-1]?.vid), video=node(links[index]?.vid), still=node(links[index]?.img);
+  const choices=(n,kind,position)=>n?.versions.flatMap((version,i)=>{
+    if(!version.ref)return [];
+    const params=new URLSearchParams({ref:version.ref});
+    if(position)params.set("position",position);
+    return [{node:n.id,ref:version.ref,version:i+1,url:`${position?"/api/video/frame-preview":"/media"}?${params}`,
+      label:`${kind} · 版本 ${i+1}${n.cur===i?"（当前）":""}`,current:n.cur===i}];
+  })||[];
+  const left=choices(previous,"视频","last");
+  const right=[...choices(video,"视频首帧","first"),...choices(still,"分镜图")];
+  const evidenceIndex=(items,version)=>{
+    const matches=item=>item.node===version.node&&item.ref===version.ref;
+    const exact=items.findIndex(item=>matches(item)&&item.version===version.version);
+    return exact<0?items.findIndex(matches):exact;
+  };
+  const leftIndex=evidence?evidenceIndex(left,evidence.left):left.findIndex(item=>item.current);
+  const rightIndex=evidence?evidenceIndex(right,evidence.right):right.findIndex(item=>item.current);
+  if(evidence&&(leftIndex<0||rightIndex<0))return toast("审阅的镜头或版本已变化，请重新分析");
+  if(!left.length)return toast("上一镜还没有可对比的视频");
+  if(!right.length)return toast("请先为当前镜头准备分镜图或视频");
+  const dialog=$("#shotContinuityReview");
+  if(dialog.open)return;
+  $("#shotContinuityTitle").textContent=`${script.name} · 镜头 ${index} 与镜头 ${index+1}`;
+  const fill=(selector,media,index)=>{
+    const pane=$(selector,dialog), pick=$("select",pane), img=$("img",pane), status=$("[role=status]",pane);
+    pick.replaceChildren(...media.map(({label},i)=>new Option(label,String(i))));
+    pick.selectedIndex=Math.max(0,index);
+    pick.onchange=()=>{
+      const selected=media[pick.selectedIndex];
+      img.hidden=true;
+      status.textContent="正在读取画面…";
+      img.onload=()=>{img.hidden=false;status.textContent="";};
+      img.onerror=()=>{status.textContent="画面暂时无法读取";};
+      img.src=selected.url;
+    };
+    pick.onchange();
+  };
+  fill("[data-left-frame]",left,leftIndex);
+  fill("[data-right-frame]",right,rightIndex);
+  if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");
+}
+
 function initShotList() {
   const button = $("#shotListBtn");
   if (!button) return;
@@ -34,6 +85,18 @@ function initShotList() {
     <div class="sl-controls"><select data-source aria-label="镜头来源"></select><button class="pill" data-reload>刷新</button>
     <button class="pill" data-film disabled>送入剪辑</button><button class="pill" data-draft>恢复剪辑</button></div><output aria-live="polite"></output><ol></ol>`;
   document.body.append(panel);
+  document.body.insertAdjacentHTML("beforeend",`<dialog id="shotContinuityReview" aria-labelledby="shotContinuityTitle">
+    <header><h2 id="shotContinuityTitle"></h2><button type="button" data-close>关闭</button></header>
+    <div class="shot-continuity-frames">
+      <figure data-left-frame><figcaption>前一镜尾帧</figcaption><select aria-label="前一镜版本"></select>
+        <div><img alt="前一镜尾帧" hidden><span role="status"></span></div></figure>
+      <figure data-right-frame><figcaption>当前镜头</figcaption><select aria-label="当前镜头版本"></select>
+        <div><img alt="当前镜头画面" hidden><span role="status"></span></div></figure>
+    </div></dialog>`);
+  const review=$("#shotContinuityReview");
+  $("[data-close]",review).onclick=closeShotContinuityReview;
+  review.onkeydown=event=>event.stopPropagation();
+  review.onclose=()=>{if(!review.open)$$("img",review).forEach(img=>img.removeAttribute("src"));};
   let epoch = 0;
   const sourceSelect = $("[data-source]", panel);
   const list = $("ol", panel), message = $("output", panel), film = $("[data-film]", panel);
@@ -54,11 +117,19 @@ function initShotList() {
     selectOnly(target.id);
     fit([target]);
   }
-  function row(title, details, onOpen, versions, selected, onVersion) {
+  function row(title, details, onOpen, versions, selected, onVersion, shotIndex=null, onCompare=null) {
     const el = document.createElement("li"), info = document.createElement("div"), open = document.createElement("button");
     open.type = "button"; open.className = "pill"; open.textContent = title; open.onclick = onOpen;
     const subtitle = document.createElement("span"); subtitle.textContent = details;
     info.append(open, subtitle); el.append(info);
+    if(shotIndex>0){
+      const tail=document.createElement("span");tail.className="story-tail-status";
+      tail.dataset.scriptTailStatus=String(shotIndex);tail.hidden=true;info.append(tail);
+    }
+    if(onCompare){
+      const compare=document.createElement("button");compare.className="pill";compare.type="button";
+      compare.textContent="对比衔接";compare.onclick=onCompare;info.append(compare);
+    }
     if (versions.length) {
       const input = document.createElement("select");
       input.setAttribute("aria-label", `${title}版本`);
@@ -74,15 +145,18 @@ function initShotList() {
     list.replaceChildren(); message.textContent = ""; film.disabled = true; film.onclick = null;
     if (!target) { message.textContent = "添加原片或生成分镜后，可在这里查看镜头。"; return; }
     if (target.type === "script") {
-      const connected = (target.data.made || []).slice(-target.data.shots.length);
+      const connected = scriptShotLinks(target);
       const vids = [];
       target.data.shots.forEach((shot, i) => {
         const v = node(connected[i]?.vid); vids.push(v);
         row(`镜头 ${i + 1}`, [`${shot.duration || "—"} 秒`, ...(shot.characters || []),
-          v?.job ? "生成中" : curV(v) ? "已生成" : "待生成"].join(" · "), () => locate(v || target),
+          v?.job ? "生成中" : curV(v) ? "已生成" : connected[i]?"待生成":"未展开"].join(" · "),
+          () => locate(v || node(connected[i]?.img) || target),
           v?.versions.map((_, index) => [String(index), `版本 ${index + 1}`]) || [], String(v?.cur ?? ""),
-          value => { if (switchVersion(v, +value)) locate(v); refresh(); });
+          value => { if (switchVersion(v, +value)) locate(v); refresh(); },i,
+          i>0&&connected[i-1]&&connected[i]?()=>openShotContinuityReview(target,i):null);
       });
+      paintScriptContinuity(target,list,connected);
       film.disabled = !vids.length || vids.some(v => !curV(v));
       film.onclick = () => {
         if (vids.some(v => !curV(v) || node(v.id) !== v)) return refresh();

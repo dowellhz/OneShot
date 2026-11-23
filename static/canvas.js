@@ -576,16 +576,23 @@ function renderVTabs(n, el) {
     t.addEventListener("pointerdown", e => e.stopPropagation());
     t.addEventListener("dblclick", e => e.stopPropagation());
   }
+  const previousTab=$(".on",t)?.dataset.i, scrollTop=t.scrollTop;
+  const focusedTab=t.contains(document.activeElement)?document.activeElement.dataset.i:null;
   t.innerHTML = n.versions.map((v, i) => {
     const tip = [`版本 ${i + 1}`, v.label || v.mode, v.seconds ? v.seconds.toFixed(1) + "s" : "", v.seed != null ? "seed " + v.seed : ""].filter(Boolean).join(" · ");
     return `<button role="tab" aria-selected="${i === n.cur}" aria-label="版本 ${i + 1}" data-i="${i}" tabindex="${i===n.cur?0:-1}" class="${i === n.cur ? "on" : ""}" title="${esc(tip)}" ${n.job ? "disabled" : ""}>${i + 1}</button>`;
   }).join("");
   $$("button",t).forEach(button=>vtWireTab(button,n));
   const active=$(".on",t);
-  if(active){
+  t.scrollTop=scrollTop;
+  if(active && previousTab!==active.dataset.i){
     const top=active.offsetTop,bottom=top+active.offsetHeight;
     if(top<t.scrollTop)t.scrollTop=top;
     else if(bottom>t.scrollTop+t.clientHeight)t.scrollTop=bottom-t.clientHeight;
+  }
+  if(focusedTab!=null){
+    const focus=previousTab===active?.dataset.i?$('[data-i="'+focusedTab+'"]',t):active;
+    focus?.focus({preventScroll:true});
   }
 }
 function refresh(n) { if (!n) return; render(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges(); }
@@ -766,14 +773,14 @@ function drawEdges() {
     const d = curve(pa,pb);
     g.innerHTML = `<path class="hit" d="${d}"></path><path class="vis" d="${d}"></path>`;
     if (selEdge === e) g.classList.add("sel");
-    if (["remake","previs","audio_ref","video_ref","trim","capture","transcript","audio_cut","broll","seed_audio_ref"].includes(e.relation)) {
+    if (e.story_continuity || ["remake","previs","audio_ref","video_ref","trim","capture","transcript","audio_cut","broll","seed_audio_ref"].includes(e.relation)) {
       g.classList.add("remake-edge");
       const label = document.createElement("div");
       label.className = "elabel remake-label";
       label.style.left = (pa.x + pb.x) / 2 + "px"; label.style.top = (pa.y + pb.y) / 2 + "px";
       const seedLabel = e.relation==="seed_audio_ref" ? (a.type==="image"?"参考图":`@音频${e.slot}`) +
         ` · 版本 ${a.versions.findIndex(v=>v.ref===e.ref)+1}` : "";
-      label.textContent = seedLabel || (e.segment_edit ? "修改片段" : e.extension ? extensionLabel(e.extension) : {previs:"白模动作参考",audio_ref:"音频参考",video_ref:"视频参考",remake:"原片",trim:"裁剪自原片",capture:"视频截帧",transcript:"音频转写",audio_cut:"台词剪辑",broll:"B-roll 来源"}[e.relation]);
+      label.textContent = e.story_continuity?"上一镜尾帧":seedLabel || (e.segment_edit ? "修改片段" : e.extension ? extensionLabel(e.extension) : {previs:"白模动作参考",audio_ref:"音频参考",video_ref:"视频参考",remake:"原片",trim:"裁剪自原片",capture:"视频截帧",transcript:"音频转写",audio_cut:"台词剪辑",broll:"B-roll 来源"}[e.relation]);
       world.appendChild(label);
     } else if (a.type === "image" && b.type === "video") {
       const p = plans[b.id] || (plans[b.id] = plan(b)), k = p.es.indexOf(e);
@@ -800,6 +807,7 @@ function drawEdges() {
       world.appendChild(label);
     }
   }
+  refreshScriptContinuity();
 }
 function cutEdge(e) {
   if (!canvasCanEdit()) return;
@@ -1694,7 +1702,8 @@ function isMouseWheel(e) {
 }
 vp.addEventListener("wheel", e => {
   if (e.target.closest("textarea, #pp, #drawer, .menu, #anglePop")) return;
-  const sb = e.target.closest(".sb"); if (sb && sb.scrollHeight > sb.clientHeight && !(e.ctrlKey || e.metaKey)) return;
+  const scrollable = e.target.closest(".sb, .vtabs");
+  if (scrollable && scrollable.scrollHeight > scrollable.clientHeight && !(e.ctrlKey || e.metaKey)) return;
   e.preventDefault();
   const zoom = e.ctrlKey || e.metaKey || (wheelMode === "zoom" && !e.shiftKey) || (wheelMode === "auto" && !e.shiftKey && isMouseWheel(e));
   if (zoom) {
@@ -1807,6 +1816,9 @@ function ctxMenu(e) {
   if (!many && n.type === "audio" && v?.ref) add("transcript","text","音频转写");
   if (!many && ["video","audio"].includes(n.type) && v?.ref && canvasCanEdit()) add("separate-audio","audio","人声分离");
   if (!many && n.data.playlist) add("playlist-open","stack","打开播放列表");
+  if (!many && canvasCanEdit() && B.edges.some(edge=>edge.from===n.id && vtGenerationReference(edge,n,node(edge.to)))) {
+    add("replace-reference","next","替换下游参考…");
+  }
   if (!many && v) {
     if (v.source === "previs") add("previsvideo", "next", "用作动作参考");
     if (n.type === "image") {
@@ -1882,6 +1894,7 @@ function ctxMenu(e) {
     if (a === "arrange") ctOpenArrangeMenu(e.clientX, e.clientY);
     else if (a === "comment") ccNode(n);
     else if (a === "template") openWorkflowTemplates(true);
+    else if (a === "replace-reference") vtOpenReferenceUpdate(n);
     else if (a === "workflow-review") openWorkflowReview(n.id, n.cur >= 0 ? n.cur + 1 : null);
     else if(a==="merge-tabs")vtMerge(vids.map(m=>m.id),n.id);
     else if(a==="split-tab"||a==="split-tabs")vtSplit(n.id,n.cur,a==="split-tabs");

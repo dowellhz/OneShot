@@ -118,6 +118,13 @@
 .ac-remake-plan > div { display:flex; align-items:center; gap:8px; }
 .ac-remake-plan img { width:46px; height:54px; object-fit:contain; border-radius:5px; background:var(--card); }
 .ac-remake-plan label { display:flex; gap:6px; align-items:center; }
+.ac-storyboard-plan { display:grid; gap:7px; margin-top:8px; padding:8px; border:1px solid var(--line2); border-radius:9px; overflow-wrap:anywhere; }
+.ac-storyboard-plan dl { display:grid; grid-template-columns:auto minmax(0,1fr); gap:5px 8px; margin:0; }
+.ac-storyboard-plan dt,.ac-storyboard-plan [role=status] { color:var(--dim); font-size:var(--fs-caption); }
+.ac-storyboard-plan dd { margin:0; white-space:pre-wrap; }
+.ac-revision-before { color:var(--dim); }
+.ac-storyboard-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.ac-storyboard-plan [role=status]:empty { display:none; }
 
 .ac-choices {
   display: grid;

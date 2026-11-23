@@ -21,6 +21,12 @@ AC_STATES.waiting_approval="等待确认生成方案…";
 AC.approvals=[];
 const acDecidedApprovals=new Set();
 AC_LABELS.canvas_workflow_review="读取制作复盘";
+AC_LABELS.canvas_reference_plan="准备参考素材替换";
+AC_LABELS.canvas_group_run_plan="准备分组运行";
+AC_LABELS.storyboard_context="读取分镜脚本";
+AC_LABELS.storyboard_visual_review="审阅镜头衔接";
+AC_LABELS.storyboard_next_shot_plan="准备下一镜";
+AC_LABELS.storyboard_revision_plan="准备镜头修改";
 AC_LABELS.image_camera="图片换机位";
 AC_LABELS.image_relight="图片重新布光";
 AC_LABELS.web_search="搜索公开资料";
@@ -348,6 +354,44 @@ async function acFocus(ids,editor=false){
 }
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
 function acResultCards(result){
+ if(result.shot_revision){
+  const p=result.shot_revision;
+  const labels={duration:"时长",shot_size:"景别",camera:"机位",scene:"场景",action:"动作",dialogue:"台词",sound:"声音",keyframe:"首帧"};
+  const display=value=>esc((Array.isArray(value)?value.join("\n"):value)??"");
+  return `<section class="ac-storyboard-plan" data-shot-revision="${esc(JSON.stringify(p))}">
+   <strong>${esc(p.name)} · 第 ${p.shot} 镜</strong>
+   <dl>${Object.entries(p.changes).map(([key,value])=>`<dt>${esc(labels[key])}</dt><dd>
+     <span class="ac-revision-before">${display(p.before[key])||"未填写"}</span><span aria-label="改为"> → </span>${display(value)||"清空"}</dd>`).join("")}</dl>
+   <div class="ac-storyboard-actions"><button type="button" data-apply-shot-revision>应用到原镜头</button>
+    <button type="button" data-run-shot-revision hidden>查看重生成计划</button></div><span role="status"></span></section>`;
+ }
+ if(result.shot_review){
+  const p=result.shot_review;
+  return `<div class="ac-results"><span>第 ${p.shot-1} 镜尾帧（版本 ${p.left.version}） · 第 ${p.shot} 镜${p.right.kind==="image"?"分镜图":"首帧"}（版本 ${p.right.version}）</span>
+   <button type="button" data-shot-review="${esc(JSON.stringify(p))}">打开双帧对比</button></div>`;
+ }
+ if(result.storyboard_plan){
+  const p=result.storyboard_plan,s=p.shot;
+  const fields=[["场景",s.scene],["机位",s.camera],["首帧",s.keyframe],["动作",s.action.join("\n")],
+    ["角色",s.characters.join("、")],["台词",s.dialogue.join("\n")],["声音",s.sound]];
+  return `<section class="ac-storyboard-plan" data-storyboard-plan="${esc(JSON.stringify(p))}">
+   <strong>${esc(p.name)} · 第 ${p.anchor.count+1} 镜 · ${esc(s.shot_size)} · ${s.duration} 秒</strong>
+   <dl>${fields.filter(([,value])=>value).map(([label,value])=>`<dt>${label}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
+   <div class="ac-storyboard-actions"><button type="button" data-adopt-storyboard>加入分镜</button>
+    <button type="button" data-open-approved-shot hidden>展开这一镜</button>
+    <button type="button" data-link-previous-shot hidden>参考上一镜尾帧</button>
+    <button type="button" data-run-approved-shot hidden>生成这一镜…</button></div><span role="status"></span></section>`;
+ }
+ if(result.group_run_plan){
+  const p=result.group_run_plan;
+  return `<div class="ac-results"><span>${esc(p.name)} · ${p.targets.length} 个节点 · ${p.mode==="all"?"运行指定节点":"补齐未生成节点"}</span>
+   <button type="button" data-group-run-plan="${esc(JSON.stringify(p))}">查看分组运行计划</button></div>`;
+ }
+ if(result.reference_plan){
+  const p=result.reference_plan;
+  return `<div class="ac-results"><span>${esc(p.source_name)} → ${esc(p.replacement_name)}${p.version?" · 版本 "+esc(p.version):""}${p.group_name?" · "+esc(p.group_name):""}${p.targets?.length?" · "+p.targets.length+" 个指定节点":""}</span>
+   <button type="button" data-reference-plan="${esc(JSON.stringify(p))}">预览参考替换</button></div>`;
+ }
  if (result.remake) {
   const {node_id, source_ref, shot_number, shot_start, frame, preview_job, video_job} = result.remake;
   const locate = Number.isFinite(shot_start) && Number.isInteger(shot_number);
@@ -695,11 +739,11 @@ function acAppendEvent(e,replay=false){
   el=AC.calls.get(d.call_id);
   if(!el)return;
   const result=d.result, output=$(".ac-output",el);
-  if(result.previs_node||result.playlist_node||result.workflow||result.remake_plan||result.review_versions?.length||
+  if(result.previs_node||result.playlist_node||result.workflow||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.remake_plan||result.review_versions?.length||
      result.preview?.completed?.length||result.video?.completed||d.name==="video_remake_export"&&result.export_ref||
      ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
-  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion?"等待确认":"完成";
+  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision?"等待确认":"完成";
   $("summary",el).textContent=el.dataset.label+" · "+state;
   $(".ac-progress",el).textContent="";
   const detail=document.createElement("pre");
@@ -1237,6 +1281,128 @@ function initAgentChat(){
  $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{const rid=AC.runs[0]?.id;if(!rid)return;try{await flushSave();await acApi(`/api/chat/runs/${rid}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=async e=>{
+  const revisionButton=e.target.closest("[data-apply-shot-revision],[data-run-shot-revision]");
+  if(revisionButton){
+   const card=revisionButton.closest("[data-shot-revision]"), p=JSON.parse(card.dataset.shotRevision), script=node(p.node);
+   if(p.board!==boardId || AC.board!==boardId || !canvasCanEdit())return toast("请回到对应的可编辑画布");
+   if(script?.type!=="script")return toast("分镜已移除");
+   const run=$("[data-run-shot-revision]",card), status=$('[role="status"]',card);
+   if(revisionButton===run){
+    const index=script.data.shots.findIndex(shot=>shot.id===run.dataset.shot);
+    if(index<0)return toast("该镜头已移除");
+    openScriptShotRun(script,index,{mode:run.dataset.mode});
+    return;
+   }
+   try{
+    const result=applyScriptShotRevision(script,p);
+    revisionButton.disabled=true;
+    status.textContent=result.already?"该修改已在分镜中":
+     `分镜已更新，已同步 ${result.updated.length} 个生成节点。${result.retained.length?"保留已有调整的节点："+result.retained.join("、")+"。":""}`;
+    if(result.updated.length){
+     run.hidden=false;
+     run.dataset.shot=script.data.shots[result.index].id;
+     run.dataset.mode=result.updated.length>1?"all":result.updated[0].type==="video"?"video":"frame";
+    }
+    card.closest(".ac-call").querySelector("summary").textContent=AC_LABELS.storyboard_revision_plan+" · 已应用";
+   }catch(error){status.textContent=error.message;}
+   return;
+  }
+  const reviewButton=e.target.closest("[data-shot-review]");
+  if(reviewButton){
+   const p=JSON.parse(reviewButton.dataset.shotReview);
+   if(p.board!==boardId || AC.board!==boardId)return toast("请回到审阅所属画布");
+   const script=node(p.script);
+   if(script?.type!=="script")return toast("分镜已移除");
+   openShotContinuityReview(script,p.shot-1,p);
+   return;
+  }
+  const shotButton=e.target.closest("[data-open-approved-shot],[data-link-previous-shot],[data-run-approved-shot]");
+  if(shotButton){
+   const card=shotButton.closest("[data-storyboard-plan]"), plan=JSON.parse(card.dataset.storyboardPlan);
+   const open=$("[data-open-approved-shot]",card), tail=$("[data-link-previous-shot]",card), run=$("[data-run-approved-shot]",card);
+   if(plan.board!==boardId || AC.board!==boardId || !canvasCanEdit())return toast("请回到对应的可编辑画布");
+   const script=node(plan.node);
+   const index=script?.data.shots?.findIndex(shot=>shot.id===open.dataset.openApprovedShot)??-1;
+   if(script?.type!=="script" || index<0)return toast("这一镜已移除");
+   if(shotButton===run){openScriptShotRun(script,index);return;}
+   if(shotButton===tail){
+    tail.disabled=true;
+    try{await linkPreviousShotFrame(script,index);}finally{tail.disabled=false;}
+    return;
+   }
+   openScriptShot(script,index);
+   const pair=scriptShotLinks(script)[index];
+   if(pair)open.textContent="定位这一镜";
+   tail.hidden=index===0||!node(pair?.img);
+   run.hidden=!pair;
+   return;
+  }
+  const adopt=e.target.closest("[data-adopt-storyboard]");
+  if(adopt){
+   const card=adopt.closest("[data-storyboard-plan]"), p=JSON.parse(card.dataset.storyboardPlan), status=$('[role="status"]',card);
+   const script=node(p.node), data=script?.data, shots=data?.shots||[];
+   if(p.board!==boardId || AC.board!==boardId || !canvasCanEdit())return toast("请回到对应的可编辑画布");
+   if(script?.type!=="script" || nodeLocked(script) || toolBusy.has(script.id)){
+    status.textContent="脚本已移除、锁定或正在改写，请检查后再试";return;
+   }
+   const accepted=(shot,label)=>{
+    status.textContent=label;adopt.disabled=true;
+    const open=$("[data-open-approved-shot]",card), index=data.shots.indexOf(shot);
+    if(shot.id){
+     open.dataset.openApprovedShot=shot.id;
+     const pair=scriptShotLinks(script)[index];
+     open.textContent=pair?"定位这一镜":"展开这一镜";
+     open.hidden=false;
+     $("[data-link-previous-shot]",card).hidden=index===0||!node(pair?.img);
+     $("[data-run-approved-shot]",card).hidden=!pair;
+    }
+    card.closest(".ac-call").querySelector("summary").textContent=AC_LABELS.storyboard_next_shot_plan+" · 已加入分镜";
+   };
+   const sameFields=(a,b)=>Object.keys(b).every(key=>JSON.stringify(a?.[key]??null)===JSON.stringify(b[key]));
+   const prior=p.shot_id?shots.find(shot=>shot.id===p.shot_id):
+    shots.length===p.anchor.count+1&&sameFields(shots.at(-1),p.shot)?shots.at(-1):null;
+   if(prior){accepted(prior,"这一镜已加入分镜");return;}
+   if(shots.length!==p.anchor.count || !sameFields(shots.at(-1),p.anchor.last) ||
+      (data.style||"")!==p.anchor.style || JSON.stringify(data.characters||[])!==JSON.stringify(p.anchor.characters)){
+    status.textContent="前镜或角色设定已更新，请重新准备方案";return;
+   }
+   checkpoint();ensureScriptShotIds(script);
+   const shot={...p.shot,id:p.shot_id||newCanvasNodeId()};
+   data.shots=[...shots,shot];refresh(script);save();
+   accepted(shot,"已加入分镜");
+   void acFocus([script.id]);
+   return;
+  }
+  const groupPlan=e.target.closest("[data-group-run-plan]");
+  if(groupPlan){
+   const plan=JSON.parse(groupPlan.dataset.groupRunPlan);
+   if(plan.board!==boardId || AC.board!==boardId || !canvasCanEdit())return toast("请回到对应的可编辑画布");
+   const group=(B.groups||[]).find(g=>g.id===plan.group);
+   if(!group || !plan.targets.some(id=>group.nodes.includes(id)&&node(id)))return toast("分组或目标节点已移除，请重新准备方案");
+   openCanvasGroupRun(group,{plan});
+   return;
+  }
+  const reference=e.target.closest("[data-reference-plan]");
+  if(reference){
+   const p=JSON.parse(reference.dataset.referencePlan), source=node(p.source);
+   if(p.board!==boardId || AC.board!==boardId || !canvasCanEdit())return toast("请回到对应的可编辑画布");
+   const group=p.group?(B.groups||[]).find(g=>g.id===p.group):null;
+   if(!source || p.group&&!group)return toast("原素材或分组已移除，请重新准备方案");
+   if(!p.memory){vtOpenReferenceUpdate(source,undefined,group,p);return;}
+   const board=B, epoch=boardOpenEpoch;
+   reference.disabled=true;
+   try{
+    const asset=await boardRequest("/api/memory/"+encodeURIComponent(p.memory)+"?board="+encodeURIComponent(p.board));
+    if(B!==board || boardOpenEpoch!==epoch || AC.board!==boardId || !reference.isConnected)return;
+    const choice=vtLibraryReferences([asset],source.type).find(item=>item.spec.versions[0]?.ref===p.ref);
+    if(!choice || p.character_view && asset.character_views?.[p.character_view]!==p.ref){
+     return toast("资产参考图或定稿视角已变化，请重新准备方案");
+    }
+    vtOpenReferenceUpdate(source,undefined,group,{...p,spec:choice.spec});
+   }catch(error){if(B===board)toast(error.message);}
+   finally{reference.disabled=false;}
+   return;
+  }
   const playlist=e.target.closest("[data-playlist-open]");
   if(playlist&&AC.board===boardId){
    const board=boardId;

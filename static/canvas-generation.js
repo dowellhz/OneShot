@@ -303,6 +303,7 @@ async function poll() {
         const actualSource = n.job.source || (n.data.film ? "film" : "gen");
         const finalizing=!!n.job.history?.draft_final;
         const restoreVersion = finalizing || !!n.job.history?.film_recipe?.timeline;
+        const job=n.job;
         const versions=[];
         for (const s of sts.filter(s => s.state === "done")) for (const o of s.outputs || []) {
           const m = o.meta || {};
@@ -310,10 +311,9 @@ async function poll() {
           const generation = receipt && {generation_record:{...receipt, service:s.meta?.provider || receipt.service,
             effective_prompt:s.meta?.prompt || receipt.effective_prompt,
             settings:{...receipt.settings,...(s.meta?.model ? {provider_model:s.meta.model} : {})}}};
-          versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: actualSource, memory_used: n.job.memory_used||[], mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}), ...generation });
+          versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: actualSource, memory_used: n.job.memory_used||[], mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}), ...generation, ...(job.group_run_id?{group_run_id:job.group_run_id}:{}) });
         }
         const batch=n.job.batch;
-        groupRunJobFinished(n,n.job,versions,errs);
         n.job = null;
         if (finalizing) delete n.draft_finalize_attempt;
         if (versions.length && !placeCanvasBatch(n,versions,batch)) {
@@ -321,6 +321,7 @@ async function poll() {
           if(restoreVersion)switchVersion(n,n.versions.length-1,{recordUndo:false});
           else n.cur=n.versions.length-1;
         }
+        groupRunJobFinished(n,job,versions,errs);
         if (n.type==="audio" && canvasCanEdit()) {
           versions.forEach(version=>addGeneratedAudioSubtitle(n,version));
           if (versions.some(version=>version.audio_recipe?.subtitles && !version.audio_transcript)) toast("配音已保存，服务未返回字幕时间码");
@@ -439,7 +440,7 @@ addEventListener("paste", e => {
 function frameCaptureSuffix(position, at) {
   return position === "first" ? "首帧" : position === "last" ? "末帧" : at.toFixed(2) + " 秒";
 }
-async function captureOnCanvas(sourceId, version, {position, at, before=false, active=()=>true, allowDetached=false}={}) {
+async function captureOnCanvas(sourceId, version, {position, at, before=false, active=()=>true, allowDetached=false, onCaptured=null}={}) {
   if (!canvasCanEdit() || !version?.ref) return null;
   const board = boardId, epoch = boardOpenEpoch;
   const result = await api("/api/lastframe", {ref:version.ref, position, at});
@@ -458,7 +459,9 @@ async function captureOnCanvas(sourceId, version, {position, at, before=false, a
   image.versions.push({ref:result.ref,url:result.url,w:result.w,h:result.h,source:"frame",prompt:"",capture});
   image.cur=0;
   if (source) B.edges.push({from:source.id,to:image.id,relation:"capture",source_ref:version.ref,at:time});
-  render(image);selectOnly(image.id);save();loadAssets();
+  const selected=onCaptured?.(image)||image;
+  render(image);if(selected!==image)render(selected);
+  selectOnly(selected.id);save();loadAssets();
   return image;
 }
 async function continueFrom(n, extension) {

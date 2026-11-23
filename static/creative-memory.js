@@ -9,7 +9,7 @@ function cmKind(a){return KIND_CN[a.kind]||'资料';}
 const CM_DOCUMENT_EXT = /\.(txt|md|markdown|csv|json|docx|pdf)$/i;
 function cmMediaType(ref, media) {
   if(media?.type==="audio" || /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(ref))return "audio";
-  if(/\.(mp4|mov|webm)$/i.test(ref))return "video";
+  if(media?.type==="video" || /\.(mp4|mov|webm|m4v|mkv)$/i.test(ref))return "video";
   if(/\.(png|jpe?g|webp)$/i.test(ref))return "image";
   return "";
 }

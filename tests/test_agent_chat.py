@@ -942,6 +942,177 @@ class ChatIntegration(ChatFixture):
         self.assertEqual(data["workflow"]["steps"][-1]["inputs"][0]["ref"], self.source["ref"])
         self.assertEqual(path.read_text(), baseline)
 
+    async def test_reference_plan_pins_replacement_and_does_not_modify_canvas(self):
+        board = self.load()
+        latest = image_editor.save(server.COMFY_DIR, Image.new("RGB", (60, 32), "blue"), "input")
+        board["nodes"].extend([
+            {"id":"replacement","type":"image","name":"新素材","x":1200,"y":100,
+             "data":{},"versions":[self.source,latest],"cur":1},
+            {"id":"target","type":"image","name":"镜头","x":1600,"y":100,
+             "data":{},"versions":[],"cur":-1},
+        ])
+        board["groups"] = [{"id":"shots","name":"镜头组","nodes":["target","n2"]}]
+        board["edges"] = [{"from":"n1","to":"target","ref":self.source["ref"],"prompt_slot":4}]
+        path = server.board_path("test")
+        server.write_board(path, board)
+        original = path.read_text()
+        args = {"source_node_id":"n1","replacement_node_id":"replacement","group_id":"shots","version":1}
+        self.svc.model.side_effect = [call("canvas_reference_plan",args),answer("请在预览中确认")]
+        rid = await self.send("换一下镜头组的参考素材")
+        self.assertEqual((await self.wait(rid))["state"], "done")
+        plan = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?", rid)["result"])["reference_plan"]
+        self.assertEqual((plan["board"],plan["source"],plan["replacement"],plan["version"],plan["ref"],plan["group"]),
+                         ("test","n1","replacement",1,self.source["ref"],"shots"))
+        self.assertEqual(path.read_text(), original)
+        self.svc.model.side_effect = [call("canvas_reference_plan",{**args,"replacement_node_id":"n2"}),answer()]
+        invalid = await self.send("改用不匹配的素材",key="reference-plan-invalid")
+        self.assertEqual((await self.wait(invalid))["state"], "done")
+        error = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?", invalid)["result"])
+        self.assertIn("类型相同",error["error"])
+        self.assertEqual(path.read_text(), original)
+        memory = await self.client.post("/api/memory",json={"kind":"character","board":"test",
+            "name":"林森","ref":self.source["ref"],"character_view":"main"})
+        self.assertEqual(memory.status,200,await memory.text())
+        memory_id = (await memory.json())["id"]
+        side = await self.client.post("/api/memory",json={"id":memory_id,"board":"test","ref":latest["ref"],"character_view":"side"})
+        self.assertEqual(side.status,200,await side.text())
+        memory_args = {"source_node_id":"n1","memory_id":memory_id,"character_view":"side","target_ids":["target"]}
+        self.svc.model.side_effect = [call("canvas_reference_plan",memory_args),answer("已准备侧面图")]
+        rid = await self.send("只把镜头的参考换成林森侧面图",key="reference-plan-memory")
+        self.assertEqual((await self.wait(rid))["state"], "done")
+        asset_plan = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?", rid)["result"])["reference_plan"]
+        self.assertEqual((asset_plan["memory"],asset_plan["ref"],asset_plan["character_view"],asset_plan["targets"]),
+                         (memory_id,latest["ref"],"side",["target"]))
+        self.assertEqual(path.read_text(), original)
+        self.svc.model.side_effect = [call("canvas_reference_plan",{**memory_args,"character_view":"back"}),answer()]
+        rid = await self.send("改用林森背面图",key="reference-plan-unapproved")
+        self.assertEqual((await self.wait(rid))["state"], "done")
+        error = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?", rid)["result"])
+        self.assertIn("尚未定稿",error["error"])
+
+    async def test_group_run_plan_is_scoped_and_does_not_submit_jobs(self):
+        board = self.load()
+        board["nodes"].append({"id":"n3","type":"video","name":"待生成镜头","x":1100,"y":80,
+                               "data":{"prompt":"横移"},"versions":[],"cur":-1})
+        board["groups"] = [{"id":"shots","name":"镜头组","nodes":["n1","n2","n3"]}]
+        path = server.board_path("test")
+        server.write_board(path, board)
+        baseline = path.read_text()
+        self.svc.model.side_effect = [call("canvas_group_run_plan",{"group_id":"shots"}),answer("请确认运行计划")]
+        rid = await self.send("补齐镜头组")
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+        self.assertEqual(result["group_run_plan"],{"board":"test","group":"shots","name":"镜头组","targets":["n3"],"mode":"missing"})
+        self.svc.model.side_effect = [call("canvas_group_run_plan",{"group_id":"shots","target_ids":["n1"]}),answer()]
+        rid = await self.send("只重跑参考图",key="specific-group-run")
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+        self.assertEqual((result["group_run_plan"]["targets"],result["group_run_plan"]["mode"]),(["n1"],"all"))
+        self.svc.model.side_effect = [call("canvas_group_run_plan",{"group_id":"shots","target_ids":["n2"]}),answer()]
+        rid = await self.send("运行文字节点",key="invalid-group-run")
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+        self.assertIn("无法在分组内生成",result["error"])
+        self.assertEqual(path.read_text(),baseline)
+
+    async def test_storyboard_continuation_reads_pinned_reference_and_prepares_one_shot(self):
+        current = image_editor.save(server.COMFY_DIR,Image.new("RGB",(60,32),"blue"),"input")
+        board = self.load()
+        board["nodes"][0]["versions"].append(current)
+        board["nodes"][0]["cur"] = 1
+        previous = {"duration":5,"shot_size":"中景","camera":"缓推","scene":"窗边暖光","characters":["林森"],
+                    "action":["林森右手拿起木盒"],"dialogue":[],"sound":"风声","keyframe":"木盒还放在窗台上"}
+        next_shot = {**previous,"shot_size":"近景","keyframe":"林森右手握住木盒","action":["林森用左手打开盒盖"]}
+        board["nodes"].append({"id":"story","type":"script","name":"窗边分镜","x":1000,"y":80,
+                               "data":{"style":"写实暖光","characters":[{"name":"林森","look":"深蓝外套"}],"shots":[previous]},
+                               "cur":-1,"versions":[]})
+        board["edges"].append({"from":"n1","to":"story","ref":self.source["ref"]})
+        path = server.board_path("test")
+        server.write_board(path,board)
+        previous_board = path.read_text()
+        self.svc.model.side_effect = [
+            call("storyboard_context",{"node_id":"story"},"read-story"),
+            call("storyboard_next_shot_plan",{"node_id":"story","after_shot":1,"shot":next_shot},"plan-shot"),
+            answer("下一镜草案已准备"),
+        ]
+        rid = await self.send("续写下一镜",selected=["story"])
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        results = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=?",rid)]
+        context = next(row["storyboard"] for row in results if "storyboard" in row)
+        self.assertEqual(context["shots"][-1]["action"],previous["action"])
+        self.assertEqual((context["references"][0]["version"],context["references"][0]["ref"]),(1,self.source["ref"]))
+        plan = next(row["storyboard_plan"] for row in results if "storyboard_plan" in row)
+        self.assertEqual(plan["anchor"]["last"],previous)
+        self.assertEqual(plan["shot"],next_shot)
+        self.assertEqual(path.read_text(),previous_board)
+        script = board["nodes"][-1]
+        anchor_ref, current_ref = "output:h3studio/previous.mp4", "output:h3studio/current.mp4"
+        tail_ref = "input:h3studio/continuity.png"
+        script["data"]["shots"] = [{**previous,"id":"previous-shot"},{**next_shot,"id":"next-shot"}]
+        script["data"]["made"] = [{"shot_id":"previous-shot","vid":"previous-video"},{"shot_id":"next-shot","img":"next-image"}]
+        board["nodes"].extend([
+            {"id":"previous-video","type":"video","name":"镜1","data":{},"cur":1,"versions":[{"ref":anchor_ref},{"ref":current_ref}]},
+            {"id":"tail","type":"image","name":"上一镜尾帧","data":{},"cur":0,"versions":[{"ref":tail_ref,
+                "capture":{"position":"last","source_node":"previous-video","source_ref":anchor_ref}}]},
+            {"id":"next-image","type":"image","name":"镜2 · 分镜图","data":{},"cur":0,"versions":[{"ref":"output:h3studio/new.png",
+                "generation_record":{"inputs":[{"ref":self.source["ref"]}]}}]},
+        ])
+        board["edges"].append({"from":"tail","to":"next-image","ref":tail_ref,"story_continuity":True})
+        server.write_board(path,board)
+        self.svc.model.side_effect = [call("storyboard_context",{"node_id":"story","from_shot":2}),answer("第2镜尾帧已过期")]
+        rid = await self.send("检查第二镜的尾帧",key="check-storyboard-tail",selected=["story"])
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        context = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])["storyboard"]
+        row, = context["shots"]
+        self.assertEqual(row["canvas"]["image_node"],"next-image")
+        continuity = row["continuity"]
+        self.assertEqual((continuity["state"],continuity["captured_from_ref"],continuity["previous_video_ref"],
+                          continuity["previous_version"],continuity["image_used_tail"]),
+                         ("stale",anchor_ref,current_ref,2,False))
+        baseline = path.read_text()
+        self.svc.model.side_effect = [call("storyboard_revision_plan",{"node_id":"story","shot":2,
+            "changes":{"keyframe":"左手握住木盒","scene":next_shot["scene"]}}),answer("请确认")]
+        rid = await self.send("改第二镜的首帧",key="revise-storyboard",selected=["story"])
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        plan = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])["shot_revision"]
+        self.assertEqual((plan["shot"],plan["shot_id"]),(2,"next-shot"))
+        self.assertEqual(plan["before"],{"keyframe":next_shot["keyframe"]})
+        self.assertEqual(plan["changes"],{"keyframe":"左手握住木盒"})
+        self.assertEqual(path.read_text(),baseline)
+
+    async def test_visual_continuity_review_uses_pinned_boundary_frames_without_writing(self):
+        board = self.load()
+        old, current, next_video = ("input:h3studio/previous.mp4","input:h3studio/current.mp4","input:h3studio/next.mp4")
+        board["nodes"].extend([
+            {"id":"story","type":"script","name":"分镜","data":{"shots":[{"id":"first"},{"id":"second"}],
+             "made":[{"shot_id":"first","vid":"previous-video"},{"shot_id":"second","vid":"next-video","img":"n1"}]},"versions":[],"cur":-1},
+            {"id":"previous-video","name":"镜1","type":"video","data":{},"versions":[{"ref":old},{"ref":current}],"cur":1},
+            {"id":"next-video","name":"镜2","type":"video","data":{},"versions":[{"ref":next_video}],"cur":0},
+        ])
+        path = server.board_path("test")
+        server.write_board(path,board)
+        baseline = path.read_text()
+        before = set(server.COMFY_DIR.rglob("*"))
+        vision = AsyncMock(return_value="木盒位置从右手变到桌边，建议保持在右手。")
+        user_args = {"node_id":"story","shot":2,"previous_version":1}
+        with patch.object(self.app["llm"],"available",return_value=True), patch.object(self.app["llm"],"chat",vision,create=True), \
+             patch.object(server.film,"capture_frame",return_value=(Image.new("RGB",(24,24),"blue"),0)) as capture:
+            self.svc.model.side_effect = [call("storyboard_visual_review",user_args),answer()]
+            rid = await self.send("对比前后两镜",selected=["story"])
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+            self.assertEqual((result["shot_review"]["left"]["ref"],result["shot_review"]["right"]["ref"]),(old,next_video))
+            self.assertEqual([(call.args[0].name,call.args[1]) for call in capture.call_args_list],[("previous.mp4","last"),("next.mp4","first")])
+            self.assertEqual([part["type"] for part in vision.await_args.args[1]],["text","image_url","text","image_url"])
+            self.svc.model.side_effect = [call("storyboard_visual_review",{**user_args,"current_type":"image"}),answer()]
+            rid = await self.send("换成分镜图看",key="visual-review-use-still",selected=["story"])
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+            self.assertEqual((result["shot_review"]["right"]["kind"],result["shot_review"]["right"]["ref"]),("image",self.source["ref"]))
+            self.assertEqual(capture.call_count,3)
+        self.assertEqual(path.read_text(),baseline)
+        self.assertEqual(set(server.COMFY_DIR.rglob("*")),before)
+
     async def test_private_skill_can_be_loaded_automatically_with_references(self):
         payload = {"name": "样片审稿", "description": "检查镜头的交付格式", "instructions": "按照三列格式写反馈",
                    "references": {"notes/checklist.md": "逐镜检查片尾字幕"}, "automatic": True}

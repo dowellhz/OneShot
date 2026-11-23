@@ -1577,6 +1577,25 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             self.assertAlmostEqual(result["at"], timestamp, places=5)
             self.assertTrue(server.can_read_media(self.user, result["ref"]))
 
+    async def test_frame_preview_reads_first_and_last_without_creating_assets(self):
+        source = self.make_clip("review-boundary", seconds=2, frequency=440,
+                                color=lambda tick: (220,30,30) if tick < 24 else (30,30,220))
+        server.grant_media(self.user,source)
+        before = set(server.COMFY_DIR.rglob("*"))
+        for position,channel in (("first",0),("last",2)):
+            request = Request(source,self.user)
+            request.query = {"ref":source,"position":position}
+            response = await server.video_frame_preview(request)
+            self.assertEqual(response.content_type,"image/png")
+            self.assertIn("no-store",response.headers["Cache-Control"])
+            with Image.open(io.BytesIO(response.body)) as frame:
+                self.assertGreater(frame.getpixel((32,32))[channel],190)
+        self.assertEqual(set(server.COMFY_DIR.rglob("*")),before)
+        outsider = Request(source,{"id":99,"role":"member"})
+        outsider.query = {"ref":source,"position":"last"}
+        with self.assertRaises(web.HTTPNotFound):
+            await server.video_frame_preview(outsider)
+
     async def test_film_checks_missing_clips_and_replays_an_accepted_export(self):
         source = self.make_clip("checked-film", seconds=1, color=(40,70,90), frequency=440)
         spec = {"clips":[{"ref":source,"in":0,"out":1}], "subtitles":False}

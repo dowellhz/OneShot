@@ -73,6 +73,7 @@ async function openBoard(id, savedConflictDraft) {
   closeAudioSeparation();
   closeVideoDraftFinal();
   closeVideoCompare();
+  closeShotContinuityReview();
   closeTextDocument();
   ctCloseGroupGallery();
   closeLightbox();
@@ -98,12 +99,12 @@ async function openBoard(id, savedConflictDraft) {
   showBoardSaveFailure();
   history.replaceState(null, "", "/?board=" + encodeURIComponent(id));
   B = Object.assign(emptyBoard(), b);
-  renderCanvasGroupRun();
   canvasApplyAccess();
   B.groups = Array.isArray(B.groups) ? B.groups.filter(g => g && typeof g.id === "string" && Array.isArray(g.nodes)).map(g => ({...g,name:String(g.name || "分组"),nodes:g.nodes.filter(id => B.nodes.some(n => n.id === id))})) : [];
   const cnt = {};   // boards from the first version: names, defaults
   B.nodes.forEach(n => { cnt[n.type] = (cnt[n.type] || 0) + 1; n.name = n.name || `${TYPE_CN[n.type]} ${cnt[n.type]}`; n.data = { ...defaults(n.type), ...n.data }; n.versions = n.versions || []; delete n.w;
     if (n.type === "image" && !["4mp", "16mp"].includes(n.data.quality)) n.data.quality = "4mp"; });
+  restoreCanvasGroupRun();
   historyEpoch++;
   undoStack.length = redoStack.length = 0; sel.clear(); selEdge = null;
   $("#bname").textContent = B.name || "我的画布";

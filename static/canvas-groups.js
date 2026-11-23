@@ -171,6 +171,7 @@ function ctCreateGroupElement(group) {
   el.innerHTML = `<div class="cg-head"><span class="cg-grip" aria-hidden="true" title="拖动分组">${ico("grip")}</span><input aria-label="分组名称">
     <button type="button" data-group-select aria-label="选择分组" title="选中整组">${ico("select")}</button>
     <button type="button" data-group-run aria-label="运行分组" title="运行分组">${ico("send")}</button>
+    <button type="button" data-group-replace aria-label="替换组内参考素材" title="替换组内参考素材">${ico("next")}</button>
     <button type="button" data-group-template aria-label="存为工作流模板" title="存为工作流模板">${ico("stack")}</button>
     <button type="button" data-group-archive aria-label="下载分组素材" title="下载分组素材">${ico("dl")}</button>
     <button type="button" data-group-fold aria-label="收起分组" title="收起分组"></button>
@@ -187,6 +188,7 @@ function ctCreateGroupElement(group) {
   input.onkeydown = e => { e.stopPropagation(); if(e.key==="Enter")input.blur(); };
   $("[data-group-select]",el).onclick = () => { sel=new Set(group.nodes.filter(id=>node(id))); updateSel(); };
   $("[data-group-run]",el).onclick = () => openCanvasGroupRun(group);
+  $("[data-group-replace]",el).onclick = () => vtOpenReferenceUpdate(null,undefined,group);
   $("[data-group-template]",el).onclick = () => openWorkflowTemplates(true, group);
   $("[data-group-archive]",el).onclick = async e => {
     const button=e.currentTarget;
@@ -229,6 +231,7 @@ function ctRenderGroups() {
     input.readOnly=!canvasCanEdit();
     $("[data-group-select]",el).hidden=folded;
     $("[data-group-run]",el).hidden=!canvasCanEdit() || !members.some(n=>["image","video","audio"].includes(n.type)&&!n.data.previs&&!n.data.film);
+    $("[data-group-replace]",el).hidden=!canvasCanEdit() || !vtGroupReferenceSources(group).length;
     $("[data-group-template]",el).hidden=!(B.access==="owner" || !B.access && B.owner===ME_USER?.id) || members.length<2;
     $("[data-group-archive]",el).hidden=!ctDownloadable(members).length;
     $("[data-group-dissolve]",el).hidden=!canvasCanEdit();

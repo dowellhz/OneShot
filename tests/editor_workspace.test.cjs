@@ -2437,6 +2437,8 @@ async function run(){
   workflowButton.click();`);
  equal(evaluate('$$("#groupRunConfirm li strong").map(el=>el.textContent)'),['分镜首帧','分镜视频','场景参考'],'confirmation shows dependency order before submission');
  assert.match(evaluate('$("#groupRunConfirm [data-summary]").textContent'),/3 个节点.*4 项/);
+ assert.match(evaluate('$("#groupRunConfirm .group-run-refs").textContent'),/分镜首帧\s*首帧 · 本轮生成/);
+ assert.equal(evaluate('$("#groupRunConfirm .group-run-refs img")'),null,'a live dependency preview does not show a stale thumbnail');
  evaluate('$("#groupRunConfirm footer [data-close]").click()');
  assert.equal(submittedBatches.length,4,'cancelling confirmation submits nothing');
  evaluate('workflowButton.click();approveWorkflow()');
@@ -2467,7 +2469,221 @@ async function run(){
  await ready('!groupRun.active','stop waits for the submitted node without launching more',350);
  assert.equal(submittedBatches.length,10);
  equal(evaluate('groupRun.steps.map(step=>step.status)'),['done','skipped','skipped'],'stop preserves the first result');
+ evaluate(`const stoppedOutput=curV(workflowImage).ref;
+  switchVersion(workflowImage,0);
+  const retryGroup=$("#groupRunProgress [data-retry]");
+  retryGroup.click();`);
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/已切换版本/);
+ assert.match(evaluate('$("#groupRunConfirm [data-summary]").textContent'),/将重试 1 个节点.*保留 1 个完成节点/);
+ evaluate(`$("#groupRunConfirm footer [data-close]").click();
+  switchVersion(workflowImage,workflowImage.versions.findIndex(v=>v.ref===stoppedOutput));
+  retryGroup.click();`);
+ assert.match(evaluate('$("#groupRunConfirm [data-summary]").textContent'),/将重试 2 个节点/);
+ assert.equal(submittedBatches.length,10,'opening retry submits no work');
+ evaluate('approveWorkflow()');
+ await ready('workflowVideo.job','retry starts from the unfinished video',350);
+ assert.equal(submittedBatches[10].req.images[0].ref,evaluate('stoppedOutput'),'retry reuses the completed upstream output');
+ jobs.set(submittedBatches[10].jobId,{state:"error",error:"模拟视频失败"});
+ await ready('independentImage.job','failed retry leaves the other branch runnable',350);
+ finishBatch(11,1);
+ await ready('!groupRun.active','retry completes with one remaining failure',350);
+ evaluate('retryGroup.click()');
+ equal(evaluate('$$("#groupRunConfirm li strong").map(el=>el.textContent)'),['分镜视频'],
+  'the second retry keeps both successful nodes and only offers the remaining failure');
+ evaluate('approveWorkflow()');
+ await ready('workflowVideo.job','second retry launches only the failed video',350);
+ assert.equal(submittedBatches[12].req.images[0].ref,evaluate('stoppedOutput'));
+ finishBatch(12,1);
+ await ready('!groupRun.active','second retry completes',350);
+ equal(evaluate('groupRun.steps.map(step=>step.status)'),['done','done','done'],'all earlier successes remain visible after the retry');
+ assert(evaluate('$("#groupRunProgress [data-retry]").hidden'));
+ const targetedStart=submittedBatches.length;
+ evaluate(`const rerunMedia=name=>({ref:"output:h3studio/"+name+".png",url:"/media?ref=output:h3studio/"+name+".png",w:512,h:512});
+  const rerunSource=addNode("image",900,100,{}, {name:"原始素材",versions:[rerunMedia("previous")],cur:0});
+  const rerunReplacement=addNode("image",900,480,{}, {name:"更新素材",versions:[rerunMedia("replacement")],cur:0});
+  const pinnedScene=addNode("image",2150,850,{prompt:"引用旧版本",count:1},{name:"固定旧分镜"});
+  workflowImage.data.count=1;
+  link(rerunSource,workflowImage,true);
+  link(workflowImage,pinnedScene,true,{ref:curV(workflowImage).ref});
+  workflowGroup.nodes.push(pinnedScene.id);
+  drawEdges();
+  $("[data-group-replace]",CT_GROUPS.get(workflowGroup.id)).click();
+  const currentOriginal=$("#versionRefUpdate [name=original]");
+  currentOriginal.value=rerunSource.id;currentOriginal.dispatchEvent(new Event("change"));
+  const currentReplacement=$("#versionRefUpdate [name=replacement]");
+  currentReplacement.value=rerunReplacement.id;currentReplacement.dispatchEvent(new Event("change"));
+  $("#versionRefUpdate [data-review-run]").click();`);
+ equal(evaluate('[$("#groupRunConfirm select").value,$$("#groupRunConfirm li strong").map(el=>el.textContent)]'),
+   ["affected",["分镜首帧","分镜视频"]],'targeted run follows live downstream images and skips independent or pinned branches');
+ assert.equal(submittedBatches.length,targetedStart,'showing the targeted plan does not submit generation');
+ evaluate('approveWorkflow()');
+ await ready('workflowImage.job','targeted rerun starts with the changed image reference',350);
+ assert.equal(submittedBatches[targetedStart].req.images[0].ref,'output:h3studio/replacement.png');
+ finishBatch(targetedStart,1);
+ await ready('workflowVideo.job','dependent video uses the new upstream image',350);
+ assert.equal(submittedBatches[targetedStart+1].req.images[0].ref,`output:h3studio/layout-job-${targetedStart}-0.png`);
+ finishBatch(targetedStart+1,1);
+ await ready('!groupRun.active','targeted rerun finished',350);
+ assert.equal(submittedBatches.length,targetedStart+2,'no independent or pinned shots were resubmitted');
+ evaluate(`const recoveryId=groupRun.id;
+  const runReceipt=JSON.parse(sessionStorage.getItem(groupRunStorageKey(boardId)));
+  runReceipt.steps[0].status="running";runReceipt.steps[1].status="waiting";
+  sessionStorage.setItem(groupRunStorageKey(boardId),JSON.stringify(runReceipt));
+  restoreCanvasGroupRun();`);
+ equal(evaluate(`[groupRun.id===recoveryId,groupRun.active,groupRun.steps.map(step=>step.status),
+  curV(workflowImage).group_run_id===recoveryId,groupRun.steps[0].outputRef===curV(workflowImage).ref]`),
+  [true,false,["done","skipped"],true,true],'restoring progress recognizes the exact saved output and leaves unsubmitted steps for confirmation');
+ assert.equal(submittedBatches.length,targetedStart+2,'restoring the receipt submits no additional generation');
+ evaluate(`$("#groupRunProgress [data-dismiss]").click();
+  const groupPlanBoard=AC.board;AC.board=boardId;
+  acAppendEvent({kind:"tool_start",data:{name:"canvas_group_run_plan",call_id:"scoped-group-run"}});
+  acAppendEvent({kind:"tool_end",data:{name:"canvas_group_run_plan",call_id:"scoped-group-run",result:{group_run_plan:{
+   board:boardId,group:workflowGroup.id,name:workflowGroup.name,targets:[workflowVideo.id],mode:"all"}}}});
+  const extraMember=addNode("video",2200,1300,{prompt:"新加入的镜头"});
+  workflowGroup.nodes.push(extraMember.id);
+  $("[data-call=scoped-group-run] [data-group-run-plan]").click();AC.board=groupPlanBoard;`);
+ equal(evaluate('$$("#groupRunConfirm li strong").map(el=>el.textContent)'),['分镜视频'],
+  'the assistant card retains its original scope when a new node joins the group');
+ assert.match(evaluate('$("#groupRunConfirm .group-run-refs small").textContent'),/首帧 · 版本 \d+（当前）/);
+ assert.equal(evaluate('new URL($("#groupRunConfirm .group-run-refs img").src,location.href).searchParams.get("ref")'),evaluate('curV(workflowImage).ref'));
+ assert.equal(submittedBatches.length,targetedStart+2,'opening the assistant preview does not submit');
+ evaluate('approveWorkflow()');
+ await ready('workflowVideo.job','assistant group confirmation starts the specified video',350);
+ assert.equal(submittedBatches[targetedStart+2].req.images[0].ref,evaluate('curV(workflowImage).ref'));
+ finishBatch(targetedStart+2,1);
+ await ready('!groupRun.active','assistant planned run completes',350);
+ assert.equal(submittedBatches.length,targetedStart+3);
+ evaluate(`const storyLast={duration:5,shot_size:"中景",camera:"缓推",scene:"窗边暖光",characters:["林森"],
+   action:["右手握木盒"],dialogue:[],sound:"风声",keyframe:"木盒在窗台"};
+  const storyNext={...storyLast,shot_size:"近景",keyframe:"林森右手握木盒",action:["左手打开盒盖"]};
+  const storyCast=[{name:"林森",look:"深蓝外套"}];
+  const storyNode=addNode("script",4000,100,{style:"写实暖光",characters:storyCast,shots:[storyLast],made:[]});
+  const legacyStoryImage=addNode("image",4450,100,{}, {name:"以前的首帧"});
+  const legacyStoryVideo=addNode("video",4450,600,{}, {name:"以前的镜头"});
+  storyNode.data.made=[{img:legacyStoryImage.id,vid:legacyStoryVideo.id}];
+  const storyReference=addNode("image",3570,100,{}, {name:"林森",versions:[rerunMedia("cast-previous"),rerunMedia("cast-current")],cur:1});
+  B.edges.push({from:storyReference.id,to:storyNode.id,ref:storyReference.versions[0].ref});
+  const storyBefore=B.nodes.length;
+  AC.board=boardId;
+  acAppendEvent({kind:"tool_start",data:{name:"storyboard_next_shot_plan",call_id:"next-shot"}});
+  acAppendEvent({kind:"tool_end",data:{name:"storyboard_next_shot_plan",call_id:"next-shot",result:{storyboard_plan:{
+   board:boardId,node:storyNode.id,name:storyNode.name,anchor:{count:1,last:storyLast,style:"写实暖光",characters:storyCast},shot:storyNext}}}});
+  const adoptShot=$("[data-call=next-shot] [data-adopt-storyboard]");
+  storyNode.data.style="冷光";adoptShot.click();`);
+ assert.match(evaluate('$("[data-call=next-shot] [role=status]").textContent'),/重新准备/);
+ assert.equal(evaluate('storyNode.data.shots.length'),1);
+ evaluate('storyNode.data.style="写实暖光";adoptShot.click();');
+ equal(evaluate('[storyNode.data.shots.length,storyNode.data.shots.at(-1).keyframe,storyNode.data.made.length,B.nodes.length===storyBefore,adoptShot.disabled]'),
+  [2,"林森右手握木盒",1,true,true],'confirmed continuation appends one script shot without generating or expanding the canvas');
+ evaluate(`const openNewShot=$("[data-call=next-shot] [data-open-approved-shot]");
+  openNewShot.click();
+  const newStoryPair=scriptShotLinks(storyNode)[1], newestStoryVideo=node(newStoryPair.vid);
+  openNewShot.click();`);
+ equal(evaluate(`[B.nodes.length===storyBefore+2,scriptShotLinks(storyNode)[0].vid===legacyStoryVideo.id,
+  newestStoryVideo.name,plan(newestStoryVideo).inputs.map(({edge,version})=>[edge.role,version?.ref??null])]`),
+  [true,true,"镜2",[["first",null],["subject","output:h3studio/cast-previous.png"]]],
+  'the new shot can be expanded once and located without duplicating the prior pair or switching the pinned cast');
+ evaluate('$("[data-call=next-shot] [data-run-approved-shot]").click()');
+ equal(evaluate('$$("#groupRunConfirm li strong").map(el=>el.textContent)'),["镜2 · 分镜图","镜2"],
+  'the single-shot plan only includes its two nodes in dependency order');
+ assert.match(evaluate('$$("#groupRunConfirm .group-run-refs").at(-1).textContent'),/首帧 · 本轮生成/);
+ evaluate(`const storyRunMode=$("#groupRunConfirm select");
+  storyRunMode.value="video";storyRunMode.dispatchEvent(new Event("change"));`);
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/参考素材不可用/);
+ assert(evaluate('$("#groupRunConfirm [type=submit]").disabled'));
+ evaluate('$("#groupRunConfirm footer [data-close]").click()');
+ const storyCaptureFetch=w.fetch, storyTailRequests=[];
+ let releaseOlderTail;
+ w.fetch=async(url,options)=>{
+  if(String(url)!=='/api/lastframe')return storyCaptureFetch(url,options);
+  storyTailRequests.push(JSON.parse(options.body));
+  if(storyTailRequests.length===2)await new Promise(resolve=>{releaseOlderTail=resolve;});
+  const ref='input:h3studio/story-tail-'+storyTailRequests.length+'.png';
+  return {ok:true,text:async()=>JSON.stringify({ref,url:'/media?ref='+encodeURIComponent(ref),w:64,h:64,at:4.9})};
+ };
+ await evaluate(`legacyStoryVideo.versions=["older","newer"].map(label=>({ref:"input:h3studio/"+label+".mp4",
+  url:"/media?ref=input:h3studio/"+label+".mp4",w:640,h:480,seconds:5}));legacyStoryVideo.cur=0;
+  const picture=node(newStoryPair.img), tailButton=$("[data-call=next-shot] [data-link-previous-shot]");
+  $("#acMessages").onclick({target:tailButton});`);
+ const tailEdge=evaluate('B.edges.find(edge=>edge.to===picture.id&&edge.story_continuity)');
+ assert.match(evaluate('picture.data.prompt'),/@图\{1\}/);
+ equal(evaluate('curV(node(B.edges.find(edge=>edge.to===picture.id&&edge.story_continuity).from)).capture.source_ref'),
+  'input:h3studio/older.mp4','the tail capture records the precise prior video version');
+ const tailBadge=`$('[data-script-tail-status="1"]',els.get(storyNode.id))`;
+ assert.match(evaluate(tailBadge+'.textContent'),/已对齐 · 上一镜版本 1/);
+ await evaluate('linkPreviousShotFrame(storyNode,1)');
+ assert.equal(storyTailRequests.length,1,'repeat clicks reuse the exact existing tail frame');
+ const staleTail=evaluate('legacyStoryVideo.cur=1;drawEdges();linkPreviousShotFrame(storyNode,1)');
+ assert.match(evaluate(tailBadge+'.textContent'),/不一致/);
+ evaluate('legacyStoryVideo.cur=0');
+ releaseOlderTail();
+ await staleTail;
+ assert.equal(evaluate('B.nodes.length'),evaluate('storyBefore+3'),'switching versions during capture leaves the graph intact');
+ await evaluate('legacyStoryVideo.cur=1;linkPreviousShotFrame(storyNode,1)');
+ const updatedTail=evaluate('B.edges.find(edge=>edge.to===picture.id&&edge.story_continuity)');
+ assert.equal(updatedTail.prompt_slot,1,'renewing the tail retains its prompt index');
+ assert.notEqual(updatedTail.ref,'input:h3studio/story-tail-1.png');
+ assert.equal(tailEdge.prompt_slot,1);
+ evaluate(`picture.versions=[{...rerunMedia("story-result"),generation_record:{inputs:[{ref:"input:h3studio/story-tail-1.png"}]}}];picture.cur=0;drawEdges();`);
+ assert.match(evaluate(tailBadge+'.textContent'),/当前分镜图尚未使用/);
+ evaluate(`curV(picture).generation_record.inputs[0].ref=B.edges.find(edge=>edge.to===picture.id&&edge.story_continuity).ref;drawEdges();`);
+ assert.match(evaluate(tailBadge+'.textContent'),/已对齐 · 上一镜版本 2/);
+ evaluate(`newestStoryVideo.versions=[{ref:"output:h3studio/shot-two.mp4",url:"/media?ref=output:h3studio/shot-two.mp4",seconds:5,w:640,h:480}];
+  newestStoryVideo.cur=0;
+  const comparisonBoardSnapshot=JSON.stringify([B.nodes,B.edges]);
+  $("[data-script-review='1']",els.get(storyNode.id)).click();
+  const compare=$('#shotContinuityReview');
+  const compareSources=()=>$$("img",compare).map(img=>new URL(img.getAttribute("src"),location.href));
+  const leftCompare=$("[data-left-frame] select",compare),rightCompare=$("[data-right-frame] select",compare);`);
+ equal(evaluate('[compare.open,...compareSources().map(url=>url.searchParams.get("position"))]'),
+  [true,"last","first"],'shot review compares the actual final and first frames by default');
+ evaluate(`leftCompare.value="0";leftCompare.dispatchEvent(new Event("change"));
+  rightCompare.value="1";rightCompare.dispatchEvent(new Event("change"));`);
+ equal(evaluate(`[...compareSources().map(url=>[url.pathname,url.searchParams.get("ref")]),
+  JSON.stringify([B.nodes,B.edges])===comparisonBoardSnapshot]`),[
+  ["/api/video/frame-preview","input:h3studio/older.mp4"],["/media","output:h3studio/story-result.png"],true],
+  'selecting alternate review versions only changes the dialog');
+ evaluate('closeShotContinuityReview()');
+ evaluate(`acAppendEvent({kind:"tool_start",data:{name:"storyboard_visual_review",call_id:"visual-shot-review"}});
+  acAppendEvent({kind:"tool_end",data:{name:"storyboard_visual_review",call_id:"visual-shot-review",result:{text:"核对木盒位置",shot_review:{
+    board:boardId,script:storyNode.id,shot:2,
+    left:{node:legacyStoryVideo.id,version:1,ref:legacyStoryVideo.versions[0].ref,kind:"video"},
+    right:{node:picture.id,version:1,ref:curV(picture).ref,kind:"image"}}}}});
+  $("[data-call=visual-shot-review] [data-shot-review]").click();`);
+ equal(evaluate(`[compare.open,leftCompare.value,rightCompare.value,legacyStoryVideo.cur,newestStoryVideo.cur]`),
+  [true,"0","1",1,0],'assistant review reopens the precise old tail and still without switching canvas versions');
+ evaluate('closeShotContinuityReview()');
+ evaluate(`const revisionShot=storyNode.data.shots[1], revisionEdges=JSON.stringify(B.edges);
+  const oldAction=newestStoryVideo.data.fields.action;
+  const oldDialogue=newestStoryVideo.data.fields.dialogue;
+  newestStoryVideo.data.fields.dialogue="人工调整的对白";
+  const revisionPlan={board:boardId,node:storyNode.id,shot:2,shot_id:revisionShot.id,
+    before:{keyframe:revisionShot.keyframe,action:revisionShot.action,dialogue:revisionShot.dialogue??null},
+    changes:{keyframe:"木盒在左手",action:["抬起木盒"],dialogue:["方案对白"]}};
+  const continuitySuffix=picture.data.prompt.slice(scriptShotSettings(storyNode,revisionShot).image.prompt.length);
+  acAppendEvent({kind:"tool_start",data:{name:"storyboard_revision_plan",call_id:"revise-shot"}});
+  acAppendEvent({kind:"tool_end",data:{name:"storyboard_revision_plan",call_id:"revise-shot",result:{shot_revision:revisionPlan}}});
+  const revisionCard=$("[data-call=revise-shot]"), revisionApply=$("[data-apply-shot-revision]",revisionCard);
+  revisionShot.keyframe="先手动改了首帧";revisionApply.click();`);
+ assert.match(evaluate(`$('[role=status]',revisionCard).textContent`),/重新准备/);
+ evaluate('revisionShot.keyframe=revisionPlan.before.keyframe;revisionApply.click()');
+ equal(evaluate(`[revisionShot.keyframe,picture.data.prompt.includes("木盒在左手"),picture.data.prompt.endsWith(continuitySuffix),
+   newestStoryVideo.data.fields.action,newestStoryVideo.data.fields.dialogue,curV(newestStoryVideo).node_data.fields.action===oldAction,
+   JSON.stringify(B.edges)===revisionEdges,$("[data-run-shot-revision]",revisionCard).dataset.mode]`),
+   ["木盒在左手",true,true,"抬起木盒","人工调整的对白",true,true,"all"],
+   'confirmed shot revision updates the linked prompts while retaining manual changes, history and continuity links');
+ evaluate('newestStoryVideo.data.fields.dialogue=oldDialogue;undo()');
+ w.fetch=storyCaptureFetch;
+ evaluate('AC.board=groupPlanBoard;undo();undo()');
+ evaluate('const liveStory=node(storyNode.id);checkpoint();liveStory.data.shots.reverse();refresh(liveStory)');
+ equal(evaluate('scriptShotLinks(liveStory).map(pair=>pair.vid)'),[evaluate('newStoryPair.vid'),evaluate('legacyStoryVideo.id')],
+  'editing shot order keeps each generated pair attached to its own shot');
+ evaluate('undo();undo()');
+ assert.equal(evaluate('B.nodes.length'),evaluate('storyBefore'));
+ evaluate('undo()');
+ assert.equal(evaluate('node(storyNode.id).data.shots.length'),1);
  evaluate('$("#groupRunProgress [data-dismiss]").click();restore(groupRunBase);delete B.batch_layout;save()');
+ assert.equal(evaluate('sessionStorage.getItem(groupRunStorageKey(boardId))'),null,'dismissing progress removes the saved receipt');
  w.fetch=generationFetch;
  console.log('Group run DOM passed: confirmation, dependency order, pinned result reuse, failure isolation and stopping later submissions.');
  evaluate(`const copyFlowBase=snap();
@@ -2582,9 +2798,162 @@ async function run(){
  evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}))');
  equal(evaluate('[videoRefEdge.ref,videoRefEdge.prompt_slot,versionCopyVideo.cur]'),
  ['output:h3studio/video-new.mp4',3,1],'bulk update keeps the stable slot while pinning the chosen video');
+ evaluate(`const replacementVideo=addNode("video",3920,1200,{},
+   {name:"替换素材",versions:[copyAsset("replacement-old.mp4",{seconds:6}),copyAsset("replacement-new.mp4",{seconds:8})],cur:1});
+  const upstreamVideo=addNode("video",3880,1000,{},
+   {versions:[copyAsset("upstream.mp4",{seconds:6})],cur:0});
+  const duplicateTarget=addNode("video",4200,1200);
+  link(versionCopyVideo,upstreamVideo,true);
+  link(upstreamVideo,replacementVideo,true);
+  link(versionCopyVideo,duplicateTarget,true);
+  link(replacementVideo,duplicateTarget,true);
+  videoRefTarget.versions=[copyAsset("already-generated.mp4",{seconds:5})];videoRefTarget.cur=0;
+  Object.assign(videoRefEdge,{start:1,end:3});
+  const originalCard=$(".card",els.get(versionCopyVideo.id));
+  ctxMenu({target:originalCard,clientX:120,clientY:120});
+  $("#ctxMenu [data-a=replace-reference]").click();
+  const replacementSelect=$("#versionRefUpdate [name=replacement]");
+  replacementSelect.value=replacementVideo.id;
+  replacementSelect.dispatchEvent(new Event("change"));
+  const replacementVersion=$("#versionRefUpdate [name=replacementVersion]");
+  replacementVersion.value="0";
+  replacementVersion.dispatchEvent(new Event("change"));`);
+ assert.match(evaluate('$("#versionRefUpdate [data-summary]").textContent'),/→ 替换素材 · 版本 1 · 更新 1 个节点/);
+ assert.match(evaluate('$("#versionRefUpdate ol").textContent'),/参考区间将重置/);
+ evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}))');
+ equal(evaluate(`[videoRefEdge.from===replacementVideo.id,videoRefEdge.ref,videoRefEdge.prompt_slot,videoRefEdge.start??null,
+  curV(videoRefTarget).input_edges[0].from===versionCopyVideo.id,curV(videoRefTarget).input_edges[0].ref,
+  videoInputs(upstreamVideo)[0].source===versionCopyVideo,videoInputs(duplicateTarget).length,replacementVideo.cur]`),
+ [true,"output:h3studio/replacement-old.mp4",3,null,true,"output:h3studio/video-new.mp4",true,2,1],
+ 'cross-node replacement pins the selected source, preserves history and skips cycles and duplicate links');
+ evaluate(`const replacementAudio=addNode("audio",3900,1050,{},
+   {versions:[copyAsset("replacement.wav")],cur:0});
+  vtOpenReferenceUpdate(versionCopyAudio);
+  const audioReplacement=$("#versionRefUpdate [name=replacement]");
+  audioReplacement.value=replacementAudio.id;audioReplacement.dispatchEvent(new Event("change"));
+  $("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}));`);
+ equal(evaluate(`[seedBulkTarget.data.references[0].node_id===replacementAudio.id,
+  B.edges.find(e=>e.to===seedBulkTarget.id).from===replacementAudio.id,
+  curV(seedBulkTarget).audio_recipe.references[0].node_id===versionCopyAudio.id]`),
+ [true,true,true],'reference audio keeps the current slots and leaves the historical recipe intact');
+ evaluate(`const groupShot=addNode("video",4150,1200);
+  link(versionCopyVideo,groupShot,true,{prompt_slot:6});
+  const groupReplacement=addNode("video",3980,1420,{},
+    {name:"新镜头素材",versions:[copyAsset("group-alternative.mp4",{seconds:5})],cur:0});
+  const referenceGroup=ctNewGroup("复用模板",[videoRefTarget.id,groupShot.id]);
+  ctSetFold(referenceGroup,true);
+  $("[data-group-replace]",CT_GROUPS.get(referenceGroup.id)).click();
+  const groupOriginal=$("#versionRefUpdate [name=original]");
+  groupOriginal.value=versionCopyVideo.id;groupOriginal.dispatchEvent(new Event("change"));
+  const groupNew=$("#versionRefUpdate [name=replacement]");
+  groupNew.value=groupReplacement.id;groupNew.dispatchEvent(new Event("change"));`);
+ equal(evaluate('Array.from(groupOriginal.options,option=>option.value).sort()'),
+   [evaluate('versionCopyVideo.id'),evaluate('replacementVideo.id')].sort(),'the group lists its existing references, including external source nodes');
+ assert.match(evaluate('$("#versionRefUpdate ol").textContent'),/版本 1/);
+ evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}))');
+ equal(evaluate(`[referenceGroup.collapsed,videoInputs(groupShot)[0].source===groupReplacement,
+  videoInputs(groupShot)[0].edge.prompt_slot,videoInputs(upstreamVideo)[0].source===versionCopyVideo,
+  videoInputs(videoRefTarget)[0].source===replacementVideo]`),
+  [true,true,6,true,true],'a folded group replacement only changes matching links that enter the group');
+ evaluate('Object.assign(videoRefEdge,{start:0.5,end:2})');
+ assert.match(evaluate('groupGenerationNodes(referenceGroup,true).find(step=>step.id===videoRefTarget.id).references[0].label'),
+  /视频参考 · 版本 1（固定） · 0\.5–2 秒/);
+ evaluate(`const referenceCardBoard=AC.board;AC.board=boardId;
+  acAppendEvent({kind:"tool_start",data:{name:"canvas_reference_plan",call_id:"reference-plan-card"}});
+  acAppendEvent({kind:"tool_end",data:{name:"canvas_reference_plan",call_id:"reference-plan-card",result:{reference_plan:{
+    board:boardId,source:groupReplacement.id,source_name:groupReplacement.name,replacement:replacementVideo.id,
+    replacement_name:replacementVideo.name,ref:replacementVideo.versions[0].ref,version:1,group:referenceGroup.id,group_name:referenceGroup.name}}}});
+  $("[data-call=reference-plan-card] [data-reference-plan]").click();`);
+ equal(evaluate(`[$("#versionRefUpdate [name=original]").value===groupReplacement.id,
+  $("#versionRefUpdate [name=replacement]").value===replacementVideo.id,$("#versionRefUpdate [name=replacementVersion]").value,
+  replacementVideo.cur,videoInputs(groupShot)[0].source===groupReplacement]`),
+  [true,true,"0",1,true],'the assistant card preselects the exact historical version without applying the plan or switching the source');
+ assert.match(evaluate('$("#versionRefUpdate ol").textContent'),/版本 1/);
+ evaluate('$("#versionRefUpdate [data-cancel]").click();AC.board=referenceCardBoard');
  evaluate(`const focusedVersion=$(".vtabs button.on",els.get(versionCopyVideo.id));focusedVersion.focus();
   focusedVersion.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowUp",bubbles:true,cancelable:true}));`);
  equal(evaluate('[versionCopyVideo.cur,document.activeElement.dataset.i,document.activeElement.tabIndex]'),[0,"0",0],'arrow navigation keeps keyboard focus on the activated tab');
+ equal(evaluate(`{
+  const strip=$(".vtabs",els.get(versionCopyVideo.id));
+  Object.defineProperties(strip,{clientHeight:{value:24},scrollHeight:{value:52}});
+  const wheel=new WheelEvent("wheel",{deltaY:80,bubbles:true,cancelable:true});
+  document.activeElement.dispatchEvent(wheel);
+  strip.scrollTop=28;
+  render(versionCopyVideo);
+  [wheel.defaultPrevented,strip.scrollTop,document.activeElement.dataset.i];
+ }`),[false,28,"0"],'an overflowing version list handles wheel input without moving the canvas and keeps its scroll and focus on refresh');
+ const referenceLibraryFetch=w.fetch;
+ const replacementAssets=[
+  {id:'lin-memory',kind:'character',name:'林森',aliases:['远林'],tags:['近代'],ref:'input:h3studio/old-lin.png',
+   character_views:{main:'input:h3studio/lin-main.png',side:'input:h3studio/lin-side.png'},
+   media:[{ref:'input:h3studio/lin-main.png'},{ref:'input:h3studio/lin-side.png',w:512,h:768}]},
+  {id:'sound-memory',kind:'prop',name:'声音',media:[{ref:'input:h3studio/voice.wav',type:'audio'}]},
+ ];
+ w.fetch=(url,options)=>{
+  const path=new URL(url,'http://oneshot.test').pathname;
+  if(path==='/api/memory'&&options?.method==='GET')return Promise.resolve({ok:true,json:async()=>replacementAssets});
+  if(path==='/api/memory/lin-memory'&&options?.method==='GET')return Promise.resolve({ok:true,json:async()=>replacementAssets[0]});
+  return referenceLibraryFetch(url,options);
+ };
+ await evaluate(`vtOpenReferenceUpdate(node(originalImage.id));$("#versionRefUpdate [data-library-source]").onclick()`);
+ assert.equal(evaluate('$("#versionRefUpdate [data-library-picker] [role=status]").textContent'),"");
+ equal(evaluate('Array.from($("#versionRefUpdate [data-library-picker] select").options,option=>option.textContent)'),
+   ['选择素材…','林森 · 标准主图 · 个人素材库','林森 · 全身侧面 · 个人素材库'],
+   'only compatible assets are offered, with approved character views labelled separately');
+ evaluate(`const librarySearch=$("#versionRefUpdate [data-library-picker] input");
+  librarySearch.value="不匹配";librarySearch.dispatchEvent(new Event("input"));`);
+ assert.match(evaluate('$("#versionRefUpdate [data-library-picker] [role=status]").textContent'),/没有匹配/);
+ evaluate(`librarySearch.value="远林";librarySearch.dispatchEvent(new Event("input"));
+  const librarySelect=$("#versionRefUpdate [data-library-picker] select");
+  librarySelect.value="1";librarySelect.dispatchEvent(new Event("change"));`);
+ assert.match(evaluate('$("#versionRefUpdate [data-reference-media] img").src'),/lin-side\.png/);
+ evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}))');
+ equal(evaluate(`[imageInputs(imageRefTarget)[0].source.name,imageInputs(imageRefTarget)[0].source.data.asset.id,
+  imageInputs(imageRefTarget)[0].version.ref,imageInputs(imageRefTarget)[0].edge.prompt_slot]`),
+  ['林森 · 全身侧面','lin-memory','input:h3studio/lin-side.png',1],
+  'a library view becomes an asset-linked source and retains the prompt slot');
+ await evaluate(`const scopedAssetShot=addNode("video",4220,1550,{},{name:"只替换此镜头"});
+  link(node(originalImage.id),scopedAssetShot,true,{role:"subject",prompt_slot:7});
+  const otherAssetShot=addNode("video",4500,1550);
+  link(node(originalImage.id),otherAssetShot,true);
+  AC.board=boardId;
+  const scopedAssetCall="reference-library-plan";
+  acAppendEvent({kind:"tool_start",data:{name:"canvas_reference_plan",call_id:scopedAssetCall}});
+  acAppendEvent({kind:"tool_end",data:{name:"canvas_reference_plan",call_id:scopedAssetCall,result:{reference_plan:{
+    board:boardId,source:originalImage.id,source_name:originalImage.name,memory:"lin-memory",
+    replacement_name:"林森 · 全身侧面",ref:"input:h3studio/lin-side.png",character_view:"side",targets:[scopedAssetShot.id]}}}});
+  $("#acMessages").onclick({target:$("[data-call=reference-library-plan] [data-reference-plan]")});`);
+ assert.match(evaluate('$("#versionRefUpdate [data-reference-media] img").src'),/lin-side\.png/);
+ equal(evaluate('$$("#versionRefUpdate ol li").map(li=>li.firstChild.textContent)'),['只替换此镜头'],
+  'the assistant preview narrows the asset replacement to the requested shot');
+ evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}));AC.board=referenceCardBoard;');
+ equal(evaluate(`[imageInputs(scopedAssetShot)[0].source.data.asset.id,imageInputs(scopedAssetShot)[0].edge.prompt_slot,
+  imageInputs(otherAssetShot)[0].source.id===originalImage.id]`),['lin-memory',7,true],
+  'choosing one shot preserves the other shot even when both originally shared the reference');
+ w.fetch=referenceLibraryFetch;
+ evaluate(`const countBeforeReferenceUpload=B.nodes.length;
+  const referenceUpload=filename=>{
+    const field=$("#versionRefUpdate [name=replacementFile]");
+    Object.defineProperty(field,"files",{configurable:true,value:[new File(["fixture"],filename)]});
+    return field.onchange();
+  };
+  vtOpenReferenceUpdate(groupReplacement);`);
+ await evaluate('referenceUpload("wrong-type.png")');
+ assert.match(evaluate('$("#versionRefUpdate [data-upload-status]").textContent'),/请选择视频文件/);
+ await evaluate('referenceUpload("模板取景.mkv")');
+ assert.match(evaluate('$("#versionRefUpdate [name=replacement] option:checked").textContent'),/模板取景（新上传）/);
+ equal(evaluate('[B.nodes.length===countBeforeReferenceUpload,videoInputs(groupShot)[0].source===groupReplacement]'),
+  [true,true],'uploading is staged until the replacement is confirmed');
+ evaluate('$("#versionRefUpdate [data-cancel]").click();vtOpenReferenceUpdate(groupReplacement)');
+ assert.doesNotMatch(evaluate('$("#versionRefUpdate [name=replacement]").textContent'),/新上传/);
+ await evaluate('referenceUpload("模板取景.mkv")');
+ evaluate('$("#versionRefUpdate form").dispatchEvent(new Event("submit",{cancelable:true}))');
+ equal(evaluate(`[B.nodes.length===countBeforeReferenceUpload+1,videoInputs(groupShot)[0].source.name,
+  videoInputs(groupShot)[0].edge.prompt_slot,videoInputs(groupShot)[0].version.source]`),
+  [true,"模板取景",6,"upload"],'confirming creates the new source node and moves the reference to it');
+ evaluate('undo()');
+ equal(evaluate(`[B.nodes.length===countBeforeReferenceUpload,videoInputs(node(groupShot.id))[0].source.id===groupReplacement.id]`),
+  [true,true],'undo restores the original reference and removes the node created in the same operation');
  evaluate('restore(copyFlowBase)');
  console.log('Version copies and references DOM passed: keyboard menu, drag, pinned audio reference, read-only guard, provenance, video inputs and undo.');
  const queueFetch=w.fetch, queueSends=[], queueDeletes=[];

@@ -2990,6 +2990,32 @@ async def lastframe(req):
                               "at":time, "position":position})
 
 
+@routes.get("/api/video/frame-preview")
+async def video_frame_preview(req):
+    ref, position = req.query.get("ref",""), req.query.get("position")
+    if position not in ("first","last"):
+        raise bad("请选择首帧或尾帧")
+    try:
+        source = tools.ref_path(COMFY_DIR,ref)
+    except ValueError:
+        raise web.HTTPNotFound() from None
+    if source.suffix.lower() not in tools.VIDEO_EXT or not source.is_file() or not can_read_media(req["user"],ref):
+        raise web.HTTPNotFound()
+
+    def preview():
+        image, _ = film.capture_frame(source,position)
+        image.thumbnail((960,960))
+        buffer = io.BytesIO()
+        image.save(buffer,format="PNG")
+        return buffer.getvalue()
+
+    try:
+        body = await asyncio.to_thread(preview)
+    except (OSError, ValueError, IndexError) as error:
+        raise bad(str(error)) from None
+    return web.Response(body=body,content_type="image/png",headers={"Cache-Control":"private, no-store"})
+
+
 @routes.post("/api/rewrite")
 async def rewrite(req):
     p = apply_fields(await req.json(), for_llm=True)

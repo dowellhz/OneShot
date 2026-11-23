@@ -46,7 +46,10 @@ function updateWizBtn() {
 function goStep(k) { W.step = k; wizSave(); wizSig = ""; renderWiz(); }
 
 // ---- shared bits
-function shotPairs() { const s = wizScript(); return s ? madeShots(s).map(x => ({ img: node(x.img), vid: node(x.vid) })).filter(x => x.img && x.vid) : []; }
+function shotPairs() {
+  const s=wizScript();
+  return s?scriptShotLinks(s).map((pair,index)=>({img:node(pair?.img),vid:node(pair?.vid),index})).filter(pair=>pair.img&&pair.vid):[];
+}
 function jobText(n) {
   if (!n?.job) return "";
   const st = n.job.ids.map(i => n.job.st?.[i]).filter(Boolean), run = st.find(s => s.state === "running"), q = st.find(s => s.state === "queued");
@@ -157,7 +160,8 @@ function stepBoards() {
   const pairs = shotPairs(), d = wizScript().data;
   const ready = pairs.filter(p => curV(p.img)).length;
   return `<div class="wz4"><p class="tip">每个镜头的第一帧。不满意可以重画，或者写一句怎么改。${ready < pairs.length ? `已完成 ${ready}/${pairs.length}` : "全部就绪"}</p>
-    <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map((p, i) => {
+    <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map(p => {
+      const i=p.index;
       const v = curV(p.img), busy = p.img.job, s = d.shots[i] || {};
       return `<div class="bc"><div class="pic">${v ? `<img src="${v.url}">` : ""}${busy ? `<div class="pend"><div class="spin"></div>${jobText(p.img)}</div>` : !v ? `<div class="pend">等待生成</div>` : ""}</div>
         <div class="cap"><b>镜头 ${i + 1}</b>${verNav(p.img)}</div><div class="txt">${esc(s.keyframe || "")}</div>
@@ -169,7 +173,8 @@ function stepBoards() {
 function stepVideos() {
   const pairs = shotPairs(), d = wizScript().data, done = pairs.filter(p => curV(p.vid)).length, busy = pairs.filter(p => p.vid.job).length;
   return `<div class="wz5"><p class="tip">${busy ? `正在生成 ${busy} 个镜头，<span id="wzEta"></span>可以关掉网页，回来接着看。` : done < pairs.length ? "点「开始生成」把所有镜头排进队列。" : "全部生成好了。有多个版本的镜头，用 ‹ › 挑出最好的一版。"}</p>
-    <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map((p, i) => {
+    <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map(p => {
+      const i=p.index;
       const v = curV(p.vid), s = d.shots[i] || {};
       return `<div class="bc"><div class="pic">${v ? `<video src="${v.url}" controls playsinline preload="metadata"></video>` : curV(p.img) ? `<img src="${curV(p.img).url}" class="dimg">` : ""}
           ${p.vid.job ? `<div class="pend"><div class="spin"></div>${jobText(p.vid)}</div>` : ""}</div>
@@ -217,8 +222,8 @@ function wireStep(body) {
     });
     $$("[data-m]", body).forEach(b => b.onclick = () => {
       const el = b.closest(".sh"), i = el ? +el.dataset.i : -1, m = b.dataset.m;
-      checkpoint();
-      if (m === "add") d.shots.push({ duration: 5, shot_size: "中景", camera: "", scene: d.shots.at(-1)?.scene || "", characters: d.shots.at(-1)?.characters || [], action: [], dialogue: [], sound: "", keyframe: "" });
+      checkpoint();ensureScriptShotIds(s);
+      if (m === "add") d.shots.push({ id:newCanvasNodeId(), duration: 5, shot_size: "中景", camera: "", scene: d.shots.at(-1)?.scene || "", characters: d.shots.at(-1)?.characters || [], action: [], dialogue: [], sound: "", keyframe: "" });
       else if (m === "del") d.shots.splice(i, 1);
       else if (m === "up" && i > 0) d.shots.splice(i - 1, 0, d.shots.splice(i, 1)[0]);
       else if (m === "down" && i + 1 < d.shots.length) d.shots.splice(i + 1, 0, d.shots.splice(i, 1)[0]);
@@ -310,7 +315,7 @@ async function wizGo(what, btn) {
       } catch {}
     }
     libCache = null;
-    if (!madeShots(s).length) expandScript(s);
+    expandMissingScriptShots(s);
     W.step = 3; wizSave(); renderWiz();
     await batchImages(s); wizSig = ""; renderWiz();
   } else if (what === "videos") {
