@@ -4134,6 +4134,28 @@ async function run(){
   [['推近木盒','抬头看窗外'],['林森：走吧。'],'推近木盒\n抬头看窗外','节点独立台词',true,true,true,true],
   'manual edits sync to original image and video fields, retain local overrides and do not rewrite history');
  assert.match(evaluate('$("[role=status]",shotEditForm).textContent'),/同步了 2 个生成节点.*独立设置/);
+ w.__memories=[...(w.__memories||[]),{id:"shot-edit-hero",name:"镜头角色",kind:"character",board:evaluate("boardId"),
+  character_views:{main:"input:h3studio/shot-main.png",face:"input:h3studio/shot-face.png"}}];
+ evaluate(`$("[data-shot-assets]",shotEditForm).open=true;
+  const shotAssetQuery=$("[data-shot-asset-query]",shotEditForm);
+  shotAssetQuery.value="镜头角";shotAssetQuery.dispatchEvent(new Event("input",{bubbles:true}));`);
+ await ready('!!$("[data-add-shot-asset=shot-edit-hero]")','shot editor searches the accessible library');
+ evaluate(`const shotAssetResult=$("[data-add-shot-asset=shot-edit-hero]").closest("li");
+  $("select",shotAssetResult).value="face";$("button",shotAssetResult).click();shotEditSubmit.click();`);
+ equal(evaluate(`[editedRangeShot.asset_refs[0].view,
+  currentRangeFrame().data.prompt.includes("@{shot-edit-hero#face|镜头角色}"),
+  editedRangeVideo.data.fields.scene.includes("@{shot-edit-hero#face|镜头角色}")]`),
+  ['face',true,true],'saving a shot reference updates both linked nodes');
+ evaluate(`editedRangeVideo.data.fields.scene="节点独立场景";
+  $("[data-remove-shot-asset]",shotEditForm).click();
+  $("select",shotAssetResult).value="main";$("button",shotAssetResult).click();shotEditSubmit.click();`);
+ equal(evaluate(`[editedRangeShot.asset_refs[0].view,
+  currentRangeFrame().data.prompt.includes("@{shot-edit-hero#main|镜头角色}"),
+  currentRangeFrame().data.prompt.includes("@{shot-edit-hero#face|镜头角色}"),
+  editedRangeVideo.data.fields.scene,JSON.stringify([currentRangeFrame().versions,editedRangeVideo.versions])===editorHistory]`),
+  ['main',true,false,'节点独立场景',true],'view replacement preserves independently edited fields and history');
+ assert.match(evaluate('$("[role=status]",shotEditForm).textContent'),/独立设置/);
+ w.__memories=w.__memories.filter(asset=>asset.id!=="shot-edit-hero");
  const beforeEditRun=submittedBatches.length;
  evaluate('$("[data-run-shot-edit]",shotEditForm).click()');
  equal(evaluate('[shotEditDialog.open,$("#groupRunConfirm").open,$("#groupRunConfirm [name=mode]").value,$$("#groupRunConfirm ol li").length]'),
@@ -4166,6 +4188,8 @@ async function run(){
  equal(evaluate(`[duplicatedRangeShot.id!==editedRangeShot.id,duplicatedRangeShot.action,duplicatedRangeShot.action!==editedRangeShot.action,
   !!duplicatedRangeShot.frame,scriptShotLinks(liveRangeScript)[4]]`),
   [true,['推近木盒','抬头看窗外'],true,false,null],'copy duplicates the specification and leaves generated media attached to the original');
+ equal(evaluate('[duplicatedRangeShot.asset_refs[0].view,duplicatedRangeShot.asset_refs!==editedRangeShot.asset_refs]'),
+  ['main',true],'copy preserves the shot reference without sharing its editable list');
  evaluate(`$('[data-edit-shot="3"]',$("#shotList")).click();
   $("[data-remove-shot]",shotEditForm).click();`);
  assert.match(evaluate('$("[role=status]",shotEditForm).textContent'),/图片、视频和历史版本会保留/);

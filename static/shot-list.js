@@ -251,6 +251,78 @@ function openShotMediaPicker(script, shot, onSaved) {
   if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");
 }
 
+function editShotAssets(dialog, notify) {
+  const panel=$("[data-shot-assets]",dialog), search=$("[data-shot-asset-query]",panel);
+  const selected=$("[data-shot-asset-selected]",panel), results=$("[data-shot-asset-results]",panel);
+  const status=$("[data-shot-asset-status]",panel), bid=boardId;
+  let refs=[], request=0, timer=null;
+  const label=asset=>asset.name+(CHARACTER_VIEWS[asset.view]?.[0]?" · "+CHARACTER_VIEWS[asset.view][0]:"");
+  const draw=()=>{
+    selected.replaceChildren();
+    refs.forEach((asset,index)=>{
+      const row=document.createElement("li"), name=document.createElement("span"), remove=document.createElement("button");
+      name.textContent=label(asset);
+      remove.type="button";remove.textContent="移除";remove.dataset.removeShotAsset="";
+      remove.setAttribute("aria-label","移除 "+label(asset));
+      remove.onclick=()=>{refs.splice(index,1);status.textContent="";draw();notify();search.focus();};
+      row.append(name,remove);selected.append(row);
+    });
+  };
+  const find=()=>{
+    const q=search.value.trim(), epoch=++request;
+    clearTimeout(timer);
+    results.replaceChildren();
+    status.textContent=q?"正在找素材…":"";
+    if(!q)return;
+    const active=()=>dialog.open&&bid===boardId&&search.oninput===find&&epoch===request;
+    timer=setTimeout(async()=>{
+      try{
+        const matches=await cmReferenceSearch(q);
+        if(!active())return;
+        status.textContent=matches.length?"":"没有匹配资产";
+        for(const asset of matches){
+          const row=document.createElement("li"), title=document.createElement("span"), add=document.createElement("button");
+          title.textContent=asset.name+" · "+cmScopeLabel(asset);
+          row.append(title);
+          const slots=Object.keys(CHARACTER_VIEWS).filter(slot=>asset.character_views?.[slot]);
+          let view;
+          if(slots.length){
+            view=document.createElement("select");
+            view.setAttribute("aria-label",asset.name+" 的参考视角");
+            view.append(new Option("默认参考",""),...slots.map(slot=>new Option(CHARACTER_VIEWS[slot][0],slot)));
+            row.append(view);
+          }
+          add.type="button";add.textContent="添加";add.dataset.addShotAsset=asset.id;
+          add.setAttribute("aria-label","添加 "+asset.name);
+          add.onclick=()=>{
+            const slot=view?.value||"", related=refs.filter(ref=>ref.id===asset.id);
+            if(related.some(ref=>(ref.view||"")===slot))return;
+            if(!related.length&&new Set(refs.map(ref=>ref.id)).size>=8){
+              status.textContent="每镜最多采用 8 项资产";return;
+            }
+            if(slot&&related.filter(ref=>ref.view).length>=3){
+              status.textContent="每个角色最多采用 3 个视角";return;
+            }
+            const keep=refs.filter(ref=>ref.id!==asset.id||slot&&ref.view);
+            refs=[...keep,{id:asset.id,name:asset.name,kind:asset.kind,...(slot?{view:slot}:{})}];
+            status.textContent="";draw();notify();
+          };
+          row.append(add);results.append(row);
+        }
+      }catch(error){if(active())status.textContent=error.message;}
+    },140);
+  };
+  search.oninput=find;
+  search.onkeydown=event=>{if(event.key==="Enter"&&!event.isComposing)event.preventDefault();};
+  search.value="";
+  find();
+  panel.open=false;
+  return {
+    read:()=>structuredClone(refs),
+    reset:assets=>{refs=structuredClone(assets||[]);draw();},
+  };
+}
+
 function openShotEditor(script, index, onSaved, draft=null) {
   const order=script.data.shots||[], shot=draft||order[index];
   if(!shot||!canvasCanEdit()||node(script.id)!==script||nodeLocked(script))return;
@@ -277,6 +349,7 @@ function openShotEditor(script, index, onSaved, draft=null) {
   duration.replaceChildren(...times.map(seconds=>new Option(`${seconds} 秒`,String(seconds))));
   const multiline=new Set(["action","dialogue"]);
   const baseline={}, values={}, updatedTypes=new Set();
+  const assets=editShotAssets(dialog,()=>form.oninput());
   let mode=null;
   const fill=()=>{
     for(const field of fields){
@@ -285,8 +358,12 @@ function openShotEditor(script, index, onSaved, draft=null) {
       field.value=field===duration?String(raw||5):field===cast?(raw||[]).join("，"):multiline.has(field.name)?(raw||[]).join("\n"):raw||"";
       values[field.name]=field.value;
     }
+    baseline.asset_refs=structuredClone(shot.asset_refs??null);
+    assets.reset(baseline.asset_refs);
   };
   const changed=()=>fields.filter(field=>field.value!==values[field.name]);
+  const changedAssets=()=>JSON.stringify(assets.read())!==JSON.stringify(baseline.asset_refs||[]);
+  const dirty=()=>!!changed().length||changedAssets();
   const getIndex=()=>script.data.shots?.indexOf(shot)??-1;
   const validateEdit=()=>{
     if(board!==boardId || !canvasCanEdit() || node(script.id)!==script || nodeLocked(script) || toolBusy.has(script.id)){
@@ -308,7 +385,7 @@ function openShotEditor(script, index, onSaved, draft=null) {
   fill();
   saveButton.disabled=!inserting;run.hidden=true;
   form.oninput=()=>{
-    const hasChanges=!!changed().length;
+    const hasChanges=dirty();
     saveButton.disabled=!inserting&&!hasChanges;
     duplicate.disabled=remove.disabled=hasChanges;
     removeActions.hidden=true;
@@ -325,6 +402,10 @@ function openShotEditor(script, index, onSaved, draft=null) {
       before[name]=baseline[name];
       changes[name]=field===duration?Number(value):field===cast?value.split(/[,，\n]+/).map(item=>item.trim()).filter(Boolean):
         multiline.has(name)?value.split("\n").map(line=>line.trim()).filter(Boolean):value;
+    }
+    if(changedAssets() || inserting&&assets.read().length){
+      before.asset_refs=baseline.asset_refs;
+      changes.asset_refs=assets.read();
     }
     try{
       validateEdit();
@@ -343,7 +424,7 @@ function openShotEditor(script, index, onSaved, draft=null) {
       }
       const currentIndex=getIndex();
       if(currentIndex<0)throw new Error("镜头已变化，请重新打开编辑");
-      if(!patch.length)return;
+      if(!Object.keys(changes).length)return;
       const result=applyScriptShotRevision(script,{shot_id:shot.id,shot:currentIndex+1,before,changes});
       for(const n of result.updated)updatedTypes.add(n.type);
       mode=updatedTypes.size>1?"all":updatedTypes.has("video")?"video":updatedTypes.has("image")?"frame":null;
@@ -357,13 +438,13 @@ function openShotEditor(script, index, onSaved, draft=null) {
   };
   duplicate.onclick=()=>{
     const currentIndex=getIndex();
-    if(inserting||changed().length||currentIndex<0)return;
+    if(inserting||dirty()||currentIndex<0)return;
     try{validateEdit();}catch(error){status.textContent=error.message;return;}
     closeShotEditor();
     openShotEditor(script,currentIndex+1,onSaved,shot);
   };
   remove.onclick=()=>{
-    if(inserting||changed().length)return;
+    if(inserting||dirty())return;
     removeActions.hidden=false;
     status.textContent="将从分镜移除此镜，画布上的图片、视频和历史版本会保留。";
     $("[data-confirm-shot-remove]",removeActions).focus();
@@ -373,7 +454,7 @@ function openShotEditor(script, index, onSaved, draft=null) {
   };
   $("[data-confirm-shot-remove]",removeActions).onclick=()=>{
     const currentIndex=getIndex();
-    if(inserting||changed().length||currentIndex<0||removeActions.hidden)return;
+    if(inserting||dirty()||currentIndex<0||removeActions.hidden)return;
     try{
       validateEdit();
       const linked=scriptShotLinks(script)[currentIndex];
@@ -389,7 +470,7 @@ function openShotEditor(script, index, onSaved, draft=null) {
   };
   run.onclick=()=>{
     const currentIndex=getIndex();
-    if(board!==boardId || node(script.id)!==script || currentIndex<0 || !mode || changed().length)return;
+    if(board!==boardId || node(script.id)!==script || currentIndex<0 || !mode || dirty())return;
     closeShotEditor();
     openScriptShotRun(script,currentIndex,{mode});
   };
@@ -436,6 +517,11 @@ function initShotList() {
       <label>动作<textarea name="action" rows="4" placeholder="一行一个动作"></textarea></label>
       <label>台词<textarea name="dialogue" rows="4" placeholder="一行一句台词"></textarea></label>
       <label class="sl-wide">声音<textarea name="sound" rows="2" maxlength="600"></textarea></label>
+      <details class="sl-wide sl-shot-assets" data-shot-assets><summary>参考资产</summary>
+        <ul data-shot-asset-selected aria-label="已选参考资产"></ul>
+        <label>查找资产<input type="search" data-shot-asset-query maxlength="80" placeholder="名称、别名或标签"></label>
+        <p aria-live="polite" data-shot-asset-status></p><ul data-shot-asset-results aria-label="可选参考资产"></ul>
+      </details>
     </div>
     <p role="status"></p>
     <div class="sl-remove-actions" data-shot-remove-actions hidden><button type="button" data-cancel-shot-remove>取消</button><button type="button" data-confirm-shot-remove>确认移出</button></div>
@@ -662,7 +748,8 @@ function initShotList() {
       const rows=shots.map((shot, i) => {
         const v = node(connected[i]?.vid);
         const el=row(`镜头 ${i + 1}`, [`${shot.duration || "—"} 秒`, ...(shot.characters || []),
-          v?.job ? "生成中" : curV(v) ? "已生成" : connected[i]?"待生成":"未展开"].join(" · "),
+          shot.asset_refs?.length?`${new Set(shot.asset_refs.map(asset=>asset.id)).size} 项参考资产`:"",
+          v?.job ? "生成中" : curV(v) ? "已生成" : connected[i]?"待生成":"未展开"].filter(Boolean).join(" · "),
           () => locate(v || node(connected[i]?.img) || target),
           v?.versions.map((_, index) => [String(index), `版本 ${index + 1}`]) || [], String(v?.cur ?? ""),
           value => { if (switchVersion(v, +value)) locate(v); refresh(); },i,
