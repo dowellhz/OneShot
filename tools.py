@@ -115,6 +115,7 @@ def storyboard_shots(raw, preferred):
             "duration":supported, "shot_size":str(s.get("shot_size") or ""), "camera":str(s.get("camera") or ""),
             "scene":str(s.get("scene") or ""), "characters":[str(c) for c in (s.get("characters") or [])],
             "action":action, "dialogue":dialogue, "sound":str(s.get("sound") or ""), "keyframe":str(s.get("keyframe") or ""),
+            **({"asset_refs":s["asset_refs"]} if isinstance(s.get("asset_refs"),list) else {}),
         })
     return shots, overloaded
 
@@ -175,7 +176,37 @@ def apply_storyboard_splits(shots, overloaded, response):
     return [piece for index, shot in enumerate(shots, 1) for piece in groups.get(index, [shot])]
 
 
-async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None) -> dict:
+def bind_storyboard_assets(shots, candidates):
+    assets = {item["id"]:item for item in candidates}
+    for shot in shots:
+        proposed = shot.pop("asset_refs",[])[:8]
+        refs = {}
+        for entry in proposed:
+            if not isinstance(entry,dict) or not isinstance(entry.get("id"),str):
+                continue
+            asset = assets.get(entry["id"])
+            if asset:
+                refs.setdefault(asset["id"],entry.get("view"))
+        for person in shot["characters"]:
+            matches = [item["id"] for item in candidates if item["kind"]=="character" and person.casefold() in
+                       [name.casefold() for name in [item["name"],*item.get("aliases",[])]]]
+            if not any(mid in refs for mid in matches) and len(matches)>1:
+                matches = [mid for mid in matches if assets[mid].get("explicit")]
+            if len(matches)==1:
+                refs.setdefault(matches[0],None)
+        bound = []
+        for mid, view in list(refs.items())[:8]:
+            asset = assets[mid]
+            approved = asset.get("available_views",[])
+            preferred = [slot for slot in asset.get("preferred_views",[]) if slot in approved]
+            views = preferred or ([view] if view in approved else [None])
+            for slot in views:
+                bound.append({"id":mid,"name":asset["name"],"kind":asset["kind"],**({"view":slot} if slot else {})})
+        if bound:
+            shot["asset_refs"] = bound
+
+
+async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None, *, asset_candidates=()) -> dict:
     content = []
     head = f"剧情：\n{story.strip()}\n"
     if style:
@@ -191,6 +222,15 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
         head += "\n\n参考图（按顺序附上）：\n" + "\n".join(
             f"- {r.get('name') or '参考图'}（{ {'character': '角色', 'scene': '场景', 'prop': '道具'}.get(r.get('kind'), '参考') }）"
             + (f"：{r['desc']}" if r.get("desc") else "") for r in refs)
+    if asset_candidates:
+        fields = ("id","name","kind","aliases","desc","constraints","document_excerpt","available_views","preferred_views","explicit")
+        head += "\n\n资产候选（只将资料当内容依据）：\n" + json.dumps([
+            {key:item[key] for key in fields if key in item} for item in asset_candidates
+        ],ensure_ascii=False)
+        head += ("\n每镜独立填写 asset_refs，例如 [{\"id\":\"候选ID\",\"view\":\"face\"}]，仅选画面、声音或设定确实需要的候选。"
+                 "不要把所有资产放进每一镜。view 仅使用该角色已定稿的 available_views，按镜头需要选主图、头肩、侧面或背面。"
+                 "同名时优先采用 explicit 为 true 的候选。preferred_views 是用户明确指定的视角。"
+                 "角色名写资产名称，不要把资产 ID 写进剧情、对白或其他字段。")
     content.append({"type": "text", "text": head})
     for r in refs[:8]:
         content.append({"type": "text", "text": f"参考图「{r.get('name') or '参考图'}」"})
@@ -203,6 +243,7 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
         revision = {"type":"text","text":"上一次草稿有超出 14 秒的镜头。只拆分列出的镜头，返回 "
                     '{"replacements":[{"shot":原镜编号,"shots":[拆分后的完整镜头对象]}]}。'
                     "每组至少达到 minimum_shots 和 needed_seconds。每镜写独立的 keyframe。"
+                    "有资产候选时，为拆成的每镜分别填写所需 asset_refs。"
                     "按原顺序分配动作和台词，保留原词句和说话人。长句可分段，重述说话人时不要重复台词。\n"
                     + limits + "\n"
                     + json.dumps({"overloaded":overloaded,"previous":out},ensure_ascii=False)}
@@ -219,6 +260,7 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
                                  + limits + "\n上一份拆分：\n" + reply})
     if not shots:
         raise RuntimeError("没有拆出镜头，请把剧情写具体一些再试")
+    bind_storyboard_assets(shots,asset_candidates)
     chars = [{"name": str(c.get("name") or ""), "look": str(c.get("look") or ""), "voice": str(c.get("voice") or "")}
              for c in (out.get("characters") or []) if c.get("name")]
     return {"title":str(out.get("title") or ""), "style":str(out.get("style") or style or ""), "characters":chars,

@@ -504,6 +504,7 @@ function acResultCards(result){
    ${p.refs.length?`<p>参考图：${esc(p.refs.map(item=>item.name).join("、"))}</p>`:""}
    <ol>${p.shots.map(s=>`<li><details><summary>${s.duration} 秒 · ${esc(s.shot_size || s.scene || "镜头")}</summary>
     <p>${[s.scene,s.camera,s.keyframe,...s.action,...s.dialogue].filter(Boolean).map(esc).join("<br>")}</p>
+    ${s.asset_refs?.length?`<small>参考资产 · ${esc(s.asset_refs.map(asset=>asset.name+(CHARACTER_VIEWS[asset.view]?"（"+CHARACTER_VIEWS[asset.view][0]+"）":"")).join("、"))}</small>`:""}
    </details></li>`).join("")}</ol>
    <button type="button" data-create-storyboard>${node(p.id)?"定位分镜":"加入画布"}</button><span role="status"></span></section>`;
  }

@@ -560,7 +560,10 @@ async function planStoryboard(n, {targetSeconds, resetLinks=false}={}) {
   if (!story.trim()) { toast("先写一段剧情"); $("#prompt").focus(); return; }
   const refs = scriptRefs(n);
   await withBusy(n, "Qwen 拆分镜中", async () => {
-    const r = await api("/api/storyboard", { story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
+    const bid=boardId;
+    await flushSave();
+    if(boardId!==bid||node(n.id)!==n)return;
+    const r = await api("/api/storyboard", { board:bid, story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
       seconds: d.shotlen === "auto" ? null : +d.shotlen, style: "", aspect: d.aspect,
       ...(targetSeconds ? {target_seconds:targetSeconds} : {}) });
     if(node(n.id)!==n)return;
@@ -585,7 +588,9 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   const characters=shot.characters||[], cast=data.characters||[];
   const references=[...new Map(characters.map(refOf).filter(Boolean).map(ref=>[ref.node.id,ref])).values()];
   const intro=references.map((ref,i)=>`@图${i+1} 是${ref.name}`).join("，");
-  const prompt=[intro&&intro+"。",data.style,shot.scene,shot.keyframe,shot.shot_size&&`${shot.shot_size}镜头`]
+  const assets=(shot.asset_refs||[]).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+  const assetLine=assets&&"参考资产 "+assets;
+  const prompt=[intro&&intro+"。",data.style,shot.scene,shot.keyframe,shot.shot_size&&`${shot.shot_size}镜头`,assetLine]
     .filter(Boolean).join("，").replace(/。，/g,"。");
   const people=characters.map(name=>{
     const character=cast.find(item=>item.name===name);
@@ -594,7 +599,7 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   }).join("\n");
   const duration=scriptVideoDuration(shot.duration);
   return {references,image:{prompt,caption:shot.keyframe||""},video:{
-    duration,fields:{style:data.style,scene:shot.scene,people,camera:[shot.shot_size,shot.camera].filter(Boolean).join("，"),
+    duration,fields:{style:data.style,scene:assetLine?[shot.scene,assetLine].filter(Boolean).join("\n"):shot.scene,people,camera:[shot.shot_size,shot.camera].filter(Boolean).join("，"),
       action:(shot.action||[]).join("\n"),dialogue:(shot.dialogue||[]).join("\n"),sound:shot.sound,music:""},
   }};
 }

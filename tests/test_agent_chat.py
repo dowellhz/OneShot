@@ -1567,6 +1567,50 @@ class ChatIntegration(ChatFixture):
         self.assertEqual(path.read_text(),before)
         self.assertFalse(server.JOBS)
 
+    async def test_storyboard_binds_assets_to_their_shots_on_canvas_and_in_assistant(self):
+        user = {"id":7,"role":"member"}
+        store = self.app["creative_memory"]
+        hero = store.put(user,{"board":"test","kind":"character","name":"林森","ref":self.source["ref"],
+                              "source_board":"test","character_view":"main"})
+        face = image_editor.save(server.COMFY_DIR,Image.new("RGB",(64,64),"blue"))
+        b = self.load()
+        b["nodes"][0]["versions"].append(face)
+        server.write_board(server.board_path("test"),b)
+        store.put(user,{"id":hero["id"],"ref":face["ref"],"source_board":"test","character_view":"face"})
+        station = store.put(user,{"board":"test","kind":"scene","name":"站台","desc":"玻璃顶棚"})
+        await self.client.put("/api/board/another",json={"nodes":[]})
+        hidden = store.put(user,{"board":"another","kind":"document","name":"其他项目资料"})
+        story = "林森在站台转身。接着拍远处的天空。"
+        token = "@{"+hero["id"]+"#face|林森}"
+        proposed = {"title":"站台","shots":[
+            {"duration":5,"scene":"站台","characters":["林森"],"action":["转身"],"keyframe":"人物站在月台中央",
+             "asset_refs":[{"id":station["id"],"view":"main"}]},
+            {"duration":5,"scene":"天空","action":["云慢慢飘过"],"keyframe":"远处的天空",
+             "asset_refs":[{"id":hidden["id"]}]},
+        ]}
+        llm = SimpleNamespace(chat=AsyncMock(return_value=json.dumps(proposed)),available=lambda: True,via="fixture")
+        self.svc.model.side_effect = [call("storyboard_create_plan",{"story":story}),answer()]
+        with patch.dict(self.app,{"llm":llm}):
+            rid = await self.send(text=f"用 {token} 做分镜，{story}")
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            endpoint = await self.client.post("/api/storyboard",json={"board":"test","story":token+"，"+story})
+            self.assertEqual(endpoint.status,200,await endpoint.text())
+            from_canvas = await endpoint.json()
+        row = db.one("SELECT result FROM chat_calls WHERE run_id=? AND name='storyboard_create_plan'",rid)
+        from_assistant = json.loads(row["result"])["storyboard_create"]
+        for result in (from_canvas,from_assistant):
+            self.assertEqual(result["shots"][0]["asset_refs"],[
+                {"id":station["id"],"name":"站台","kind":"scene"},
+                {"id":hero["id"],"name":"林森","kind":"character","view":"face"},
+            ])
+            self.assertNotIn("asset_refs",result["shots"][1])
+        for invocation in llm.chat.await_args_list:
+            planner_input = invocation.args[1][0]["text"]
+            self.assertIn("asset_refs",planner_input)
+            self.assertIn(hero["id"],planner_input)
+            self.assertIn('"preferred_views": ["face"]',planner_input)
+            self.assertNotIn(hidden["id"],planner_input)
+
     async def test_storyboard_continuation_reads_pinned_reference_and_prepares_one_shot(self):
         current = image_editor.save(server.COMFY_DIR,Image.new("RGB",(60,32),"blue"),"input")
         board = self.load()

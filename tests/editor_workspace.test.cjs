@@ -6958,17 +6958,25 @@ async function run(){
   result:{storyboard_create:{id:"n-new-storyboard-candidate",board:boardId,title:"雨夜",aspect:"9:16",style:"写实",
    story:"走出门",planned_seconds:20,characters:[],refs:[{node:newStoryboardReference.id,
     ref:newStoryboardReference.versions[0].ref,name:newStoryboardReference.name}],
-   shots:[{duration:10,scene:"走廊",shot_size:"中景",action:["靠近门"],dialogue:[],keyframe:"门边"},
+   shots:[{duration:10,scene:"走廊",shot_size:"中景",action:["靠近门"],dialogue:[],keyframe:"门边",
+    asset_refs:[{id:"hero-asset",name:"林森",kind:"character",view:"face"}]},
     {duration:10,scene:"街道",shot_size:"远景",action:["走出门"],dialogue:[],keyframe:"街灯"}]}}}});
  const confirmNewStoryboard=$("[data-call=new-storyboard-candidate] [data-create-storyboard]");
  const adoptNewStoryboard=()=>$("#acMessages").onclick({target:confirmNewStoryboard});`);
  assert.equal(evaluate('!!node("n-new-storyboard-candidate")'),false,'planning leaves the canvas intact');
+ assert.match(evaluate('$("[data-storyboard-create]").textContent'),/林森（正面头肩）/);
  await evaluate('adoptNewStoryboard()');
  equal(evaluate(`const createdStory=node("n-new-storyboard-candidate");
   [createdStory.type,createdStory.data.aspect,createdStory.data.shots.map(s=>s.duration),scriptRefs(createdStory)[0].ref]`),
   ['script','9:16',[10,10],'output:h3studio/story-first.png'],'confirmation creates an editable script with its exact reference version');
  await evaluate('adoptNewStoryboard()');
  equal(evaluate('B.nodes.filter(n=>n.id==="n-new-storyboard-candidate").length'),1,'repeated confirmation locates the same script');
+ evaluate('expandScript(createdStory)');
+ equal(evaluate(`const ownedShots=scriptShotLinks(createdStory), exactAsset="@{hero-asset#face|林森}";
+  [node(ownedShots[0].img).data.prompt.includes(exactAsset), node(ownedShots[0].vid).data.fields.scene.includes(exactAsset),
+   node(ownedShots[1].img).data.prompt.includes(exactAsset), node(ownedShots[1].vid).data.fields.scene.includes(exactAsset)]`),
+  [true,true,false,false],'only the shot using the asset sends its exact identity and view to both generation nodes');
+ evaluate('undo()');
  evaluate('undo()');
  assert.equal(evaluate('!!node("n-new-storyboard-candidate")'),false,'one undo removes the script and its reference connection');
  console.log('Assistant storyboard creation passed: review, pinned assets, duplicate protection and undo.');

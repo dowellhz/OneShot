@@ -1442,9 +1442,15 @@ class AgentService:
                 pins.append({"node":nid,"ref":version["ref"],"name":source["name"]})
             aspect = args.get("aspect","16:9")
             llm = self.app["llm"]
+            data = run["data"]
             try:
+                candidates = self.app["creative_memory"].storyboard_assets(user,bid,story,data.get("memory_ids",[]),
+                    creative_memory.requested_views(data.get("memory_views",[])),explicit=data.get("explicit_memory_ids",[]))
                 result = await h.tools.storyboard(llm,h.COMFY_DIR,story,refs,args.get("shots"),None,
-                    args.get("style",""),aspect,args.get("target_seconds"))
+                    args.get("style",""),aspect,args.get("target_seconds"),
+                    **({"asset_candidates":candidates} if candidates else {}))
+            except web.HTTPException as error:
+                raise ToolError(json.loads(error.text).get("error",error.reason)) from None
             except (ValueError, RuntimeError) as error:
                 raise ToolError(str(error)) from None
             self.board(user,bid)

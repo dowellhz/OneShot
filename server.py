@@ -3629,8 +3629,10 @@ async def storyboard(req):
     p = await req.json()
     if not clean(p.get("story")):
         raise bad("先写一段剧情")
+    candidates = req.app["creative_memory"].storyboard_assets(req["user"],p["board"],p["story"]) if p.get("board") else []
     return await llm_call(req, tools.storyboard(req.app["llm"], COMFY_DIR, p["story"], p.get("refs") or [], p.get("shots"),
-                                                p.get("seconds"), clean(p.get("style")), p.get("aspect") or "16:9", p.get("target_seconds")))
+                                                p.get("seconds"), clean(p.get("style")), p.get("aspect") or "16:9", p.get("target_seconds"),
+                                                **({"asset_candidates":candidates} if candidates else {})))
 
 
 @routes.post("/api/describe")

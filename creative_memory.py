@@ -273,6 +273,26 @@ class Store:
             for _,_,asset in candidates[:20]
         ]
 
+    def storyboard_assets(self, user, bid, story, adopted=(), views=None, *, explicit=()):
+        mentioned = self.mentions(user,bid,story,strict=False)
+        explicit_ids = {asset["id"] for asset in mentioned} | set(explicit)
+        fixed_views = {**view_tokens(story),**(views or {})}
+        in_current = self.scope_filter(user,bid,"current")
+        assets = {asset["id"]:asset for asset in self.list(user,bid)}
+        selected = {asset["id"]:asset for asset in mentioned}
+        selected.update((mid,assets[mid]) for mid in adopted if mid in assets)
+        matches = self.keyword_matches([asset for asset in assets.values() if in_current(asset)],story)
+        for asset in matches:
+            selected.setdefault(asset["id"],asset)
+        candidates = []
+        for asset in list(selected.values())[:16]:
+            summary = self.summary(asset,story)
+            preferred = fixed_views.get(asset["id"],[])
+            if any(slot not in summary.get("available_views",[]) for slot in preferred):
+                fail(f"「{asset['name']}」有指定视角尚未定稿")
+            candidates.append({**summary,"preferred_views":preferred,"explicit":asset["id"] in explicit_ids})
+        return candidates
+
     @staticmethod
     def keyword_matches(items, query):
         query = query.casefold().strip()[:8000]
