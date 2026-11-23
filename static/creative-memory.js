@@ -15,9 +15,10 @@ function cmMediaType(ref, media) {
 }
 function cmScopeLabel(a){return a.team ? '团队 · '+(canvasTeams.find(t=>t.id===a.team)?.name || '团队素材') :
   a.project?'项目素材':a.board?'画布素材':a.shared?'共享素材':'个人素材库';}
-function cmNewScope(bid=boardId){
+function cmNewScope(){
   const project=currentProject()?.id||'';
-  return {board:project?'':bid,project};
+  const team=B?.team||'';
+  return {board:project||team?'':boardId,project,team};
 }
 function cmToken(a){const names=CM.items.filter(b=>[b.name,...(b.aliases||[])].some(n=>n.toLocaleLowerCase()===a.name.toLocaleLowerCase()));return names.length>1?'@{'+a.id+'}':'@'+a.name;}
 async function cmFolders() {
@@ -29,13 +30,14 @@ async function cmFolders() {
  return items;
 }
 
-function cmFolderToken(asset) {
+function cmLabelledToken(asset, view = "") {
  const safe=asset.name.replace(/[{}@\r\n]/g,char=>({'{':'｛','}':'｝','@':'＠','\r':' ','\n':' '})[char]).trim();
  const label=Array.from(safe).slice(0,60).join('')||'素材';
- return `@{${asset.id}|${label}}`;
+ return `@{${asset.id}${view ? "#"+view : ""}|${label}}`;
 }
 function cmReadableReferences(text) {
- return String(text||'').replace(/@\{[A-Za-z0-9_-]{1,80}\|([^{}\r\n@]{1,60})\}/g,(_match,label)=>'@'+label.replace(/[\\`*_\[\]<>]/g,'\\$&'));
+ return String(text||'').replace(/@\{[A-Za-z0-9_-]{1,80}(?:#(main|face|side|back|detail))?\|([^{}\r\n@]{1,60})\}/g,
+  (_match,view,label)=>'@'+label.replace(/[\\`*_\[\]<>]/g,'\\$&')+(view?' · '+CHARACTER_VIEWS[view][0]:''));
 }
 
 function cmFolderClose() {
@@ -99,7 +101,7 @@ function cmFolderApply() {
  if(!S?.chosen.size)return;
  const status=$('#cmFolderPicker [data-cf-status]');
  if(S.bid!==boardId||!S.ta.isConnected||S.ta.value!==S.text){status.textContent='输入内容已变化，请重新引用文件夹';return;}
- const inserted=S.items.filter(item=>S.chosen.has(item.id)).map(cmFolderToken).join(' ')+' ';
+ const inserted=S.items.filter(item=>S.chosen.has(item.id)).map(item=>cmLabelledToken(item)).join(' ')+' ';
  if(S.ta.maxLength>=0&&S.text.length-(S.end-S.start)+inserted.length>S.ta.maxLength){status.textContent='插入后超出输入长度，请减少引用';return;}
  S.ta.setRangeText(inserted,S.start,S.end,'end');
  cmFolderClose();
@@ -120,7 +122,7 @@ function cmInsert(ta,a,start=ta.selectionStart,end=ta.selectionStart){
    token=attachPromptMedia(ta,n,a.ref);
    if(!token){cmClose();return;}
   }
- }else token=cmToken(a);
+ }else token=a.characterView?cmLabelledToken(a,a.characterView):cmToken(a);
  ta.setRangeText(token+' ',start,end,'end');ta.dispatchEvent(new Event('input',{bubbles:true}));ta.focus();cmClose();
  if(a.canvasNode&&ta.id!=="acInput")ta._before=snap();
 }
@@ -132,6 +134,7 @@ function cmDraw(){
  CM.matches.forEach((a,i)=>{
   const b=document.createElement('button');b.type='button';b.id='cm-option-'+i;b.role='option';b.dataset.option=i;
   b.dataset[a.assetFolder?'assetFolder':a.canvasNode?'canvasNode':'memory']=a.id;
+  if(a.characterView)b.dataset.characterView=a.characterView;
   b.setAttribute('aria-selected',String(i===CM.index));
   if(a.assetFolder)b.insertAdjacentHTML('beforeend',ico('assets'));
   else if(a.ref&&(!a.canvasNode||a.type==="image")){const im=document.createElement('img');im.src='/media?ref='+encodeURIComponent(a.ref);im.alt='';b.append(im);}
@@ -139,7 +142,7 @@ function cmDraw(){
   name.textContent=a.name;
   sub.textContent=a.assetFolder ? `文件夹 · ${cmScopeLabel(a)} · ${a.count} 项` : a.canvasNode
    ?'画布 · '+(TYPE_CN[a.type]||'节点')+(a.version?' · 版本 '+a.version:'')+(a.duplicate?' · '+a.id:'')
-   :cmKind(a)+' · '+cmScopeLabel(a)+(a.desc?' · '+a.desc.slice(0,55):'');
+   :cmKind(a)+' · '+cmScopeLabel(a)+(a.characterView?' · '+CHARACTER_VIEWS[a.characterView][0]:a.desc?' · '+a.desc.slice(0,55):'');
   info.append(name,sub);b.append(info);box.append(b);
  });
  CM.target?.setAttribute('aria-activedescendant','cm-option-'+CM.index);
@@ -167,19 +170,27 @@ async function cmSuggest(ta,force=false){
  const pos=ta.selectionStart,part=ta.value.slice(0,pos),match=part.match(/@([^@\s，。！？、；：,.!?;:()（）\[\]【】]{0,80})$/);if(!match){cmClose();return;}
  const start=pos-match[0].length;if(start&&/[A-Za-z0-9_.]/.test(part[start-1])){cmClose();return;}cmEnsure();CM.target=ta;CM.start=start;const query=match[1].toLocaleLowerCase(),bid=boardId;
  const versionSearch=query.match(/^(.+)[#＃](\d*)$/);
+ const viewSearch=query.match(/^(.+)[#＃]([^#＃]*)$/);
  let memoryError;
  const [items, folders]=await Promise.all([cmList(force).catch(error=>{memoryError=error;return [];}),cmFolders().catch(()=>[])]);
  if(boardId!==bid||CM.target!==ta||document.activeElement!==ta||ta.selectionStart!==pos||ta.value.slice(0,pos)!==part)return;
  const nodes=cmCanvasMatches(ta,versionSearch?.[1]??query,versionSearch?.[2],bid);
  const memory=items.filter(a=>[a.name,...(a.aliases||[]),...(a.tags||[])].some(v=>v.toLocaleLowerCase().includes(query)));
+ const targetType=canvasPromptNode(ta)?.type;
+ const views = viewSearch && (ta.id==="acInput" || targetType==="image" || targetType==="video")
+  ? items.filter(asset=>asset.kind==="character" && [asset.name,...(asset.aliases||[])]
+    .some(name=>name.toLocaleLowerCase().includes(viewSearch[1])))
+    .flatMap(asset=>Object.entries(CHARACTER_VIEWS)
+     .filter(([slot,[label]])=>asset.character_views?.[slot] && (slot.includes(viewSearch[2])||label.includes(viewSearch[2])))
+     .map(([slot])=>({...asset,characterView:slot,ref:asset.character_views[slot]}))) : [];
  const matchingFolders=folders.filter(folder=>folder.name.toLocaleLowerCase().includes(query)).slice(0,6).map(folder=>({...folder,assetFolder:true}));
  const slots=20-matchingFolders.length;
  const visibleMemory=memory.slice(0,nodes.length?Math.max(8,slots-nodes.length):slots);
- CM.matches=(versionSearch?[...nodes,...matchingFolders,...visibleMemory]:
+ CM.matches=(viewSearch?[...views,...nodes,...matchingFolders,...visibleMemory]:
   [...matchingFolders,...visibleMemory,...nodes]).slice(0,20);
  CM.index=0;cmDraw();
  if(!CM.matches.length&&memoryError)CM.popup.firstChild.textContent=memoryError.message;
- if(!CM.matches.length&&versionSearch)CM.popup.firstChild.textContent='没有可引用的版本';
+ if(!CM.matches.length&&viewSearch&&!memoryError)CM.popup.firstChild.textContent='没有可引用的角色视角或画布版本';
  const r=ta.getBoundingClientRect(),width=Math.min(360,innerWidth-24);
  const host=ta.closest('dialog[open]')||document.body;
  if(CM.popup.parentElement!==host)host.append(CM.popup);
@@ -217,14 +228,14 @@ async function cmEdit(a=null, kind='character', options={}) {
   cmClose(); CM.editor?.remove();
   const panel=document.createElement('section'); panel.id='memoryEditor'; panel.className='cm-editor'; panel.role='dialog';
   panel.setAttribute('aria-modal','false'); panel.setAttribute('aria-label','资产详情');
-  panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>范围<select name="board">${projectOptions.map(p=>`<option value="project:${esc(p.id)}">项目 · ${esc(p.name)}</option>`).join("")}<option value="${esc(initialBoard)}">当前画布</option><option value="">个人素材库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享给所有平台账号（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片、视频或文档<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
+  panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>保存到<select name="board">${projectOptions.map(p=>`<option value="project:${esc(p.id)}">项目 · ${esc(p.name)}</option>`).join("")}<option value="">个人资产库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享给所有平台账号（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片、视频或文档<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
   if(host)host.replaceChildren(panel); else document.body.append(panel); CM.editor=panel;
   const character = document.createElement("section");
   character.className = "cm-character";
   character.innerHTML = `<strong>标准角色图</strong><p>先生成并定稿主图，再补其他角度。</p><div class="cm-character-views"></div><details><summary>角色卡</summary><div class="cm-character-fields">${Object.entries(CHARACTER_FIELDS).map(([key,label]) => `<label>${label}<input name="character_${key}" maxlength="800"></label>`).join("")}</div></details>`;
   panel.querySelector(".cm-hero").after(character);
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
-  let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(initialBoard),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
+  let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
  let documentData=options.preset?.document||data.document||null, documentDirty=!!options.preset?.document;
   const docBox=document.createElement("details");
@@ -393,7 +404,9 @@ async function cmEdit(a=null, kind='character', options={}) {
     }
   }
   for(const k of ['name','kind','desc','constraints'])field(k).value=data[k]||'';
-  if(data.board && data.board!==initialBoard)field('board').add(new Option('原画布',data.board));
+  if(!currentProject() && !B?.team)field('board').add(new Option('当前画布 · '+(B?.name||'未命名画布'),initialBoard));
+  if(data.board && ![...field('board').options].some(option=>option.value===data.board))
+    field('board').add(new Option('原有画布范围',data.board));
   for(const team of canvasTeams)field('board').add(new Option('团队 · '+team.name,'team:'+team.id));
   if(data.team && !canvasTeams.some(t=>t.id===data.team))field('board').add(new Option('原团队','team:'+data.team));
   field('board').value=data.team?'team:'+data.team:data.project?'project:'+data.project:data.board||'';

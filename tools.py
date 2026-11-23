@@ -6,7 +6,7 @@
 - split_grid(): a storyboard grid image -> tiles
 - concat(): several clips -> one mp4 (H.264 + AAC), audio kept in sync with each clip's picture
 """
-import json, re, time, uuid
+import json, math, re, time, uuid
 from fractions import Fraction
 from pathlib import Path
 
@@ -59,30 +59,68 @@ def _lines(v) -> list[str]:
 
 # ------------------------------------------------------------------ storyboard
 
-STORYBOARD_SYS = """你是电影分镜师。把用户的剧情拆成一组连续镜头，供 AI 视频模型（MiniMax H3，单镜头 3~8 秒，可生成对白和音效）逐镜生成。
+STORYBOARD_DURATIONS = (5, 8, 10, 14)
+STORYBOARD_SYS = """你是电影分镜师。把用户的剧情拆成一组连续镜头，供 AI 视频模型逐镜生成。
 只输出一个 JSON 对象，不要任何解释或代码块标记，格式：
 {"title": "片名", "style": "全片统一的画面风格（写实/动画、色调、光线）",
  "characters": [{"name": "角色名", "look": "外貌、年龄、发型、服装，写具体", "voice": "声音特点，如 清亮的少女音，语速轻快"}],
  "shots": [{"duration": 5, "shot_size": "景别，如 中景", "camera": "机位与运镜，如 固定机位，缓慢推近",
    "scene": "这个镜头的地点、时间、环境、光线", "characters": ["出现在画面里的角色名"],
-   "action": ["按时间顺序的动作，一行一个，2~4 条"], "dialogue": ["角色名（语气）：台词"],
+   "action": ["按时间顺序列动作，一行只写一个实际发生的动作节拍"], "dialogue": ["角色名（语气）：台词"],
    "sound": "环境音和动作音效", "keyframe": "这个镜头第一帧的静态画面，一句话写清人物位置、姿态、表情、景别、构图和光线，用于生成分镜图"}]}
 要求：
-- 镜头之间动作和空间连续，前一镜结尾接得上后一镜开头；每镜只讲一件事，3~8 秒。
+- 先分配真实播放时间，再拆镜。估算动作的准备、完成、停顿、反应和自然语速下的完整台词。中文每秒约 4 字，英文每秒约 2.5 个词。
+- 可提交的镜头时长只有 5、8、10、14 秒。选能容纳内容的最短档位。简单一拍可用 5 秒，多个连续动作、有停顿的对话可以用 8、10 或 14 秒。
+- 同一段内容在 15 秒内讲不完，或任何连续动作、对白超过单镜 14 秒预算，必须按动作转折或台词换气拆成多个镜头。保留原动作、台词和节奏，不要为了总时长或镜头数把内容加速或删减。总时长与目标镜头数是偏好，超出时分镜优先。
+- 新拆的每镜都有独立静态首帧。首帧从上一镜动作结束后的合理姿态起步，保持人物位置、视线、道具、光线和空间方向连续。首帧描述不要提前写入本镜尚未发生的动作结果。
 - 角色名必须和用户给的参考图名字一致；参考图里能看到的外貌要写进 look，并在每个镜头保持一致。
 - 台词只用剧情里写到的或剧情明显需要的，台词原文保留；没有台词就给空数组。
 - 全部用中文。"""
 
 
-async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str) -> dict:
+def shot_seconds(action, dialogue):
+    beats = sum(len(re.split(r"随后|然后|接着|紧接着|继而|[；;]", line)) for line in action)
+    speech = 0.0
+    for line in dialogue:
+        body = re.sub(r"^[^：:\n]{1,24}[：:]\s*", "", line)
+        speech += len(re.findall(r"[\u3400-\u9fff]", body))/4 + len(re.findall(r"[A-Za-z0-9]+", body))/2.5 + .3
+    return max(5, 2 + 2*beats, math.ceil(speech + .7))
+
+
+def storyboard_shots(raw, preferred):
+    shots, overloaded = [], []
+    for index, s in enumerate(raw, 1):
+        if not isinstance(s, dict):
+            raise ValueError("分镜条目格式不正确")
+        action, dialogue = _lines(s.get("action")), _lines(s.get("dialogue"))
+        try:
+            duration = math.ceil(float(s.get("duration") or preferred or 5))
+        except (ValueError, TypeError, OverflowError):
+            duration = 5
+        required = max(duration, shot_seconds(action, dialogue))
+        supported = next((value for value in STORYBOARD_DURATIONS if value >= required), None)
+        if supported is None:
+            overloaded.append({"shot":index,"needed_seconds":required,"action":action,"dialogue":dialogue})
+            continue
+        shots.append({
+            "duration":supported, "shot_size":str(s.get("shot_size") or ""), "camera":str(s.get("camera") or ""),
+            "scene":str(s.get("scene") or ""), "characters":[str(c) for c in (s.get("characters") or [])],
+            "action":action, "dialogue":dialogue, "sound":str(s.get("sound") or ""), "keyframe":str(s.get("keyframe") or ""),
+        })
+    return shots, overloaded
+
+
+async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None) -> dict:
     content = []
     head = f"剧情：\n{story.strip()}\n"
     if style:
         head += f"\n指定风格：{style}"
     if nshots:
-        head += f"\n镜头数：{int(nshots)} 个"
+        head += f"\n偏好镜头数：约 {int(nshots)} 个。如果放不下动作或对白就增加镜头。"
     if seconds:
-        head += f"\n每个镜头时长：约 {int(seconds)} 秒"
+        head += f"\n普通镜头参考时长：约 {int(seconds)} 秒，按内容调整。"
+    if total_seconds:
+        head += f"\n全片目标时长：约 {int(total_seconds)} 秒。先保证动作和对白完整。"
     head += f"\n画幅：{aspect or '16:9'}"
     if refs:
         head += "\n\n参考图（按顺序附上）：\n" + "\n".join(
@@ -92,25 +130,25 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
     for r in refs[:8]:
         content.append({"type": "text", "text": f"参考图「{r.get('name') or '参考图'}」"})
         content.append(image_part(ref_path(comfy_dir, r["ref"]), 640))
-    out = parse_json(await llm.chat(STORYBOARD_SYS, content, max_tokens=3500, temperature=0.5))
-    shots = []
-    for s in out.get("shots") or []:
-        d = s.get("duration") or seconds or 5
-        try:
-            d = int(round(float(d)))
-        except Exception:
-            d = 5
-        shots.append({
-            "duration": min(10, max(3, d)), "shot_size": str(s.get("shot_size") or ""), "camera": str(s.get("camera") or ""),
-            "scene": str(s.get("scene") or ""), "characters": [str(c) for c in (s.get("characters") or [])],
-            "action": _lines(s.get("action")), "dialogue": _lines(s.get("dialogue")), "sound": str(s.get("sound") or ""),
-            "keyframe": str(s.get("keyframe") or ""),
-        })
+    out = parse_json(await llm.chat(STORYBOARD_SYS, content, max_tokens=6200, temperature=.4))
+    shots, overloaded = storyboard_shots(out.get("shots") or [], seconds)
+    if overloaded:
+        minimum_shots = len(shots) + 2*len(overloaded)
+        revision = {"type":"text","text":"上一次草稿有超出 14 秒的镜头。逐个拆分列出的镜头，其他镜头保留。每个拆分镜头都有独立首帧，保留动作和台词原文。返回修订后完整的分镜 JSON。\n"
+                    + json.dumps({"overloaded":overloaded,"previous":out},ensure_ascii=False)}
+        out = parse_json(await llm.chat(STORYBOARD_SYS,[*content,revision],max_tokens=6200,temperature=.3))
+        shots, overloaded = storyboard_shots(out.get("shots") or [], seconds)
+        if overloaded:
+            numbers = "、".join(str(entry["shot"]) for entry in overloaded)
+            raise ValueError(f"第 {numbers} 镜仍超过单镜 14 秒，请减小单镜动作或将该段分开描述")
+        if len(shots) < minimum_shots:
+            raise ValueError("长镜头尚未拆成足够的分镜，请将该段分开描述")
     if not shots:
         raise RuntimeError("没有拆出镜头，请把剧情写具体一些再试")
     chars = [{"name": str(c.get("name") or ""), "look": str(c.get("look") or ""), "voice": str(c.get("voice") or "")}
              for c in (out.get("characters") or []) if c.get("name")]
-    return {"title": str(out.get("title") or ""), "style": str(out.get("style") or style or ""), "characters": chars, "shots": shots}
+    return {"title":str(out.get("title") or ""), "style":str(out.get("style") or style or ""), "characters":chars,
+            "shots":shots, "planned_seconds":sum(shot["duration"] for shot in shots)}
 
 
 # ------------------------------------------------------------------ describe (反推)

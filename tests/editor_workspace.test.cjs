@@ -45,6 +45,7 @@ w.fetch=async(url,options={})=>{
  }
  else if(pathname==='/api/status')result={comfy:true};
  else if(pathname==='/api/queue')result={jobs:[],total:0};
+ else if(pathname==='/api/canvas-teams')result=w.__assetTeams||[];
  else if(pathname==='/api/document-import')result={name:'现场记录.md',text:'<b>吊车入镜</b>',truncated:false};
  else if(pathname==='/api/asset-folders'){
   if(method==='POST'){result={id:'qa-folder',name:JSON.parse(options.body).name};w.__folders=[result];}
@@ -404,6 +405,11 @@ async function run(){
  equal(evaluate('JSON.stringify({edges:B.edges,versions:B.nodes.map(n=>[n.id,n.data,n.versions])})'),flowContents,'relation layout preserves inputs and recipes');
  equal(evaluate('vtSignature(node("takeA"))===vtSignature(node("takeB"))'),true,'auto and explicit first/last inputs are equivalent');
  equal(evaluate('vtSnapshot({...node("takeA"),versions:[{ref:"output:h3studio/legacy.mp4",video_recipe:{planned:true,duration:5,ar:1.5,images:[{node_id:"inputFirst",role:"frame",time:0},{node_id:"inputLast",role:"frame",time:2},{node_id:"inputLast",role:"frame",time:5}]}}],cur:0},0).input_edges.map(e=>e.role)'),['first','keyframe','last'],'legacy recipes recover their original keyframe inputs');
+ equal(evaluate(`vtSnapshot({...node("takeA"),versions:[{video_recipe:{images:[
+   {node_id:"inputFirst",ref:"input:h3studio/pinned.png",pinned:true},
+   {node_id:"inputLast",ref:"input:h3studio/current.png"}
+ ]}}],cur:0},0).input_edges.map(e=>e.ref||null)`),['input:h3studio/pinned.png',null],
+  'recovering links from a recipe keeps explicit version pins and leaves ordinary links dynamic');
  equal(evaluate(`(()=>{const nodes=${JSON.stringify(flowIds)}.map(id=>({...node(id)}));nodes.find(n=>n.id==="inputFirst").y=99999;nodes.find(n=>n.id==="inputLast").y=-9999;const p=ctFlowPositions(nodes,B.edges);return p.find(n=>n.id==="inputFirst").y<p.find(n=>n.id==="inputLast").y;})()`),true,'frame roles determine image order even after positions are reversed');
  assert(evaluate('!!vtMergeInfo(["takeA","scene2Video"]).error'),'different input graphs cannot merge');
  evaluate('B.edges.find(e=>e.to==="takeB"&&e.from==="inputLast").role="keyframe";B.edges.find(e=>e.to==="takeB"&&e.from==="inputLast").time=2');
@@ -502,6 +508,15 @@ async function run(){
  assert(markdown.querySelector('h1'));assert.equal(markdown.querySelectorAll('li').length,2);assert(markdown.querySelector('table'));assert(markdown.querySelector('blockquote'));assert.equal(markdown.querySelector('pre code').textContent.trim(),'const value = 1;');assert(markdown.querySelector('.ac-code-copy'));assert.equal(markdown.querySelector('a').rel,'noopener noreferrer');
  evaluate('acMarkdown(window.__markdown,\'<script>alert(1)</script><img src="x" onerror="alert(1)"><svg onload="alert(1)"></svg><a href="javascript:alert(1)">unsafe</a><p class="ac-conflict" style="position:fixed">text</p>\')');
  assert.equal(markdown.querySelectorAll('script,svg,[onerror],[onload],[style],.ac-conflict').length,0);assert(!markdown.querySelector('a').hasAttribute('href'));
+ evaluate(`const streamedChat=$("#acMessages");
+  acRenderReplyPreview(streamedChat,[{run_id:"preview",text:"**开头** <img src=x>"}]);`);
+ equal(evaluate('[$("#acMessages [data-ac-reply-preview]").textContent,$$("#acMessages [data-ac-reply-preview] img").length]'),
+  ['**开头** <img src=x>',0],'an unfinished reply is safe visible text');
+ evaluate(`acRenderReplyPreview(streamedChat,[{run_id:"preview",text:"**更长的回复**"}]);`);
+ equal(evaluate('$$("#acMessages [data-ac-reply-preview]").map(el=>el.textContent)'),['**更长的回复**'],
+  'successive updates reuse one bubble');
+ evaluate('acRenderReplyPreview(streamedChat,[])');
+ assert.equal(evaluate('$$("#acMessages [data-ac-reply-preview]").length'),0);
  const videoHTML=evaluate('acResultCards({nodes:[{id:"videoTest",type:"video",ref:"output:h3studio/test.mp4",name:"视频"}]})');
  assert.match(videoHTML,/<video controls/);assert(!videoHTML.includes('<img'));
  const exportCard=w.document.createElement('div');
@@ -557,6 +572,20 @@ async function run(){
  evaluate('node("pendingVideo").job={ids:[],agent_call:"busy"};switchVersion(node("pendingVideo"),0)');
  equal(evaluate('node("pendingVideo").cur'),1,'tabs cannot change an active job input graph');
  evaluate('node("pendingVideo").job=null');
+ evaluate(`const assetVideo=node("pendingVideo"), assetTake=curV(assetVideo);
+  assetTake.memory_used=[{id:"previous-character",name:"原角色"},{id:"previous-scene",name:"原场景"}];
+  const oldVideoRecipe=assetTake.video_recipe;
+  assetTake.video_recipe={...oldVideoRecipe,memory_views:[{memory_id:"previous-character",views:["face"]}]};
+  selectOnly(assetVideo.id);
+  const regenerateVideo=prompt=>{const req={prompt};applyVideoMemory(assetVideo,req);return req;};`);
+ equal(evaluate('regenerateVideo("改变动作")'),{prompt:'改变动作',memory_ids:['previous-character','previous-scene'],
+  memory_views:[{memory_id:'previous-character',views:['face']}]},'ordinary generation reuses the selected take assets');
+ equal(evaluate('regenerateVideo("@{previous-character#back|原角色}")'),
+  {prompt:'@{previous-character#back|原角色}',memory_ids:['previous-character','previous-scene']},'a new explicit view overrides a saved view');
+ evaluate('$("[data-memory-ignore=previous-character]").click()');
+ equal(evaluate('regenerateVideo("改变动作")'),{prompt:'改变动作',memory_ids:['previous-scene']},
+  'the references bar can remove an inherited asset while keeping the others');
+ evaluate('delete assetVideo.data.ignored_memory_ids;delete assetTake.memory_used;assetTake.video_recipe=oldVideoRecipe');
  const historyCard=evaluate('acResultCards({nodes:[{id:"pendingVideo",type:"video",ref:"output:h3studio/test.mp4",version_index:0}]})');
  assert.match(historyCard,/test\.mp4/);assert(!historyCard.includes('second.mp4'),'chat result shows the saved version');
  evaluate('duplicate(["pendingVideo"])');
@@ -575,6 +604,13 @@ async function run(){
  await ready('CM.target?.id==="prompt" && !CM.popup.hidden && CM.matches.length===1','prompt alias completion');
  evaluate('document.querySelector("#memoryMention [data-memory=person1]").click()');
  equal(evaluate('document.getElementById("prompt").value'),'@林森 ','mouse completes alias with canonical name');
+ w.__memories[0].character_views={main:'input:h3studio/lin.png',face:'input:h3studio/lin-face.png',back:'input:h3studio/lin-back.png'};
+ evaluate(`cmInvalidate();const anglePrompt=$("#prompt");anglePrompt._node="n1";anglePrompt.value="@小林#头肩";
+  anglePrompt.setSelectionRange(anglePrompt.value.length,anglePrompt.value.length);anglePrompt.dispatchEvent(new Event("input",{bubbles:true}));`);
+ await ready('CM.matches.length===1 && !!$("#memoryMention [data-character-view=face]")','approved angle can be found by alias and view name');
+ evaluate('$("#memoryMention [data-character-view=face]").click()');
+ equal(evaluate('[anglePrompt.value,cmReadableReferences(anglePrompt.value)]'),
+   ['@{person1#face|林森} ','@林森 · 正面头肩 '],'selection preserves the asset identity and displays a readable view label');
  evaluate('document.getElementById("acInput").value="@主角";document.getElementById("acInput").focus();document.getElementById("acInput").setSelectionRange(3,3);document.getElementById("acInput").dispatchEvent(new Event("input",{bubbles:true}))');
  await ready('CM.matches.length===1 && !CM.popup.hidden','tag completion');
  evaluate('document.getElementById("acInput").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))');
@@ -583,7 +619,7 @@ async function run(){
  equal(evaluate('document.getElementById("acInput").value'),'@{person1} ','duplicate names insert unambiguous IDs');
  await evaluate('cmEdit(null,"document")');
  equal(evaluate('document.querySelector("#memoryEditor [name=kind]").value'),'document','background memory editor');
- equal(evaluate('document.querySelector("#memoryEditor [name=board]").value'),'btest','new memory defaults to current project');
+ equal(evaluate('document.querySelector("#memoryEditor [name=board]").value'),'btest','standalone canvas defaults to its own asset library');
  evaluate('document.querySelector("#memoryEditor [data-close]").click()');
  // The dedicated library uses the same persisted API records, not an independent mock-only store.
  w.__memories=[
@@ -598,26 +634,27 @@ async function run(){
  evaluate('ME_USER={id:1,role:"member"};document.getElementById("assetLibraryBtn").click()');
  await ready('AL.items.length===5 && document.getElementById("alLoading").hidden','asset library entry');
  equal(evaluate('document.getElementById("assetLibrary").hidden'),false,'dedicated workspace opens');
- equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),5,'all kinds share asset grid');
+ equal(evaluate('[$("#alScope").value,$("#alScope option:checked").textContent,$$("#alGrid .al-card").length]'),
+  ['current','当前资产库 · '+evaluate('B.name'),3],'the standalone library shows only the current canvas assets');
  equal(evaluate('document.querySelector("#alGrid .al-card[data-id=doc] strong svg")'),null,'asset names are escaped');
  evaluate('$("#alNewFolder").click();$("#alFolderEditor input").value="试拍";$("#alFolderEditor button[type=submit]").click()');
  await ready('!!$("#alFolders [data-folder=qa-folder]")','creates a personal asset folder');
- evaluate('$("#alFolders [data-folder=all]").click();$("#alFileMode").click();$(".al-card[data-id=char] .al-file-check input").click();$(".al-card[data-id=scene] .al-file-check input").click();$("#alTargetFolder").value="qa-folder";$("#alTargetFolder").dispatchEvent(new Event("change"));$("#alApplyFolder").click()');
+ evaluate('$("#alFolders [data-folder=all]").click();$("#alFileMode").click();$(".al-card[data-id=char] .al-file-check input").click();$(".al-card[data-id=doc] .al-file-check input").click();$("#alTargetFolder").value="qa-folder";$("#alTargetFolder").dispatchEvent(new Event("change"));$("#alApplyFolder").click()');
  await ready('AL.items.filter(a=>a.folder_id==="qa-folder").length===2 && !AL.folderBusy','files selected assets in one action');
  evaluate('$("#alFileMode").click();$("#alFolders [data-folder=qa-folder]").click()');
- equal(evaluate('$$("#alGrid .al-card").map(a=>a.dataset.id)'),['char','scene'],'folder filters the asset grid');
+ equal(evaluate('$$("#alGrid .al-card").map(a=>a.dataset.id)'),['char','doc'],'folder filters the asset grid');
  evaluate('$("#alDeleteFolder").click();$("#alFolderEditor [data-confirm]").click()');
- await ready('!$("#alFolders [data-folder=qa-folder]") && $("#alGrid").children.length===5','deleting a folder keeps its assets');
+ await ready('!$("#alFolders [data-folder=qa-folder]") && $("#alGrid").children.length===3','deleting a folder keeps its assets');
  evaluate('document.querySelector("#alCategories [data-kind=character]").click()');
  equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'category filter');
  evaluate('document.querySelector("#alCategories [data-kind=all]").click();document.getElementById("alSearch").value="小林";document.getElementById("alSearch").dispatchEvent(new Event("input"))');
  equal(evaluate('document.querySelector("#alGrid .al-card").dataset.id'),'char','alias search');
- evaluate('document.getElementById("alSearch").value="树林";document.getElementById("alSearch").dispatchEvent(new Event("input"))');
+ evaluate('$("#alScope").value="personal";$("#alScope").dispatchEvent(new Event("change"));document.getElementById("alSearch").value="树林";document.getElementById("alSearch").dispatchEvent(new Event("input"))');
  equal(evaluate('document.querySelector("#alGrid .al-card").dataset.id'),'scene','tag search');
- evaluate('document.getElementById("alReset").click();document.getElementById("alSource").value="generated";document.getElementById("alSource").dispatchEvent(new Event("change"))');
+ evaluate('document.getElementById("alSearch").value="";document.getElementById("alSearch").dispatchEvent(new Event("input"));document.getElementById("alSource").value="generated";document.getElementById("alSource").dispatchEvent(new Event("change"))');
  equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'generated source filter');
- evaluate('document.getElementById("alReset").click();document.getElementById("alScope").value="project";document.getElementById("alScope").dispatchEvent(new Event("change"))');
- equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),3,'project scope filter');
+ evaluate('document.getElementById("alReset").click();document.getElementById("alScope").value="shared";document.getElementById("alScope").dispatchEvent(new Event("change"))');
+ equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'shared scope is selected separately');
  evaluate('document.getElementById("alScope").value="personal";document.getElementById("alScope").dispatchEvent(new Event("change"))');
  equal(evaluate('document.querySelectorAll("#alGrid .al-card").length'),1,'personal scope excludes another owner');
  evaluate('document.getElementById("alReset").click();document.querySelector("#alGrid [data-id=char] .al-card-main").click()');
@@ -639,10 +676,11 @@ async function run(){
  w.__memorySaveFailure=false;
  evaluate('document.querySelector("#alGrid [data-id=clip] .al-card-main").click()');
  await ready('document.querySelector("#alDetail .cm-hero video")?.controls===true','playable video asset');
- evaluate('document.querySelector("#alGrid [data-id=public] .al-card-main").click()');
+ evaluate('$("#alScope").value="shared";$("#alScope").dispatchEvent(new Event("change"));document.querySelector("#alGrid [data-id=public] .al-card-main").click()');
  await ready('document.querySelector("#alDetail [name=name]")?.value==="共享画风"','shared asset detail');
  equal(evaluate('document.querySelector("#alDetail [name=name]").disabled'),true,'foreign shared asset read only');
  equal(evaluate('document.querySelector("#alDetail [type=submit]").hidden'),true,'shared asset hides write action');
+ evaluate('$("#alReset").click()');
  const fileInput=w.document.getElementById('alFile');
  Object.defineProperty(fileInput,'files',{configurable:true,value:[new w.File(['png'],'new-person.png',{type:'image/png'})]});
  fileInput.dispatchEvent(new w.Event('change'));
@@ -650,6 +688,7 @@ async function run(){
  evaluate('document.querySelector("#alDetail [name=name]").value="上传角色";document.querySelector("#alDetail form").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');
  await ready('AL.items.some(a=>a.name==="上传角色") && CM.editor.dataset.busy==="false"','uploaded asset persisted');
  assert.match(w.__lastMemoryPost.ref,/^input:h3studio\/upload/);assert.equal(w.__lastMemoryPost.ref,w.__lastMemoryPost.default_ref);
+ assert.equal(w.__lastMemoryPost.board,'btest','a standalone upload stays with the current canvas');
  equal(evaluate('B.nodes.length'),nodesBeforeLibrary,'asset upload does not add canvas nodes');
  evaluate('node("n1").data.asset={id:AL.items.find(a=>a.name==="上传角色").id,kind:"character"};checkpoint()');
  evaluate('document.querySelector("#alDetail [data-delete]").click();document.querySelector("#alDetail [data-delete]").click()');
@@ -677,8 +716,12 @@ async function run(){
  equal(evaluate('document.getElementById("alError").hidden'),false,'loading failure has visible error');
  w.__memoryReadFailure=false;await evaluate('alRefresh()');
  equal(evaluate('document.getElementById("alError").hidden'),true,'refresh recovers');
- evaluate('document.getElementById("assetBtn").click()');equal(evaluate('AL.open'),false,'side toolbar toggles same library');
- await evaluate('alOpen()');
+ evaluate('$("#alScope").value="personal";$("#alScope").dispatchEvent(new Event("change"));$("#assetBtn").click()');
+ await ready('AL.open && $("#alLoading").hidden && $("#alScope").value==="current"','the entry returns to the current library from a broader scope');
+ evaluate('$("#alClose").click()');
+ evaluate('$("#assetBtn").click()');
+ await ready('AL.open && $("#alLoading").hidden && !$("#drawer").classList.contains("on")','the side entry opens the current library directly');
+ assert.equal(evaluate('$("#alScope").value'),'current');
  const beforeVideoPlace=evaluate('B.nodes.length');
  evaluate('document.querySelector("#alGrid [data-id=clip] [data-action=canvas]").click()');
  equal(evaluate('B.nodes.length'),beforeVideoPlace+1,'video asset places one node');
@@ -694,6 +737,18 @@ async function run(){
  equal(evaluate('$$("#alGrid .al-card strong").map(e=>e.textContent)'),['现场记录'],'asset search includes document text');
  evaluate('$("#alReset").click();alClose()');
  w.__memories=w.__memories.filter(a=>a.document?.name!=='现场记录.md');
+ w.__assetTeams=[{id:'asset-team',name:'短片组',managed:true}];
+ w.__memories.push({id:'team-style',name:'团队画风',kind:'style',team:'asset-team',owner:2,media:[]});
+ evaluate('B.team="asset-team";$("#assetLibraryBtn").click()');
+ await ready('!$("#alLoading").hidden || $("#alTitle").textContent==="当前资产库 · 短片组"','team canvas opens the library');
+ await ready('$("#alLoading").hidden','team library finishes loading');
+ equal(evaluate('[$("#alTitle").textContent,alFolderTeam(),$$("#alGrid .al-card").some(a=>a.dataset.id==="team-style"),!!$("#alGrid [data-id=scene]")]'),
+  ['当前资产库 · 短片组','asset-team',true,false],'the default scope shows assets from the current team');
+ await evaluate('alNew()');
+ assert.equal(evaluate('$("#memoryEditor select[name=board]").value'),'team:asset-team','new assets default to the library that is open');
+ evaluate('delete B.team;alBoardChanged()');
+ delete w.__assetTeams;
+ w.__memories=w.__memories.filter(a=>a.id!=='team-style');
  await evaluate('cmEdit(window.__memories.find(a=>a.id==="char"),"character")');
  equal(evaluate('$$(".cm-character-view button").some(b=>b.textContent==="用现有图片定稿")'),true,'existing image has direct approval action');
  equal(evaluate('$$(".cm-character-hint").filter(el=>el.textContent==="主图定稿后可生成").length'),4,'locked angles explain the prerequisite');
@@ -1453,7 +1508,7 @@ async function run(){
  await ready('boardId!=="btest" && $$("#projectCanvases [data-project-board]").length===2','project quick toolbar creates a sibling canvas');
  assert.equal(evaluate('B.nodes.length'),0);
  await evaluate('alOpen()');
- evaluate('$("#alScope").value="project";$("#alScope").dispatchEvent(new Event("change"))');
+ equal(evaluate('[$("#alScope").value,$("#alScope option:checked").textContent]'),['current','当前资产库 · 短片']);
  equal(evaluate('$("#alGrid .al-card strong")?.textContent'),'城市设定','project asset is listed from the sibling canvas');
  evaluate('alClose()');
  const siblingAssets=await evaluate('cmList(true)');
@@ -1466,6 +1521,13 @@ async function run(){
  evaluate('$("#boards [data-dissolve-project]").click();$("#bpForm [data-confirm]").click()');
  await ready('$("#projectCanvases").hidden && !!$("#boards [data-id=btest]")','dissolving retains the original board');
  assert.equal(projectBoards.size,2);
+ evaluate('closeMenus();$("#assetLibraryBtn").click()');
+ await ready('AL.open && $("#alLoading").hidden','the independent canvas opens its current library');
+ equal(evaluate('[$("#alTitle").textContent,$("#alGrid .al-card strong")?.textContent ?? null]'),
+  ['当前资产库 · '+evaluate('B.name'),null],'the canvas library excludes assets moved to the personal library after the project was dissolved');
+ evaluate('$("#alScope").value="personal";$("#alScope").dispatchEvent(new Event("change"))');
+ assert.equal(evaluate('$("#alGrid .al-card strong")?.textContent'),'城市设定');
+ evaluate('alClose()');
  const saveFetch=w.fetch, previousName=evaluate('B.name');
  w.fetch=(url,options={})=>url==='/api/board/btest'&&options.method==='PUT'
   ? Promise.resolve({ok:false,status:503,json:async()=>({error:'暂时无法保存'})})
@@ -2803,6 +2865,14 @@ async function run(){
  equal(evaluate(`[[...rangeFrom.options].map(option=>option.disabled),[...rangeTo.options].map(option=>option.textContent),
    $$("[data-clip-range]",shotTimeline).length,sendRange.disabled]`),[[false,false,true,false],["镜头 1","镜头 2"],2,false],
   'completed consecutive shots can be cut before a later shot has generated');
+ evaluate(`const savedWizard=W;
+  W={step:5,script:storyNode.id};
+  const unrelatedFilm={id:"unrelated-film",type:"video",data:{film:{clips:[{node:"other-video"}]}},versions:[],cur:-1};
+  B.nodes.push(unrelatedFilm);`);
+ assert.match(evaluate('stepFilm()'),/镜头 3 还缺少视频/);
+ assert.equal(evaluate(`stepFilm().includes('data-go="quick"')`),false);
+ await evaluate('wizGo("quick")');
+ assert.equal(evaluate('FILM'),null,'the wizard cannot submit a partial storyboard from a stale button');
  evaluate(`sendRange.click();const firstRangeDraft=FILM.key;
   FILM.spec.clips[0].volume=.3;closeFilm();`);
  equal(evaluate('JSON.parse(localStorage.getItem(firstRangeDraft)).spec.clips.map(clip=>[clip.node,clip.ref])'),[
@@ -2834,8 +2904,19 @@ async function run(){
  evaluate(`closeFilm();rangeFrom.value="range-fourth";rangeFrom.dispatchEvent(new Event("change"));`);
  equal(evaluate('[...rangeTo.options].map(option=>option.textContent)'),['镜头 4'],'choosing a later shot starts its own contiguous interval');
  evaluate(`$("#shotList [data-close]").click();storyNode.data.shots=savedRangeShots;storyNode.data.made=savedRangeLinks;
+  openStoryFilm(storyNode);const fullStoryDraft=FILM.key;
+  FILM.spec.clips[0].trans="black";FILM.spec.aspect="9:16";closeFilm();`);
+ await evaluate('wizGo("edit")');
+ equal(evaluate('[FILM.key===fullStoryDraft,FILM.spec.story_script,FILM.spec.clips[0].trans,FILM.spec.aspect,FILM.n]'),
+  [true,evaluate('storyNode.id'),'black','9:16',null],'the wizard opens the same storyboard draft and keeps its adjustments');
+ evaluate(`closeFilm();unrelatedFilm.data.film.story_script=storyNode.id;
+  legacyStoryVideo.cur=0;`);
+ await evaluate('wizGo("current-cut")');
+ equal(evaluate('[wizardFilm(storyNode)===unrelatedFilm,FILM.key!==fullStoryDraft,FILM.spec.clips[0].ref,FILM.n]'),
+  [true,true,'input:h3studio/older.mp4',null],'a finished film can be kept while opening a cut from newly selected shot versions');
+ evaluate(`const newFullStoryDraft=FILM.key;closeFilm();legacyStoryVideo.cur=1;W=savedWizard;B.nodes.splice(B.nodes.indexOf(unrelatedFilm),1);
   sel=savedRangeSelection;updateSel();
-  for(const key of [firstRangeDraft,secondRangeDraft])localStorage.removeItem(key);
+  for(const key of [firstRangeDraft,secondRangeDraft,fullStoryDraft,newFullStoryDraft])localStorage.removeItem(key);
   if(savedLatestFilm)localStorage.setItem(filmDraftPrefix()+"latest",savedLatestFilm);else localStorage.removeItem(filmDraftPrefix()+"latest");`);
  evaluate(`const revisionShot=storyNode.data.shots[1], revisionEdges=JSON.stringify(B.edges);
   const oldAction=newestStoryVideo.data.fields.action;
@@ -2868,6 +2949,7 @@ async function run(){
  assert.equal(evaluate('node(storyNode.id).data.shots.length'),1);
  evaluate('$("#groupRunProgress [data-dismiss]").click();restore(groupRunBase);delete B.batch_layout;save()');
  assert.equal(evaluate('sessionStorage.getItem(groupRunStorageKey(boardId))'),null,'dismissing progress removes the saved receipt');
+ const groupBatchFetch=w.fetch;
  w.fetch=generationFetch;
  console.log('Group run DOM passed: confirmation, dependency order, pinned result reuse, failure isolation and stopping later submissions.');
  evaluate(`const runRangeBase=snap();
@@ -2898,6 +2980,264 @@ async function run(){
  evaluate('$("#shotRangePicker [type=submit]").click()');
  equal(evaluate('[scopedRunMode.value,$$("#groupRunConfirm li strong").map(item=>item.textContent)]'),
   ['missing_frame',['镜3 · 分镜图']],'a plan to fill missing frames keeps existing results and skips video generation');
+ evaluate(`closeCanvasGroupRunDialog();
+  const rangePriorVideo=node(scriptShotLinks(runRangeScript)[1].vid),rangeFollowingFrame=node(scriptShotLinks(runRangeScript)[2].img);
+  const rangeFollowingVideo=node(scriptShotLinks(runRangeScript)[2].vid);
+  const rangeGuide=addNode("image",4100,200,{}, {versions:[rerunMedia("range-guide")],cur:0});
+  B.edges.push({from:rangeGuide.id,to:rangeFollowingFrame.id,ref:curV(rangeGuide).ref,prompt_slot:2});
+  rangeFollowingFrame.data.image_ref_seq=2;rangeFollowingFrame.data.prompt+="\\n角色参考 @图{2}";
+  const rangeFramePrompt=rangeFollowingFrame.data.prompt;
+  const originalRangeTail=()=>B.edges.find(edge=>edge.to===rangeFollowingFrame.id&&edge.story_continuity);`);
+ const batchTailRequests=[];
+ w.fetch=(url,options)=>{
+  if(String(url)!=="/api/lastframe")return groupBatchFetch(url,options);
+  batchTailRequests.push(JSON.parse(options.body));
+  const ref="input:h3studio/range-tail-"+batchTailRequests.length+".png";
+  return Promise.resolve({ok:true,text:async()=>JSON.stringify({ref,url:'/media?ref='+encodeURIComponent(ref),w:64,h:64,at:4.9})});
+ };
+ const newChainStart=submittedBatches.length;
+ evaluate(`acAppendEvent({kind:"tool_start",data:{name:"storyboard_range_run_plan",call_id:"continuous-shot-chat"}});
+  acAppendEvent({kind:"tool_end",data:{name:"storyboard_range_run_plan",call_id:"continuous-shot-chat",result:{shot_range_plan:{
+    board:boardId,script:runRangeScript.id,name:runRangeScript.name,first:2,last:3,
+    anchors:[{id:"range-1"},{id:"range-2"}],mode:"missing",tail_mode:"connect"}}}});
+  const continuityCard=$("[data-call=continuous-shot-chat]");
+  $("[data-open-shot-range]",continuityCard).click();
+  $("#shotRangePicker [type=submit]").click();
+  const connectTailOption=$("#groupRunConfirm [name=connect-tails]");
+  const tailRefreshOption=$("#groupRunConfirm [name=refresh-tails]"), rangeRunSubmit=$("#groupRunConfirm [type=submit]");`);
+ assert.match(evaluate('continuityCard.textContent'),/连接缺失的上一镜尾帧/);
+ equal(evaluate('[connectTailOption.closest("label").hidden,connectTailOption.checked,tailRefreshOption.closest("label").hidden]'),
+  [false,true,true],'the assistant preselects new tail connections in the existing run dialog');
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/连接上一镜尾帧 · 取本轮生成视频/);
+ assert.match(evaluate('$("#groupRunConfirm [data-summary]").textContent'),/为 1 张分镜图连接上一镜尾帧/);
+ evaluate('connectTailOption.click()');
+ assert.doesNotMatch(evaluate('$("#groupRunConfirm ol").textContent'),/连接上一镜尾帧/);
+ evaluate('connectTailOption.click()');
+ assert.equal(evaluate('!!originalRangeTail() || rangeFollowingFrame.data.prompt!==rangeFramePrompt'),false);
+ assert.equal(batchTailRequests.length,0,'preview does not capture a frame or alter the prompt');
+ assert.equal(submittedBatches.length,newChainStart,'the assistant plan and opening its preview submit no work');
+ evaluate('rangeRunSubmit.click()');
+ await ready('rangePriorVideo.job','the prior missing video is submitted first',1000);
+ assert.equal(submittedBatches.length,newChainStart+1);
+ finishBatch(newChainStart,1);
+ await ready('rangeFollowingFrame.job','a new tail is connected before submitting the following frame',1000);
+ assert.equal(batchTailRequests[0].ref,`output:h3studio/layout-job-${newChainStart}-0.mp4`);
+ equal(evaluate('[originalRangeTail().ref,originalRangeTail().prompt_slot,rangeFollowingFrame.data.prompt.startsWith(rangeFramePrompt)]'),
+  ['input:h3studio/range-tail-1.png',3,true]);
+ assert.match(evaluate('rangeFollowingFrame.data.prompt'),/参考上一镜尾帧 @图\{3\}/);
+ assert.deepEqual(submittedBatches[newChainStart+1].req.images.map(input=>input.prompt_slot),[2,3]);
+ finishBatch(newChainStart+1,1);
+ await ready('rangeFollowingVideo.job','the new video waits for its new frame',1000);
+ finishBatch(newChainStart+2,1);
+ await ready('!groupRun.active','the new chain completes',1000);
+ equal(evaluate('groupRun.steps.map(step=>step.status)'),['done','done','done']);
+ const rangeBatchStart=submittedBatches.length;
+ evaluate(`openScriptShotRangeRun(runRangeScript,1,2,"all");
+  const oldRangeTailRef=originalRangeTail().ref, oldRangeTailSlot=originalRangeTail().prompt_slot;`);
+ assert.match(evaluate('$("#groupRunConfirm [data-summary]").textContent'),/第 3 镜会沿用已固定的尾帧/);
+ assert.equal(evaluate('tailRefreshOption.checked'),false);
+ evaluate('tailRefreshOption.checked=true;tailRefreshOption.dispatchEvent(new Event("change"))');
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/上一镜尾帧 · 取本轮生成视频/);
+ assert.equal(batchTailRequests.length,1,'checking the option makes no media request');
+ assert.equal(submittedBatches.length,rangeBatchStart);
+ evaluate('rangeRunSubmit.click()');
+ await ready('groupRun.steps[0]?.status==="running" && node(groupRun.steps[0].id).job','first frame is running',1000);
+ finishBatch(rangeBatchStart,1);
+ await ready('rangePriorVideo.job','the prior video runs after its own frame',1000);
+ assert.equal(batchTailRequests.length,1,'capture waits for the prior video result');
+ finishBatch(rangeBatchStart+1,1);
+ await ready('rangeFollowingFrame.job','next frame is submitted after capture',1000);
+ assert.equal(batchTailRequests[1].ref,`output:h3studio/layout-job-${rangeBatchStart+1}-0.mp4`);
+ assert.equal(batchTailRequests[1].position,'last');
+ assert.equal(submittedBatches[rangeBatchStart+2].req.images.find(input=>input.prompt_slot===evaluate('oldRangeTailSlot')).ref,
+  'input:h3studio/range-tail-2.png','the next frame sends the new tail at the existing prompt slot');
+ equal(evaluate('[originalRangeTail().ref,originalRangeTail().prompt_slot]'),['input:h3studio/range-tail-2.png',evaluate('oldRangeTailSlot')]);
+ assert.equal(evaluate('B.nodes.some(n=>n.type==="image"&&n.versions.some(v=>v.ref===oldRangeTailRef))'),true);
+ finishBatch(rangeBatchStart+2,1);
+ await ready('node(scriptShotLinks(runRangeScript)[2].vid).job','next shot video follows its new frame',1000);
+ finishBatch(rangeBatchStart+3,1);
+ await ready('!groupRun.active','tail refresh batch completes',1000);
+ equal(evaluate('groupRun.steps.map(step=>step.status)'),['done','done','done','done']);
+ evaluate(`openScriptShotRangeRun(runRangeScript,1,2,"all");
+  tailRefreshOption.checked=true;tailRefreshOption.dispatchEvent(new Event("change"));rangeRunSubmit.click();`);
+ await ready('groupRun.steps[0]?.status==="running" && node(groupRun.steps[0].id).job','first frame is retried',1000);
+ finishBatch(rangeBatchStart+4,1);
+ await ready('rangePriorVideo.job','the prior video is retried',1000);
+ jobs.set(submittedBatches[rangeBatchStart+5].jobId,{state:"error",error:"模拟上一镜失败"});
+ await ready('!groupRun.active','dependent shots are skipped when the prior video fails',1000);
+ equal(evaluate('groupRun.steps.map(step=>step.status)'),['done','error','skipped','skipped']);
+ assert.equal(batchTailRequests.length,2);
+ assert.equal(submittedBatches.length,rangeBatchStart+6,'failure does not fall back to the old tail or submit its dependent video');
+ evaluate('$("#groupRunProgress [data-dismiss]").click()');
+ w.fetch=generationFetch;
+ console.log('Storyboard batch continuity DOM passed: explicit preview, new and refreshed tail references, stable prompt slots and upstream failure isolation.');
+ evaluate(`const sortShotsButton=$("#shotList [data-sort-shots]");
+  const sortBeforeEdges=JSON.stringify(B.edges), sortBeforeMedia=JSON.stringify([rangePriorVideo,rangeFollowingVideo]);
+  const rangeShotOrder=()=>node(runRangeScript.id).data.shots.map(shot=>shot.id);
+  sortShotsButton.click();
+  $('[data-shot-order="2"] [data-step="-1"]').click();`);
+ equal(evaluate('rangeShotOrder()'),['range-0','range-2','range-1','range-3'],'the arrow moves the chosen shot one position');
+ evaluate(`const sortRows=$$("#shotList ol li");
+  const shotDrag=(type,input)=>Object.assign(new Event(type,{cancelable:true}),input);
+  const shotDragData={setData(){},dropEffect:"",effectAllowed:""};
+  $(".sl-sort-grip",sortRows[1]).ondragstart(shotDrag("dragstart",{dataTransfer:shotDragData}));
+  sortRows[0].ondragover(shotDrag("dragover",{clientY:-1,dataTransfer:shotDragData}));`);
+ assert.equal(evaluate('sortRows[0].dataset.shotDrop'),'before');
+ evaluate('sortRows[0].ondrop(shotDrag("drop",{clientY:-1,dataTransfer:shotDragData}))');
+ equal(evaluate('rangeShotOrder()'),['range-2','range-0','range-1','range-3'],'dragging a shot before the first row moves it across the list');
+ equal(evaluate(`[JSON.stringify(B.edges)===sortBeforeEdges,JSON.stringify([rangePriorVideo,rangeFollowingVideo])===sortBeforeMedia,
+  scriptShotLinks(runRangeScript)[0].vid===rangeFollowingVideo.id,madeShots(runRangeScript)[0].vid===rangeFollowingVideo.id]`),
+  [true,true,true,true],'versions and pinned edges remain unchanged while subsequent tools use the new order');
+ assert.match(evaluate('$("[data-script-tail-status=\'0\']",$("#shotList")).textContent'),/首镜仍引用旧的上一镜尾帧/);
+ evaluate(`sortShotsButton.dispatchEvent(new KeyboardEvent("keydown",{key:"z",ctrlKey:true,bubbles:true,cancelable:true}));`);
+ equal(evaluate('rangeShotOrder()'),['range-0','range-2','range-1','range-3'],'undo works with focus inside the shot list');
+ equal(evaluate('$$("#shotList [data-shot-order]").length'),4,'undo refreshes the open list');
+ evaluate(`sortShotsButton.dispatchEvent(new KeyboardEvent("keydown",{key:"z",ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true}));`);
+ equal(evaluate('rangeShotOrder()'),['range-2','range-0','range-1','range-3'],'redo restores the new ordering');
+ console.log('Storyboard ordering DOM passed: arrows, drag, stable references, continuity warnings and undo/redo.');
+ evaluate(`sortShotsButton.click();
+  const currentRangeFrame=()=>node(rangeFollowingFrame.id);
+  const rangeTail=()=>scriptTailEdges().get(rangeFollowingFrame.id);
+  const tailRemoveBefore={prompt:currentRangeFrame().data.prompt,versions:JSON.stringify(currentRangeFrame().versions),ref:rangeTail().ref,source:rangeTail().from};
+  const firstTailControls=$('[data-shot-tail-actions="0"]',$("#shotList"));
+  $("[data-tail-remove]",firstTailControls).click();`);
+ equal(evaluate(`[!!rangeTail(),currentRangeFrame().data.prompt===rangeFramePrompt,
+  JSON.stringify(currentRangeFrame().versions)===tailRemoveBefore.versions,curV(node(tailRemoveBefore.source)).ref===tailRemoveBefore.ref]`),
+  [false,true,true,true],'removing the first-shot tail clears just its generated instruction and retains the capture and history');
+ evaluate(`sortShotsButton.dispatchEvent(new KeyboardEvent("keydown",{key:"z",ctrlKey:true,bubbles:true,cancelable:true}));`);
+ equal(evaluate('[currentRangeFrame().data.prompt===tailRemoveBefore.prompt,rangeTail().ref===tailRemoveBefore.ref]'),
+  [true,true],'undo restores the exact tail binding and prompt');
+ evaluate(`sortShotsButton.click();
+  $('[data-shot-order="0"] [data-step="1"]').click();
+  $('[data-shot-order="1"] [data-step="1"]').click();
+  node(rangePriorVideo.id).cur=0;drawEdges();`);
+ const repairFetch=w.fetch, repairRequests=[];
+ w.fetch=(url,options)=>{
+  if(String(url)!=="/api/lastframe")return repairFetch(url,options);
+  repairRequests.push(JSON.parse(options.body));
+  return Promise.resolve({ok:true,text:async()=>JSON.stringify({ref:"input:h3studio/repaired-tail.png",w:64,h:64,at:4.9})});
+ };
+ const relinkButton=`$('[data-shot-tail-actions="2"] [data-tail-link]',$("#shotList"))`;
+ assert.equal(evaluate(relinkButton+'.hidden'),false,'switching the prior version reveals a repair action');
+ const beforeRepairSelection=evaluate('JSON.stringify([...sel])');
+ evaluate(relinkButton+'.click()');
+ await ready('rangeTail()?.ref==="input:h3studio/repaired-tail.png"','repair uses the new selected prior version');
+ assert.equal(repairRequests[0].ref,evaluate('curV(node(rangePriorVideo.id)).ref'));
+ equal(evaluate('[rangeTail().prompt_slot,currentRangeFrame().data.prompt===tailRemoveBefore.prompt,JSON.stringify([...sel])]'),
+  [3,true,beforeRepairSelection],'repair keeps the slot, prompt and canvas selection stable');
+ assert.match(evaluate('$("[data-script-tail-status=\'2\']",$("#shotList")).textContent'),/当前分镜图尚未使用/);
+ w.fetch=repairFetch;
+ console.log('Storyboard tail repair DOM passed: in-list refresh, targeted removal, original media retention and undo.');
+ evaluate(`sortShotsButton.click();
+  const liveRangeScript=node(runRangeScript.id), editedRangeShot=liveRangeScript.data.shots[2];
+  const editedRangeVideo=node(rangeFollowingVideo.id);
+  editedRangeVideo.data.fields.dialogue="节点独立台词";
+  const editorHistory=JSON.stringify([currentRangeFrame().versions,editedRangeVideo.versions]);
+  const editorLink=rangeTail().ref, editorAction=editedRangeShot.action;
+  $('[data-edit-shot="2"]',$("#shotList")).click();
+  const shotEditDialog=$("#shotEditor"), shotEditForm=$("form",shotEditDialog), shotEditSubmit=$("[type=submit]",shotEditForm);
+  const shotEditValue=(name,value)=>{
+    const field=shotEditForm.elements.namedItem(name);field.value=value;field.dispatchEvent(new Event("input",{bubbles:true}));
+  };
+  shotEditValue("keyframe","木盒已经打开");
+  shotEditValue("action","推近木盒\\n抬头看窗外");
+  shotEditValue("dialogue","林森：走吧。");
+  editedRangeShot.action=["他人刚修改了动作"];
+  shotEditSubmit.click();`);
+ assert.match(evaluate('$("[role=status]",shotEditForm).textContent'),/镜头内容已变化/);
+ equal(evaluate('[shotEditForm.elements.action.value,currentRangeFrame().data.prompt.includes("木盒已经打开")]'),
+  ['推近木盒\n抬头看窗外',false],'conflicting edits preserve the form draft without overwriting the graph');
+ evaluate('editedRangeShot.action=editorAction;shotEditSubmit.click()');
+ equal(evaluate(`[editedRangeShot.action,editedRangeShot.dialogue,editedRangeVideo.data.fields.action,editedRangeVideo.data.fields.dialogue,
+  currentRangeFrame().data.prompt.includes("木盒已经打开"),currentRangeFrame().data.prompt.includes("@图{3}"),
+  rangeTail().ref===editorLink,JSON.stringify([currentRangeFrame().versions,editedRangeVideo.versions])===editorHistory]`),
+  [['推近木盒','抬头看窗外'],['林森：走吧。'],'推近木盒\n抬头看窗外','节点独立台词',true,true,true,true],
+  'manual edits sync to original image and video fields, retain local overrides and do not rewrite history');
+ assert.match(evaluate('$("[role=status]",shotEditForm).textContent'),/同步了 2 个生成节点.*独立设置/);
+ const beforeEditRun=submittedBatches.length;
+ evaluate('$("[data-run-shot-edit]",shotEditForm).click()');
+ equal(evaluate('[shotEditDialog.open,$("#groupRunConfirm").open,$("#groupRunConfirm [name=mode]").value,$$("#groupRunConfirm ol li").length]'),
+  [false,true,'all',2],'reviewing regeneration opens the existing two-node preview');
+ assert.equal(submittedBatches.length,beforeEditRun,'editing and previewing do not trigger generation');
+ console.log('Storyboard shot editor DOM passed: safe form save, local override protection, unchanged history and exact regeneration preview.');
+ evaluate(`closeCanvasGroupRunDialog();
+  const shotsBeforeStructure=rangeShotOrder(), graphBeforeStructure=JSON.stringify(B.edges), nodeCountBeforeStructure=B.nodes.length;
+  const addShotButton=$("[data-add-shot]",$("#shotList")), placementShot=$("[data-shot-placement] select",shotEditForm);
+  addShotButton.click();
+  shotEditValue("keyframe","未保存的镜头");
+  $("[data-close]",shotEditForm).click();`);
+ const priorShotOrder=Array.from(evaluate('shotsBeforeStructure'));
+ equal(evaluate('rangeShotOrder()'),priorShotOrder,'closing a new draft leaves the storyboard untouched');
+ evaluate(`addShotButton.click();placementShot.value="0";
+  shotEditValue("keyframe","远景，窗外天亮");
+  shotEditValue("characters","林森，裴简");
+  shotEditSubmit.click();`);
+ equal(evaluate(`[rangeShotOrder().slice(1),liveRangeScript.data.shots[0].keyframe,liveRangeScript.data.shots[0].characters,
+  B.nodes.length===nodeCountBeforeStructure,scriptShotLinks(liveRangeScript)[0]]`),
+  [priorShotOrder,'远景，窗外天亮',['林森','裴简'],true,null],
+  'adding at a chosen position stores a new independent shot without expanding or submitting it');
+ evaluate(`editedRangeShot.frame={ref:"input:h3studio/existing-shot.png"};
+  $('[data-edit-shot="3"]',$("#shotList")).click();
+  $("[data-duplicate-shot]",shotEditForm).click();`);
+ equal(evaluate('[placementShot.value,shotEditForm.elements.keyframe.value,liveRangeScript.data.shots.length]'),
+  ['4','木盒已经打开',5],'copy starts an editable draft immediately after the chosen shot');
+ evaluate(`shotEditSubmit.click();
+  const duplicatedRangeShot=liveRangeScript.data.shots[4];`);
+ equal(evaluate(`[duplicatedRangeShot.id!==editedRangeShot.id,duplicatedRangeShot.action,duplicatedRangeShot.action!==editedRangeShot.action,
+  !!duplicatedRangeShot.frame,scriptShotLinks(liveRangeScript)[4]]`),
+  [true,['推近木盒','抬头看窗外'],true,false,null],'copy duplicates the specification and leaves generated media attached to the original');
+ evaluate(`$('[data-edit-shot="3"]',$("#shotList")).click();
+  $("[data-remove-shot]",shotEditForm).click();`);
+ assert.match(evaluate('$("[role=status]",shotEditForm).textContent'),/图片、视频和历史版本会保留/);
+ assert.equal(evaluate('liveRangeScript.data.shots.includes(editedRangeShot)'),true);
+ evaluate('$("[data-confirm-shot-remove]",shotEditForm).click()');
+ equal(evaluate(`[rangeShotOrder().includes(editedRangeShot.id),rangeShotOrder()[3]===duplicatedRangeShot.id,
+  scriptShotLinks(liveRangeScript)[3],!!node(rangeFollowingVideo.id),B.nodes.length===nodeCountBeforeStructure,JSON.stringify(B.edges)===graphBeforeStructure]`),
+  [false,true,null,true,true,true],'confirmed removal detaches the shot and leaves its canvas and history intact');
+ evaluate('undo()');
+ assert.equal(evaluate('scriptShotLinks(node(runRangeScript.id))[3].vid'),evaluate('rangeFollowingVideo.id'));
+ assert.equal(submittedBatches.length,beforeEditRun);
+ console.log('Storyboard structure DOM passed: insert, copy independent settings, detach while retaining media, and undo.');
+ evaluate(`const sourceScriptForMedia=node(runRangeScript.id);
+  const adoptedVideo=addNode("video",5300,200,{prompt:"独立上传素材"},{name:"已上传的片段",
+    versions:[{ref:"input:h3studio/adopted-cut.mp4",w:1280,h:720,seconds:4}],cur:0});
+  const adoptedStill=addNode("image",5650,200,{}, {name:"已生成的分镜图",versions:[rerunMedia("existing-still")],cur:0});
+  const mediaVideoBefore=JSON.stringify(adoptedVideo);
+  const originalAssociationEdges=JSON.stringify(B.edges);
+  $('[data-shot-media="0"]',$("#shotList")).click();
+  const mediaForm=$("#shotMediaPicker form"), [imagePicker,videoPicker]=$$("select",mediaForm);
+  const mediaConfirm=$("[type=submit]",mediaForm);
+  const chooseShotMedia=(picker,id)=>{picker.value=id;picker.dispatchEvent(new Event("change",{bubbles:true}));};`);
+ equal(evaluate('[videoPicker.options[videoPicker.options.length-1].textContent,[...videoPicker.options].some(option=>option.value===rangeFollowingVideo.id)]'),
+  ['已上传的片段 · 版本 1',false],'the picker identifies the active version and excludes videos already attached to another shot');
+ evaluate('chooseShotMedia(videoPicker,adoptedVideo.id);mediaConfirm.click()');
+ equal(evaluate('[scriptShotLinks(sourceScriptForMedia)[0].vid,JSON.stringify(B.edges)===originalAssociationEdges,JSON.stringify(adoptedVideo)===mediaVideoBefore]'),
+  [evaluate('adoptedVideo.id'),true,true],'association reuses the node without inventing generation lineage');
+ evaluate(`const previousMediaDraft=localStorage.getItem(filmDraftPrefix()+"latest");
+  const filmStartForMedia=$("[data-film-from]",$("#shotList"));filmStartForMedia.selectedIndex=0;
+  filmStartForMedia.dispatchEvent(new Event("change"));$("[data-film]",$("#shotList")).click();`);
+ equal(evaluate('FILM.spec.clips.map(clip=>clip.ref)'),['input:h3studio/adopted-cut.mp4'],'the existing clip is available in the storyboard film path');
+ evaluate(`const mediaTestDraft=FILM.key;closeFilm();localStorage.removeItem(mediaTestDraft);
+  if(previousMediaDraft)localStorage.setItem(filmDraftPrefix()+"latest",previousMediaDraft);else localStorage.removeItem(filmDraftPrefix()+"latest");
+  const countBeforeCompletingShot=B.nodes.length;
+  openShotRangePicker(sourceScriptForMedia,null,{firstIndex:0,lastIndex:0});
+  $("#shotRangePicker [type=submit]").click();
+  const completedVideoPair=scriptShotLinks(sourceScriptForMedia)[0];`);
+ equal(evaluate(`[B.nodes.length-countBeforeCompletingShot,completedVideoPair.vid===adoptedVideo.id,!!node(completedVideoPair.img),
+  B.edges.some(edge=>edge.to===adoptedVideo.id),JSON.stringify(adoptedVideo)===mediaVideoBefore]`),
+  [1,true,true,false,true],'filling a video-only shot creates just a frame node without rewriting the existing video');
+ evaluate(`closeCanvasGroupRunDialog();
+  $('[data-shot-media="4"]',$("#shotList")).click();
+  chooseShotMedia(imagePicker,adoptedStill.id);mediaConfirm.click();
+  const countBeforeMakingVideo=B.nodes.length;
+  openShotRangePicker(sourceScriptForMedia,null,{firstIndex:4,lastIndex:4});
+  $("#shotRangePicker [type=submit]").click();
+  const completedImagePair=scriptShotLinks(sourceScriptForMedia)[4];`);
+ equal(evaluate(`[B.nodes.length-countBeforeMakingVideo,completedImagePair.img===adoptedStill.id,
+  B.edges.some(edge=>edge.from===adoptedStill.id&&edge.to===completedImagePair.vid&&edge.role==="first")]`),
+  [1,true,true],'filling an image-only shot creates just a video node and sets its first-frame input');
+ assert.equal(submittedBatches.length,beforeEditRun,'association and filling nodes do not submit a generation');
+ console.log('Storyboard media association DOM passed: existing nodes, ordered editing and precise missing-node expansion.');
  evaluate('closeCanvasGroupRunDialog();$("#shotList [data-close]").click();AC.board=rangeAssistantBoard;restore(runRangeBase);save()');
  evaluate(`const copyFlowBase=snap();
   const copyAsset=(filename,fields={})=>({ref:"output:h3studio/"+filename,url:"/media?ref=output:h3studio/"+filename,...fields});
@@ -3852,6 +4192,37 @@ async function run(){
  assert.match(evaluate('cameraPortrait.data.prompt'),/135 mm/);
  w.fetch=originalCameraFetch;
  console.log('Image camera tools passed: presets, camera preview controls, candidate versions, saved recipes and legacy prompts.');
+ const opticFetch=w.fetch;
+ let opticRequest;
+ w.fetch=(url,options)=>{
+  if(String(url)!=="/api/generate")return opticFetch(url,options);
+  opticRequest=JSON.parse(options.body);
+  const ref="output:h3studio/new-lens.mp4";
+  jobs.set("video-optics-job",{state:"done",outputs:[{ref,url:"/media?ref="+encodeURIComponent(ref),meta:{width:640,height:480,duration:5}}]});
+  return Promise.resolve({ok:true,text:async()=>JSON.stringify({ids:["video-optics-job"]})});
+ };
+ evaluate(`const opticalNode=addNode("video",2600,100,{prompt:"列车靠站"},{versions:[
+    copyAsset("old-lens.mp4",{seconds:5}),copyAsset("older-no-snapshot.mp4",{seconds:5})],cur:0});
+  selectOnly(opticalNode.id);$("#videoOpticsBtn").click();
+  $('[data-video-optics-preset="1"]').click();$("#videoOptics [name=optics]").value="anamorphic";
+  $("#videoOptics [type=submit]").click();`);
+ equal(evaluate('[opticalNode.data.video_optics,opticalNode.data.prompt,$("#videoOptics").open]'),
+  [{lens:85,sensor:'full-frame',optics:'anamorphic',aperture:'2'},'列车靠站',false]);
+ await evaluate('generate(opticalNode)');
+ await ready('opticalNode.versions.length===3 && !opticalNode.job','video optics request produces a new canvas version',350);
+ assert.deepEqual(opticRequest.video_optics,{lens:85,sensor:'full-frame',optics:'anamorphic',aperture:'2'});
+ equal(evaluate('[curV(opticalNode).video_recipe.video_optics,curV(opticalNode).generation_record.video_optics]'),
+  [opticRequest.video_optics,opticRequest.video_optics]);
+ evaluate('switchVersion(opticalNode,0)');
+ assert.equal(evaluate('!!opticalNode.data.video_optics'),false,'selecting a legacy version restores its original settings');
+ evaluate('switchVersion(opticalNode,2);switchVersion(opticalNode,1)');
+ assert.equal(evaluate('!!opticalNode.data.video_optics'),false,'an older version without a snapshot does not inherit optics from another take');
+ evaluate('switchVersion(opticalNode,2);$("#videoOpticsBtn").click()');
+ equal(evaluate('$$("select",$("#videoOptics")).map(select=>select.value)'),['85','full-frame','anamorphic','2']);
+ evaluate('$("#videoOptics [data-reset]").click();$("#videoOptics [type=submit]").click()');
+ assert.equal(evaluate('!!videoReq(opticalNode,fullPrompt(opticalNode)).video_optics'),false,'clearing does not carry optics into the next submission');
+ w.fetch=opticFetch;
+ console.log('Video optics DOM passed: presets, request capture, legacy version switching and reset.');
  const oldSizeFetch=w.fetch;
  let pixelExport;
  w.fetch=async(url,options={})=>{
@@ -3879,7 +4250,8 @@ async function run(){
  w.fetch=oldSizeFetch;
  console.log('Exact image sizing passed: crop-aware aspect lock, fit preview, draft restore and same-node save.');
  evaluate(`const previewImage=addNode("image",0,100000,{}, {name:"预览图片",versions:[
-   copyAsset("preview-first.png",{generation_record:{prompt:"历史版本 <img src=x>",effective_prompt:"生成时实际使用"}}),
+   copyAsset("preview-first.png",{generation_record:{prompt:"历史版本 <img src=x>",effective_prompt:"生成时实际使用"},
+    memory_used:[{name:"林森 <img src=x>",references:[{view:"face",ref:"input:h3studio/past-face.png"}]}]}),
    copyAsset("preview-current.png",{prompt:"当前版本提示词"})],cur:1});
    const previewAudio=addNode("audio",500,100000,{}, {name:"预览音频",versions:[
    copyAsset("preview-track.wav",{seconds:8}),copyAsset("preview-track-later.wav")],cur:1});
@@ -3901,6 +4273,9 @@ async function run(){
  evaluate('$("[data-light-details]").click()');
  equal(evaluate('[$("#lightDetails").hidden,$("#lightDetails pre").textContent,$$("#lightDetails img").length]'),
   [false,'历史版本 <img src=x>',0]);
+ equal(evaluate('[$("#lightDetails li").textContent,$("#lightDetails li a").getAttribute("href")]'),
+  ['林森 <img src=x> · 正面头肩','/media?ref=input%3Ah3studio%2Fpast-face.png'],
+  'generation details link to the exact character angle used by the selected version');
  let copiedPreviewPrompt;
  Object.defineProperty(w.navigator,'clipboard',{configurable:true,value:{writeText:async value=>{copiedPreviewPrompt=value;}}});
  await evaluate('$("[data-light-copy-prompt]").onclick()');
@@ -4466,7 +4841,42 @@ async function run(){
  equal(evaluate('[AC.session,AC.referencePins.get(stemTestVideo.id).ref,$("#creativeApps").open]'),['parallel-ui-b','output:h3studio/stem-video-old.mp4',false]);
  assert.match(evaluate('$("#acInput").value'),/^乙的草稿\n\n创作任务 · 动态字幕与图表/);
  assert.match(evaluate('$("#acInput").value'),/三月 10，四月 20，五月 30/);
+ evaluate(`$("#creativeAppsBtn").click();
+  $('[data-app-id="broll"]',$("#creativeApps")).click();
+  $('[name="app-0"]',$("#creativeApps")).value="结尾显示订单增长";
+  $('[name="app-1"]',$("#creativeApps")).value="保留原声";
+  $("[data-app-source]",$("#creativeApps")).value=stemTestVideo.id;
+  $("[data-app-source]",$("#creativeApps")).dispatchEvent(new Event("change"));`);
+ await evaluate('$("[data-app-workspace]",$("#creativeApps")).onclick()');
+ equal(evaluate(`[$("#brollDialog").open,brollSession.ref,stemTestVideo.cur,$("#brollDialog [name=brief]").value]`),
+  [true,'output:h3studio/stem-video-old.mp4',1,'画面内容和图表数据 · 结尾显示订单增长\n显示时段和样式 · 保留原声'],
+  'opening the native workspace carries the form brief and uses the pinned historical media without switching tabs');
+ evaluate('closeBroll()');
+ const appPreviewFetch=w.fetch;
+ w.fetch=(url,options)=>{
+  const path=new URL(String(url),'http://oneshot.test').pathname;
+  const row={id:'starter-storyboard',name:'三镜头分镜模板',category:'分镜',builtin:true,nodes:2};
+  const result=path==='/api/canvas-templates/presets'?[row]:path==='/api/canvas-templates/starter-storyboard/preview'?
+   {name:row.name,nodes:[{id:'n1',name:'故事简报',type:'text',inputs:{text:'旧故事'}},
+    {id:'n2',name:'分镜',type:'script',inputs:{prompt:'',nshots:'3',shotlen:'5',aspect:'16:9'}}],edges:[]}:null;
+  return result?Promise.resolve({ok:true,json:async()=>result}):appPreviewFetch(url,options);
+ };
+ const appBoardNodes=evaluate('B.nodes.length');
+ evaluate(`$("#creativeAppsBtn").click();
+  $('[name="app-0"]',$("#creativeApps")).value="深夜末班列车";
+  $('[name="app-1"]',$("#creativeApps")).value="20 秒，5 镜";
+  $('[name="app-2"]',$("#creativeApps")).value="9:16，纪实风";`);
+ await evaluate('$("[data-app-template]",$("#creativeApps")).onclick()');
+ assert.match(evaluate('$("[data-field=text]",$("#templatePreview")).value'),/深夜末班列车[\s\S]*20 秒，5 镜/);
+ equal(evaluate(`[$("[data-field=nshots]",$("#templatePreview")).value,$("[data-field=shotlen]",$("#templatePreview")).value,
+  $("[data-field=aspect]",$("#templatePreview")).value,B.nodes.length,$("#templatePreview .template-inputs").open]`),
+  ['auto','auto','9:16',appBoardNodes,true],'template launch pre-fills only the editable copy preview, including script controls');
+ equal(evaluate('templateCopyPayload($("[data-template-action=insert]",$("#templatePreview"))).inputs.map(input=>[input.node,input.field,input.before]).slice(-3)'),
+  [['n2','nshots','3'],['n2','shotlen','5'],['n2','aspect','16:9']]);
+ evaluate('closeWorkflowTemplates()');
+ w.fetch=appPreviewFetch;
  console.log('Creative apps passed: category, example and insertion preserve the running session, draft and pinned version.');
+ console.log('Creative app launch DOM passed: prefilled templates and historical-version workspace handoff.');
  evaluate(`const previousAgentDraft=$("#acInput").value, liveStemVersion=stemTestVideo.cur;
    vtTabMenu(stemTestVideo,0,70,100);`);
  await evaluate('$("[data-version-new-session]").onclick()');
@@ -4491,6 +4901,32 @@ async function run(){
  assert.equal(evaluate('$("#acExecutionScope").value'),'full');
  await evaluate('acLoadSession("parallel-ui-e")');
  assert.equal(evaluate('$("#acExecutionScope").value'),'plan');
+ evaluate(`$("#acExecutionScope").value="brainstorm";$("#acExecutionScope").dispatchEvent(new Event("change"));
+  const directionIds=["雨夜悬疑","站台重逢","误车喜剧"];
+  acAppendEvent({kind:"tool_start",data:{name:"creative_directions",call_id:"idea-comparison"}});
+  acAppendEvent({kind:"tool_end",data:{name:"creative_directions",call_id:"idea-comparison",result:{creative_directions:directionIds.map(title=>(
+   {title,premise:"<img onerror=alert(1)> 空站台",approach:"试写场景",tradeoff:"需要夜景素材",first_step:"五秒开场"}))}}});
+  const ideaCard=$("[data-call=idea-comparison]");`);
+ equal(evaluate('[ideaCard.open,$$(".ac-direction",ideaCard).length,!!$("img",ideaCard),$("#acGenerationMode").disabled]'),
+  [true,3,false,true],'brainstorm displays comparison cards as text and disables generation settings');
+ evaluate(`$("#acInput").value="以及保留现有主角";
+  $$("[data-explore-direction]",ideaCard)[1].click();`);
+ assert.match(evaluate('$("#acInput").value'),/^以及保留现有主角\n\n继续讨论「站台重逢」/);
+ assert.equal(scopedMessages.length,1,'choosing a direction populates the draft without sending it');
+ await evaluate('acSend()');
+ assert.equal(scopedMessages[1].execution_scope,'brainstorm');
+ assert.equal(scopedMessages[1].generation_mode,undefined);
+ evaluate(`acAttachNodeReference(stemTestVideo,stemTestVideo.versions[0].ref);
+  $("#acInput").value="先控制在十五秒";
+  $$("[data-plan-direction]",ideaCard)[0].click();`);
+ assert.equal(evaluate('$("#acExecutionScope").value'),'plan');
+ assert.match(evaluate('$("#acInput").value'),/^先控制在十五秒\n\n把「雨夜悬疑」拟成制作方案[\s\S]*需要夜景素材[\s\S]*五秒开场/);
+ assert.equal(scopedMessages.length,2,'planning loads the selected direction without submitting it');
+ await evaluate('acSend()');
+ assert.equal(scopedMessages[2].execution_scope,'plan');
+ assert.equal(scopedMessages[2].generation_mode,undefined);
+ assert(scopedMessages[2].selected_versions.some(item=>item.ref==='output:h3studio/stem-video-old.mp4'));
+ console.log('Brainstorm assistant passed: comparison cards, scoped discussion and planning, pinned references and draft preservation.');
  w.fetch=parallelFetch;
  console.log('Parallel assistant passed: live switcher, late-poll isolation, session drafts, new chat during approval and scoped stop.');
 

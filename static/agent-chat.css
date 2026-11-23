@@ -123,6 +123,7 @@
 .ac-storyboard-plan dl { display:grid; grid-template-columns:auto minmax(0,1fr); gap:5px 8px; margin:0; }
 .ac-storyboard-plan dt,.ac-storyboard-plan [role=status] { color:var(--dim); font-size:var(--fs-caption); }
 .ac-storyboard-plan dd { margin:0; white-space:pre-wrap; }
+.ac-direction p { margin:0; white-space:pre-wrap; }
 .ac-revision-before { color:var(--dim); }
 .ac-storyboard-actions { display:flex; gap:6px; flex-wrap:wrap; }
 .ac-template-results { display:grid; gap:6px; }

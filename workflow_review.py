@@ -67,9 +67,10 @@ def capture_generation(payload):
     return {"settings":{key:payload[key] for key in SETTINGS if key in payload},
             "prompt":text(payload.get("prompt"), 5000), "mode":text(payload.get("mode")),
             **({"camera_plan":payload["camera_plan"]} if payload.get("camera_plan") else {}),
+            **({"video_optics":payload["video_optics"]} if payload.get("video_optics") else {}),
             **({"object_edit":payload["object_edit"]} if payload.get("object_edit") else {}),
             "fields":{key:text(value, 2400) for key, value in obj(payload.get("fields")).items() if key in PROMPT_FIELDS},
-            "inputs":[{k:entry[k] for k in ("node_id","ref","role","time","name","version","start","end") if k in entry}
+            "inputs":[{k:entry[k] for k in ("node_id","ref","role","time","name","version","start","end","memory_id","memory_view") if k in entry}
                       for entry in inputs]}
 
 
@@ -102,6 +103,11 @@ def argument_rows(v, receipt, remake):
         try:
             shot = camera_plan.validate(shot)
             values.append({"label":"重拍机位", "value":camera_plan.instructions(shot)})
+        except ValueError:
+            pass
+    if optics := run.get("video_optics") or obj(v.get("video_recipe")).get("video_optics"):
+        try:
+            values.append({"label":"视频镜头参数","value":"，".join(image_camera.optics_instructions(image_camera.validate_optics(optics)))})
         except ValueError:
             pass
     image_view = obj(obj(v.get("edit")).get("recipe")).get("camera_view")

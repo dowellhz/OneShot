@@ -1,19 +1,19 @@
 "use strict";
 
 const CREATIVE_APPS = [
-  {id:"storyboard", name:"短片分镜策划", category:"策划", icon:"script", template:"starter-storyboard",
+  {id:"storyboard", name:"短片分镜策划", category:"策划", icon:"script", template:"starter-storyboard", templateBrief:["n1","text"],
     description:"把创作简报拆成带时长和镜头动作的分镜表。",
     fields:["故事或创作目的","目标时长与镜头数","画幅和风格"],
     example:["凌晨最后一班渡船启程。一位修伞师把修好的旧伞送到码头，乘客在舷梯前接过伞。","15 秒，3 个镜头","16:9，冷色调，安静的纪实感"],
     output:["第 1 镜 · 4 秒 · 远景建立码头和即将离开的渡船。","第 2 镜 · 6 秒 · 中近景跟随修伞师奔向舷梯。","第 3 镜 · 5 秒 · 手部特写完成交接，切到船缓缓离岸。"],
     work:"按镜头给出时长、景别、机位、动作、声音及首帧要点，合计时长须符合要求。将 Markdown 分镜表保存为一个文本节点。先交付分镜，不提交生图或生视频。"},
-  {id:"product", name:"商品主视觉套图", category:"图片", icon:"image", template:"starter-product", media:["image","product.webp"],
+  {id:"product", name:"商品主视觉套图", category:"图片", icon:"image", template:"starter-product", templateBrief:["n1","text"], media:["image","product.webp"],
     description:"从同一商品参考规划并生成主图、横幅和竖版图。",
     fields:["商品名称和已确认的卖点","投放渠道与画幅","必须保留的外观、颜色或标识"],
     example:["蓝橙配色的桌面产品，突出清楚的轮廓和材质。","电商主图 1:1、横幅 16:9、竖版 9:16","白色影棚，保留蓝橙配色，留出文案空间。"],
     output:["方形主图突出完整轮廓，横幅把产品放在画面右侧，竖图保留上方文案区。"],
     work:"优先使用本轮引用的商品图；没有参考图且要求外观一致时，先请我引用。为各画幅分别写构图，保持真实卖点和包装一致。提交套图前显示确认卡。"},
-  {id:"character", name:"角色造型与连续性", category:"图片", icon:"assets", template:"starter-character",
+  {id:"character", name:"角色造型与连续性", category:"图片", icon:"assets", template:"starter-character", templateBrief:["n1","prompt"],
     description:"制定角色卡与参考图清单，或核对已有镜头的造型。",
     fields:["角色、参考素材或需要核对的镜头","需要保持一致的细节"],
     example:["为渡船修伞师制定角色资料。她约三十岁，穿深蓝工装，佩戴左手银戒指。","坚持短发和深蓝工装。戒指位置以角色本人的左右为准。"],
@@ -51,6 +51,42 @@ const appDrafts = new Map();
 let appBoard, currentApp, appBusy = false;
 
 function creativeAppKey(app) { return `${appBoard}:${app.id}`; }
+function creativeAppBrief(app,values) {
+  return app.fields.map((label,i)=>values[i]&&`${label} · ${values[i]}`).filter(Boolean).join("\n");
+}
+
+function creativeAppPrefill(app,values) {
+  const brief=creativeAppBrief(app,values);
+  if(!brief)return [];
+  const [node,field]=app.templateBrief;
+  const value=app.id==="character"?brief+"\n单人全身、正面略转约 30°，自然站姿，浅灰背景和均匀光线。":brief;
+  const edits=[{node,field,value}];
+  if(app.id==="storyboard"){
+    if(values[1])edits.push({node:"n2",field:"nshots",value:"auto"},{node:"n2",field:"shotlen",value:"auto"});
+    const aspect=values[2]?.match(/(?:^|[^\d])(16:9|9:16|4:3|1:1|21:9)(?!\d)/)?.[1];
+    if(aspect)edits.push({node:"n2",field:"aspect",value:aspect});
+  }
+  return edits;
+}
+
+function creativeAppMedia(app) {
+  const assistant=AC.open&&AC.board===boardId;
+  const preferred=assistant&&AC.refs!==null?AC.refs:[...sel];
+  const candidates=B.nodes.flatMap(n=>{
+    const pinned=assistant&&AC.referencePins.get(n.id)?.ref;
+    const v=pinned?n.versions.find(version=>version.ref===pinned):curV(n);
+    const valid=app.id==="previs"?n.type==="video"&&n.data.previs:
+      v?.ref&&(app.id==="review"||!n.data.previs&&(n.type==="video"||app.id==="broll"&&n.type==="image"));
+    return valid?[{id:n.id,ref:v?.ref,version:n.versions.indexOf(v)+1,name:n.name}]:[];
+  });
+  const selected=candidates.filter(item=>preferred.includes(item.id));
+  const initial=selected.length===1?selected[0].id:candidates.length===1?candidates[0].id:"";
+  return {candidates,initial};
+}
+
+const appWorkspaces={
+  previs:"打开白模编辑器",broll:"打开动态画面工具",remake:"打开视频重制",review:"打开制作复盘",
+};
 
 function showCreativeApps() {
   if (!B || creativeApps.open) return;
@@ -85,6 +121,7 @@ function renderCreativeAppDetail() {
   const host = appsField("[data-app-detail]"), app = currentApp;
   if (!app) { host.replaceChildren(); return; }
   const values = appDrafts.get(creativeAppKey(app)) || [];
+  const direct=appWorkspaces[app.id], mediaChoice=direct?creativeAppMedia(app):null;
   const media = app.media && (app.media[0]==="image" ? `<img src="/static/creative-examples/${app.media[1]}" alt="${esc(app.name)}示例">` :
     `<video src="/static/creative-examples/${app.media[1]}" controls playsinline preload="metadata" aria-label="${esc(app.name)}示例"></video>`);
   host.innerHTML = `<h2>${esc(app.name)}</h2><p>${esc(app.description)}</p>
@@ -92,28 +129,56 @@ function renderCreativeAppDetail() {
       <strong>示例交付</strong><ul>${app.output.map(line=>`<li>${esc(line)}</li>`).join("")}</ul></div></details>
     <form>${app.fields.map((label,index)=>`<label>${esc(label)}${index===0 ? `<textarea name="app-${index}" rows="2" maxlength="1600" required>${esc(values[index]||"")}</textarea>` :
       `<input name="app-${index}" maxlength="400" value="${esc(values[index]||"")}">`}</label>`).join("")}
+      ${direct?`<label>${app.id==="previs"?"白模场景":"素材版本"}<select data-app-source><option value="">${app.id==="previs"?"新建白模场景":app.id==="review"?"整张画布":"选择素材版本"}</option>
+        ${mediaChoice.candidates.map(item=>`<option value="${esc(item.id)}">${esc(item.name)}${item.version?" · 版本 "+item.version:""}</option>`).join("")}</select></label>`:""}
       <div class="app-actions"><button type="submit" ${canvasCanEdit()?"":"disabled"}>加入对话草稿</button>
       <button type="button" data-app-example ${canvasCanEdit()?"":"disabled"}>在对话试用示例</button>
-      ${app.template?'<button type="button" data-app-template>查看画布模板</button>':""}</div>
+      ${app.template?'<button type="button" data-app-template>打开画布模板</button>':""}
+      ${direct?`<button type="button" data-app-workspace ${!canvasCanEdit()&&app.id!=="review"?"disabled":""}>${direct}</button>`:""}</div>
       <div role="status" data-app-status></div></form>`;
   const form = $("form",host);
+  const readInputs=()=>app.fields.map((_,index)=>form.elements[index].value.trim());
   form.oninput = () => appDrafts.set(creativeAppKey(app),app.fields.map((_,index)=>form.elements[index].value));
   form.onsubmit = event => {
     event.preventDefault();
-    const inputs = app.fields.map((_,index)=>form.elements[index].value.trim());
+    const inputs=readInputs();
     if (!inputs[0]) { $("[data-app-status]",host).textContent = "请填写创作需求"; return; }
     useCreativeApp(app,inputs);
   };
   $("[data-app-example]",host).onclick = () => useCreativeApp(app,app.example);
   const template = $("[data-app-template]",host);
   if (template) template.onclick = boardAction(async()=>{
-    const bid = appBoard;
+    if(appBoard!==boardId)return;
+    const prefill=creativeAppPrefill(app,readInputs());
     closeCreativeApps();
-    await openWorkflowTemplates();
-    if (bid!==boardId || $("#workflowTemplates").hidden) return;
-    const row = WT.rows.find(row=>row.id===app.template);
-    if (row) await showTemplatePreview(row);
+    await openWorkflowTemplates(false,null,{id:app.template,scope:"presets",prefill});
   });
+  if(direct){
+    const select=$("[data-app-source]",form), workspace=$("[data-app-workspace]",form);
+    select.value=mediaChoice.initial;
+    const sourceRequired=app.id==="broll"||app.id==="remake";
+    const update=()=>{workspace.disabled=(!canvasCanEdit()&&app.id!=="review")||(sourceRequired&&!select.value);};
+    select.onchange=update;update();
+    workspace.onclick=boardAction(async()=>{
+      if(appBoard!==boardId||(sourceRequired&&!select.value)||(!canvasCanEdit()&&app.id!=="review"))return;
+      const target=mediaChoice.candidates.find(item=>item.id===select.value);
+      const source=node(target?.id), version=source?.versions.find(v=>v.ref===target?.ref);
+      if(target&&(!source||target.ref&&!version)){
+        $("[data-app-status]",host).textContent="素材或版本已移除，请重新打开应用选择";return;
+      }
+      const brief=creativeAppBrief(app,readInputs());
+      if(app.id==="broll"&&brief.length>1000){
+        $("[data-app-status]",host).textContent="动态画面工具的需求最多 1000 字，请精简后打开";return;
+      }
+      closeCreativeApps();
+      if(app.id==="previs"){
+        if(source)openPrevis(source);
+        else addPrevisNode(toW(innerWidth/2-150,innerHeight/2-180));
+      }else if(app.id==="broll")openBroll(source,{sourceRef:target.ref,brief});
+      else if(app.id==="remake")await openVideoRemake(source,{sourceRef:target.ref,brief});
+      else await openWorkflowReview(source?.id||null,version?source.versions.indexOf(version)+1:null);
+    });
+  }
 }
 
 async function useCreativeApp(app, values) {
@@ -121,7 +186,7 @@ async function useCreativeApp(app, values) {
   if (appBusy || bid!==boardId || !canvasCanEdit()) return;
   appBusy = true;
   try {
-    const draft = [`创作任务 · ${app.name}`,...app.fields.map((label,i)=>values[i] && `${label} · ${values[i]}`).filter(Boolean),app.work].join("\n");
+    const draft = [`创作任务 · ${app.name}`,creativeAppBrief(app,values),app.work].filter(Boolean).join("\n");
     closeCreativeApps();
     await acOpen();
     if (bid!==boardId || AC.board!==bid || !AC.session || !AC.open) return;

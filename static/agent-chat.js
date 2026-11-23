@@ -9,7 +9,7 @@ const AC_THINKING_LEVELS={off:"关闭",low:"轻量",high:"标准",max:"深度"};
 AC.drafts=new Map();
 const AC_REVIEW_LIMIT=8;
 const AC_GENERATION_MODES={auto:"自动生成",smart:"智能确认",manual:"每次确认"};
-const AC_EXECUTION_SCOPES={full:"正常执行",analysis:"仅分析",plan:"仅拟方案"};
+const AC_EXECUTION_SCOPES={full:"正常执行",analysis:"仅分析",plan:"仅拟方案",brainstorm:"头脑风暴"};
 AC.executionScope="full";
 let acGenerationMode=localStorage.getItem("h3.chat.generationMode") || "auto";
 if(!Object.hasOwn(AC_GENERATION_MODES,acGenerationMode))acGenerationMode="auto";
@@ -33,6 +33,7 @@ AC_LABELS.storyboard_visual_review="审阅镜头衔接";
 AC_LABELS.storyboard_next_shot_plan="准备下一镜";
 AC_LABELS.storyboard_revision_plan="准备镜头修改";
 AC_LABELS.storyboard_range_run_plan="准备批量生成镜头";
+AC_LABELS.creative_directions="比较创意方向";
 AC_LABELS.image_camera="图片换机位";
 AC_LABELS.image_relight="图片重新布光";
 AC_LABELS.web_search="搜索公开资料";
@@ -385,11 +386,21 @@ async function acFocus(ids,editor=false){
 }
 function acResultVersion(item){const resolved=vtResolve(item.id,item.ref);return resolved?.node.versions[resolved.index]||item;}
 function acResultCards(result){
+ if(result.creative_directions?.length){
+  return result.creative_directions.map(direction=>`<section class="ac-storyboard-plan ac-direction" data-creative-direction="${esc(JSON.stringify(direction))}">
+    <strong>${esc(direction.title)}</strong><p>${esc(direction.premise)}</p>
+    <dl><dt>执行方法</dt><dd>${esc(direction.approach)}</dd><dt>取舍</dt><dd>${esc(direction.tradeoff)}</dd>
+    <dt>第一步</dt><dd>${esc(direction.first_step)}</dd></dl>
+    <div class="ac-storyboard-actions"><button type="button" data-explore-direction>继续讨论这个方向</button>
+    <button type="button" data-plan-direction>拟制作方案</button></div></section>`).join("");
+ }
  if(result.shot_range_plan){
   const plan=result.shot_range_plan;
   const modes={missing:"补齐未生成镜头",all:"运行所有选中的节点",missing_frame:"只补齐分镜图",missing_video:"只补齐视频",frame:"重生成分镜图",video:"重生成视频"};
+  const tails={connect:"连接缺失的上一镜尾帧",refresh:"刷新已有的上一镜尾帧",connect_and_refresh:"连接缺失并刷新已有的上一镜尾帧"};
+  const details=[modes[plan.mode],tails[plan.tail_mode]].filter(Boolean).join(" · ");
   return `<section class="ac-storyboard-plan"><strong>${esc(plan.name)} · 第 ${esc(plan.first)}${plan.first===plan.last?"":"–"+esc(plan.last)} 镜</strong>
-    <p>${esc(modes[plan.mode])}</p><button type="button" data-open-shot-range="${esc(JSON.stringify(plan))}">核对生成范围</button></section>`;
+    <p>${esc(details)}</p><button type="button" data-open-shot-range="${esc(JSON.stringify(plan))}">核对生成范围</button></section>`;
  }
  if(result.template_fill_plan){
   const plan=result.template_fill_plan;
@@ -796,7 +807,7 @@ function acAppendEvent(e,replay=false){
   el=AC.calls.get(d.call_id);
   if(!el)return;
   const result=d.result, output=$(".ac-output",el);
-  if(result.previs_node||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
+  if(result.creative_directions?.length||result.previs_node||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
      result.preview?.completed?.length||result.video?.completed||d.name==="video_remake_export"&&result.export_ref||
      ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
@@ -970,6 +981,7 @@ function acRenderState(){
  $("#acNew").disabled=$("#acSessions").disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
  $("#acExecutionScope").value=AC.executionScope;
  $("#acExecutionScope").disabled=AC.sending||!!AC.loadingSessions;
+ $("#acInput").placeholder=AC.executionScope==="brainstorm"?"描述创作目标，输入 @ 引用素材，一起探索不同方向…":"描述你想做什么，输入 @ 引用素材…";
  $("#acGenerationMode").disabled=AC.executionScope!=="full"||AC.sending||!!AC.loadingSessions;
  acRenderParallel();
  acRenderNodeActivity();
@@ -1133,6 +1145,18 @@ function acRenderApprovals() {
  if(panel._items!==markup){panel._items=markup;panel.innerHTML=markup;}
  panel.hidden=!items.length;
 }
+function acRenderReplyPreview(box,replies){
+ const reply=replies?.at(-1);
+ let preview=$("[data-ac-reply-preview]",box);
+ if(!reply?.text){preview?.remove();return;}
+ if(!preview){
+  preview=document.createElement("div");
+  preview.className="ac-msg assistant";
+  preview.dataset.acReplyPreview="";
+ }
+ if(preview.textContent!==reply.text)preview.textContent=reply.text;
+ if(box.lastElementChild!==preview)box.append(preview);
+}
 async function acPoll(background=false){
  if(AC.polling?.epoch===AC.epoch||(!AC.open&&!background)||!AC.session)return;
  const sid=AC.session,epoch=AC.epoch,polling={epoch};
@@ -1149,7 +1173,9 @@ async function acPoll(background=false){
    if(j.session&&!listed.some(item=>item.id===sid))listed.push(j.session);
    acSessionDirectory(listed);
   }
-  for(const e of j.events){AC.cursor=e.id;AC.events.push(e);acAppendEvent(e,AC.replaying||!AC.open);}AC.replaying=false;acRenderState();if(bottom)box.scrollTop=box.scrollHeight;$("#acError").hidden=true;
+  for(const e of j.events){AC.cursor=e.id;AC.events.push(e);acAppendEvent(e,AC.replaying||!AC.open);}
+  acRenderReplyPreview(box,j.reply_previews);
+  AC.replaying=false;acRenderState();if(bottom)box.scrollTop=box.scrollHeight;$("#acError").hidden=true;
  }catch(e){if(epoch===AC.epoch){$("#acError").textContent="连接中断，将自动重连："+e.message;$("#acError").hidden=false;}}finally{if(AC.polling===polling)AC.polling=false;}
 }
 function acResetSession(id){
@@ -1429,6 +1455,22 @@ function initAgentChat(){
  $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{const rid=AC.runs[0]?.id;if(!rid)return;try{await flushSave();await acApi(`/api/chat/runs/${rid}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=async e=>{
+  const follow=e.target.closest("[data-explore-direction],[data-plan-direction]");
+  if(follow){
+   if(AC.board!==boardId||!AC.session||AC.sending||AC.loadingSessions)return;
+   const direction=JSON.parse(follow.closest("[data-creative-direction]").dataset.creativeDirection);
+   const plan=follow.hasAttribute("data-plan-direction"), input=$("#acInput");
+   const heading=plan?`把「${direction.title}」拟成制作方案`:`继续讨论「${direction.title}」`;
+   const task=plan?"请列出制作步骤、所需素材和第一项可验证的交付。有适用的工作流时，准备可核对的方案。":
+    "请细化执行方法和第一步。";
+   const draft=[heading,direction.premise,`执行方法 · ${direction.approach}`,`取舍 · ${direction.tradeoff}`,`第一步 · ${direction.first_step}`,task].join("\n");
+   const next=[input.value.trimEnd(),draft].filter(Boolean).join("\n\n");
+   if(next.length>input.maxLength)return toast("草稿超过输入长度，原内容已保留");
+   AC.executionScope=plan?"plan":"brainstorm";
+   input.value=next;input.focus();input.setSelectionRange(next.length,next.length);
+   acRenderState();
+   return;
+  }
   const shotRange=e.target.closest("[data-open-shot-range]");
   if(shotRange){if(AC.board===boardId)openPlannedShotRange(JSON.parse(shotRange.dataset.openShotRange));return;}
   const template=e.target.closest("[data-open-workflow-template],[data-template-fill-plan]");
@@ -1628,13 +1670,17 @@ function initAgentChat(){
  try{const layout=JSON.parse(localStorage.getItem("h3.chat.window"));if(layout?.floating){pane.classList.add("floating");for(const k of ["left","top","width","height"])if(Number.isFinite(layout[k]))pane.style[k]=Math.max(k==="width"?300:k==="height"?300:8,Math.min(layout[k],k==="left"?innerWidth-300:k==="top"?innerHeight-150:k==="width"?innerWidth-16:innerHeight-24))+"px";}}catch{}
  if(typeof aeInit==="function")aeInit();
  const resize=new ResizeObserver(()=>{if(pane.classList.contains("floating")&&!pane.hidden)acStoreWindow();});resize.observe(pane);
+ let nextPoll=0;
  setInterval(()=>{
+  const now=performance.now();
+  if(now<nextPoll)return;
+  nextPoll=now+(AC.open&&acActive()?.state==="thinking"?400:1000);
   if(AC.open){
    if(AC.board!==boardId||!AC.session)acBoardChanged();
    else acPoll();
    acRenderRefs();
   }else if(AC.board===boardId&&(acActive()||AC.queue.length||AC.sessions.some(s=>s.run_state||s.queued_count)))acPoll(true);
   else if(AC.nodeDirectory?.board===boardId&&AC.nodeDirectory.rows.some(session=>session.run_state||session.queued_count))void acRefreshNodeDirectory();
- },1000);
+ },200);
 }
 function acStoreWindow(){const p=$("#agentChat");if(p.parentElement.id==="light")return;const r=p.getBoundingClientRect();try{localStorage.setItem("h3.chat.window",JSON.stringify({floating:p.classList.contains("floating"),left:r.left,top:r.top,width:r.width,height:r.height}));}catch{}}

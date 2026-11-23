@@ -8,6 +8,7 @@ const imageCameraOpticalFields = {
 };
 const imageCameraOpticalId = field => "ieCam"+field[0].toUpperCase()+field.slice(1);
 const imageCameraOpticalKeys = Object.keys(imageCameraOpticalFields);
+const cameraLensOptions=[[18,"超广角"],[24,"广角"],[28,"广角"],[35,"小广角"],[40,"标准"],[50,"标准"],[85,"人像"],[100,"中长焦"],[135,"长焦"],[200,"长焦"]];
 const imageCameraDraftIds = [...imageCameraFields.map(id=>"ieCam"+id),...imageCameraOpticalKeys.map(imageCameraOpticalId),"ieCamCount"];
 const imageCameraPresets = [
   ["左侧面",-90,0,0,50,"中景"], ["右侧面",90,0,0,50,"中景"], ["背面",180,0,0,50,"全景"],
@@ -41,7 +42,62 @@ function imageCameraFieldsHTML(prefix) {
   return sliders.map(([id,label,min,max,step,value])=>`<label class="ie-label" for="${prefix+id}">${label}<output id="${prefix+id}V"></output></label>
     <input type="range" id="${prefix+id}" min="${min}" max="${max}" step="${step}" value="${value}">`).join("") +
     `<div class="ie-padding"><label>景别<select id="${prefix}Framing"><option value="">保持不变</option>${["面部特写","近景","中景","全景","远景"].map(label=>`<option>${label}</option>`).join("")}</select></label>
-      <label>焦段<select id="${prefix}Lens">${[[18,"超广角"],[24,"广角"],[28,"广角"],[35,"小广角"],[40,"标准"],[50,"标准"],[85,"人像"],[100,"中长焦"],[135,"长焦"],[200,"长焦"]].map(([mm,label])=>`<option value="${mm}"${mm===50?" selected":""}>${mm} mm · ${label}</option>`).join("")}</select></label></div>`;
+      <label>焦段<select id="${prefix}Lens">${cameraLensOptions.map(([mm,label])=>`<option value="${mm}"${mm===50?" selected":""}>${mm} mm · ${label}</option>`).join("")}</select></label></div>`;
+}
+
+const videoOpticPresets=[
+  ["环境广角",{lens:24,sensor:"s35",optics:"spherical",aperture:"8"}],
+  ["人物浅景深",{lens:85,sensor:"full-frame",optics:"spherical",aperture:"2"}],
+  ["宽银幕质感",{lens:40,sensor:"s35",optics:"anamorphic",aperture:"2.8"}],
+  ["微距细节",{lens:100,optics:"macro",aperture:"5.6"}],
+];
+
+function closeVideoOptics() {
+  const dialog=$("#videoOptics");
+  if(dialog?.open){if(dialog.close)dialog.close();else dialog.removeAttribute("open");}
+}
+
+function openVideoOptics(n) {
+  if(n.type!=="video"||!canvasCanEdit()||nodeLocked(n)||n.job||prepping.has(n.id)||node(n.id)!==n)return;
+  const options={lens:{label:"焦段",options:cameraLensOptions.map(([mm,label])=>[mm,`${mm} mm · ${label}`])},...imageCameraOpticalFields};
+  if(!$("#videoOptics")){
+    document.body.insertAdjacentHTML("beforeend",`<dialog id="videoOptics" aria-labelledby="videoOpticsTitle"><form>
+      <header><h2 id="videoOpticsTitle">视频镜头参数</h2><button type="button" data-close>关闭</button></header>
+      <div class="ie-row">${videoOpticPresets.map(([name],i)=>`<button type="button" data-video-optics-preset="${i}">${name}</button>`).join("")}</div>
+      <div class="ie-padding">${Object.entries(options).map(([key,{label,options:pairs}])=>`<label>${label}<select name="${key}">
+        <option value="">由模型决定</option>${pairs.map(([value,text])=>`<option value="${value}">${text}</option>`).join("")}
+        </select></label>`).join("")}</div>
+      <p>参数会加入生成指令，由视频模型推演镜头效果。</p><p role="status"></p>
+      <footer><button type="button" data-reset>清除设置</button><button type="submit">应用</button></footer>
+      </form></dialog>`);
+  }
+  const dialog=$("#videoOptics"), form=$("form",dialog), board=boardId, version=curV(n);
+  const baseline=JSON.stringify(n.data.video_optics||{}), fields=$$("select",form), status=$("[role=status]",form);
+  const paint=settings=>{for(const field of fields)field.value=String(settings[field.name]||"");};
+  paint(n.data.video_optics||{});
+  status.textContent="";
+  $("[data-close]",form).onclick=closeVideoOptics;
+  $("[data-reset]",form).onclick=()=>paint({});
+  $$("[data-video-optics-preset]",form).forEach(button=>{
+    button.onclick=()=>paint(videoOpticPresets[Number(button.dataset.videoOpticsPreset)][1]);
+  });
+  form.onsubmit=event=>{
+    event.preventDefault();
+    if(board!==boardId||node(n.id)!==n||!canvasCanEdit()||nodeLocked(n)||n.job||prepping.has(n.id)||
+      curV(n)!==version||JSON.stringify(n.data.video_optics||{})!==baseline){
+      status.textContent="节点、版本或镜头参数已变化，请重新打开";return;
+    }
+    const settings=Object.fromEntries(fields.filter(field=>field.value).map(field=>[field.name,field.name==="lens"?+field.value:field.value]));
+    if(JSON.stringify(settings)!==baseline){
+      checkpoint();rememberVideoVersion(n);
+      if(Object.keys(settings).length)n.data.video_optics=settings;
+      else delete n.data.video_optics;
+      refresh(n);save();
+    }
+    closeVideoOptics();
+  };
+  dialog.onkeydown=event=>event.stopPropagation();
+  if(!dialog.open){if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
 }
 
 function imageCameraHTML() {

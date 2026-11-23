@@ -136,6 +136,87 @@ class ChatIntegration(ChatFixture):
         self.assertEqual(json.loads(continued[-1]["content"])["answers"],event["data"]["answers"])
         self.assertEqual(self.load()["nodes"][-1]["data"]["text"],"9:16 · 海风")
 
+    async def test_streamed_reply_reconnects_and_waits_for_complete_tool_arguments(self):
+        self.svc.model = chat.AgentService.model.__get__(self.svc)
+        release, started = asyncio.Event(), asyncio.Event()
+        request_bodies = []
+
+        async def completion(req):
+            body = await req.json()
+            request_bodies.append(body)
+            response = web.StreamResponse(headers={"Content-Type":"text/event-stream"})
+            await response.prepare(req)
+
+            async def chunk(delta, finish=None):
+                data = json.dumps({"choices":[{"index":0,"delta":delta,"finish_reason":finish}]},ensure_ascii=False)
+                await response.write(("data: "+data+"\r\n\r\n").encode())
+
+            if len(request_bodies)==1:
+                await chunk({"content":"开始 <thi"})
+                await chunk({"content":"nk>具体内部过程","reasoning_content":"内部推理"})
+                started.set()
+                await release.wait()
+                await chunk({"content":"</think>执行","tool_calls":[{"index":0,"id":"chunked","type":"function",
+                    "function":{"name":"canvas_create_text","arguments":"{\"text\":\""}}]})
+                await chunk({"tool_calls":[{"index":0,"function":{"arguments":"完整文字\"}"}}]},"tool_calls")
+            else:
+                await chunk({"content":"**最终回复**"})
+                await chunk({},"stop")
+            await response.write(b"data: [DONE]\n\n")
+            return response
+
+        upstream = web.Application()
+        upstream.router.add_post("/complete",completion)
+        route = {"provider":{"id":"p1","kind":"openai_compat","name":"Stream","secrets":{}},"model":"stream-test"}
+        endpoint = f"/api/chat/sessions/{self.sid}"
+        async with TestServer(upstream) as model:
+            with patch.object(chat.providers,"routes",return_value=[route]), patch.object(
+                    chat.providers,"llm_endpoint",return_value=(str(model.make_url("/complete")),{})):
+                rid = await self.send("生成一段文字")
+                try:
+                    await asyncio.wait_for(started.wait(),2)
+                    async with asyncio.timeout(2):
+                        while rid not in self.svc.reply_previews:
+                            await asyncio.sleep(.01)
+                    for _ in range(2):
+                        state = await (await self.client.get(endpoint)).json()
+                        self.assertEqual(state["reply_previews"],[{"run_id":rid,"text":"开始"}])
+                        self.assertFalse(any(e["kind"]=="assistant" for e in state["events"]))
+                        self.assertEqual(len(self.load()["nodes"]),2)
+                        self.assertNotIn("内部",json.dumps(state,ensure_ascii=False))
+                finally:
+                    release.set()
+                self.assertEqual((await self.wait(rid))["state"],"done")
+                state = await (await self.client.get(endpoint)).json()
+        self.assertEqual(state["reply_previews"],[])
+        self.assertEqual([e["data"]["text"] for e in state["events"] if e["kind"]=="assistant"],["开始 执行","**最终回复**"])
+        self.assertEqual(self.load()["nodes"][-1]["data"]["text"],"完整文字")
+        self.assertEqual([body["stream"] for body in request_bodies],[True,True])
+
+    async def test_provider_declining_stream_uses_a_complete_reply(self):
+        self.svc.model = chat.AgentService.model.__get__(self.svc)
+        flags = []
+
+        async def completion(req):
+            stream = (await req.json())["stream"]
+            flags.append(stream)
+            if stream:
+                return web.json_response({"error":{"message":"stream is not supported"}},status=400)
+            return web.json_response({"choices":[{"message":answer("完整回复")}]})
+
+        upstream = web.Application()
+        upstream.router.add_post("/complete",completion)
+        route = {"provider":{"id":"p1","kind":"openai_compat","name":"Fallback","secrets":{}},"model":"json-test"}
+        async with TestServer(upstream) as model:
+            with patch.object(chat.providers,"routes",return_value=[route]), patch.object(
+                    chat.providers,"llm_endpoint",return_value=(str(model.make_url("/complete")),{})):
+                rid = await self.send()
+                self.assertEqual((await self.wait(rid))["state"],"done")
+                state = await (await self.client.get(f"/api/chat/sessions/{self.sid}")).json()
+        self.assertEqual(flags,[True,False])
+        self.assertEqual(state["reply_previews"],[])
+        self.assertEqual([e["data"]["text"] for e in state["events"] if e["kind"]=="assistant"],["完整回复"])
+
     async def test_model_choice_is_locked_and_thinking_survives_tool_calls_and_queue(self):
         deep = {"provider":{"id":"p1","kind":"deepseek","name":"Cloud","secrets":{}}, "model":"deepseek-flash"}
         other = {"provider":{"id":"p2","kind":"openai_compat","name":"Other","secrets":{}}, "model":"alternative"}
@@ -794,32 +875,43 @@ class ChatIntegration(ChatFixture):
             no_write=call("canvas_create_text",{"text":"不可执行"},"write-attempt")
             preview=call("workflow_template_plan",{"template_id":"starter-storyboard","changes":[
                 {"node":"n1","field":"text","value":"雨后车站"}]},"template-plan")
-            return {**no_write,"tool_calls":no_write["tool_calls"]+preview["tool_calls"]}
+            calls = no_write["tool_calls"] + preview["tool_calls"]
+            if query=="brainstorm":
+                generation=call("image_generate",{"prompt":"不可生成"},"gen-attempt")
+                directions=call("creative_directions",{"directions":[
+                    {"title":title,"premise":premise,"approach":"先写分镜","tradeoff":"需要额外角色","first_step":"试写开场"}
+                    for title,premise in (("悬疑","空站台收到信"),("温情","久别重逢"),("喜剧","认错列车"))]},"ideas")
+                calls += generation["tool_calls"] + directions["tool_calls"]
+            return {**no_write,"tool_calls":calls}
 
         self.svc.model.side_effect=model
         first=await self.send("占用当前对话",key="scope-first-run")
         await asyncio.wait_for(already_running.wait(),2)
         queued={}
-        for scope in ("analysis","plan"):
+        for scope in ("analysis","plan","brainstorm"):
             response=await self.client.post(endpoint,json={"text":scope,"request_key":"scope-"+scope,"execution_scope":scope,"enqueue":True})
             self.assertEqual(response.status,200,await response.text())
             queued[scope]=await response.json()
             self.assertEqual(queued[scope]["state"],"queued")
         release.set()
         self.assertEqual((await self.wait(first))["state"],"done")
-        for scope,label in (("analysis","仅分析"),("plan","仅拟方案")):
+        for scope,label in (("analysis","仅分析"),("plan","仅拟方案"),("brainstorm","头脑风暴")):
             rid=queued[scope]["id"]
             self.assertEqual((await self.wait(rid))["state"],"done")
-            rejected, draft = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)]
+            rejected,draft,*rest = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)]
             self.assertIn(label,rejected["error"])
             self.assertIn(label,traces[scope])
-            if scope=="analysis":
+            if scope!="plan":
                 self.assertIn(label,draft["error"])
             else:
                 self.assertEqual(draft["template_fill_plan"]["inputs"][0]["value"],"雨后车站")
+            if scope=="brainstorm":
+                self.assertIn(label,rest[0]["error"])
+                self.assertEqual([item["title"] for item in rest[1]["creative_directions"]],["悬疑","温情","喜剧"])
         self.assertEqual(server.board_path("test").read_text(),baseline)
         self.assertNotIn("workflow_template_plan",chat.scoped_tools({"execution_scope":"analysis"}))
         self.assertNotIn("canvas_create_text",chat.scoped_tools({"execution_scope":"plan"}))
+        self.assertNotIn("image_generate",chat.scoped_tools({"execution_scope":"brainstorm"}))
 
     async def test_independent_sessions_share_slots_without_blocking_eligible_queue_entries(self):
         sessions = [self.sid]
@@ -1116,6 +1208,11 @@ class ChatIntegration(ChatFixture):
         self.assertEqual((continuity["state"],continuity["captured_from_ref"],continuity["previous_video_ref"],
                           continuity["previous_version"],continuity["image_used_tail"]),
                          ("stale",anchor_ref,current_ref,2,False))
+        reordered = {**script,"data":{**script["data"],"shots":script["data"]["shots"][::-1]}}
+        first = self.svc.storyboard_context(board,reordered)["shots"][0]
+        self.assertEqual(first["canvas"]["image_node"],"next-image")
+        self.assertEqual(first["continuity"]["state"],"no_previous")
+        self.assertEqual(first["continuity"]["tail_ref"],tail_ref)
         baseline = path.read_text()
         self.svc.model.side_effect = [call("storyboard_revision_plan",{"node_id":"story","shot":2,
             "changes":{"keyframe":"左手握住木盒","scene":next_shot["scene"]}}),answer("请确认")]
@@ -1125,15 +1222,25 @@ class ChatIntegration(ChatFixture):
         self.assertEqual((plan["shot"],plan["shot_id"]),(2,"next-shot"))
         self.assertEqual(plan["before"],{"keyframe":next_shot["keyframe"]})
         self.assertEqual(plan["changes"],{"keyframe":"左手握住木盒"})
-        storyboard_range = call("storyboard_range_run_plan",{"node_id":"story","first":1,"last":2,"stage":"frame"},"plan-range")
+        storyboard_range = call("storyboard_range_run_plan",{"node_id":"story","first":1,"last":2,
+            "stage":"frame","tail_mode":"connect_and_refresh"},"plan-range")
         write_attempt = call("canvas_create_text",{"text":"应该等待确认"},"try-before-confirm")
         self.svc.model.side_effect = [{**storyboard_range,"tool_calls":storyboard_range["tool_calls"]+write_attempt["tool_calls"]},answer()]
-        rid = await self.send("只补第 1 到 2 镜的分镜图",key="plan-shot-range",selected=["story"])
+        rid = await self.send("只补第 1 到 2 镜的分镜图，有上一镜的都用最新尾帧",key="plan-shot-range",selected=["story"])
         self.assertEqual((await self.wait(rid))["state"],"done")
         prepared, blocked = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)]
         self.assertEqual(prepared["shot_range_plan"]["anchors"],[{"id":"previous-shot"},{"id":"next-shot"}])
         self.assertEqual(prepared["shot_range_plan"]["mode"],"missing_frame")
+        self.assertEqual(prepared["shot_range_plan"]["tail_mode"],"connect_and_refresh")
         self.assertIn("确认运行",blocked["error"])
+        self.assertEqual(path.read_text(),baseline)
+        self.svc.model.side_effect = [call("storyboard_range_run_plan",{"node_id":"story","first":1,"last":2,
+            "stage":"video","tail_mode":"refresh"}),answer()]
+        rid = await self.send("只生成第 1 到 2 镜的视频，并更新分镜图的尾帧引用",key="video-with-tail",selected=["story"])
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        rejected = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+        self.assertIn("尾帧用于生成分镜图",rejected["error"])
+        self.assertNotIn("shot_range_plan",rejected)
         self.assertEqual(path.read_text(),baseline)
 
     async def test_visual_continuity_review_uses_pinned_boundary_frames_without_writing(self):

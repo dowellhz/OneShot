@@ -74,6 +74,9 @@ async function openBoard(id, savedConflictDraft) {
   closeVideoDraftFinal();
   closeVideoCompare();
   closeShotContinuityReview();
+  closeShotEditor();
+  closeShotMediaPicker();
+  closeVideoOptics();
   closeTextDocument();
   ctCloseGroupGallery();
   closeLightbox();

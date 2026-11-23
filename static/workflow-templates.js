@@ -119,9 +119,16 @@ function templateMedia(url,index,type,name,edge=null) {
 }
 
 function templateInputs(nodes) {
-  const fields=nodes.flatMap(node=>Object.entries(node.inputs||{}).map(([key,value])=>`<label>${esc(node.name)} · ${esc(TEMPLATE_INPUT_LABELS[key]||key)}
-    <textarea rows="2" maxlength="20000" data-template-input="${esc(node.id)}" data-field="${esc(key)}" data-before="${esc(JSON.stringify(value))}">
-${esc(value)}</textarea></label>`));
+  const options={nshots:["auto","3","4","6","8"],shotlen:["auto","3","5","8"],aspect:["16:9","9:16","4:3","1:1","21:9"]};
+  const labels={nshots:"镜头数",shotlen:"每镜时长",aspect:"画幅"};
+  const fields=nodes.flatMap(node=>Object.entries(node.inputs||{}).map(([key,value])=>{
+    const attr=`data-template-input="${esc(node.id)}" data-field="${esc(key)}" data-before="${esc(JSON.stringify(value))}"`;
+    const choices=node.type==="script"&&Object.hasOwn(options,key)?options[key]:null;
+    const control=choices?`<select ${attr}>${[...new Set([value,...choices])].map(choice=>
+      `<option value="${esc(choice)}"${choice===value?" selected":""}>${esc(choice==="auto"?"自动":choice)}</option>`).join("")}</select>`:
+      `<textarea rows="2" maxlength="20000" ${attr}>\n${esc(value)}</textarea>`;
+    return `<label>${esc(node.name)} · ${esc(labels[key]||TEMPLATE_INPUT_LABELS[key]||key)}${control}</label>`;
+  }));
   return fields.length?`<details class="template-inputs"><summary>填写模板内容</summary><div>${fields.join("")}</div></details>`:"";
 }
 
@@ -179,7 +186,8 @@ function templateCopyPayload(button) {
   const preview=button.closest("#templatePreview");
   if(!preview)return {};
   const inputs=$$("[data-template-input]",preview).flatMap(input=>{
-    if(input.value===input.defaultValue)return [];
+    const original=input.tagName==="SELECT"?JSON.parse(input.dataset.before):input.defaultValue;
+    if(input.value===original)return [];
     const {templateInput:node,field,before}=input.dataset;
     return [{node,field,before:JSON.parse(before),value:input.value}];
   });
@@ -199,7 +207,7 @@ function fillTemplatePreview(panel, inputs) {
   $("#templateStatus").textContent=`已填入 ${matches.length} 项，可修改后再使用模板`;
 }
 
-async function showTemplatePreview(row, inputs=null) {
+async function showTemplatePreview(row, inputs=null, prefill=null) {
   const epoch = ++WT.previewEpoch;
   const panel = $("#templatePreview");
   const url = TEMPLATE_API + "/" + encodeURIComponent(row.id);
@@ -249,6 +257,9 @@ async function showTemplatePreview(row, inputs=null) {
           return player?`<li><details><summary>${summary}</summary>${player}</details></li>`:`<li>${summary}</li>`;
         }).join("")}</ul>` : ""}
       </div>`;
+    if(prefill?.length){
+      inputs=prefill.map(edit=>({...edit,before:nodes.get(edit.node)?.inputs?.[edit.field]}));
+    }
     fillTemplatePreview(panel,inputs);
     panel.querySelector("header button").focus();
   } catch (error) {
@@ -277,7 +288,7 @@ async function openWorkflowTemplates(selectionOnly=false, group=null, target=nul
   $("#templateClose").focus();
   if (target && WT.scope===scope) {
     const row = WT.rows.find(item=>item.id===target.id);
-    if (row) await showTemplatePreview(row,target.inputs);
+    if (row) await showTemplatePreview(row,target.inputs,target.prefill);
     else if (!$("#templateStatus").textContent) $("#templateStatus").textContent = "此工作流模板已取消共享或不可用";
   }
 }

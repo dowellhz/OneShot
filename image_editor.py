@@ -241,7 +241,7 @@ def prepare(root: Path, p: dict) -> dict:
         instruction = "根据要求编辑 @图1，保持未要求修改的内容和构图一致。要求："
     spec = {"base": base_ref, "mask": mask_ref, "bounds": list(bounds), "strength": strength,
             "feather": feather, "mode": mode, "source": p["ref"], "prompt": prompt}
-    spec["recipe"] = {k: p[k] for k in ("ref", "mask", "mode", "prompt", "strength", "feather", "padding", "seed", "provider", "backend", "denoise", "steps") if k in p}
+    spec["recipe"] = {k: p[k] for k in ("ref", "mask", "mode", "prompt", "strength", "feather", "padding", "seed", "provider", "backend", "denoise", "steps", "memory_views") if k in p}
     spec["recipe"].setdefault("backend", backend)
     if camera is not None:
         spec["recipe"].update(camera_view=camera,count=count,quality=p.get("quality","4mp"))
@@ -254,7 +254,9 @@ def prepare(root: Path, p: dict) -> dict:
     return {"kind": "image", "model": "h3img", "prompt": instruction + prompt, "images": images,
             "ar": context.width / context.height, "quality": p.get("quality", "4mp"), "count": count,
             "seed": p.get("seed", -1), "provider": p.get("provider"), "label": p.get("label"),
-            "board": p.get("board"), "memory_ids": p.get("memory_ids", []), "_image_edit": spec, "_native_inpaint": native}
+            "board": p.get("board"), "memory_ids": p.get("memory_ids", []),
+            **({"memory_views":p["memory_views"]} if "memory_views" in p else {}),
+            "_image_edit": spec, "_native_inpaint": native}
 
 
 def composite(root: Path, spec: dict, outputs: list) -> list:

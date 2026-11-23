@@ -198,6 +198,9 @@ def workflow_template(board, selected=None, include_upstream=False):
     def clean_timeline(timeline):
         if not isinstance(timeline,dict):
             return
+        script = timeline.get("story_script")
+        if script is not None and (not isinstance(script, str) or script not in ids):
+            timeline.pop("story_script", None)
         for item in timeline.get("cutaways") or []:
             if isinstance(item,dict):
                 nid = item.get("node")

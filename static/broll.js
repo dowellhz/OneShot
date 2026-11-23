@@ -24,13 +24,14 @@ function brollMode() {
   }
 }
 
-function openBroll(source) {
-  const version = curV(source);
-  if (!canvasCanEdit() || !version?.ref || !["image","video"].includes(source.type)) return;
+function openBroll(source,{sourceRef=null,brief=""}={}) {
+  const version = sourceRef?source?.versions.find(v=>v.ref===sourceRef):curV(source);
+  if (brollDialog.open || !canvasCanEdit() || !version?.ref || !["image","video"].includes(source.type)) return;
   brollSession = {board:boardId,node:source,ref:version.ref};
   br("form").reset();
   br("fieldset").disabled = false;
-  br("[data-br-source]").textContent = `${source.name} · 版本 ${source.cur+1}`;
+  br("[data-br-source]").textContent = `${source.name} · 版本 ${source.versions.indexOf(version)+1}`;
+  br("[name=brief]").value=brief;
   const still = source.type === "image";
   br("[data-br-duration]").hidden = !still;
   br("[name=mode] option[value=motion]").hidden = !still;

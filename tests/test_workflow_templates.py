@@ -304,9 +304,17 @@ class WorkflowTemplates(ChatFixture):
         starter = api+"/starter-storyboard"
         starter_preview = await (await self.client.get(starter+"/preview",headers=guest)).json()
         original = starter_preview["nodes"][0]["inputs"]["text"]
+        settings = starter_preview["nodes"][1]["inputs"]
+        edits = [{"node":"n2","field":key,"before":settings[key],"value":value}
+                 for key,value in (("nshots","auto"),("shotlen","auto"),("aspect","9:16"))]
         changed = await self.client.post(starter+"/fragment",headers=guest,json={"inputs":[
-            {"node":"n1","field":"text","before":original,"value":"雨后车站里的故事"}]})
+            {"node":"n1","field":"text","before":original,"value":"雨后车站里的故事"},*edits]})
         self.assertEqual(changed.status,200,await changed.text())
-        self.assertEqual((await changed.json())["nodes"][0]["data"]["text"],"雨后车站里的故事")
+        fragment = (await changed.json())["nodes"]
+        self.assertEqual(fragment[0]["data"]["text"],"雨后车站里的故事")
+        self.assertEqual([fragment[1]["data"][key] for key in ("nshots","shotlen","aspect")],["auto","auto","9:16"])
+        invalid = await self.client.post(starter+"/fragment",headers=guest,json={"inputs":[{**edits[-1],"value":"invalid"}]})
+        self.assertEqual(invalid.status,400)
         untouched = await (await self.client.post(starter+"/fragment",headers=guest)).json()
         self.assertEqual(untouched["nodes"][0]["data"]["text"],original)
+        self.assertEqual(untouched["nodes"][1]["data"]["aspect"],"16:9")

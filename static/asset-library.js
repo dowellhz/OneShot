@@ -1,10 +1,16 @@
 "use strict";
 // A dedicated asset workspace; the canvas drawer remains the quick media picker.
-const AL = {open:false, board:null, items:[], kind:'all', query:'', scope:'all', source:'all', sort:'recent', selected:null, epoch:0, returnFocus:null};
+const AL = {open:false, board:null, items:[], kind:'all', query:'', scope:'current', source:'all', sort:'recent', selected:null, epoch:0, returnFocus:null};
 const AL_KINDS = {all:'所有资产', ...KIND_CN};
 const AL_DRAG_TYPE = "application/x-oneshot-library";
 Object.assign(AL,{folders:[],folder:'all',marked:new Set(),filing:false});
-const alFolderTeam = () => AL.scope.startsWith("team:") ? AL.scope.slice(5) : "";
+const alCurrentTeam = () => B?.team || boardDirectory.find(b=>b.id===boardId)?.team || "";
+const alFolderTeam = () => AL.scope === "current" ? alCurrentTeam() :
+  AL.scope.startsWith("team:") ? AL.scope.slice(5) : "";
+function alCurrentName() {
+  const team = alCurrentTeam();
+  return team ? canvasTeams.find(t=>t.id===team)?.name || "团队" : currentProject()?.name || B?.name || "未命名画布";
+}
 const alFolderList = () => alFolderTeam() ? (AL.teamFolders?.team===alFolderTeam()?AL.teamFolders.items:[]) : AL.folders;
 const alFolderURL = (id="",team=alFolderTeam()) =>
   "/api/asset-folders"+(id?"/"+encodeURIComponent(id):"")+(team?"?team="+encodeURIComponent(team):"");
@@ -18,16 +24,25 @@ function alSource(a) {
 function alSourceLabel(a) { return {upload:'用户上传',generated:'生成素材',mixed:'多种来源',text:'文本资料',other:'已有素材'}[alSource(a)]; }
 function alEditable(a) { return !a || !ME_USER || ME_USER.role === 'admin' || a.owner == null || a.owner === ME_USER.id; }
 function alThumb(a) { return a.ref || (a.media || []).find(m => cmMediaType(m.ref,m))?.ref || ''; }
+function alPersonal(a) {
+  return !a.board && !a.project && !a.team && (a.owner == null || a.owner === ME_USER?.id);
+}
+function alBoardInLibrary(bid) {
+  const project = currentProject()?.id;
+  return bid === boardId || !!(project && boardDirectory.some(board=>board.id===bid&&board.project===project));
+}
 function alBaseItems() {
   const q = AL.query.trim().toLocaleLowerCase();
-  const project = currentProject()?.id;
+  const team = alCurrentTeam(), project = currentProject()?.id;
+  const inCurrent = a => a.board && alBoardInLibrary(a.board) ||
+    (team ? a.team === team : project && a.project === project);
   const found = AL.documentQuery===q ? AL.documentResults : new Map();
   const items = new Map(AL.items.map(a=>[a.id,a]));
   for(const [id,a] of found)items.set(id,a);
   return [...items.values()].filter(a => (!q || found.has(a.id) ||
     [a.name,a.desc,a.document?.name,a.document?.text||a.document?.excerpt,...(a.aliases||[]),...(a.tags||[])].join(' ').toLocaleLowerCase().includes(q))
-    && (AL.scope === 'all' || AL.scope === 'project' && (project ? a.project === project : a.board === boardId) ||
-      AL.scope === 'canvas' && a.board === boardId || AL.scope === 'personal' && !a.board && !a.project && !a.team && (a.owner == null || a.owner === ME_USER?.id) || AL.scope === 'shared' && a.shared || AL.scope.startsWith('team:') && a.team === AL.scope.slice(5))
+    && (AL.scope === 'current' && inCurrent(a) ||
+      AL.scope === 'personal' && alPersonal(a) || AL.scope === 'shared' && a.shared || AL.scope.startsWith('team:') && a.team === AL.scope.slice(5))
     && (AL.source === 'all' || alSource(a) === AL.source)
     && (AL.folder === 'all' || (AL.folder === 'none' ? !alFolderSlot(a) : alFolderSlot(a) === AL.folder)));
 }
@@ -106,10 +121,9 @@ function alEmptyDetail() {
 function alRender() {
   if (!AL.open || AL.drag) return;
   alRenderFolders();
-  const project = currentProject();
-  $("#alScope option[value=project]").textContent = project ? "当前项目" : "当前画布";
-  $("#alScope option[value=canvas]").hidden = !project;
-  if (!project && AL.scope === "canvas") AL.scope = $("#alScope").value = "project";
+  const currentLabel = "当前资产库 · " + alCurrentName();
+  $("#alScope option[value=current]").textContent = currentLabel;
+  $("#alTitle").textContent = AL.scope === "current" ? currentLabel : "资产库";
   const base = alBaseItems(), list = base.filter(a => AL.kind === 'all' || a.kind === AL.kind);
   list.sort((a,b) => AL.sort === 'name' ? a.name.localeCompare(b.name,'zh-CN') : (b.mtime||0)-(a.mtime||0));
   for (const b of $$('#alCategories [data-kind]')) {
@@ -119,7 +133,7 @@ function alRender() {
   $('#alCount').textContent = `${list.length} 项资产`;
   $('#alHeading').textContent = AL_KINDS[AL.kind];
   $('#alGrid').replaceChildren(); $('#alEmpty').hidden = !!list.length;
-  const filtered = AL.query || AL.scope !== 'all' || AL.source !== 'all';
+  const filtered = AL.query || AL.scope !== 'current' || AL.source !== 'all';
   $('#alEmptyTitle').textContent = filtered ? '没有匹配的资产' : AL.folder!=='all' ? '这个文件夹暂无资产' : `还没有${AL.kind === 'all' ? '资产' : AL_KINDS[AL.kind]}`;
   $('#alEmptyText').textContent = filtered ? '试试其他关键词，或重置筛选条件。' : AL.folder!=='all' ? '从全部资产选择要归档的素材，再移动到此文件夹。' : '上传素材、从画布收录，或新建一份背景资料。';
   for (const a of list) {
@@ -166,7 +180,7 @@ async function alRefresh() {
         option.dataset.teamScope="";
         picker.add(option);
       }
-      if(AL.scope.startsWith("team:") && !teams.some(t=>"team:"+t.id===AL.scope))AL.scope="all";
+      if(AL.scope.startsWith("team:") && !teams.some(t=>"team:"+t.id===AL.scope))AL.scope="current";
       picker.value=AL.scope;
     }
     if(Array.isArray(folders))AL.folders=folders;
@@ -187,10 +201,26 @@ async function alRefresh() {
     if (AL.open && AL.epoch === epoch) { $('#alError').textContent = e.message + '，可点击刷新重试。'; $('#alError').hidden = false; }
   } finally { if (AL.epoch === epoch) $('#alLoading').hidden = true; }
 }
-async function alOpen() {
+function alResetFilters(scope='current',folder='all') {
+  AL.query='';AL.scope=scope;AL.source='all';AL.folder=folder;
+  AL.marked.clear();AL.filing=false;
+  $('#alSearch').value='';$('#alScope').value=scope;$('#alSource').value='all';
+  $('#alFolderEditor').replaceChildren();
+  alSearchDocuments();
+}
+async function alOpen(destination=null) {
   if (!B) return;
   if(CM.editor && !CM.editor.closest("#assetLibrary")){if(CM.editor.dataset.busy==="true")return toast("正在保存或上传，请稍等");CM.editor.remove();CM.editor=null;}
-  if (!AL.open) AL.returnFocus = document.activeElement;
+  if (!AL.open || destination) {
+    if(!AL.open)AL.returnFocus=document.activeElement;
+    AL.kind='all';
+    alResetFilters(destination?.scope,destination?.folder);
+    if(destination || AL.board!==boardId){
+      AL.selected=null;
+      if(CM.editor?.closest('#alDetail'))CM.editor=null;
+      alEmptyDetail();
+    }
+  }
   AL.open = true; $('#assetLibrary').hidden = false; $('#assetBtn').classList.add('on'); $('#assetLibraryBtn').setAttribute('aria-expanded','true');
   $('#drawer').classList.remove('on'); cmClose(); closeMenus();
   if (AL.board !== boardId) { AL.items=[]; AL.selected=null; alEmptyDetail(); }
@@ -237,13 +267,15 @@ async function alImportCanvasAssets(host, nodes, onSaved, {onCancel,skipped=0}={
   form.innerHTML=`<strong>收录 ${entries.length} 项资产</strong>
     <ul class="al-import-selection" aria-label="收录清单">${nodes.map(n=>`<li><span>${esc(n.name)}</span><small>${TYPE_CN[n.type]}${curV(n)?.ref?` · 版本 ${n.cur+1}`:""}</small></li>`).join("")}</ul>
     ${skipped?`<p>另有 ${skipped} 个节点暂不可收录。</p>`:""}
-    <label>范围 <select name="scope">${project?'<option value="project">当前项目</option>':''}<option value="canvas">当前画布</option><option value="personal">个人素材库</option>${canvasTeams.map(t=>`<option value="team:${esc(t.id)}">团队 · ${esc(t.name)}</option>`).join("")}</select></label>
+    <label>保存到 <select name="scope">${project?`<option value="project">项目资产库 · ${esc(project.name)}</option>`:alCurrentTeam()?"":`<option value="canvas">当前画布 · ${esc(B.name)}</option>`}<option value="personal">个人资产库</option>${canvasTeams.map(t=>`<option value="team:${esc(t.id)}">团队 · ${esc(t.name)}</option>`).join("")}</select></label>
     <label>文件夹 <select name="folder"><option value="">未归档</option></select></label>
     <span role="status">正在读取文件夹…</span>
     <button type="button" data-cancel>取消</button><button type="submit" disabled>确认收录</button>`;
   host.replaceChildren(form);
   const [scope,folder]=$$("select",form), submit=$("[type=submit]",form), status=$("[role=status]",form);
-  if(AL.scope.startsWith("team:") && [...scope.options].some(option=>option.value===AL.scope))scope.value=AL.scope;
+  const targetTeam = AL.open ? alFolderTeam() : alCurrentTeam();
+  const target = targetTeam ? "team:"+targetTeam : AL.open && AL.scope==="personal" ? "personal" : "";
+  if ([...scope.options].some(option=>option.value===target)) scope.value=target;
   let key=null, previous=null, busy=false;
   $("[data-cancel]",form).onclick=()=>{if(!busy){form.remove();onCancel?.();}};
   let folderRequest=0;
@@ -284,11 +316,7 @@ async function alImportCanvasAssets(host, nodes, onSaved, {onCancel,skipped=0}={
       cmInvalidate();
       if(bid!==boardId || !form.isConnected)return;
       onSaved();
-      AL.kind="all";
-      $("#alReset").click();
-      AL.folder=payload.folder||"none";
-      AL.scope=$("#alScope").value=team?"team:"+team:payload.scope;
-      await alOpen();
+      await alOpen({scope:team?"team:"+team:payload.scope==="personal"?"personal":"current",folder:payload.folder||"none"});
       toast("已收录 "+result.ids.length+" 项资产");
     } catch(err) { status.textContent=err.message; }
     finally { busy=false;submit.disabled=scope.disabled=folder.disabled=false;form.removeAttribute("aria-busy"); }
@@ -352,7 +380,7 @@ function alImpact(asset) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "无法读取参考图影响");
       if (boardId !== bid || !section.isConnected) return;
-      status.textContent = result.canvas.length || result.remake.length ? "这些版本采用了旧参考图。" : "可访问的项目没有使用旧参考图的结果。";
+      status.textContent = result.canvas.length || result.remake.length ? "这些版本使用的参考图已更新或需要重新定稿。" : "可访问的项目没有受影响的版本。";
       const chosen = [];
       const show = (entry, label, remake) => {
         const li = document.createElement("li"), button = document.createElement("button");
@@ -378,7 +406,10 @@ function alImpact(asset) {
       };
       const label = e => [e.project, e.name].filter(Boolean).join(" · ");
       result.remake.forEach(entry => show(entry, `${label(entry)} · 镜头 ${entry.shot + 1}`, true));
-      result.canvas.forEach(entry => show(entry, `${label(entry)} · 版本 ${entry.version}`, false));
+      result.canvas.forEach(entry => {
+        const views = (entry.views || []).map(change=>`${CHARACTER_VIEWS[change.view]?.[0] || "默认参考图"}${change.reference ? "" : "待定稿"}`);
+        show(entry, [label(entry),`版本 ${entry.version}`,...views].join(" · "), false);
+      });
       redo.hidden = !chosen.length;
       redo.onclick = async () => {
         const selected = chosen.filter(([, check]) => check.checked).map(([entry]) => entry);
@@ -411,8 +442,9 @@ function alImpact(asset) {
 async function alNew(options={}) {
   if (CM.editor?.dataset.busy === 'true') return toast('正在保存或上传，请稍等');
   AL.selected=null; alRender();
-  const team=AL.scope.startsWith("team:")?AL.scope.slice(5):"";
-  const preset=team?{team,board:"",project:"",...options.preset}:options.preset;
+  const team=alFolderTeam();
+  const personal=AL.scope==="personal"||AL.scope==="shared";
+  const preset=team||personal?{team,board:"",project:"",shared:AL.scope==="shared",...options.preset}:options.preset;
   await cmEdit(null, AL.kind === 'all' ? 'character' : AL.kind, {host:$('#alDetail'), ...options, preset});
 }
 function alPlace(a) {
@@ -487,7 +519,7 @@ function alImportMenu() {
 }
 function alChanged(a, removed=false) {
   if (!AL.open) return;
-  if (removed || a.board && a.board !== boardId || a.project && a.project !== currentProject()?.id) {
+  if (removed || a.board && !alBoardInLibrary(a.board) || a.project && a.project !== currentProject()?.id) {
     AL.items=AL.items.filter(x=>x.id!==a.id); AL.selected=null; alEmptyDetail();
   }
   else {
@@ -502,7 +534,7 @@ function alChanged(a, removed=false) {
 function alBoardChanged() { alClose(); alCloseCanvasImport(); AL.board=null; AL.items=[]; AL.selected=null; AL.marked.clear(); AL.filing=false; $("#alFolderEditor").replaceChildren(); CM.editor?.remove(); CM.editor=null; alEmptyDetail(); }
 function initAssetLibrary() {
   const pane=document.createElement('section');pane.id='assetLibrary';pane.hidden=true;pane.setAttribute('role','dialog');pane.setAttribute('aria-modal','false');pane.setAttribute('aria-labelledby','alTitle');
-  pane.innerHTML=`<header class="al-head"><div class="al-title">${ico('assets')}<div><h1 id="alTitle">资产库</h1><p>让人物、场景和故事设定成为可复用的创作资产</p></div></div><button type="button" id="alClose" aria-label="返回画布">${ico('left')}返回画布</button></header><div class="al-body"><nav class="al-sidebar" aria-label="资产分类"><div class="al-nav-label">创作资产</div><div id="alCategories">${Object.entries(AL_KINDS).map(([k,v])=>`<button type="button" data-kind="${k}" aria-pressed="${k==='all'}"><span>${v}</span><small>0</small></button>`).join('')}</div><div class="al-sidebar-note">资产可包含参考图、视频和文字设定。<br>输入 @ 自动引用，生成历史持续保留。</div><button type="button" id="alTemplate">工作流模板</button><button type="button" id="alHistory">${ico('clock')}素材历史</button></nav><main class="al-main"><div class="al-toolbar"><label class="al-search">${ico('search')}<input id="alSearch" placeholder="搜索名称、标签和文档正文" aria-label="搜索资产"></label><button type="button" id="alUpload">${ico('upload')}上传素材</button><button type="button" id="alNew">${ico('plus')}新建资产</button><input id="alFile" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf" hidden></div><div class="al-filterbar"><h2 id="alHeading">所有资产</h2><span id="alCount">0 项资产</span><div class="al-filters"><select id="alScope" aria-label="资产范围"><option value="all">所有范围</option><option value="project">当前项目</option><option value="canvas">当前画布</option><option value="personal">个人素材库</option><option value="shared">共享素材</option></select><select id="alSource" aria-label="资产来源"><option value="all">所有来源</option><option value="upload">用户上传</option><option value="generated">生成素材</option><option value="mixed">多种来源</option><option value="text">文本资料</option><option value="other">已有素材</option></select><select id="alSort" aria-label="资产排序"><option value="recent">最近更新</option><option value="name">名称排序</option></select><button type="button" id="alReset" title="重置筛选">重置</button><button type="button" id="alRefresh" title="刷新资产库" aria-label="刷新资产库">${ico('redo')}</button></div></div><div class="al-feedback"><span id="alLoading" hidden>正在读取资产…</span><span id="alError" role="alert" hidden></span></div><div class="al-content"><div id="alGrid" class="al-grid"></div><div id="alEmpty" class="al-empty">${ico('assets')}<h3 id="alEmptyTitle">还没有资产</h3><p id="alEmptyText"></p><div><button type="button" id="alEmptyNew">新建资产</button><button type="button" id="alFromCanvas">从画布收录</button></div></div></div><div class="al-foot"><span>拖动资产卡片可放入画布。</span><button type="button" id="alImportBtn">从画布收录</button></div><div id="alImport" class="al-import" hidden></div></main><aside id="alDetail" class="al-detail" aria-label="资产详情"></aside></div>`;
+  pane.innerHTML=`<header class="al-head"><div class="al-title">${ico('assets')}<div><h1 id="alTitle">当前资产库</h1></div></div><button type="button" id="alClose" aria-label="返回画布">${ico('left')}返回画布</button></header><div class="al-body"><nav class="al-sidebar" aria-label="资产分类"><div class="al-nav-label">创作资产</div><div id="alCategories">${Object.entries(AL_KINDS).map(([k,v])=>`<button type="button" data-kind="${k}" aria-pressed="${k==='all'}"><span>${v}</span><small>0</small></button>`).join('')}</div><div class="al-sidebar-note">资产可包含参考图、视频和文字设定。<br>输入 @ 自动引用，生成历史持续保留。</div><button type="button" id="alTemplate">工作流模板</button><button type="button" id="alHistory">${ico('clock')}素材历史</button></nav><main class="al-main"><div class="al-toolbar"><label class="al-search">${ico('search')}<input id="alSearch" placeholder="搜索名称、标签和文档正文" aria-label="搜索资产"></label><button type="button" id="alUpload">${ico('upload')}上传素材</button><button type="button" id="alNew">${ico('plus')}新建资产</button><input id="alFile" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf" hidden></div><div class="al-filterbar"><h2 id="alHeading">所有资产</h2><span id="alCount">0 项资产</span><div class="al-filters"><select id="alScope" aria-label="资产范围"><option value="current">当前资产库</option><option value="personal">个人资产库</option><option value="shared">共享素材</option></select><select id="alSource" aria-label="资产来源"><option value="all">所有来源</option><option value="upload">用户上传</option><option value="generated">生成素材</option><option value="mixed">多种来源</option><option value="text">文本资料</option><option value="other">已有素材</option></select><select id="alSort" aria-label="资产排序"><option value="recent">最近更新</option><option value="name">名称排序</option></select><button type="button" id="alReset" title="重置筛选">重置</button><button type="button" id="alRefresh" title="刷新资产库" aria-label="刷新资产库">${ico('redo')}</button></div></div><div class="al-feedback"><span id="alLoading" hidden>正在读取资产…</span><span id="alError" role="alert" hidden></span></div><div class="al-content"><div id="alGrid" class="al-grid"></div><div id="alEmpty" class="al-empty">${ico('assets')}<h3 id="alEmptyTitle">还没有资产</h3><p id="alEmptyText"></p><div><button type="button" id="alEmptyNew">新建资产</button><button type="button" id="alFromCanvas">从画布收录</button></div></div></div><div class="al-foot"><span>拖动资产卡片可放入画布。</span><button type="button" id="alImportBtn">从画布收录</button></div><div id="alImport" class="al-import" hidden></div></main><aside id="alDetail" class="al-detail" aria-label="资产详情"></aside></div>`;
   document.body.append(pane);alEmptyDetail();
   pane.insertAdjacentHTML("afterend",`<dialog id="alCanvasImport" aria-labelledby="alCanvasImportTitle"><h2 id="alCanvasImportTitle">收录到资产库</h2><div data-canvas-import-form></div></dialog>`);
   const canvasImport=$("#alCanvasImport"), importForm=$("[data-canvas-import-form]",canvasImport);
@@ -563,11 +595,12 @@ function initAssetLibrary() {
   };
   for(const [id,field] of [['alSource','source'],['alSort','sort']])$('#'+id).onchange=e=>{AL[field]=e.target.value;alRender();};
   $$('#alCategories [data-kind]').forEach(b=>b.onclick=()=>{AL.kind=b.dataset.kind;alRender();});
-  $('#alReset').onclick=()=>{AL.query='';AL.scope=AL.source=AL.folder='all';AL.marked.clear();$('#alSearch').value='';$('#alScope').value=$('#alSource').value='all';alRender();};
+  $('#alReset').onclick=()=>{alResetFilters();alRender();};
   $('#alFromCanvas').onclick=$('#alImportBtn').onclick=alImportMenu;
   $('#alUpload').onclick=()=>$('#alFile').click();$('#alFile').onchange=e=>{const file=e.target.files[0];if(file)alNew({file,kind:CM_DOCUMENT_EXT.test(file.name)?'document':undefined,preset:{name:file.name.replace(/\.[^.]+$/,'')}});e.target.value='';};
   $('#alTemplate').onclick=openWorkflowTemplates;
   $('#alHistory').onclick=()=>{alClose();$('#drawer').classList.add('on');loadAssets();};
-  $('#assetLibraryBtn').onclick=()=>AL.open?alClose():alOpen();$('#assetBtn').onclick=()=>AL.open?alClose():alOpen();
+  const openCurrent = () => alOpen(AL.open && AL.scope !== "current" ? {scope:"current"} : null);
+  $('#assetLibraryBtn').onclick=$('#assetBtn').onclick=openCurrent;
   document.addEventListener('pointerdown',e=>{if(!e.target.closest('#alImport,#alImportBtn,#alFromCanvas'))$('#alImport').hidden=true;});
 }

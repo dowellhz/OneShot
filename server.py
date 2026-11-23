@@ -25,6 +25,7 @@ import providers
 import remote
 import local_admin
 import image_editor
+import image_camera
 import motion_reference
 import camera_plan
 import object_edit
@@ -1792,6 +1793,11 @@ async def unpublish_template(req):
 
 
 TEMPLATE_VIDEO_INPUTS = ("style","scene","people","camera","action","dialogue","sound","music")
+TEMPLATE_SCRIPT_SETTINGS = {
+    "nshots": ("auto","3","4","6","8"),
+    "shotlen": ("auto","3","5","8"),
+    "aspect": ("16:9","9:16","4:3","1:1","21:9"),
+}
 
 
 def template_node_inputs(node):
@@ -1804,6 +1810,9 @@ def template_node_inputs(node):
         fields = data.get("fields")
         fields = fields if isinstance(fields,dict) else {}
         return {f"fields.{key}":str(fields.get(key) or "") for key in TEMPLATE_VIDEO_INPUTS}
+    if node["type"] == "script":
+        settings = {key:str(data.get(key) or ("16:9" if key == "aspect" else "auto")) for key in TEMPLATE_SCRIPT_SETTINGS}
+        return {"prompt":str(data.get("prompt") or ""),**settings}
     if node["type"] in ("image","video","audio","script"):
         return {"prompt":str(data.get("prompt") or "")}
     return {}
@@ -1828,6 +1837,8 @@ def template_copy_inputs(row, payload):
         fields = template_node_inputs(node) if node else {}
         if field not in fields or (nid,field) in applied or len(value)>20_000 or len(old)>20_000:
             raise bad("模板填写项不存在、重复或超过 20000 字")
+        if node["type"] == "script" and field in TEMPLATE_SCRIPT_SETTINGS and value not in TEMPLATE_SCRIPT_SETTINGS[field]:
+            raise bad("分镜模板参数无效")
         if fields[field]!=old:
             raise web.HTTPConflict(text=json.dumps({"error":"模板内容已更新，请重新打开预览"},ensure_ascii=False),
                                    content_type="application/json")
@@ -2698,10 +2709,10 @@ async def preview(req):
     retake = resolve_camera_plan(raw)
     object_plan = resolve_object_edit(raw)
     if raw.get("previs_guide") is not None or raw.get("audio_refs") or raw.get("video_refs"):
-        payload = req.app["creative_memory"].prepare(req["user"], raw)
+        payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"], raw))
         return web.json_response({"prompt": reference_prompt(payload), "mode": "镜头重拍" if retake else
                                   object_edit.ACTIONS[object_plan["action"]] if object_plan else "全模态参考"})
-    p = apply_fields(raw)
+    p = apply_fields(apply_video_optics(raw))
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
     p = await to_english(req.app, p)
@@ -2942,7 +2953,7 @@ async def generate_request(req, raw):
     if draft is not None:
         draft = memory.character_draft_request(req["user"], raw, draft)
     options = {"owner_only":True} if req.get("connector_own_assets") else {}
-    payload = memory.prepare(req["user"], raw, **options)
+    payload = memory.prepare(req["user"], raw, replay_ref=req.get("replay_memory_ref"), **options)
     return await submit_prepared_generation(req, payload, draft=draft)
 
 
@@ -2969,11 +2980,12 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
     if payload.get("memory_used"):
         result["memory_used"] = payload["memory_used"]
         if not native:
-            result["memory_context"] = {k: payload[k] for k in ("prompt", "images", "planned") if k in payload}
+            result["memory_context"] = {k: payload[k] for k in ("prompt", "images", "planned", "memory_views") if k in payload}
     return web.json_response(result)
 
 
 async def _generate_request(req, raw, *, fixed_route=None):
+    raw = apply_video_optics(raw)
     u = req["user"]
     cap = "image" if raw.get("kind") == "image" else "video"
     extension = raw.get("extension")
@@ -3265,7 +3277,7 @@ async def storyboard(req):
     if not clean(p.get("story")):
         raise bad("先写一段剧情")
     return await llm_call(req, tools.storyboard(req.app["llm"], COMFY_DIR, p["story"], p.get("refs") or [], p.get("shots"),
-                                                p.get("seconds"), clean(p.get("style")), p.get("aspect") or "16:9"))
+                                                p.get("seconds"), clean(p.get("style")), p.get("aspect") or "16:9", p.get("target_seconds")))
 
 
 @routes.post("/api/describe")
@@ -3388,12 +3400,14 @@ async def library(req):
 @routes.post("/api/library")
 async def library_put(req):
     data = await req.json()
+    store = req.app["creative_memory"]
     if isinstance(data, dict) and data.pop("recreate_deleted", False):
         mid = data.get("id")
         if isinstance(mid, str) and db.one("SELECT 1 FROM creative_memories WHERE id=? AND deleted=1", mid):
             data.pop("id")
-            data.setdefault("board", data.get("source_board", ""))
-    return web.json_response(req.app["creative_memory"].put(req["user"], data))
+            if not {"board","project","team"} & data.keys() and (bid := data.get("source_board")):
+                data.update(store.default_scope(req["user"],bid))
+    return web.json_response(store.put(req["user"], data))
 
 
 @routes.delete("/api/library/{aid}")
@@ -4858,6 +4872,27 @@ def resolve_camera_plan(raw):
         return camera_plan.validate(raw["camera_plan"])
     except ValueError as error:
         raise bad(str(error)) from None
+
+
+def apply_video_optics(raw):
+    if "video_optics" not in raw:
+        return raw
+    if raw.get("kind","video") != "video":
+        raise bad("视频镜头参数仅用于视频生成")
+    try:
+        settings = image_camera.validate_optics(raw["video_optics"])
+    except ValueError as error:
+        raise bad(str(error)) from None
+    if not settings:
+        return raw
+    description = "，".join(image_camera.optics_instructions(settings)) + "。"
+    fields = raw.get("fields")
+    if isinstance(fields,dict) and pfields.has_content(fields):
+        camera = str(fields.get("camera") or "").strip()
+        return {**raw,"fields":{**fields,"camera":"\n".join(filter(None,(camera,description)))}}
+    prompt = str(raw.get("prompt") or "").strip()
+    prompt, structured = _append_to_section(prompt,("detailed_description","integrated_multimodal_description"),description)
+    return {**raw,"prompt":prompt if structured else "\n".join(filter(None,(prompt,description)))}
 
 
 def resolve_object_edit(raw):

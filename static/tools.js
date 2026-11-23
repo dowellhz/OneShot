@@ -263,7 +263,7 @@ async function saveAsset(n, kind) {
   try {
     await flushSave();
     if (bid !== boardId || node(n.id) !== n) return;
-    const scope = n.data.asset?.id ? {} : cmNewScope(bid);
+    const scope = n.data.asset?.id ? {} : cmNewScope();
     const a = await api("/api/library", { id: n.data.asset?.id, kind, name, desc: n.data.caption || (v.prompt || "").slice(0, 200), ref: v.ref, w: v.w, h: v.h, source_board: bid, node_id:n.id, ...scope, recreate_deleted:true });
     if (bid !== boardId || node(n.id) !== n) return;
     checkpoint(); n.name = a.name; n.data.asset = { id: a.id, kind }; save(); render(n); refreshDownstream(n); drawEdges();
@@ -355,6 +355,10 @@ function scriptShotLinks(n) {
   return links;
 }
 
+function shotNeedsNodes(pair) {
+  return !node(pair?.img)||!node(pair?.vid);
+}
+
 function scriptTailEdges() {
   const edges=new Map();
   for(const edge of B.edges)if(edge.story_continuity&&!edges.has(edge.to))edges.set(edge.to,edge);
@@ -363,26 +367,39 @@ function scriptTailEdges() {
 
 function scriptContinuityStatus(links,index,edges) {
   const edge=edges.get(links[index]?.img);
-  if(index<1||!edge)return null;
+  if(!edge)return null;
+  if(index===0)return {text:"首镜仍引用旧的上一镜尾帧",warning:true};
   const previous=node(links[index-1]?.vid), source=node(edge.from), picture=node(edge.to);
   const capture=source?.versions.find(v=>v.ref===edge.ref)?.capture;
   const requested=curV(previous)?.ref;
   const used=curV(picture)?.generation_record?.inputs;
-  let text;
-  if(!capture?.source_ref || capture.position!=="last")text="尾帧来源无法确认";
-  else if(!requested)text="上一镜当前没有可用视频";
-  else if(capture.source_node!==previous.id || capture.source_ref!==requested)text="尾帧与上一镜当前版本不一致";
-  else if(Array.isArray(used)&&!used.some(item=>item.ref===edge.ref))text="尾帧已对齐，当前分镜图尚未使用";
-  if(text)return {text,warning:true};
+  if(!capture?.source_ref || capture.position!=="last")return {text:"尾帧来源无法确认",warning:true,relink:!!requested};
+  if(!requested)return {text:"上一镜当前没有可用视频",warning:true};
+  if(capture.source_node!==previous.id || capture.source_ref!==requested)return {text:"尾帧与上一镜当前版本不一致",warning:true,relink:true};
+  if(Array.isArray(used)&&!used.some(item=>item.ref===edge.ref))return {text:"尾帧已对齐，当前分镜图尚未使用",warning:true};
   return {text:`尾帧已对齐 · 上一镜版本 ${previous.cur+1}`,warning:false};
 }
 
 function paintScriptContinuity(script,root,links=scriptShotLinks(script),edges=scriptTailEdges()) {
+  const editable=canvasCanEdit()&&!nodeLocked(script);
   for(const badge of $$("[data-script-tail-status]",root)){
-    const status=scriptContinuityStatus(links,Number(badge.dataset.scriptTailStatus),edges);
+    const index=Number(badge.dataset.scriptTailStatus);
+    const status=scriptContinuityStatus(links,index,edges);
     badge.hidden=!status;
-    badge.textContent=status?.text||"";
+    if(badge.textContent!==(status?.text||""))badge.textContent=status?.text||"";
     badge.dataset.warning=String(!!status?.warning);
+    const actions=$("[data-shot-tail-actions]",badge.parentElement);
+    if(!actions)continue;
+    const edge=edges.get(links[index]?.img);
+    const picture=node(links[index]?.img), previous=node(links[index-1]?.vid);
+    const link=$("[data-tail-link]",actions), remove=$("[data-tail-remove]",actions);
+    const canChange=editable&&picture?.type==="image"&&!nodeLocked(picture);
+    link.hidden=!canChange||!curV(previous)?.ref||picture.data.model==="h3video"||!!edge&&!status?.relink;
+    remove.hidden=!canChange||!edge;
+    actions.hidden=link.hidden&&remove.hidden;
+    const label=edge?"改用最新尾帧":"连接上一镜尾帧";
+    if(link.textContent!==label)link.textContent=label;
+    link.disabled=remove.disabled=!!(picture?.job||prepping.has(picture?.id)||scriptContinuityPending.has(picture));
   }
 }
 
@@ -405,27 +422,45 @@ function openScriptShot(n,index) {
 
 const scriptContinuityPending=new Set();
 
-async function linkPreviousShotFrame(script,index) {
+function scriptTailPrompt(slot) {
+  return `参考上一镜尾帧 ${promptMediaToken("image",slot)} 的人物、道具位置和光线，按本镜的机位与首帧要求构图。`;
+}
+
+function removeScriptTailPrompt(picture, edge) {
+  const slot=promptSlot(edge.prompt_slot);
+  if(!slot || !picture.data.prompt || imageInputs(picture).some(input=>input.edge!==edge&&input.edge.prompt_slot===slot))return;
+  const token=promptMediaToken("image",slot), instruction=scriptTailPrompt(slot);
+  picture.data.prompt=picture.data.prompt.split("\n").filter(line=>line.trim()!==instruction).join("\n").replaceAll(token,"");
+}
+
+async function linkPreviousShotFrame(script,index,{batch=false,allowNew=!batch,select=!batch,active:keepRunning=()=>true}={}) {
+  const fail=message=>{
+    if(batch)throw new Error(message);
+    toast(message);
+    return false;
+  };
   if(!canvasCanEdit() || node(script.id)!==script || nodeLocked(script))return;
   const pairs=scriptShotLinks(script), source=node(pairs[index-1]?.vid), picture=node(pairs[index]?.img);
   const version=curV(source);
-  if(!version?.ref)return toast("请先为上一镜生成或选好视频版本");
-  if(!picture)return toast("请先展开这一镜");
-  if(nodeLocked(picture)||picture.job||prepping.has(picture.id))return toast("请等当前分镜图任务结束，或解锁节点后再连接");
-  if(picture.data.model==="h3video")return toast("请为分镜图选择支持参考图片的模型");
-  if(vtReferenceAncestors(source).has(picture.id))return toast("上一镜已依赖本镜分镜图，连接会形成循环");
-  if(scriptContinuityPending.has(picture))return;
+  if(!version?.ref)return fail("请先为上一镜生成或选好视频版本");
+  if(!picture)return fail("请先展开这一镜");
+  if(nodeLocked(picture)||picture.job||prepping.has(picture.id))return fail("请等当前分镜图任务结束，或解锁节点后再连接");
+  if(picture.data.model==="h3video")return fail("请为分镜图选择支持参考图片的模型");
+  if(vtReferenceAncestors(source).has(picture.id))return fail("上一镜已依赖本镜分镜图，连接会形成循环");
+  if(scriptContinuityPending.has(picture))return fail("上一镜尾帧正在截取，请稍后重试");
   const continuity=()=>B.edges.find(edge=>edge.to===picture.id&&edge.story_continuity);
   const prior=continuity();
   const bindingKey=edge=>edge&&JSON.stringify([edge.from,edge.ref,edge.prompt_slot]);
   const priorBinding=bindingKey(prior);
   const oldFrame=node(prior?.from)?.versions.find(item=>item.ref===prior.ref);
-  if(oldFrame?.capture?.source_node===source.id&&oldFrame.capture.source_ref===version.ref){
-    toast("已连接上一镜当前版本的尾帧");return;
+  if(!allowNew&&!prior)return false;
+  if(oldFrame?.capture?.position==="last"&&oldFrame.capture.source_node===source.id&&oldFrame.capture.source_ref===version.ref){
+    if(!batch)toast("已连接上一镜当前版本的尾帧");
+    return true;
   }
   const previousShot=script.data.shots[index-1], shot=script.data.shots[index];
   const active=()=>{
-    if(node(script.id)!==script || nodeLocked(script) || node(picture.id)!==picture ||
+    if(!keepRunning() || node(script.id)!==script || nodeLocked(script) || node(picture.id)!==picture ||
       nodeLocked(picture) || picture.job || prepping.has(picture.id) || picture.data.model==="h3video" ||
       node(source.id)!==source || curV(source)!==version || continuity()!==prior ||
       bindingKey(prior)!==priorBinding || vtReferenceAncestors(source).has(picture.id) ||
@@ -434,23 +469,27 @@ async function linkPreviousShotFrame(script,index) {
     return linked[index-1]?.vid===source.id&&linked[index]?.img===picture.id;
   };
   scriptContinuityPending.add(picture);
-  toast("正在截取上一镜尾帧…");
+  if(!batch)toast("正在截取上一镜尾帧…");
   try{
-    const frame=await captureOnCanvas(source.id,version,{position:"last",active,onCaptured:image=>{
+    const frame=await captureOnCanvas(source.id,version,{position:"last",active,select,onCaptured:image=>{
       const sequence=promptSlot(picture.data.image_ref_seq);
       const slot=promptSlot(prior?.prompt_slot)||1+Math.max(sequence,...imageInputs(picture).map(({edge})=>promptSlot(edge.prompt_slot)));
       const binding={from:image.id,ref:curV(image).ref,prompt_slot:slot,story_continuity:true};
       if(prior)Object.assign(prior,binding);
       else {
         B.edges.push({...binding,to:picture.id});
-        const token=promptMediaToken("image",slot);
-        picture.data.prompt=[picture.data.prompt,`参考上一镜尾帧 ${token} 的人物、道具位置和光线，按本镜的机位与首帧要求构图。`].filter(Boolean).join("\n");
+        picture.data.prompt=[picture.data.prompt,scriptTailPrompt(slot)].filter(Boolean).join("\n");
       }
       picture.data.image_ref_seq=Math.max(sequence,slot);
       return picture;
     }});
-    toast(frame?"已连接上一镜尾帧，可生成本镜分镜图":"镜头或素材已变化，请重新选择");
-  }catch(error){if(node(script.id)===script)toast("尾帧连接失败："+error.message);}
+    if(!batch)toast(frame?"已连接上一镜尾帧，可生成本镜分镜图":"镜头或素材已变化，请重新选择");
+    return !!frame;
+  }catch(error){
+    if(batch)throw error;
+    if(node(script.id)===script)toast("尾帧连接失败："+error.message);
+    return false;
+  }
   finally{scriptContinuityPending.delete(picture);}
 }
 
@@ -468,7 +507,7 @@ function renderScript(n, body) {
       ${links[i]||canvasCanEdit()&&!nodeLocked(n)?`<button type="button" data-script-shot="${i}" aria-label="${links[i]?"定位":"展开"}第 ${i+1} 镜">${links[i]?"定位":"展开"}</button>`:""}</div>
       ${s.action.length ? `<div class="sa">${s.action.map(esc).join("<br>")}</div>` : ""}
       ${s.dialogue.length ? `<div class="sd">${s.dialogue.map(esc).join("<br>")}</div>` : ""}
-      ${i>0&&links[i]?.img?`<span class="story-tail-status" data-script-tail-status="${i}" hidden></span>`:""}
+      ${links[i]?.img?`<span class="story-tail-status" data-script-tail-status="${i}" hidden></span>`:""}
       ${links[i]?`<div class="script-shot-actions">
         ${canvasCanEdit()&&!nodeLocked(n)?`${i>0&&links[i].img?`<button type="button" data-script-tail="${i}" aria-label="第 ${i+1} 镜参考上一镜尾帧">参考上一镜尾帧</button>`:""}
           <button type="button" data-script-run="${i}" aria-label="第 ${i+1} 镜生成计划">生成计划</button>`:""}
@@ -491,13 +530,13 @@ function scriptCtl(n) {
   const pill = (k, opts, label) => `<span class="pill">${label}<select data-k="${k}">${Object.entries(opts).map(([a, t]) => `<option value="${a}" ${String(a) === String(d[k]) ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
   let h = `<span class="pill model"><span class="dot" style="background:#bdbdc6"></span>Qwen 分镜</span>`;
   h += pill("nshots", { auto: "镜头数：自动", 3: "3 个镜头", 4: "4 个镜头", 6: "6 个镜头", 8: "8 个镜头" }, d.nshots === "auto" ? "自动镜数" : d.nshots + " 镜");
-  h += pill("shotlen", { auto: "每镜时长：自动", 3: "每镜 3 秒", 5: "每镜 5 秒", 8: "每镜 8 秒" }, d.shotlen === "auto" ? "自动时长" : d.shotlen + "s/镜");
+  h += pill("shotlen", { auto: "按动作和台词估算", 3: "偏好短镜", 5: "偏好约 5 秒", 8: "偏好约 8 秒", 10: "偏好约 10 秒", 14: "偏好约 14 秒" }, d.shotlen === "auto" ? "自动时长" : "偏好 "+d.shotlen+"s");
   h += pill("aspect", { "16:9": "16:9", "9:16": "9:16", "4:3": "4:3", "1:1": "1:1", "21:9": "21:9" }, d.aspect);
   h += pill("quality", { hd: "视频 768P", std: "视频 480P" }, d.quality === "hd" ? "768P" : "480P");
   if (has) {
     h += `<button class="pill" data-sa="expand" title="每个镜头建一张分镜图 + 一个视频节点（分栏已填好、连好人物设定）">${made.length ? "再展开一组" : "展开到画布"}</button>`;
     if (made.length) {
-      if(made.length<d.shots.length)h += '<button class="pill" data-sa="missing">展开未展开的镜头</button>';
+      if(scriptShotLinks(n).some(shotNeedsNodes))h += '<button class="pill" data-sa="missing">补齐画布节点</button>';
       h += `<button class="pill" data-sa="imgs" title="依次生成还没有画面的分镜图">批量出分镜图</button>`;
       h += `<button class="pill" data-sa="vids" title="分镜图就绪的镜头依次生成视频">批量生成视频</button>`;
       h += `<button class="pill" data-sa="cat" title="打开剪辑台：调整顺序、裁剪、字幕、音乐，再导出成片">剪辑成片</button>`;
@@ -507,31 +546,38 @@ function scriptCtl(n) {
 }
 function wireScriptCtl(n, ctl) {
   $$("button[data-sa]", ctl).forEach(b => b.onclick = () => ({ expand: expandScript, missing:expandMissingScriptShots,
-    imgs: batchImages, vids: batchVideos, cat: s => concatVideos(scriptShotLinks(s).map(x => node(x?.vid)), s) })[b.dataset.sa](n));
+    imgs: batchImages, vids: batchVideos, cat: openStoryFilm })[b.dataset.sa](n));
 }
 function madeShots(n) {
-  const ids=new Set((n.data.shots||[]).map(shot=>shot.id));
-  return (n.data.made||[]).filter(pair=>(!pair.shot_id||ids.has(pair.shot_id))&&(node(pair.img)||node(pair.vid)));
+  const shots=n.data.shots||[];
+  const positions=new Map(shots.map((shot,index)=>[shot.id,index]).filter(([id])=>id));
+  return (n.data.made||[]).filter(pair=>(!pair.shot_id||positions.has(pair.shot_id))&&(node(pair.img)||node(pair.vid)))
+    .sort((a,b)=>(positions.get(a.shot_id)??shots.length)-(positions.get(b.shot_id)??shots.length));
 }
-async function planStoryboard(n) {
+async function planStoryboard(n, {targetSeconds, resetLinks=false}={}) {
   const d = n.data, story = fullPrompt(n);
   if (!story.trim()) { toast("先写一段剧情"); $("#prompt").focus(); return; }
   const refs = scriptRefs(n);
   await withBusy(n, "Qwen 拆分镜中", async () => {
     const r = await api("/api/storyboard", { story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
-      seconds: d.shotlen === "auto" ? null : +d.shotlen, style: "", aspect: d.aspect });
+      seconds: d.shotlen === "auto" ? null : +d.shotlen, style: "", aspect: d.aspect,
+      ...(targetSeconds ? {target_seconds:targetSeconds} : {}) });
     if(node(n.id)!==n)return;
     checkpoint();ensureScriptShotIds(n);
+    if(resetLinks)d.made=[];
     Object.assign(d,{title:r.title,style:r.style,characters:r.characters,shots:r.shots.map(shot=>({...shot,id:newCanvasNodeId()}))});
     save(); render(n); drawEdges();
-    toast(`拆成 ${r.shots.length} 个镜头（${r.seconds}s）${llmNote(r)}${$("#wiz")?.classList.contains("on") ? "，可以直接修改每个镜头" : "，满意就点「展开到画布」"}`, 4000);
+    const total = r.planned_seconds ?? r.shots.reduce((sum,shot)=>sum+shot.duration,0);
+    toast(`拆成 ${r.shots.length} 镜，计划约 ${total} 秒${llmNote(r)}`, 4000);
   });
 }
 function expandMissingScriptShots(n) {
-  const indexes=scriptShotLinks(n).flatMap((pair,i)=>pair?[]:[i]);
+  const indexes=scriptShotLinks(n).flatMap((pair,i)=>shotNeedsNodes(pair)?[i]:[]);
   expandScript(n,indexes);
 }
 
+const SCRIPT_VIDEO_DURATIONS = [5,8,10,14];
+const scriptVideoDuration = desired => SCRIPT_VIDEO_DURATIONS.find(seconds=>seconds>=Number(desired||5)) ?? 14;
 function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   const data=script.data;
   const refOf=name=>refs.find(ref=>ref.name===name)||refs.find(ref=>ref.name.includes(name)||name.includes(ref.name));
@@ -545,7 +591,7 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
     const look=character?.look||refOf(name)?.desc||"", voice=character?.voice;
     return `${name}：${look}${voice?"，声音："+voice:""}`.replace(/：$/,"");
   }).join("\n");
-  const desired=shot.duration||5, duration=[5,8,10,14].reduce((a,b)=>Math.abs(b-desired)<Math.abs(a-desired)?b:a);
+  const duration=scriptVideoDuration(shot.duration);
   return {references,image:{prompt,caption:shot.keyframe||""},video:{
     duration,fields:{style:data.style,scene:shot.scene,people,camera:[shot.shot_size,shot.camera].filter(Boolean).join("，"),
       action:(shot.action||[]).join("\n"),dialogue:(shot.dialogue||[]).join("\n"),sound:shot.sound,music:""},
@@ -603,29 +649,42 @@ function expandScript(n, indexes=null) {
   if(!canvasCanEdit() || node(n.id)!==n || nodeLocked(n))return;
   const d = n.data, shots = d.shots || []; if (!shots.length) return;
   const links=indexes?scriptShotLinks(n):null;
-  const selected=indexes?[...new Set(indexes)].filter(i=>shots[i]&&!links[i]):shots.map((_,i)=>i);
+  const selected=indexes?[...new Set(indexes)].filter(i=>shots[i]&&shotNeedsNodes(links[i])):shots.map((_,i)=>i);
   if(!selected.length)return;
   checkpoint();ensureScriptShotIds(n);
   const refs=scriptRefs(n);
   const s0 = size(n), x0 = n.x + s0.w + 140;
   let y0 = n.y;
   (d.made||[]).forEach(x => [x.img, x.vid].map(node).filter(Boolean).forEach(m => { y0 = Math.max(y0, m.y + size(m).h + 120); }));
-  const made = [];
+  const made = [], newRecords=[];
   let x = x0;
   selected.forEach(i => {
-    const s=shots[i];
+    const s=shots[i], pair=links?.[i];
     const settings=scriptShotSettings(n,s,refs);
-    const img = addNode("image", x, y0, {...settings.image,aspect:d.aspect,quality:"4mp"}, {name:`镜${i+1} · 分镜图`});
-    if (s.frame) { img.versions.push({ ref: s.frame.ref, url: "/media?ref=" + encodeURIComponent(s.frame.ref), w: s.frame.w, h: s.frame.h, source: "frame", prompt: "" }); img.cur = 0; }
-    settings.references.forEach(r => B.edges.push({from:r.node.id,to:img.id,...(r.pinned?{ref:r.ref}:{})}));
-    const vid = addNode("video", x, y0 + Math.max(size(img).h, 300) + 110,
-      {...settings.video,quality:d.quality,aspect:d.aspect,pmode:"fields"},{name:`镜${i+1}`});
-    B.edges.push({ from: img.id, to: vid.id, role: "first" });
-    settings.references.forEach(r => B.edges.push({from:r.node.id,to:vid.id,role:"subject",...(r.pinned?{ref:r.ref}:{})}));
-    made.push({ img: img.id, vid: vid.id, shot_id:s.id });
-    x += Math.max(size(img).w, size(vid).w) + 80;
+    const created=[];
+    let img=node(pair?.img), vid=node(pair?.vid);
+    if(!img){
+      img=addNode("image",x,y0,{...settings.image,aspect:d.aspect,quality:"4mp"},{name:`镜${i+1} · 分镜图`});
+      if(s.frame){img.versions.push({ref:s.frame.ref,url:"/media?ref="+encodeURIComponent(s.frame.ref),w:s.frame.w,h:s.frame.h,source:"frame",prompt:""});img.cur=0;}
+      settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,...(r.pinned?{ref:r.ref}:{})}));
+      created.push(img);
+    }
+    if(!vid){
+      const offset=created.length?Math.max(size(img).h,300)+110:0;
+      vid=addNode("video",x,y0+offset,{...settings.video,quality:d.quality,aspect:d.aspect,pmode:"fields"},{name:`镜${i+1}`});
+      B.edges.push({from:img.id,to:vid.id,role:"first"});
+      for(const r of settings.references){
+        if(r.node.id!==img.id)B.edges.push({from:r.node.id,to:vid.id,role:"subject",...(r.pinned?{ref:r.ref}:{})});
+      }
+      created.push(vid);
+    }
+    const record={img:img.id,vid:vid.id,shot_id:s.id};
+    if(pair)Object.assign(pair,record);
+    else newRecords.push(record);
+    made.push(record);
+    x+=Math.max(...created.map(m=>size(m).w))+80;
   });
-  d.made = [...(d.made||[]).filter(pair=>node(pair.img)||node(pair.vid)), ...made];
+  d.made = [...(d.made||[]).filter(pair=>node(pair.img)||node(pair.vid)), ...newRecords];
   B.nodes.forEach(m => render(m)); drawEdges(); save();
   sel = new Set(made.flatMap(m => [m.img, m.vid])); updateSel();
   fit([n, ...made.flatMap(m => [node(m.img), node(m.vid)])]);

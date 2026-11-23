@@ -357,7 +357,9 @@ class MemoryIntegration(ChatFixture):
         asset = await self.create(board="", project=project)
         private = await self.create(name="仅限这张画布")
         matching = await (await self.client.get("/api/memory", params={"board":"shots"})).json()
-        self.assertEqual([a["id"] for a in matching], [asset["id"]])
+        self.assertEqual({a["id"] for a in matching}, {asset["id"],private["id"]})
+        linked = await self.client.get(f"/api/memory/{private['id']}?board=shots")
+        self.assertEqual(linked.status,200,await linked.text())
         self.assertNotEqual(asset["id"], private["id"])
         seen = []
 
@@ -442,17 +444,40 @@ class MemoryIntegration(ChatFixture):
         self.assertEqual(json.loads(server.LIBRARY.read_text()),[old])
 
     async def test_agent_retrieves_and_adopts_implicit_memory(self):
-        a=await self.create(tags=['森林','主角'])
+        a=await self.create(tags=['森林','主角'], character_view='main')
+        face=image_editor.save(server.COMFY_DIR,Image.new('RGB',(48,64),'blue'))
+        board=self.load()
+        board["nodes"][0]["versions"].append({"ref":face["ref"]})
+        server.write_board(server.board_path("test"),board)
+        saved=await self.client.post("/api/memory",json={"id":a["id"],"ref":face["ref"],
+            "character_view":"face","source_board":"test"})
+        self.assertEqual(saved.status,200,await saved.text())
         output=image_editor.save(server.COMFY_DIR,Image.new('RGB',(64,48),'green'));seen=[]
         async def submit(req,p):
             seen.append(p);server.JOBS['e000000000001']={'id':'e000000000001','state':'done','created':1,'meta':{'uid':7},'outputs':[{'ref':output['ref'],'meta':{'width':64,'height':48}}]}
             return web.json_response({'ids':['e000000000001']})
-        self.svc.model.side_effect=[call('memory_search',{'query':'森林主角'}),call('memory_use',{'memory_ids':[a['id']]},'use'),call('image_generate',{'prompt':'主角穿过森林'},'gen'),answer()]
+        self.svc.model.side_effect=[call('memory_search',{'query':'森林主角'}),
+            call('memory_use',{'memory_ids':[a['id']]},'use'),
+            call('image_generate',{'prompt':'主角穿过森林，头肩近景',
+                'memory_views':[{'memory_id':a['id'],'views':['face']}]},'gen'),answer()]
         with patch.object(server,'_generate_request',submit):
             rid=await self.send(text='让主角穿过森林');row=await self.wait(rid)
-        self.assertEqual(row['state'],'done',row.get('error'));self.assertEqual(seen[0]['images'][0]['ref'],a['ref'])
+        self.assertEqual(row['state'],'done',row.get('error'))
+        self.assertEqual([image['ref'] for image in seen[0]['images']],[face['ref']])
         self.assertEqual(len(self.load()['nodes']),3)
-        version=self.load()['nodes'][-1]['versions'][0];self.assertEqual(version['memory_used'][0]['id'],a['id'])
+        version=self.load()['nodes'][-1]['versions'][0]
+        self.assertEqual(version['memory_used'][0]['id'],a['id'])
+        self.assertEqual(version['memory_used'][0]['references'],[{'view':'face','ref':face['ref']}])
+        self.assertEqual(version['generation_record']['inputs'][0]['memory_view'],'face')
+        explicit = "@{"+a["id"]+"#face|林森}"
+        self.svc.model.side_effect = [
+            call("image_generate",{"prompt":"面部近景","memory_views":[{"memory_id":a["id"],"views":["main"]}]}),
+            answer(),
+        ]
+        with patch.object(server,"_generate_request",submit):
+            rid = await self.send(text=f"用 {explicit} 生成一张图片", key="explicit-angle")
+            self.assertEqual((await self.wait(rid))["state"],"done")
+        self.assertEqual([item["ref"] for item in seen[-1]["images"]],[face["ref"]])
 
     async def test_agent_save_is_idempotent_and_saves_text(self):
         self.svc.model.side_effect=[call('memory_save',{'name':'项目背景','kind':'document','description':'时间是2040年'}),answer()]
@@ -460,6 +485,12 @@ class MemoryIntegration(ChatFixture):
         row=db.one('SELECT * FROM chat_calls WHERE run_id=?',rid);run=db.one('SELECT * FROM chat_runs WHERE id=?',rid);run['data']=json.loads(run['data'])
         await self.svc.execute(run,{'id':7,'role':'member'},row['id'],'memory_save',json.loads(row['args']))
         memories=await (await self.client.get('/api/memory?board=test')).json();self.assertEqual(len(memories),1);self.assertEqual(memories[0]['desc'],'时间是2040年')
+        self.assertEqual(memories[0].get("board"),"test")
+        self.assertFalse(memories[0].get("project"))
+        sibling=await self.client.put("/api/board/another-workspace",json={"name":"另一张画布","nodes":[]})
+        self.assertEqual(sibling.status,200)
+        visible=await (await self.client.get("/api/memory?board=another-workspace")).json()
+        self.assertEqual(visible,[])
 
     async def test_h3_edit_gets_real_memory_reference(self):
         a=await self.create();seen=[]
@@ -515,10 +546,35 @@ class MemoryIntegration(ChatFixture):
         })
         self.assertEqual([item["ref"] for item in payload["images"]], [other])
         self.assertIn("戒指固定在本人左手", payload["prompt"])
+        selected = {"kind":"video","board":"test","prompt":"@林森 回头","duration":5,
+                    "images":[{"ref":third, "node_id":"n1"}],
+                    "memory_views":[{"memory_id":asset["id"],"views":["main","face"]}]}
+        payload = self.app["creative_memory"].prepare({"id":7,"role":"member"}, selected)
+        self.assertEqual([(item["ref"],item["role"],item.get("memory_view")) for item in payload["images"]],
+                         [(third,"frame",None),(other,"subject","main"),(source,"subject","face")])
+        body, _ = server.engine_body(payload)
+        self.assertEqual(len(body["keyframes"]),1)
+        self.assertEqual(body["references"],[str(server.tools.ref_path(server.COMFY_DIR,ref)) for ref in (other,source)])
+        face_token = "@{"+asset["id"]+"#face|同名素材}"
+        handwritten = await self.client.post("/api/generate",json={"kind":"image","board":"test","prompt":"@林森#face"})
+        self.assertEqual(handwritten.status,400,await handwritten.text())
+        self.assertIn("选择已定稿视角",(await handwritten.json())["error"])
+        with patch.object(server,"_generate_request",return_value=web.json_response({"ids":[]})):
+            manual = await self.client.post("/api/generate",json={
+                "kind":"video","board":"test","prompt":"慢慢回头","fields":{"people":face_token}})
+        self.assertEqual(manual.status,200,await manual.text())
+        applied = await manual.json()
+        self.assertEqual(applied["memory_used"][0]["references"],[{"view":"face","ref":source}])
+        self.assertEqual(applied["memory_context"]["memory_views"],[{"memory_id":asset["id"],"views":["face"]}])
+        self.assertIn("林森",applied["memory_context"]["prompt"])
+        self.assertNotIn("同名素材",applied["memory_context"]["prompt"])
         response = await update(third, "main")
         result = await response.json()
         self.assertEqual(result["character_views"], {"main": third})
         self.assertEqual(len(result["media"]), 3)
+        stale = await self.client.post("/api/generate",json=selected)
+        self.assertEqual(stale.status,400,await stale.text())
+        self.assertIn("正面头肩尚未定稿",(await stale.json())["error"])
 
     async def test_deleted_asset_unlinks_board_and_can_be_saved_again(self):
         asset = await self.create()

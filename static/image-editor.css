@@ -105,6 +105,17 @@
 #iePixelSize { margin-top:12px; padding:8px; border:1px solid var(--line2); border-radius:8px; }
 #iePixelSize summary { cursor:pointer; color:var(--text); }
 #iePixelSize .ie-padding { margin-top:8px; }
+#videoOptics { width:min(480px,calc(100vw - 24px)); padding:14px; color:var(--text); background:var(--panel); border:1px solid var(--line2); border-radius:14px; }
+#videoOptics::backdrop { background:#0009; }
+#videoOptics :is(header,footer,.ie-row) { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+#videoOptics header { justify-content:space-between; margin-bottom:12px; }
+#videoOptics footer { justify-content:flex-end; }
+#videoOptics h2 { font-size:var(--fs-heading); margin:0; }
+#videoOptics .ie-padding { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:12px; }
+#videoOptics label { display:grid; gap:4px; }
+#videoOptics select { width:100%; min-width:0; padding:6px; color:var(--text); background:var(--card); border:1px solid var(--line2); border-radius:6px; }
+#videoOptics p,#videoOptics label { color:var(--dim); font-size:var(--fs-small); }
+#videoOptics [role=status]:empty { display:none; }
 #iePixelSize .ie-pixel-lock { display:flex; align-items:center; gap:6px; margin:8px 0; }
 #iePixelSize .ie-pixel-lock input { width:auto; }
 #iePixelSize .ie-pixel-preview { display:flex; justify-content:center; margin-top:8px; }

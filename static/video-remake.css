@@ -13,6 +13,7 @@
 .rm-top { position: sticky; top: 0; z-index: 2; background: #19191d; }
 .rm-tasks { padding: 8px 16px; border-bottom: 1px solid var(--line2); }
 .rm-tasks summary { cursor: pointer; }
+.rm-launch-brief p { white-space:pre-wrap; overflow-wrap:anywhere; max-height:6em; overflow:auto; }
 .rm-tasks ul { display: grid; gap: 4px; list-style: none; padding: 0; margin: 6px 0 0; max-height: 120px; overflow: auto; }
 .rm-tasks li { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #c5c5cf; }
 .rm-tasks progress { width: 85px; accent-color: #aab6d1; }

@@ -50,15 +50,16 @@ function showPrep(n, on) {
 function captureGenerationRecord(request, textInputs) {
   const settings = Object.fromEntries(["model","provider_model","provider","quality","ar","duration","seed","count","extension"]
     .filter(key => request[key] != null).map(key => [key,request[key]]));
-  const images = (request.images || []).map(({node_id,ref,role,time,name}) => {
+  const images = (request.images || []).map(({node_id,ref,role,time,name,memory_id,memory_view}) => {
     const n = node_id ? node(node_id) : null;
     const index = n ? (curV(n)?.ref === ref ? n.cur : n.versions.findIndex(v=>v.ref===ref)) : -1;
-    return {node_id, ref, role, time, name, version:index >= 0 ? index+1 : undefined};
+    return {node_id, ref, role, time, name, memory_id, memory_view, version:index >= 0 ? index+1 : undefined};
   });
   if (request.previs_guide) images.push({...request.previs_guide, role:"previs"});
   for (const clip of request.video_refs || []) images.push({...clip,role:"video_ref"});
   for (const audio of request.audio_refs || []) images.push({...audio, role:"audio_ref"});
   return {settings, prompt:request.prompt, fields:request.fields, mode:request.mode, camera_plan:request.camera_plan,
+    video_optics:request.video_optics,
     object_edit:request.object_edit,inputs:[...textInputs,...images]};
 }
 
@@ -91,7 +92,10 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     if (d.aspect === "auto") { const v=ins[0]?.version; ar=v?.w&&v.h?v.w/v.h:1; }
     req = { kind: "image", model, expand: d.expand, prompt:resolved, images, ar, quality: model === "h3video" ? (d.quality === "16mp" ? "hd" : "std") : d.quality, turbo: d.turbo, seed: d.seed, count: d.count };
   }
-  else { req = videoReq(n, prompt); if (!req) return; }
+  else {
+    req = videoReq(n, prompt); if (!req) return;
+    applyVideoMemory(n,req);
+  }
   req.label = n.name;
   req.board = boardId;
   if (req.previs_guide || req.audio_refs || req.video_refs) {
@@ -149,6 +153,22 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   } catch (e) { if(B===sourceBoard&&node(n.id)===n)showErr(n, e.message); }
   finally { prepping.delete(n.id); if(B===sourceBoard&&node(n.id)===n)showPrep(n, false); }
 }
+function inheritedVideoAssets(n) {
+  const assets = curV(n)?.memory_used, ignored = n.data.ignored_memory_ids;
+  return Array.isArray(assets) ? assets.filter(asset=>typeof asset?.id==="string" &&
+    !(Array.isArray(ignored) && ignored.includes(asset.id))) : [];
+}
+function applyVideoMemory(n, request) {
+  const ids = new Set(inheritedVideoAssets(n).map(asset=>asset.id));
+  if (!ids.size) return;
+  request.memory_ids = [...ids];
+  const selection = curV(n)?.video_recipe?.memory_views;
+  if (!Array.isArray(selection)) return;
+  const content = [request.prompt,...Object.values(request.fields||{})].join("\n");
+  const explicitlySelected = new Set([...content.matchAll(/@\{([A-Za-z0-9_-]{1,80})#[a-z]+\|/g)].map(match=>match[1]));
+  const inherited = selection.filter(entry=>ids.has(entry?.memory_id)&&!explicitlySelected.has(entry.memory_id));
+  if (inherited.length) request.memory_views = inherited;
+}
 function videoReq(n, prompt) {
   const d = n.data;
   const guide = previsInput(n);
@@ -176,6 +196,7 @@ function videoReq(n, prompt) {
     const resolved=resolveCanvasPrompt(n,prompt,bindings);
     if(resolved===null)return null;
     const common = { kind: "video", prompt:resolved, ar, duration: d.duration, quality: d.quality, turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: d.count || 1 };
+    if(d.video_optics&&Object.keys(d.video_optics).length)common.video_optics=structuredClone(d.video_optics);
     if (d.draft && videoDraftAvailable(n)) common.draft=true;
     if(usesFields(n)){
       common.fields={};
@@ -440,7 +461,7 @@ addEventListener("paste", e => {
 function frameCaptureSuffix(position, at) {
   return position === "first" ? "首帧" : position === "last" ? "末帧" : at.toFixed(2) + " 秒";
 }
-async function captureOnCanvas(sourceId, version, {position, at, before=false, active=()=>true, allowDetached=false, onCaptured=null}={}) {
+async function captureOnCanvas(sourceId, version, {position, at, before=false, active=()=>true, allowDetached=false, onCaptured=null, select=true}={}) {
   if (!canvasCanEdit() || !version?.ref) return null;
   const board = boardId, epoch = boardOpenEpoch;
   const result = await api("/api/lastframe", {ref:version.ref, position, at});
@@ -461,7 +482,8 @@ async function captureOnCanvas(sourceId, version, {position, at, before=false, a
   if (source) B.edges.push({from:source.id,to:image.id,relation:"capture",source_ref:version.ref,at:time});
   const selected=onCaptured?.(image)||image;
   render(image);if(selected!==image)render(selected);
-  selectOnly(selected.id);save();loadAssets();
+  if(select)selectOnly(selected.id);
+  save();loadAssets();
   return image;
 }
 async function continueFrom(n, extension) {
@@ -539,5 +561,4 @@ async function placeAsset(a, at) {
   if (node(n.id)!==n) return;
   n.versions.push({ ref:a.ref,url:a.url,w,h,seconds,source:a.source,prompt:"" }); n.cur = 0; render(n); save(); selectOnly(n.id);
 }
-$("#assetBtn").onclick = () => { $("#drawer").classList.toggle("on"); $("#assetBtn").classList.toggle("on"); loadAssets(); };
 $$("#drawer .tabs button").forEach(b => b.onclick = () => { $$("#drawer .tabs button").forEach(x => x.classList.remove("on")); b.classList.add("on"); afilter = b.dataset.f; loadAssets(); });

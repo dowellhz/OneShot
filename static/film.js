@@ -93,6 +93,32 @@ function newSpec(media) {
   };
 }
 
+function storyFilmSelection(script, start = 0, end = script.data.shots.length - 1) {
+  const links = scriptShotLinks(script), media = [], missing = [];
+  for (let i = start; i <= end; i++) {
+    const source = node(links[i]?.vid);
+    if (source?.type === "video" && curV(source)?.ref) media.push(source);
+    else missing.push(i + 1);
+  }
+  return {media, missing};
+}
+
+function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, transition = "cut") {
+  const {media, missing} = storyFilmSelection(script, start, end);
+  if (missing.length) {
+    toast(`镜头 ${missing.join("、")} 缺少视频。可先补齐，或到镜头清单选择已完成的连续片段。`, 4500);
+    return false;
+  }
+  if (!media.length) return false;
+  const spec = newSpec(media);
+  if (start === 0 && end === script.data.shots.length - 1) spec.story_script = script.id;
+  for (const clip of spec.clips) clip.trans = transition;
+  const keys = script.data.shots.slice(start, end + 1).map((shot, i) => shot.id || `index:${start+i}`);
+  const key = filmDraftPrefix()+"story:"+JSON.stringify([script.id,keys,spec.clips.map(clip=>[clip.node,clip.ref])]);
+  showFilm(spec,null,key);
+  return true;
+}
+
 // open the editor: on a film node (re-edit), or with a list of shot videos (new film)
 function openFilm(arg) {
   let n = null, spec;
@@ -122,7 +148,9 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null) {
   try { saved = JSON.parse(localStorage.getItem(key)); } catch {}
   const playlistBase = n?.data.playlist ? JSON.stringify(n.data.film) : undefined;
   if (playlistBase && (saved?.playlistBase !== playlistBase || !canvasCanEdit())) saved = null;
-  if (saved?.spec?.clips?.length || playlistBase && Array.isArray(saved?.spec?.clips)) spec = saved.spec;
+  if (saved?.spec?.clips?.length || playlistBase && Array.isArray(saved?.spec?.clips)) {
+    spec = spec.story_script ? {...saved.spec,story_script:spec.story_script} : saved.spec;
+  }
   const sel = Math.max(0, Math.min(spec.clips.length - 1, saved?.sel || 0));
   FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, attempt:saved?.attempt,
     downloadExport:saved?.downloadExport,playlistBase};

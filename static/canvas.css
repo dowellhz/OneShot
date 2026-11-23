@@ -127,8 +127,8 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 [data-stem-results] audio{grid-column:1/-1;grid-row:2}
 .audio-rate input { width:4em; background:var(--card-hi); color:inherit; border:1px solid var(--line2); border-radius:4px; }
 #audioLyrics { display:block; grid-column:1 / -1; width:100%; margin:.4em 0; padding:8px; color:var(--text); background:var(--card); border:1px solid var(--line2); border-radius:8px; resize:vertical; }
-#refs :is([data-previs-update],[data-audio-update],[data-video-update]) { color:var(--text); background:transparent; border:1px solid var(--line); border-radius:5px; padding:2px 6px; cursor:pointer; }
-#refs :is([data-previs-update],[data-audio-update],[data-video-update]):hover { background:var(--card-hi); }
+#refs :is([data-previs-update],[data-audio-update],[data-video-update],[data-memory-ignore]) { color:var(--text); background:transparent; border:1px solid var(--line); border-radius:5px; padding:2px 6px; cursor:pointer; }
+#refs :is([data-previs-update],[data-audio-update],[data-video-update],[data-memory-ignore]):hover { background:var(--card-hi); }
 #addMenu :is([data-previs-menu],[data-audio-menu],[data-video-menu]) { max-height:108px; overflow-y:auto; }
 #edges .tmp { fill: none; stroke: #9a9aa4; stroke-width: 2; stroke-dasharray: 5 5; }
 .elabel { position: absolute; transform: translate(-50%, -50%); z-index: 4; padding: 2px 9px; border-radius: 9px; background: #1d1d21; border: 1px solid var(--line2);

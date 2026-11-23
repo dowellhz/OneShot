@@ -76,11 +76,11 @@ function renderWiz() {
 function maxStep() {
   const s = wizScript(); if (!s) return 0;
   if (!(s.data.shots || []).length) return 0;
+  if (!storyFilmSelection(s).missing.length) return 5;
   const pairs = shotPairs();
   if (!pairs.length) return 2;
   if (!pairs.every(p => curV(p.img))) return 3;
-  if (!pairs.every(p => curV(p.vid))) return 4;
-  return 5;
+  return 4;
 }
 function sigOf() {
   const s = wizScript(); if (!s) return "";
@@ -96,7 +96,6 @@ setInterval(() => {
 // ① 想法
 function stepIdea() {
   const chip = (k, v, label = v) => `<button class="chip ${String(W[k]) === String(v) ? "on" : ""}" data-set="${k}" data-val="${v}">${label}</button>`;
-  const n = Math.max(2, Math.round(W.dur / 5)), per = (W.quality === "hd" ? 150 : 65) * W.takes;
   return `<div class="wz1">
     <h2>你想拍一个什么样的视频？</h2>
     <textarea id="wzIdea" rows="5" placeholder="用一两句话说说你的想法，例如：一只橘猫在雨夜给流浪狗送伞">${esc(W.idea)}</textarea>
@@ -110,7 +109,7 @@ function stepIdea() {
       <div><span class="lab">画质</span>${chip("quality", "std", "快速 480P")}${chip("quality", "hd", "高清 768P")}</div>
       <div><span class="lab">每个镜头</span>${chip("takes", 1, "出 1 个版本")}${chip("takes", 2, "抽 2 个挑")}${chip("takes", 3, "抽 3 个挑")}</div>
     </div>
-    <div class="est">大约 ${n} 个镜头。在 4090 上：写剧本约半分钟，每张分镜图约半分钟，视频约 ${fmtT(per * n)}${W.takes > 1 ? `（每镜抽 ${W.takes} 个）` : ""}</div>
+    <div class="est">根据动作和台词决定镜头数。较长的段落会拆成多个镜头。</div>
     <div class="nav"><span></span><button class="go" data-go="script">写剧本 →</button></div></div>`;
 }
 // ② 剧本
@@ -124,7 +123,7 @@ function stepScript() {
       <span class="grow"></span><button class="ghost" data-go="script">不满意，重新写</button></div>
     <label class="sty">画面风格<input id="wzStyle" value="${esc(d.style)}"></label>
     <div class="shots">${d.shots.map((x, i) => `<div class="sh" data-i="${i}">
-        <div class="h"><b>镜头 ${i + 1}</b><select data-f="duration">${[5, 8, 10, 14].map(t => `<option value="${t}" ${t === Math.min(14, Math.max(5, x.duration)) ? "selected" : ""}>${t} 秒</option>`).join("")}</select>
+        <div class="h"><b>镜头 ${i + 1}</b><select data-f="duration">${SCRIPT_VIDEO_DURATIONS.map(t => `<option value="${t}" ${t === scriptVideoDuration(x.duration) ? "selected" : ""}>${t} 秒</option>`).join("")}</select>
           <input data-f="cam" value="${esc([x.shot_size, x.camera].filter(Boolean).join("，"))}" placeholder="景别和运镜，如：中景，缓慢推近">
           <span class="grow"></span><button class="ic" data-m="up" title="上移">↑</button><button class="ic" data-m="down" title="下移">↓</button><button class="ic" data-m="del" title="删除这个镜头">×</button></div>
         <label>画面<textarea data-f="keyframe" rows="2">${esc(x.keyframe)}</textarea></label>
@@ -172,7 +171,9 @@ function stepBoards() {
 // ⑤ 视频
 function stepVideos() {
   const pairs = shotPairs(), d = wizScript().data, done = pairs.filter(p => curV(p.vid)).length, busy = pairs.filter(p => p.vid.job).length;
-  return `<div class="wz5"><p class="tip">${busy ? `正在生成 ${busy} 个镜头，<span id="wzEta"></span>可以关掉网页，回来接着看。` : done < pairs.length ? "点「开始生成」把所有镜头排进队列。" : "全部生成好了。有多个版本的镜头，用 ‹ › 挑出最好的一版。"}</p>
+  const {missing} = storyFilmSelection(wizScript());
+  const unexpanded = pairs.length < d.shots.length;
+  return `<div class="wz5"><p class="tip">${busy ? `正在生成 ${busy} 个镜头，<span id="wzEta"></span>可以关掉网页，回来接着看。` : missing.length ? `镜头 ${missing.join("、")} 还缺少视频。` : "全部生成好了。有多个版本的镜头，用 ‹ › 挑出最好的一版。"}</p>
     <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map(p => {
       const i=p.index;
       const v = curV(p.vid), s = d.shots[i] || {};
@@ -181,17 +182,34 @@ function stepVideos() {
         <div class="cap"><b>镜头 ${i + 1}</b>${verNav(p.vid)}<span class="grow"></span><button class="ghost sm" data-vredo="${p.vid.id}" ${p.vid.job ? "disabled" : ""}>${v ? "再抽一个" : "生成"}</button></div>
         <div class="txt">${esc((s.dialogue || []).join(" ") || (s.action || []).join("，"))}</div></div>`;
     }).join("")}</div>
-    <div class="nav"><button class="ghost" data-goto="3">← 分镜图</button>${done < pairs.length && !busy ? `<button class="go" data-go="genvids">开始生成（${pairs.length - done} 个镜头）</button>` : ""}
-      <button class="go" data-goto="5" ${done < pairs.length ? "disabled" : ""}>下一步：成片 →</button></div></div>`;
+    <div class="nav"><button class="ghost" data-goto="3">← 分镜图</button>${unexpanded && missing.length ? '<button class="ghost" data-go="repair-shots">补齐镜头节点</button>' : ""}
+      ${done < pairs.length && !busy ? `<button class="go" data-go="genvids">开始生成（${pairs.length - done} 个镜头）</button>` : ""}
+      <button class="go" data-goto="5" ${missing.length ? "disabled" : ""}>下一步：成片 →</button></div></div>`;
 }
 // ⑥ 成片
+function wizardFilm(script) {
+  if (!script) return null;
+  const sources = new Set(scriptShotLinks(script).map(pair => pair?.vid).filter(Boolean));
+  const films = B.nodes.filter(n => {
+    const spec = n.data.film;
+    if (!spec || n.data.playlist) return false;
+    if (spec.story_script) return spec.story_script === script.id;
+    const clips = new Set((spec.clips || []).map(clip => clip.node));
+    return sources.size > 0 && sources.size === script.data.shots.length && clips.size === sources.size &&
+      [...clips].every(id => sources.has(id));
+  });
+  return films.at(-1);
+}
 function stepFilm() {
-  const films = B.nodes.filter(n => n.data.film), f = films[films.length - 1], v = f && curV(f);
+  const script = wizScript(), f = wizardFilm(script), v = f && curV(f);
+  const {missing} = storyFilmSelection(script);
   return `<div class="wz6">${f ? (f.job ? `<div class="wait"><div class="spin"></div>正在合成成片… ${jobText(f)}</div>` : v ? `<video src="${v.url}" controls playsinline class="final"></video>
       <div class="row"><a class="go" href="${v.url}" download="${esc((wizScript()?.data.title || "成片").replace(/[\\/:*?"<>|]/g, ""))}.mp4">下载成片</a>${v.cover_url ? `<a class="ghost" href="${v.cover_url}" download>下载封面</a>` : ""}
-        <button class="ghost" data-go="edit">继续剪辑</button><button class="ghost" data-go="canvas">去画布精修</button></div>` : `<div class="wait">上次合成没有成功。<button class="go" data-go="edit">重新打开剪辑台</button></div>`)
-    : `<p class="tip">最后一步：在剪辑台里调整顺序、剪掉多余的部分、加字幕和背景音乐，然后导出。台词已经自动变成字幕。</p>
-       <div class="row"><button class="go" data-go="edit">打开剪辑台</button><button class="ghost" data-go="quick">直接导出（叠化转场 + 字幕）</button></div>`}
+        <button class="ghost" data-go="edit">继续剪辑</button>${!missing.length ? '<button class="ghost" data-go="current-cut">用当前镜头剪辑</button>' : ""}
+        <button class="ghost" data-go="canvas">去画布精修</button></div>` : `<div class="wait">上次合成没有成功。<button class="go" data-go="edit">重新打开剪辑台</button></div>`)
+    : missing.length ? `<p class="tip" role="status">镜头 ${missing.join("、")} 还缺少视频。补齐后可导出完整成片。</p>`
+    : `<p class="tip">在剪辑台里调整顺序、裁剪片段、加字幕和背景音乐。台词会自动作为字幕带入。</p>
+       <div class="row"><button class="go" data-go="edit">打开剪辑台</button><button class="ghost" data-go="quick">导出成片</button></div>`}
     <div class="nav"><button class="ghost" data-goto="4">← 视频</button><span></span></div></div>`;
 }
 
@@ -295,10 +313,10 @@ async function wizGo(what, btn) {
     const idea = (W.idea || "").trim(); if (!idea) { toast("先写一句你的想法"); return; }
     let n = s;
     if (!n) { n = addNode("script", 0, 0, {}, { name: "剧本" }); W.script = n.id; }
-    if (n.data.made?.length) { toast("已经展开过分镜了，重新写剧本会生成一组新的镜头"); n.data.made = []; }
-    Object.assign(n.data, { prompt: `${idea}\n风格：${W.style}`, nshots: String(Math.max(2, Math.round(W.dur / 5))), shotlen: "5", aspect: W.aspect, quality: W.quality, shots: [] });
+    if (n.data.made?.length) toast("新分镜生成后会展开为一组新镜头");
+    Object.assign(n.data, { prompt: `${idea}\n风格：${W.style}`, nshots:"auto", shotlen:"auto", aspect:W.aspect, quality:W.quality });
     W.step = 1; wizSave();
-    const job = planStoryboard(n);      // marks the node busy synchronously, so the spinner shows right away
+    const job = planStoryboard(n,{targetSeconds:W.dur,resetLinks:true});
     renderWiz();
     await job;
     fit(B.nodes); wizSig = ""; renderWiz();
@@ -310,7 +328,9 @@ async function wizGo(what, btn) {
     for (const c of d.characters || []) {
       const m = castOf(c.name), v = curV(m); if (!v) continue;
       try {
-        const a = await api("/api/library", { id: m.data.asset?.id, kind: "character", name: c.name, desc: c.look || "", voice: c.voice || "", ref: v.ref, w: v.w, h: v.h });
+        const scope = m.data.asset?.id ? {} : cmNewScope();
+        const a = await api("/api/library", { id:m.data.asset?.id, kind:"character", name:c.name, desc:c.look||"",
+          voice:c.voice||"", ref:v.ref, w:v.w, h:v.h, source_board:boardId, node_id:m.id, ...scope });
         m.data.asset = { id: a.id, kind: "character" }; m.data.caption = c.look || m.data.caption;
       } catch {}
     }
@@ -321,19 +341,21 @@ async function wizGo(what, btn) {
   } else if (what === "videos") {
     W.step = 4; wizSave(); renderWiz();
     wizGo("genvids");
+  } else if (what === "repair-shots") {
+    expandMissingScriptShots(s);
+    wizSig = ""; renderWiz();
   } else if (what === "genvids") {
     const pairs = shotPairs().filter(p => !curV(p.vid) && !p.vid.job);
     pairs.forEach(p => { p.vid.data.count = W.takes; p.vid.data.quality = W.quality; });
     save();
     await batchVideos(s); wizSig = ""; renderWiz();
-  } else if (what === "edit" || what === "quick") {
-    const films = B.nodes.filter(n => n.data.film), f = films[films.length - 1];
-    if (f && what === "edit") { openFilm(f); return; }
-    openFilm(shotPairs().map(p => p.vid));
-    FILM.spec.clips.forEach(c => c.trans = "fade");
-    FILM.spec.aspect = "source";
+  } else if (what === "edit" || what === "quick" || what === "current-cut") {
+    if (what === "edit") {
+      const f = wizardFilm(s);
+      if (f) { openFilm(f); return; }
+    }
+    if (!s || !openStoryFilm(s, 0, s.data.shots.length - 1, "fade")) return;
     if (what === "quick") { await exportFilm(); wizSig = ""; renderWiz(); return; }
-    renderFilm();
   } else if (what === "canvas") closeWizard();
 }
 

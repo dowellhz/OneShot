@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 
 import av
 import numpy as np
+from aiohttp import web
 from PIL import Image
 
 import server
@@ -13,6 +14,33 @@ from test_agent_chat import ChatFixture, answer, call
 
 
 class ReferenceVideo(ChatFixture):
+    async def test_video_optics_reaches_generation_prompt_and_leaves_request_reusable(self):
+        optics={"lens":85,"sensor":"full-frame","optics":"anamorphic","aperture":"2.8"}
+        raw={"kind":"video","board":"test","fields":{"scene":"雨夜车站","camera":"缓慢推近","action":"列车到站"},
+             "prompt":"","video_optics":optics}
+        requested=[]
+        async def engine(_req,payload,_count):
+            requested.append(payload)
+            return web.json_response({"ids":["optic-job"]})
+        with patch.object(server.providers,"primary",return_value=None),patch.object(server,"engine_up",return_value=True), \
+                patch.object(server,"generate_engine",side_effect=engine):
+            response=await self.client.post("/api/generate",json=raw)
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual(requested[0]["prompt"].count("85 mm"),1)
+            for text in ("缓慢推近","全画幅","椭圆散景","f/2.8","列车到站"):
+                self.assertIn(text,requested[0]["prompt"])
+            for bad in ({"lens":87},{"sensor":"unknown"},{"unexpected":True}):
+                response=await self.client.post("/api/generate",json={**raw,"video_optics":bad})
+                self.assertEqual(response.status,400,await response.text())
+            self.assertEqual(len(requested),1)
+        composed=server.apply_video_optics(raw)
+        self.assertEqual(raw["fields"]["camera"],"缓慢推近")
+        self.assertIn("85 mm",server.plain_prompt(composed))
+        structured="integrated_multimodal_description: [Shot 1] A train arrives.\n\noverall_soundscape: Rain."
+        augmented=server.apply_video_optics({"prompt":structured,"video_optics":{"lens":24}})["prompt"]
+        self.assertIn("24 mm",augmented.split("\n\noverall_soundscape:")[0])
+        self.assertTrue(augmented.endswith("overall_soundscape: Rain."))
+
     async def test_extension_uses_head_or_tail_and_keeps_direction_when_regenerating(self):
         path, ref = server.film._new(server.COMFY_DIR, "input", "source", ".mp4")
         frames=(Image.new("RGB",(64,64),"red" if i<36 else "blue") for i in range(84))
@@ -34,6 +62,8 @@ class ReferenceVideo(ChatFixture):
             text, video=body["content"]
             direction="before" if text["text"].startswith("向前延长 @视频1") else "after"
             self.assertTrue(text["text"].startswith(("向前延长 @视频1","向后延长 @视频1")))
+            self.assertEqual(text["text"].count("35 mm"),1)
+            self.assertIn("f/4",text["text"])
             blob=await self.client.get(urlsplit(video["video_url"]["url"]).path)
             self.assertEqual(blob.status,200)
             with av.open(io.BytesIO(await blob.read())) as recording:
@@ -52,7 +82,8 @@ class ReferenceVideo(ChatFixture):
         with patch.object(server.providers,"routes",return_value=[route]),patch.object(server.providers,"all_providers",return_value=[]), \
                 patch.object(server.remote,"json_req",side_effect=upstream),patch.object(server.remote,"_save_video",side_effect=download):
             for direction in ("after","before"):
-                self.svc.model.side_effect=[call("video_extend",{"node_id":"n3","direction":direction,"prompt":"列车靠站"}),answer()]
+                self.svc.model.side_effect=[call("video_extend",{"node_id":"n3","direction":direction,"prompt":"列车靠站",
+                    "video_optics":{"lens":35,"aperture":"4"}}),answer()]
                 run_id=await self.send("续拍",f"extension-{direction}",["n3"])
                 await self.wait(run_id)
                 saved=self.load()
@@ -67,6 +98,7 @@ class ReferenceVideo(ChatFixture):
             final=self.load()["nodes"][-1]
             self.assertEqual(final["id"],result["id"])
             self.assertEqual([v["video_recipe"]["extension"] for v in final["versions"]],["before","before"])
+            self.assertEqual([v["video_recipe"]["video_optics"] for v in final["versions"]],[{"lens":35,"aperture":"4"}]*2)
             response=await self.client.post("/api/generate",json={"kind":"video","board":"test","provider":provider["id"],
                 "extension":"before","prompt":"降落","video_refs":[{"ref":ref,"node_id":"n3","start":2,"end":6}]})
             self.assertEqual(response.status,400)

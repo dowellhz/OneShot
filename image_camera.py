@@ -10,6 +10,24 @@ OPTICS = {"spherical":"球面定焦，保留自然的几何比例",
 APERTURES = ("1.4","2","2.8","4","5.6","8","11","16")
 
 
+def validate_optics(value):
+    if not isinstance(value, dict) or set(value) - {"lens", "sensor", "optics", "aperture"}:
+        raise ValueError("请选择有效的镜头参数")
+    settings = {}
+    if "lens" in value:
+        lens = value["lens"]
+        if type(lens) is not int or lens not in LENSES:
+            raise ValueError("请选择有效的镜头焦段")
+        settings["lens"] = lens
+    for key, options in (("sensor",SENSORS),("optics",OPTICS),("aperture",APERTURES)):
+        detail = value.get(key,"")
+        if not isinstance(detail,str) or detail and detail not in options:
+            raise ValueError("请选择有效的传感器、镜头质感或光圈")
+        if detail:
+            settings[key] = detail
+    return settings
+
+
 def validate(value):
     if not isinstance(value, dict):
         raise ValueError("请选择有效的图片机位参数")
@@ -23,12 +41,7 @@ def validate(value):
     if type(lens) is not int or lens not in LENSES or not isinstance(framing,str) or framing not in FRAMINGS:
         raise ValueError("请选择有效的镜头焦段或景别")
     clean.update(lens=lens,framing=framing)
-    for key, options in (("sensor",SENSORS),("optics",OPTICS),("aperture",APERTURES)):
-        detail = value.get(key,"")
-        if not isinstance(detail,str) or detail and detail not in options:
-            raise ValueError("请选择有效的传感器、镜头质感或光圈")
-        if detail:
-            clean[key] = detail
+    clean.update(validate_optics({key:value[key] for key in ("sensor","optics","aperture") if key in value}))
     return clean
 
 
@@ -41,6 +54,13 @@ def instructions(view):
         f"使用 {lens} mm {LENSES[lens]}镜头",
         f"景别采用{framing}" if framing else "保持原图景别",
     ]
+    return "，".join(parts + optics_instructions(view, include_lens=False))
+
+
+def optics_instructions(view, *, include_lens=True):
+    parts = []
+    if include_lens and (lens := view.get("lens")):
+        parts.append(f"使用 {lens} mm {LENSES[lens]}镜头")
     if sensor := view.get("sensor"):
         parts.append(f"采用 {SENSORS[sensor]} 传感器的画面观感")
     if optics := view.get("optics"):
@@ -48,7 +68,7 @@ def instructions(view):
     if aperture := view.get("aperture"):
         depth = "主体清晰并自然虚化背景" if float(aperture) <= 2.8 else "保留更大的清晰范围" if float(aperture) >= 8 else "采用适中的景深"
         parts.append(f"以 f/{aperture} 光圈为参考，{depth}")
-    return "，".join(parts)
+    return parts
 
 
 def generation_prompt(view):

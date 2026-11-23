@@ -32,7 +32,8 @@ function preserveCanvasGroupRun(run) {
     const key=groupRunStorageKey(run.boardId);
     if(groupRun!==run && (boardId===run.boardId || JSON.parse(sessionStorage.getItem(key)||"null")?.id!==run.id))return;
     const steps=run.steps.map(({id,name,type,count,status,error,outputRef})=>({id,name,type,count,status,error,outputRef}));
-    sessionStorage.setItem(key,JSON.stringify({id:run.id,groupId:run.groupId,story:run.story,template:run.template,name:run.name,stop:run.stop,steps}));
+    sessionStorage.setItem(key,JSON.stringify({id:run.id,groupId:run.groupId,story:run.story,template:run.template,
+      name:run.name,stop:run.stop,refreshTails:run.refreshTails,connectTails:run.connectTails,steps}));
   }catch{}
 }
 
@@ -111,7 +112,7 @@ function groupRunAffected(group, changed) {
   return affected;
 }
 
-function groupGenerationNodes(group, includeExisting, affected=null, completed=new Map()) {
+function groupGenerationNodes(group, includeExisting, affected=null, completed=new Map(), tails=new Map()) {
   const candidates=[...new Set(group.nodes)].map(node).filter(n=>n &&
     ["image","video","audio"].includes(n.type) && !n.data.previs && !n.data.film &&
     (!affected || affected.has(n.id)) &&
@@ -120,17 +121,31 @@ function groupGenerationNodes(group, includeExisting, affected=null, completed=n
   const steps=candidates.map(n=>{
     const media=groupRunInputs(n);
     const deps=media.filter(({edge,source})=>!edge.ref&&source?.type==="image"&&ids.has(source.id)).map(({source})=>source.id);
-    const missing=media.find(({edge,version})=>!deps.includes(edge.from)&&!version?.ref);
+    const continuity=tails.get(n.id), previous=node(continuity?.sourceId);
+    const followsRun=!!previous&&ids.has(previous.id);
+    const expectedRef=followsRun?null:curV(previous)?.ref;
+    const tail=continuity&&{sourceId:previous?.id,expectedRef,connect:continuity.connect};
+    const tailError=!continuity?"":nodeLocked(n)?"请先解锁分镜图":
+      n.data.model==="h3video"?"分镜图模型不支持参考图片":
+      !expectedRef&&!followsRun?"上一镜没有可用视频":
+      vtReferenceAncestors(previous).has(n.id)?"上一镜已依赖本镜分镜图":
+      completed.has(previous.id)&&completed.get(previous.id).outputRef!==expectedRef?"上一镜已切换版本，请切回上轮结果":"";
+    if(followsRun&&!tailError)deps.push(previous.id);
+    const usableMedia=continuity?media.filter(({edge})=>edge!==continuity.edge):media;
+    const missing=usableMedia.find(({edge,version})=>!deps.includes(edge.from)&&!version?.ref);
     const switched=media.find(({edge,version})=>!edge.ref && completed.has(edge.from) &&
       version?.ref!==completed.get(edge.from).outputRef);
     const configured=n.type==="audio"?n.data.prompt?.trim():usesFields(n)?fieldsFilled(n):fullPrompt(n);
     const hasEditPlan=n.type==="video" && (n.data.camera_plan || n.data.object_edit) && videoInputs(n)[0]?.edge.segment_edit;
-    const error=n.job||prepping.has(n.id)?"节点已有任务":missing?`参考素材不可用${missing.source?` · ${missing.source.name}`:""}`:
+    const error=n.job||prepping.has(n.id)?"节点已有任务":tailError|| (missing?`参考素材不可用${missing.source?` · ${missing.source.name}`:""}`:
       switched?`「${switched.source.name}」已切换版本，请切回上轮结果或固定要用的版本`:
-      !configured && !hasEditPlan?"尚未填写生成指令":"";
+      !configured && !hasEditPlan?"尚未填写生成指令":"");
     const count=n.type==="audio"?1:Math.max(1,Math.min(4,Math.trunc(Number(n.data.count))||1));
-    return {id:n.id,name:n.name,type:n.type,deps,count,error,status:error?"skipped":"waiting",
-      recipe:groupRunRecipe(n,deps,media),references:groupRunReferenceDetails(n,media,deps,completed)};
+    const references=groupRunReferenceDetails(n,usableMedia,deps,completed);
+    if(tail)references.unshift({name:previous?.name||"上一镜",label:(continuity.edge?"上一镜尾帧":"连接上一镜尾帧")+" · "+
+      (tailError|| (followsRun?"取本轮生成视频":`取当前版本 ${previous.cur+1}`))});
+    return {id:n.id,name:n.name,type:n.type,deps,count,error,tail,status:error?"skipped":"waiting",
+      recipe:groupRunRecipe(n,deps,media),references};
   });
   const ready=[], available=new Set();
   while(ready.length<steps.length){
@@ -140,14 +155,14 @@ function groupGenerationNodes(group, includeExisting, affected=null, completed=n
   }
   for(const step of steps.filter(step=>!available.has(step.id))) {
     step.status="skipped";
-    step.error="图片输入存在循环依赖";
+    step.error="生成节点存在循环依赖";
     ready.push(step);
   }
   const byId=new Map(ready.map(step=>[step.id,step]));
   for(const step of ready) {
     if(step.status==="waiting" && step.deps.some(id=>byId.get(id)?.status==="skipped")) {
       step.status="skipped";
-      step.error="上游图片节点无法生成";
+      step.error="上游节点无法生成";
     }
   }
   return ready;
@@ -188,13 +203,13 @@ function openScriptShotRun(script,index,{mode="missing"}={}) {
     imageId:pair.img||null,videoId:pair.vid||null}},{initialMode:mode});
 }
 
-function openScriptShotRangeRun(script, first, last, mode="missing") {
+function openScriptShotRangeRun(script, first, last, mode="missing", tailMode="keep") {
   if(node(script.id)!==script || nodeLocked(script))return;
   const links=scriptShotLinks(script), shots=script.data.shots;
   const range=links.slice(first,last+1).map((pair,i)=>pair&&{
     shotId:shots[first+i]?.id||null,imageId:pair.img||null,videoId:pair.vid||null});
   if(!range.length || range.some(pair=>!pair))return toast("请先展开所选镜头");
-  openCanvasRun({story:{scriptId:script.id,shots:range}},{initialMode:mode});
+  openCanvasRun({story:{scriptId:script.id,shots:range}},{initialMode:mode,initialTailMode:tailMode});
 }
 
 function openTemplateRun(name,nodes,changes) {
@@ -205,12 +220,16 @@ function openTemplateRun(name,nodes,changes) {
   openCanvasRun({template},{changed:hasChanges?changes:null});
 }
 
-function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=null}={}) {
+function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=null,initialTailMode="keep"}={}) {
   const scope=canvasRunScope(origin), {story}=origin;
   if(!canvasCanEdit() || !scope)return;
   if(groupRun?.active){$("#groupRunProgress").hidden=false;return toast("当前有运行计划正在生成");}
   const dialog=$("#groupRunConfirm"), board=B, form=$("form",dialog);
   const mode=$("[name=mode]",form), submit=$("[type=submit]",form), summary=$("[data-summary]",form), list=$("ol",form);
+  const refresh=$("[name=refresh-tails]",form);
+  const connect=$("[name=connect-tails]",form);
+  refresh.checked=retry?!!retry.refreshTails:["refresh","connect_and_refresh"].includes(initialTailMode);
+  connect.checked=retry?!!retry.connectTails:["connect","connect_and_refresh"].includes(initialTailMode);
   $("[data-title]",form).textContent=(retry?"重试":"运行")+"「"+scope.name+"」";
   mode.closest("label").hidden=!!(retry||plan);
   const affectedOption=$('option[value="affected"]',mode);
@@ -226,26 +245,50 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     const selection=["frame","missing_frame"].includes(mode.value)?new Set(current.images):
       ["video","missing_video"].includes(mode.value)?new Set(current.videos):
       mode.value==="affected"&&changed?groupRunAffected(current,changed):targets;
-    const steps=retry?groupGenerationNodes(current,true,groupRunRetryIds(retry,current),completed):
-      groupGenerationNodes(current,!mode.value.startsWith("missing"),selection);
+    const affected=retry?groupRunRetryIds(retry,current):selection;
+    const includeExisting=!!retry||!mode.value.startsWith("missing");
+    const edges=story?scriptTailEdges():new Map();
+    const tails=new Map();
+    const pinned=new Set();
+    let canRefresh=false, canConnect=false;
+    for(const index of current.indices||[]){
+      const img=current.links[index]?.img, picture=node(img), edge=edges.get(img);
+      if(index===0||picture?.type!=="image"||(affected&&!affected.has(img))||(!includeExisting&&curV(picture)))continue;
+      if(edge){
+        pinned.add(img);
+        canRefresh=true;
+      }else canConnect=true;
+      if(edge?refresh.checked:connect.checked)tails.set(img,{edge,sourceId:current.links[index-1]?.vid,connect:!edge});
+    }
+    const steps=groupGenerationNodes(current,includeExisting,affected,completed,tails);
     let warnings=[];
     if(story){
-      const edges=scriptTailEdges();
+      const planned=new Set(steps.filter(step=>step.status==="waiting").map(step=>step.id));
       warnings=current.indices.flatMap(index=>{
+        const img=current.links[index]?.img;
+        if(tails.has(img))return [];
+        if(pinned.has(img)&&planned.has(img)&&planned.has(current.links[index-1]?.vid)){
+          return [`第 ${index+1} 镜会沿用已固定的尾帧，上一镜生成的新版本不会用于本镜`];
+        }
         const tail=scriptContinuityStatus(current.links,index,edges);
         return tail?.warning?[current.indices.length>1?`第 ${index+1} 镜：${tail.text}`:tail.text]:[];
       });
     }
-    return {steps,notice:warnings.slice(0,3).join("；")+(warnings.length>3?`，另有 ${warnings.length-3} 镜待核对`:"")};
+    return {steps,canRefresh,canConnect,refreshTails:canRefresh&&refresh.checked,connectTails:canConnect&&connect.checked,
+      notice:warnings.slice(0,3).join("；")+(warnings.length>3?`，另有 ${warnings.length-3} 镜待核对`:"")};
   };
   let reviewed;
   const preview=()=>{
     const previous=reviewed;
     reviewed=collect();
     const {steps,notice}=reviewed;
+    refresh.closest("label").hidden=!reviewed.canRefresh;
+    connect.closest("label").hidden=!reviewed.canConnect;
     const ready=steps.filter(step=>step.status==="waiting");
     const outputs=ready.reduce((total,step)=>total+step.count,0);
     summary.textContent=ready.length?`将${retry?"重试":"运行"} ${ready.length} 个节点，计划生成 ${outputs} 项。实际用量由所选服务记录。`:"当前没有可运行的节点";
+    const newConnections=ready.filter(step=>step.tail?.connect).length;
+    if(newConnections)summary.textContent+=` 将为 ${newConnections} 张分镜图连接上一镜尾帧。`;
     if(retained.length)summary.textContent+=` 已保留 ${retained.length} 个完成节点。`;
     if(notice)summary.textContent+=` ${notice}。`;
     const expanded=new Set(previous?$$("details[open]",list).map(row=>row.dataset.step):
@@ -253,7 +296,7 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     list.innerHTML=groupRunRows(steps,expanded);
     submit.disabled=!ready.length;
   };
-  mode.onchange=preview;
+  mode.onchange=refresh.onchange=connect.onchange=preview;
   form.onsubmit=event=>{
     event.preventDefault();
     if(groupRun?.active || retry&&groupRun!==retry || B!==board || !canvasCanEdit())return;
@@ -262,7 +305,8 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     if(!current.steps.some(step=>step.status==="waiting"))return;
     closeCanvasGroupRunDialog();
     const id=crypto.randomUUID?.() || "group-"+Date.now()+"-"+Math.random().toString(36).slice(2);
-    void executeCanvasGroup({id,board,boardId,...origin,name:scope.name,steps:[...retained,...current.steps],active:true,stop:false});
+    void executeCanvasGroup({id,board,boardId,...origin,name:scope.name,steps:[...retained,...current.steps],
+      refreshTails:current.refreshTails,connectTails:current.connectTails,active:true,stop:false});
   };
   preview();
   if(!dialog.open){if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
@@ -321,6 +365,21 @@ async function executeCanvasGroup(run) {
       preserveCanvasGroupRun(run);renderCanvasGroupRun();
       run.inFlight={nodeId:n.id};
       try {
+        if(step.tail){
+          const {sourceId,expectedRef,connect}=step.tail;
+          const expected=expectedRef||byId.get(sourceId)?.outputRef;
+          const findIndex=scope=>scope?.indices.find(index=>{
+            return scope.links[index]?.img===n.id&&scope.links[index-1]?.vid===sourceId;
+          });
+          const index=findIndex(membership);
+          const active=()=>!run.stop&&current()&&findIndex(canvasRunScope(run))===index&&
+            curV(node(sourceId))?.ref===expected&&groupRunRecipe(n,step.deps)===step.recipe;
+          if(index===undefined||!expected||!active())throw new Error("上一镜或视频版本已变化，请重新确认尾帧");
+          if(!await linkPreviousShotFrame(node(run.story.scriptId),index,{batch:true,allowNew:connect,active})){
+            throw new Error("未能连接上一镜尾帧，已跳过本镜生成");
+          }
+          if(run.stop||!current())throw new Error("已停止提交");
+        }
         await generate(n,{batchLayout:"tabs",groupRunId:run.id});
         while(current() && node(n.id)===n && n.job)await sleep(250);
         const result=run.inFlight.result;
@@ -372,6 +431,8 @@ function initCanvasGroupRun() {
     <label>运行范围 <select name="mode"><option value="missing">补齐未生成节点</option><option value="all">全部生成节点</option><option value="affected" hidden disabled>重跑受影响的节点</option>
       <option value="missing_frame" data-shot-mode hidden disabled>只补齐分镜图</option><option value="missing_video" data-shot-mode hidden disabled>只补齐视频</option>
       <option value="frame" data-shot-mode hidden disabled>重生成分镜图</option><option value="video" data-shot-mode hidden disabled>重生成视频</option></select></label>
+    <label hidden><input type="checkbox" name="refresh-tails">生成分镜图前刷新已有的上一镜尾帧</label>
+    <label hidden><input type="checkbox" name="connect-tails">为未连接的分镜图连接上一镜尾帧</label>
     <p data-summary></p><ol></ol>
     <footer><button type="button" data-close>取消</button><button type="submit">确认运行</button></footer>
     </form></dialog>

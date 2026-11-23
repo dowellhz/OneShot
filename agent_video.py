@@ -15,9 +15,11 @@ from aiohttp import web
 import video_remake
 import previs
 import camera_plan
+import image_camera
 import object_edit
 import workflow_review
 import broll
+import creative_memory
 from render import CUTAWAY_LIMIT, TITLE_LIMIT, TITLE_POSITIONS, TITLE_STYLES
 
 NAMES = {"video_generate", "video_regenerate", "video_extend", "video_edit_segment", "video_object_settings", "video_capture_frame", "video_remake_status", "video_remake_analyze", "video_remake_plan",
@@ -36,7 +38,7 @@ def node_data(recipe):
             "mode": "keyframes" if recipe.get("planned") else "auto", "turbo": recipe.get("turbo", True), "seed": recipe.get("seed", -1),
             "sound": recipe.get("sound", ""), "music": recipe.get("music", ""), "pmode": "fields" if recipe.get("fields") else "free",
             "fields": copy.deepcopy(recipe.get("fields", {})), "count": 1, "provider": recipe.get("provider", ""),
-            **{key:copy.deepcopy(recipe[key]) for key in ("camera_plan","object_edit","draft") if recipe.get(key)}}
+            **{key:copy.deepcopy(recipe[key]) for key in ("camera_plan","object_edit","draft","video_optics") if recipe.get(key)}}
 
 
 def connect_inputs(board, nid, recipe):
@@ -53,8 +55,7 @@ def connect_inputs(board, nid, recipe):
         else:
             role = "first" if i == 0 else "last"
         edge = {"from": source_id, "to": nid, "role": role}
-        if type(image.get("prompt_slot")) is int and image["prompt_slot"]>0:
-            edge.update(ref=image["ref"],prompt_slot=image["prompt_slot"])
+        edge.update(image_reference(image))
         if recipe.get("planned") and role != "subject":
             edge["time"] = image.get("time", 0)
         if edge not in board.setdefault("edges", []):
@@ -106,7 +107,7 @@ def queued_node(s, run, user, cid, pending):
                     b["edges"] = [e for e in b.get("edges", []) if not (e.get("to") == nid and
                                   (e.get("from") in image_ids or e.get("relation") in ("previs","audio_ref","video_ref")))]
                     n["data"].update(copy.deepcopy(pending.get("target_data") or node_data(recipe)))
-                    for prop in ("camera_plan","object_edit","draft"):
+                    for prop in ("camera_plan","object_edit","draft","video_optics"):
                         if not recipe.get(prop):
                             n["data"].pop(prop, None)
                     connect_inputs(b, nid, recipe)
@@ -173,8 +174,14 @@ def fail_node(s, run, user, cid, message, target_id=None):
 def register(tool, prop, node, prompt):
     frame = prop("object", properties={"node_id": node, "role": prop("string", enum=["first", "last", "keyframe", "subject"]),
                                       "time": prop("number", minimum=0, maximum=15)}, required=["node_id"], additionalProperties=False)
+    optics = prop("object",properties={
+        "lens":prop("integer",enum=list(image_camera.LENSES)), "sensor":prop("string",enum=list(image_camera.SENSORS)),
+        "optics":prop("string",enum=list(image_camera.OPTICS)), "aperture":prop("string",enum=list(image_camera.APERTURES)),
+    },additionalProperties=False)
     options = {"prompt": prompt, "duration": prop("number", minimum=2, maximum=30), "quality": prop("string", enum=["hd", "std"]),
                "draft": prop("boolean"),
+               "video_optics":optics,
+               "memory_views":creative_memory.view_selection_schema(prop),
                "seed": prop("integer", minimum=-1, maximum=2**48), "provider": prop("string", maxLength=100), "name": node}
     guide = prop("object", properties={"node_id":node, "version":prop("integer", minimum=1, maximum=5000)},
                  required=["node_id"], additionalProperties=False)
@@ -197,7 +204,8 @@ def register(tool, prop, node, prompt):
         "method":prop("string", enum=["auto","frame","motion"]),
         "frames":prop("array", items=frame, maxItems=30), "audio_refs":sounds, "video_refs":clips}, ["node_id","direction","prompt"])
     tool("video_edit_segment", "编辑原片的指定范围（4 到 30 秒），结果放在相连的新节点。普通修改提供 prompt；重拍提供 camera_plan；框选物体用 object_edit，须有明确的原片秒数 at 和归一化框 [左,上,右,下]。替换参考用 replacement 的图片节点或资产ID。", {
-        "node_id":node,"version":guide["properties"]["version"],"prompt":prompt,"provider":options["provider"],"name":node,"draft":options["draft"],
+        "node_id":node,"version":guide["properties"]["version"],"prompt":prompt,"provider":options["provider"],"name":node,"draft":options["draft"],"video_optics":optics,
+        "memory_views":options["memory_views"],
         "start":prop("number",minimum=0),"end":prop("number",minimum=0),
         "frames":prop("array",items=frame,maxItems=30),"audio_refs":sounds,"video_refs":clips,"camera_plan":camera,"object_edit":object_plan},
         ["node_id","start","end"])
@@ -235,6 +243,8 @@ def register(tool, prop, node, prompt):
         "at":prop("number", minimum=0), "name":node}, ["node_id","position"])
     tool("video_regenerate", "在同一节点重新生成并追加版本。可选 version 指定旧版。省略 frames 时沿用所选版本的图片；只换个别输入用 replacements，重新指定整组图片用 frames，两者不可同传。物体框选等其他设置仍沿用所选版本。", {
         **options, **guide["properties"], "previs":guide, "audio_refs":sounds, "video_refs":clips, "camera_plan":camera, "object_edit":object_plan,
+        "reuse_asset_references":prop("boolean",description="用户要求复用原参考图或复现旧版时为 true，按原生成记录采用资产旧图"),
+        "memory_ids":prop("array",items=node,maxItems=8,description="替换从旧版本沿用的资产，空数组可清除继承；省略则沿用。用户本轮或本次提示词的明确引用仍会应用"),
         "frames":prop("array",items=frame,maxItems=30),
         "replacements": prop("array", maxItems=12, items=prop("object", properties={
             "from_node_id": node, "to_node_id": node}, required=["from_node_id", "to_node_id"], additionalProperties=False))}, ["node_id"])
@@ -381,6 +391,12 @@ async def render_previs(s, run, user, cid, nid):
 def reference_slot(record):
     slot = (record or {}).get("prompt_slot")
     return {"prompt_slot":slot} if type(slot) is int and slot>0 else {}
+
+
+def image_reference(image):
+    slot = reference_slot(image)
+    ref = image.get("ref")
+    return {**slot, "ref":ref} if ref and (slot or image.get("pinned") is True) else slot
 
 
 def reference_version(s, run, user, selection=None, edge=None, *, kind="video"):
@@ -840,6 +856,7 @@ def plan_payload(s, run, user, frames, duration, data, prompt, *, sounds=(), cli
         ordered = [f for f in ordered if f.get("role", "auto") != "auto"]
     for i, f in enumerate(frames):
         src, version = s.source(run, user, f["node_id"],pinned_ref=f.get("ref"))
+        pinned = bool(f.get("ref")) or src["id"] in run["data"].get("pinned_versions", ())
         role = f.get("role", "auto")
         t = 0
         if role != "subject" and f in ordered:
@@ -848,7 +865,7 @@ def plan_payload(s, run, user, frames, duration, data, prompt, *, sounds=(), cli
             t = max(0, min(end, t))
         images.append({"node_id": src["id"], "ref": version["ref"], "name": src.get("name"), "caption": src.get("data", {}).get("caption", ""),
                        "index": i + 1, "role": "subject" if role == "subject" else "frame", "time": t, "w": version.get("w"), "h": version.get("h"),
-                       **({"prompt_slot":f["prompt_slot"]} if f.get("prompt_slot") else {})})
+                       **reference_slot(f), **({"pinned":True} if pinned else {})})
         kinds.append(role)
     if not planned:
         indices = [frames.index(f) for f in ordered]
@@ -916,6 +933,7 @@ async def execute(s, run, user, cid, name, args):
     if name == "video_remake_review":
         return await review_remake(s, run, user, args)
     frames, data, original, guide_edge = args.get("frames", []), {}, None, None
+    replay_ref = None
     sound_edges, clip_edges, extension, segment = [], [], None, False
     prompt = args.get("prompt", "")
     if name == "video_extend":
@@ -939,7 +957,13 @@ async def execute(s, run, user, cid, name, args):
         b, original = video_node(s, run, user, args["node_id"])
         if original.get("job"):
             raise ValueError("原视频仍有任务，请等待完成或取消后再重新生成")
-        _, recipe, data, incoming = video_edit_snapshot(s,run,b,original,args.get("version"))
+        prior, recipe, data, incoming = video_edit_snapshot(s,run,b,original,args.get("version"))
+        if args.get("reuse_asset_references"):
+            if "memory_views" in args:
+                raise ValueError("请分别提交复用旧图和重新选择角色视角的请求")
+            if not prior or not prior.get("ref"):
+                raise ValueError("请选择已生成的视频版本复用资产参考图")
+            replay_ref = prior["ref"]
         if data.get("previs"):
             raise ValueError("这是白模预演，请用白模渲染工具")
         guide_edge = next((e for e in incoming if e.get("relation") == "previs"), None)
@@ -959,7 +983,7 @@ async def execute(s, run, user, cid, name, args):
         prompt = prompt or "\n".join([t for t in inputs if t] + ([data.get("prompt", "")] if data.get("prompt") else []))
         if not frames and recipe:
             frames = [{"node_id": im["node_id"], "role": "subject" if im.get("role") == "subject" else "keyframe" if recipe.get("planned") else "auto",
-                       **({key:im[key] for key in ("ref","prompt_slot") if key in im} if im.get("prompt_slot") else {}),
+                       **image_reference(im),
                        **({"time": im["time"]} if "time" in im else {})} for im in recipe.get("images", []) if im.get("node_id")]
             data.update({k: recipe[k] for k in ("duration", "quality", "turbo", "seed", "sound", "music", "provider") if k in recipe})
             prompt = args.get("prompt") or prompt or recipe.get("prompt", "")
@@ -1041,6 +1065,31 @@ async def execute(s, run, user, cid, name, args):
     special = bool(extension or segment)
     payload = plan_payload(s, run, user, frames, duration, {**data, **guide_aspect}, prompt,
                            sounds=sounds,clips=clips,guide=bool(guide),special=special)
+    excluded = data.get("ignored_memory_ids")
+    ignored = excluded if isinstance(excluded,list) else []
+    if "memory_views" in args:
+        payload["memory_views"] = args["memory_views"]
+    elif original and recipe.get("memory_views") and not replay_ref:
+        overrides = creative_memory.view_tokens(args.get("prompt",""))
+        payload["memory_views"] = [item for item in recipe["memory_views"] if isinstance(item,dict)
+                                   and isinstance(item.get("memory_id"),str) and item["memory_id"] not in ignored
+                                   and item["memory_id"] not in overrides
+                                   and ("memory_ids" not in args or item.get("memory_id") in args["memory_ids"])]
+    if original:
+        saved_assets = (prior or {}).get("memory_used")
+        inherited = [asset["id"] for asset in saved_assets if isinstance(asset,dict) and isinstance(asset.get("id"),str)
+                     and asset["id"] not in ignored] if isinstance(saved_assets,list) else []
+        if "memory_ids" in args:
+            data["ignored_memory_ids"] = []
+        if args.get("memory_ids", inherited):
+            payload["memory_ids"] = args.get("memory_ids", inherited)
+    if "video_optics" in args:
+        if optics := image_camera.validate_optics(args["video_optics"]):
+            data["video_optics"] = optics
+        else:
+            data.pop("video_optics",None)
+    if data.get("video_optics"):
+        payload["video_optics"] = image_camera.validate_optics(data["video_optics"])
     if args.get("draft",data.get("draft")):
         payload["draft"] = True
         data["draft"] = True
@@ -1085,7 +1134,8 @@ async def execute(s, run, user, cid, name, args):
     if name == "video_extend":
         label = (source.get("name") or "视频") + (" · 补拍片头" if args["direction"] == "before" else " · 续拍片尾")
     return await s.submit_generation(run, user, cid, payload, args.get("name") or label[:80],
-                                     s.host.generate_request, target_id=original["id"] if original else None, target_data=target_data)
+                                     s.host.generate_request, target_id=original["id"] if original else None, target_data=target_data,
+                                     **({"replay_ref":replay_ref} if replay_ref else {}))
 
 
 def remake_source(s, run, user, nid):

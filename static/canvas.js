@@ -155,6 +155,7 @@ function restore(s) {
   B.nodes.forEach(n => { if (jobs.has(n.id)) n.job = jobs.get(n.id); });
   $("#prompt")._node=null; $("#pfields")._node=null;
   rebuild(); showPanel(); save();
+  $("#shotList")?.dispatchEvent(new Event("canvas-restored"));
   if(document.activeElement?.matches("#prompt,#pfields textarea"))document.activeElement._before=snap();
 }
 function stepCanvasHistory(source, destination) {
@@ -559,6 +560,8 @@ function switchVersion(n, i, {recordUndo = true} = {}) {
       if (edges.length !== v.input_edges.length) toast("部分历史输入节点已删除，已恢复仍存在的连线");
     }
     if (v.node_data) n.data = JSON.parse(JSON.stringify(v.node_data));
+    else if(v.video_recipe?.video_optics)n.data.video_optics=structuredClone(v.video_recipe.video_optics);
+    else delete n.data.video_optics;
   }
   if (n.type === "audio") {
     if (v.audio_recipe) Object.assign(n.data,{...defaults("audio"),...v.audio_recipe});
@@ -811,13 +814,23 @@ function drawEdges() {
   refreshScriptContinuity();
 }
 function cutEdge(e) {
-  if (!canvasCanEdit()) return;
+  if (!canvasCanEdit() || !B.edges.includes(e)) return;
+  const target=node(e.to);
   if (e.relation==="seed_audio_ref") {
-    const target=node(e.to);
     if (target) removeSeedAudioReference(target,seedAudioRefs(target).findIndex(ref=>ref.node_id===e.from&&ref.ref===e.ref));
     return;
   }
-  checkpoint(); B.edges = B.edges.filter(x => x !== e); if (selEdge === e) selEdge = null; drawEdges(); refresh(node(e.to)); save();
+  if(e.story_continuity&&target&&(nodeLocked(target)||target.job||prepping.has(target.id)||scriptContinuityPending.has(target))){
+    return toast("请等分镜图任务结束，或解锁节点后再移除尾帧");
+  }
+  checkpoint();
+  if(e.story_continuity&&target)removeScriptTailPrompt(target,e);
+  B.edges=B.edges.filter(x=>x!==e);
+  if(selEdge===e)selEdge=null;
+  refresh(target);
+  if(!target)drawEdges();
+  save();
+  return true;
 }
 
 // ================================================================= selection, overlays
@@ -944,6 +957,11 @@ function showPanel() {
   if (n.type === "image") imageInputs(n).forEach((input,i)=>items.push(imagePromptChip(input,i,`<span class="role">${i===0?"原图":"参考"}</span>`)));
   if (n.type === "video") {
     const p = plan(n);
+    inheritedVideoAssets(n).forEach(asset=>{
+      const name = asset.name || "资产";
+      items.push(`<span class="ref"><span class="tx">${ico("assets")}</span>${esc(name)}<span class="role">沿用资产</span>
+        ${canvasCanEdit() ? `<button type="button" data-memory-ignore="${esc(asset.id)}" aria-label="取消沿用 ${esc(name)}" title="取消沿用此资产">×</button>` : ""}</span>`);
+    });
     if (guide) {
       const latest = curV(guide.source);
       const update = latest?.source === "previs" && latest.ref !== guide.edge.ref;
@@ -972,6 +990,13 @@ function showPanel() {
   }
   inputs(n, "text").forEach(t => items.push(`<span class="ref" title="${esc(t.data.text.slice(0, 200))}"><span class="tx">${ico("text")}</span>${esc(t.name)}<span class="role">已并入</span></span>`));
   refs.innerHTML = items.join(""); refs.style.display = items.length ? "" : "none";
+  $$("[data-memory-ignore]",refs).forEach(button=>button.onclick=()=>{
+    if(!canvasCanEdit()||n.job||prepping.has(n.id))return;
+    checkpoint(); rememberVideoVersion(n);
+    const ignored = Array.isArray(n.data.ignored_memory_ids) ? n.data.ignored_memory_ids : [];
+    n.data.ignored_memory_ids = [...ignored,button.dataset.memoryIgnore];
+    save(); showPanel();
+  });
   $$(".ref[data-tok]", refs).forEach(r => r.onclick = e => { if (!e.target.closest("button, select, input, label")) insertTok(r.dataset.tok); });
   $$("[data-image-update]",refs).forEach(button=>button.onclick=()=>{
     if(!canvasCanEdit()||n.job||prepping.has(n.id))return;
@@ -1088,6 +1113,7 @@ function showPanel() {
       : pill("duration", durations, `${ico("clock")}${Math.min(reference?max:14, Math.max(reference ? 4 : 5, d.duration))}s`);
     if (!reference && imgInputs(n).length) h += pill("mode", { auto: "按每张图的设置", keyframes: "全部当关键帧", reference: "全部当人物设定" }, plan(n).name);
     if (reference) h += '<span class="pill">全模态参考</span>';
+    if(!d.film&&!d.previs)h += `<button type="button" class="pill" id="videoOpticsBtn"${n.job||nodeLocked(n)?" disabled":""}>镜头参数${Number.isFinite(d.video_optics?.lens)?` · ${d.video_optics.lens} mm`:d.video_optics?" · 已设置":""}</button>`;
     if (segment && d.camera_plan) h += `<button type="button" class="pill" id="retakeSettings" title="重拍设置">重拍设置 · ${esc(cameraModeLabel[d.camera_plan.mode] || "机位")}</button>`;
     if (segment && d.object_edit) h += '<button type="button" class="pill" id="objectSettings">物体编辑设置</button>';
     if (!d.film) h += pill("count", { 1: "出 1 个", 2: "抽 2 个版本，挑最好的", 3: "抽 3 个版本，挑最好的" }, `${ico("stack")}${d.count > 1 ? "抽 " + d.count : "1 个"}`);
@@ -1114,6 +1140,7 @@ function showPanel() {
   if (n.type === "script") { wireScriptCtl(n, ctl); $("#more").classList.remove("on"); placeOverlays(); return; }
   if ($("#rwBtn")) $("#rwBtn").onclick = () => rewritePrompt(n);
   if ($("#pvBtn")) $("#pvBtn").onclick = () => previewPrompt(n);
+  if ($("#videoOpticsBtn")) $("#videoOpticsBtn").onclick = () => openVideoOptics(n);
   if ($("#retakeSettings")) $("#retakeSettings").onclick = () => openRetakeSettings(n);
   if ($("#objectSettings")) $("#objectSettings").onclick = () => openObjectSettings(n);
   if ($("#rsBtn")) $("#rsBtn").onclick = () => {
@@ -1434,7 +1461,8 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
   const webSource = version.web_source;
   const origin = publicResearchLink(webSource?.link);
   const license = publicResearchLink(webSource?.license_url);
-  const hasDetails = prompt || hasEffectivePrompt || transcripts.length || origin;
+  const usedAssets = Array.isArray(version.memory_used) ? version.memory_used.filter(asset => asset?.name) : [];
+  const hasDetails = prompt || hasEffectivePrompt || transcripts.length || origin || usedAssets.length;
   const editLabel = type === "image" ? (index === source?.cur ? "编辑图片" : "切到此版本并编辑") :
     type === "video" ? "剪辑视频" : "转写音频";
   const media = (v, label) => type === "audio" ? audioPreviewMarkup(v,true) : type === "image" ? `<img src="${esc(v.url)}" alt="${esc(label)}">` :
@@ -1474,6 +1502,13 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
         ${prompt ? `<h3>提示词</h3><pre>${esc(prompt)}</pre>` : ""}
         ${hasEffectivePrompt ? `<details ${prompt ? "" : "open"}><summary>生成时使用的提示词</summary><pre>${esc(effective)}</pre></details>` : ""}
         ${prompt || hasEffectivePrompt ? '<button type="button" data-light-copy-prompt>复制提示词</button>' : ""}
+        ${usedAssets.length ? `<h3>生成时使用的资产</h3><ul>${usedAssets.map(asset => {
+          const refs = Array.isArray(asset.references) ? asset.references :
+            asset.ref ? [{ref:asset.ref}] : [];
+          const links = refs.filter(item=>item?.ref).map(({ref,view})=>
+            `<a href="/media?ref=${encodeURIComponent(ref)}" target="_blank" rel="noopener">${esc(CHARACTER_VIEWS[view]?.[0] || "参考图")}</a>`);
+          return `<li>${esc(asset.name)}${links.length ? " · "+links.join("、") : ""}</li>`;
+        }).join("")}</ul>` : ""}
         ${transcripts.map(n => `<details open><summary>${esc(n.name)}</summary><pre>${esc(n.data.text)}</pre></details>`).join("")}
         <p class="light-details-status" role="status"></p>
       </aside>` : ""}
@@ -2154,6 +2189,7 @@ function paste(items, dx = 40, dy = 40, fragment = null) {
   for (const o of items) { const n = addNode(o.type, o.x + dx, o.y + dy, o.data); n.versions = JSON.parse(JSON.stringify(o.versions)); n.cur = o.cur; n.name = o.name + " 副本"; map[o.id] = n.id; render(n); made.push(n.id); }
   const remapData = data=>{
     for(const shot of data?.made || []) for(const key of ["img","vid"]) if(shot[key]) shot[key]=map[shot[key]]||"";
+    if(data?.film?.story_script) data.film.story_script=map[data.film.story_script]||"";
     for(const clip of data?.film?.clips || []) if(clip.node) clip.node=map[clip.node]||"";
     for(const clip of data?.film?.cutaways || []) if(clip.node) clip.node=map[clip.node]||"";
   };

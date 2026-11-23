@@ -288,16 +288,84 @@ def data_url(path: Path, max_side: int = 1536, quality: int = 90, *, min_side: i
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-async def json_req(http: aiohttp.ClientSession, method: str, url: str, who: str, **kw) -> dict:
+class ChatStreamUnsupported(ProviderError):
+    pass
+
+
+async def read_chat_stream(content, progress):
+    message = {"role":"assistant","content":"","reasoning_content":""}
+    calls, packet = {}, []
+    pending_size = 0
+    finished = False
+    async for line in content:
+        line = line.rstrip(b"\r\n")
+        if line.startswith(b"data:"):
+            pending_size += len(line)
+            if pending_size > 512_000:
+                raise ProviderError("模型流式数据过长")
+            packet.append(line[5:].lstrip(b" "))
+            continue
+        if line or not packet:
+            continue
+        data = b"\n".join(packet)
+        packet.clear()
+        pending_size = 0
+        if data == b"[DONE]":
+            finished = True
+            break
+        chunk = json.loads(data)
+        if chunk.get("error"):
+            raise ProviderError("模型流式回复中断")
+        for choice in chunk.get("choices") or []:
+            if choice.get("index",0) != 0:
+                continue
+            delta = choice.get("delta") or {}
+            for key in ("content","reasoning_content"):
+                if isinstance(fragment := delta.get(key),str):
+                    message[key] += fragment
+                    if len(message[key]) > 128_000:
+                        raise ProviderError("模型回复过长")
+                    if key=="content":
+                        progress(message[key])
+            for piece in delta.get("tool_calls") or []:
+                index = piece.get("index")
+                if type(index) is not int or not 0 <= index < 8:
+                    raise ProviderError("模型流式工具编号无效")
+                call = calls.setdefault(index,{"id":"","type":"function","function":{"name":"","arguments":""}})
+                call["id"] += piece.get("id") or ""
+                if len(call["id"])>200 or piece.get("type") not in (None,"function"):
+                    raise ProviderError("模型流式工具格式无效")
+                for field, fragment in (piece.get("function") or {}).items():
+                    if field in call["function"] and isinstance(fragment,str):
+                        call["function"][field] += fragment
+                        if len(call["function"][field])>20_000:
+                            raise ProviderError("模型流式工具参数过长")
+            if choice.get("finish_reason"):
+                if choice["finish_reason"]=="length":
+                    raise ProviderError("模型流式回复达到长度上限")
+                finished = True
+    if not finished:
+        raise ProviderError("模型未完成流式回复")
+    if calls:
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+    return {"choices":[{"message":message}]}
+
+
+async def json_req(http: aiohttp.ClientSession, method: str, url: str, who: str, *, chat_progress=None, **kw) -> dict:
     kw.setdefault("timeout", aiohttp.ClientTimeout(total=180))
     try:
         async with http.request(method, url, **kw) as r:
+            if chat_progress is not None and r.status < 400 and r.content_type == "text/event-stream":
+                return await read_chat_stream(r.content,chat_progress)
             text = await r.text()
             try:
                 j = json.loads(text) if text else {}
             except ValueError:
                 j = {"raw": text[:300]}
             if r.status >= 400:
+                if chat_progress is not None and (r.status in (405,415,501) or
+                        r.status in (400,422) and "stream" in _errmsg(j).casefold()):
+                    raise ChatStreamUnsupported("模型接口不支持流式回复")
                 raise ProviderError(f"{who} 返回错误（{r.status}）：{_errmsg(j)}")
             return j
     except aiohttp.ClientError as e:

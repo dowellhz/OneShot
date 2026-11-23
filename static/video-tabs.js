@@ -40,14 +40,17 @@ function vtSnapshot(n,i){
     const r=v.video_recipe,images=r?.images?.filter(im=>im.node_id);
     if(images?.length){const end=(vidFrames(r.duration||n.data.duration)-4)/24;v.input_edges=images.map((im,k)=>{
       const time=Number(im.time)||0,role=im.role==="subject"?"subject":r.planned?(time<=.01?"first":time>=end-.05?"last":"keyframe"):(k===0?"first":"last");
-      return {from:im.node_id,to:n.id,role,...(r.planned&&role!=="subject"?{time}:{})};
+      const promptSlot=Number.isInteger(im.prompt_slot)&&im.prompt_slot>0;
+      return {from:im.node_id,to:n.id,role,...(r.planned&&role!=="subject"?{time}:{}),
+        ...(promptSlot?{prompt_slot:im.prompt_slot}:{}),...((promptSlot||im.pinned===true)&&im.ref?{ref:im.ref}:{})};
     });}else v.input_edges=vtClone(B.edges.filter(e=>e.to===n.id));
   }
   if(!v.node_data){
     v.node_data=vtClone(n.data);const r=v.video_recipe;
-    if(r){for(const k of ["prompt","duration","quality","seed","turbo","provider","sound","music","fields","camera_plan","object_edit","draft"])if(k in r)v.node_data[k]=vtClone(r[k]);
+    if(r){for(const k of ["prompt","duration","quality","seed","turbo","provider","sound","music","fields","camera_plan","object_edit","draft","video_optics"])if(k in r)v.node_data[k]=vtClone(r[k]);
       if(!r.camera_plan)delete v.node_data.camera_plan;
       if(!r.object_edit)delete v.node_data.object_edit;
+      if(!r.video_optics)delete v.node_data.video_optics;
       if(!r.draft)delete v.node_data.draft;
       if(r.ar)v.node_data.aspect=r.ar+":1";v.node_data.mode=r.planned?"keyframes":"auto";v.node_data.pmode=r.fields?"fields":"free";}
   }
