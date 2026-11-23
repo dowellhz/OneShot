@@ -48,12 +48,13 @@ async function csRefresh(epoch) {
  csList();
 }
 
-async function csOpen() {
+async function csOpen(fromComposer=false) {
  const panel = $("#creativeSkills");
  if (panel.open) return;
  if (typeof panel.showModal === "function") panel.showModal();
  else panel.setAttribute("open", "");
  const epoch = ++CS.epoch;
+ CS.fromComposer=fromComposer===true;
  csBack();
  $("#csSearch").value = "";
  $("#csSearch").focus();
@@ -206,6 +207,11 @@ function initCreativeSkills() {
  $("#acSkills").onclick = csOpen;
  $("#acSkillClear").onclick = () => csChoose(null);
  $("#csSearch").oninput = csList;
+ $("#csSearch").onkeydown = event => {
+  if(event.key!=="Enter"||event.isComposing||CS.busy)return;
+  const choice=$('#csRows [data-cs-action="choose"]');
+  if(choice){event.preventDefault();choice.click();}
+ };
  $("#csNew").onclick = () => {if (!CS.busy) csEdit();};
  $("#csBack").onclick = csBack;
  $("#csDelete").onclick = () => {$("#csConfirmDelete").hidden = false;};
@@ -231,8 +237,11 @@ function initCreativeSkills() {
   if (!skill) return;
   if (action.dataset.csAction === "choose") {
    csChoose(skill);
+   const input=$("#acInput");
+   if(CS.fromComposer&&input.value==="/")input.value="";
    csClose();
-   $("#acInput").focus();
+   acRenderState();
+   input.focus();
   } else {
    csAction(async epoch => {
     const detail = await acApi("/api/chat/skills/" + encodeURIComponent(skill.id));

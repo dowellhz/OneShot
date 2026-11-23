@@ -27,7 +27,7 @@ NAMES = {"video_generate", "video_regenerate", "video_extend", "video_edit_segme
          "video_cutaways_get", "video_cutaways_edit", "video_broll_generate", "video_export_gif",
          "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate",
          "video_remake_review", "video_remake_export", "video_previs_get", "video_previs_save", "video_previs_render",
-         "video_previs_camera_motion", "video_previs_object_motion"}
+         "video_previs_camera_motion", "video_previs_object_motion", "video_previs_storyboard_plan"}
 
 
 def result_id(cid):
@@ -146,6 +146,8 @@ def queued_node(s, run, user, cid, pending):
         if scene := pending.get("previs_render"):
             history.update(previs_recipe=scene, node_data={**history["node_data"], "previs":scene,
                            "aspect":scene["aspect"], "duration":scene["duration"]})
+            if pending.get("previs_span"):
+                history["previs_span"] = pending["previs_span"]
         return {"node_id": nid, "history": history}
     return s.commit(run, user, "queued_" + cid, change)
 
@@ -263,12 +265,16 @@ def register(tool, prop, node, prompt):
     item = prop("object", properties={"id":node, "label":node, "shape":prop("string", enum=sorted(previs.SHAPES)), **dimensions,
                                     "keys":track(previs.POSE_FIELDS)},
                 required=["id","label","shape",*dimensions,"keys"], additionalProperties=False)
+    lighting = prop("object",properties={
+        **{key:prop("number",minimum=low,maximum=high) for key,(low,high) in previs.LIGHT_LIMITS.items()},
+        "tone":prop("string",enum=list(previs.LIGHT_TONES)),"enabled":prop("boolean")},additionalProperties=False)
     scene = prop("object", properties={"duration":prop("integer", minimum=2, maximum=previs.MAX_SECONDS),
                  "aspect":prop("string", enum=list(previs.ASPECTS)), "camera":track(previs.CAMERA_FIELDS,previs.CAMERA_TRANSITIONS),
-                 "objects":prop("array", items=item, maxItems=24)},
+                 "objects":prop("array", items=item, maxItems=24),"lighting":lighting},
                  required=["duration","aspect","camera","objects"], additionalProperties=False)
     tool("video_previs_get", "读取白模当前可编辑场景、场景版本校验码和已渲染的 Tab。", {"node_id":node}, ["node_id"])
-    tool("video_previs_save", "保存可编辑的白模场景。创建时省略 node_id。修改时先读取原场景，保留无关物体和关键帧，并传 node_id 与 scene_revision。已导入的 mesh 通过原物体 ID 保留。坐标 X 左右、Y 向上、Z 前后。t 为 24 FPS 帧号，含 0 并按升序排列。", {
+    tool("video_previs_storyboard_plan", "按现有白模的机位硬切准备分镜导入卡，列出实际切点和时长。用户打开白模核对后，点击按切点创建分镜，生成首帧并连到视频节点。", {"node_id":node}, ["node_id"])
+    tool("video_previs_save", "保存可编辑的白模场景。创建时省略 node_id。修改时先读取原场景，保留无关物体和关键帧，并传 node_id 与 scene_revision。灯光 lighting 省略时保留，开启时填写 azimuth（0° 为 +Z、90° 为 +X）、elevation、key、ambient、tone，传 enabled=false 恢复默认。已导入的 mesh 通过原物体 ID 保留。t 为 24 FPS 帧号。", {
         "node_id":node, "scene_revision":prop("string", maxLength=64), "name":node, "scene":scene}, ["scene"])
     tool("video_previs_camera_motion", "为现有白模在指定区间写入可编辑运镜关键帧。先用 video_previs_get 获取校验码和物体编号。start/end 为秒。推进、拉远和横移的 amount 为米，环绕的 amount 为度，跟拍则提供 target 物体编号。", {
         "node_id":node,"scene_revision":prop("string",minLength=64,maxLength=64),
@@ -285,7 +291,8 @@ def register(tool, prop, node, prompt):
         "end":prop("number",minimum=0,maximum=previs.MAX_SECONDS),
         "points":prop("array",items=route_point,minItems=1,maxItems=31)},
         ["node_id","scene_revision","target","start","end","points"])
-    tool("video_previs_render", "把已保存的白模场景渲染为无声 MP4，追加在同一节点的版本 Tab。等待可播放结果后返回。", {"node_id":node}, ["node_id"])
+    tool("video_previs_render", "把已保存的白模渲染为无声 MP4，追加在同一节点的版本 Tab。span 可指定 24 FPS 的起止帧，起帧包含、止帧不包含，省略时渲染整段。渲染结果至少 2 秒才可用作视频动作参考。", {
+        "node_id":node,"span":prop("array",items=prop("integer",minimum=0,maximum=FPS*previs.MAX_SECONDS),minItems=2,maxItems=2)}, ["node_id"])
     shot_number = prop("integer", minimum=1, maximum=video_remake.MAX_SHOTS)
     tool("video_remake_status", "读取原片视频版本的角色替换进度。指定shot可查看该镜头的已完成视频版本和任务编号。", {
         "node_id": node, "shot": shot_number,
@@ -356,7 +363,8 @@ def previs_scene(n):
 def get_previs(n):
     scene = previs_scene(n)
     return {"node_id":n["id"], "name":n.get("name"), "scene":editable_previs_tracks(scene), "scene_revision":scene_revision(scene),
-            "versions":[{"number":i, "ref":v.get("ref"), "seconds":v.get("seconds"), "current":i - 1 == n.get("cur")}
+            "versions":[{"number":i, "ref":v.get("ref"), "seconds":v.get("seconds"), "current":i - 1 == n.get("cur"),
+                         **({"span":v["previs_span"]} if v.get("previs_span") else {})}
                         for i, v in enumerate(n.get("versions", []), 1) if v.get("source") == "previs"]}
 
 
@@ -369,6 +377,7 @@ def save_previs(s, run, user, cid, args, *, motion=None, route=None):
     nid = args.get("node_id") or result_id(cid)
     def change(b):
         n = next((n for n in b["nodes"] if n["id"] == nid), None)
+        original = None
         meshes = {}
         if args.get("node_id"):
             original = previs_scene(n) if n and n.get("type") == "video" else None
@@ -390,7 +399,8 @@ def save_previs(s, run, user, cid, args, *, motion=None, route=None):
             scene = {**original,"objects":[{**item,"keys":track} if item["id"]==route["target"] else item
                                           for item in original["objects"]]}
         else:
-            scene = previs.validate({**args["scene"],"objects":[
+            retained = {"lighting":original["lighting"]} if original and "lighting" in original else {}
+            scene = previs.validate({**retained,**args["scene"],"objects":[
                 {**item,"triangles":meshes.get(item["id"])} if item["shape"] == "mesh" else item
                 for item in args["scene"]["objects"]
             ]})
@@ -402,17 +412,18 @@ def save_previs(s, run, user, cid, args, *, motion=None, route=None):
     return {**result, "previs_node":nid, "text":"白模已保存，可打开编辑器调整，或渲染预演。"}
 
 
-async def render_previs(s, run, user, cid, nid):
+async def render_previs(s, run, user, cid, nid, span=None):
     b, n = video_node(s, run, user, nid)
     scene = previs_scene(n)
+    start,end = previs.render_span(scene,span)
     if n.get("job"):
         raise ValueError("白模正在渲染，请等待完成")
     await s.begin_generation(run,cid,"previs",1,{"label":n["name"],"node":nid,"scene":scene,
-                                              "duration":scene.get("duration")},target_id=nid)
+                                              "duration":(end-start)/FPS},target_id=nid)
     result = await s.response(s.host.render_previs, user, {"board":run["board_id"], "node":nid,
-                              "revision":b.get("rev"), "request_key":cid})
+                              "revision":b.get("rev"), "request_key":cid, **({"span":span} if span is not None else {})})
     return await s.wait_submitted_jobs(run, user, cid, {"ids":result["ids"], "name":n["name"], "prompt":"",
-        "kind":"video", "target_id":nid, "previs_render":scene, "source":"previs"})
+        "kind":"video", "target_id":nid, "previs_render":scene, "source":"previs","previs_span":span})
 
 
 def reference_slot(record):
@@ -937,6 +948,16 @@ async def execute(s, run, user, cid, name, args):
     if name == "video_previs_get":
         result = get_previs(video_node(s, run, user, args["node_id"])[1])
         return {**result, "previs_node":result["node_id"], "text":"已读取当前白模场景。"}
+    if name == "video_previs_storyboard_plan":
+        _, n = video_node(s,run,user,args["node_id"])
+        scene = previs_scene(n)
+        end = scene["duration"]*FPS
+        boundaries = [0, *(k["t"] for k in scene["camera"] if k["ease"]=="cut" and 0<k["t"]<end), end]
+        run["data"]["previs_storyboard_pending"] = True
+        s.update(run)
+        return {"previs_storyboard_plan":{"board":run["board_id"],"node":n["id"],"name":n["name"],
+                                          "aspect":scene["aspect"],"fps":FPS,"boundaries":boundaries},
+                "text":f"已准备 {len(boundaries)-1} 镜。打开白模核对后可创建分镜。"}
     if name == "video_previs_save":
         return save_previs(s, run, user, cid, args)
     if name == "video_previs_camera_motion":
@@ -950,7 +971,7 @@ async def execute(s, run, user, cid, name, args):
         result = save_previs(s,run,user,cid,args,route=route)
         return {**result,"text":"走位关键帧已保存，可打开白模查看路线。"}
     if name == "video_previs_render":
-        return await render_previs(s, run, user, cid, args["node_id"])
+        return await render_previs(s, run, user, cid, args["node_id"],args.get("span"))
     if run["data"].get("remake_plan_pending") and name in ("video_remake_map", "video_remake_locate",
             "video_remake_preview", "video_remake_generate", "video_remake_review", "video_remake_export"):
         raise ValueError("本轮有待确认的换角计划，请先使用计划卡选择镜头")

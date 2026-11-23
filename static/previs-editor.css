@@ -14,6 +14,14 @@
 .pv-stage,.pv-inspector{min-width:0;border:1px solid var(--line);padding:10px;border-radius:10px;background:var(--card)}
 .pv-stage>canvas{display:block;max-width:100%;max-height:50dvh;object-fit:contain;width:auto;height:auto;margin:10px auto;
   border:1px solid var(--line);border-radius:7px;touch-action:none}
+.pv-stage>canvas[data-pv-free]{cursor:grab}
+.pv-stage>canvas[data-pv-free]:active{cursor:grabbing}
+.pv-free-controls{margin:-2px 0 10px;color:var(--dim)}
+.pv-free-controls[hidden]{display:none}
+.pv-shot-controls{margin-top:8px}
+.pv-shot-controls[hidden]{display:none}
+.pv-batch-panel{margin:8px 0;padding:8px;border:1px solid var(--line);border-radius:8px}
+.pv-batch-panel ol{margin:8px 0;padding-left:22px;max-height:150px;overflow:auto;line-height:1.6;color:var(--dim)}
 .pv-controls label,.pv-fields label,.pv-wide{color:var(--dim)}
 .pv-controls label>*{margin-left:4px}
 .pv-controls input[type=number]{width:64px}
@@ -27,8 +35,8 @@
 .pv-inspector .pv-wide:not([hidden]){display:grid;grid-template-columns:68px minmax(0,1fr);align-items:center;gap:5px;margin:0 0 8px}
 .pv-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 12px}
 .pv-fields label:not([hidden]){display:grid;gap:4px}
-[data-pv-motion],.pv-route{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
-[data-pv-motion] summary{cursor:pointer;margin-bottom:8px}
+[data-pv-motion],[data-pv-lighting],.pv-route{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+:is([data-pv-motion],[data-pv-lighting]) summary{cursor:pointer;margin-bottom:8px}
 [data-pv-motion] p{margin:0 0 8px;color:var(--dim)}
 [data-pv-motion-segment]:empty{display:none}
 [data-pv-route-info]{margin:8px 0;color:var(--dim)}

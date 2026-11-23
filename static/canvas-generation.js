@@ -63,6 +63,22 @@ function captureGenerationRecord(request, textInputs) {
     object_edit:request.object_edit,inputs:[...textInputs,...images]};
 }
 
+function previsComposition(n) {
+  const guide=n?.type==="image" && n.data.previs_composition;
+  if (!guide?.ref) return null;
+  const version=n.versions.find(v=>v.ref===guide.ref && v.source==="previs-frame");
+  return {ref:guide.ref,enabled:guide.enabled!==false,version};
+}
+
+function storyboardFrameReady(n) {
+  const current=curV(n), guide=previsComposition(n);
+  return !!current && !(guide?.enabled && current.ref===guide.ref && current.source==="previs-frame");
+}
+
+function previsCompositionHasRoom(n, guide, refs) {
+  return isRemote(n) || refs.length<9 || refs.slice(0,9).includes(guide.ref);
+}
+
 async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false}={}) {
   if (n.type === "audio") return generateAudio(n,{groupRunId});
   if (n.data.previs) return openPrevis(n);
@@ -76,20 +92,33 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   let req, gridReference;
   if (n.type === "image") {
     const linked=imageInputs(n), images=[];
+    const guide=grid?null:previsComposition(n);
     if(grid){
       gridReference=linked.find(input=>input.version?.ref);
       if(!gridReference){toast("请先连入有图片的节点");return;}
     }
     const ins=grid?[gridReference]:linked, model=grid&&isRemote(n)?"h3img":d.model;
-    if (ins.length && model === "h3video") { toast("以图改图需要 H3-Image 模型"); return; }
+    if ((ins.length || guide?.enabled) && model === "h3video") { toast("以图改图需要 H3-Image 模型"); return; }
     for(const {edge,source,version} of ins){
       if(!version?.ref){showErr(n,edge.ref?`「${source.name}」引用的版本已移除`:`「${source.name}」还没有图片`);return;}
       images.push({ref:version.ref,node_id:source.id,name:source.name,...(edge.prompt_slot?{prompt_slot:edge.prompt_slot}:{})});
     }
-    const resolved=resolveCanvasPrompt(n,prompt,canvasPromptBindings(ins));
+    let resolved=resolveCanvasPrompt(n,prompt,canvasPromptBindings(ins));
     if(resolved===null)return;
+    if(guide?.enabled){
+      if(!guide.version){showErr(n,"白模构图版本已移除，请关闭构图参考或恢复原版本");return;}
+      if(!previsCompositionHasRoom(n,guide,images.map(image=>image.ref))){
+        showErr(n,"H3-Image 最多使用 9 张参考图，请为白模构图留出一个位置");return;
+      }
+      let index=images.findIndex(image=>image.ref===guide.ref);
+      if(index<0){
+        index=images.length;
+        images.push({ref:guide.ref,node_id:n.id,name:"白模构图"});
+      }
+      resolved+=`\n按 @图${index+1} 的机位、透视和主体位置构图。按提示词制作角色、环境、材质与光线。`;
+    }
     let ar = AR[d.aspect];
-    if (d.aspect === "auto") { const v=ins[0]?.version; ar=v?.w&&v.h?v.w/v.h:1; }
+    if (d.aspect === "auto") { const v=ins[0]?.version || (guide?.enabled && guide.version); ar=v?.w&&v.h?v.w/v.h:1; }
     req = { kind: "image", model, expand: d.expand, prompt:resolved, images, ar, quality: model === "h3video" ? (d.quality === "16mp" ? "hd" : "std") : d.quality, turbo: d.turbo, seed: d.seed, count: d.count };
   }
   else {
@@ -113,7 +142,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     ? {input_edges:structuredClone(B.edges.filter(e=>e.to===n.id)),node_data:structuredClone(n.data),
        ...(slow?{video_recipe:structuredClone(req)}:{})}
     : null;
-  const layout=batchLayout;
+  const layout=previsComposition(n)?"tabs":batchLayout;
   const batch=req.count>1 && layout!=="tabs" && !req.draft && !req.segment_edit && !req.extension
     ? {layout,data:structuredClone(grid?{...d,prompt}:d),edges:structuredClone(B.edges.filter(e=>e.to===n.id))}
     : null;

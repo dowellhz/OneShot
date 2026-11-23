@@ -6,7 +6,7 @@
 <title>OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
 <link rel="stylesheet" href="/static/type.css?v=1">
-<link rel="stylesheet" href="/static/canvas.css?v=66">
+<link rel="stylesheet" href="/static/canvas.css?v=69">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
@@ -126,6 +126,11 @@
   <div class="r"><span>触控板双指滑动；鼠标滚轮按左下角设置平移或缩放</span><span></span></div>
   <div class="r"><span>点小地图跳转，拖小地图里的框移动</span><span><kbd>M</kbd></span></div>
   <div class="r"><span>打开资产库</span><span><kbd>L</kbd></span></div>
+  <h4>创作助手与批注</h4>
+  <div class="r"><span>打开或收起创作助手</span><span><kbd>⌘J</kbd><kbd>Ctrl+J</kbd></span></div>
+  <div class="r"><span>进入助手输入框</span><span><kbd>/</kbd></span></div>
+  <div class="r"><span>在助手输入框引用素材</span><span><kbd>@</kbd></span></div>
+  <div class="r"><span>开始批注</span><span><kbd>A</kbd></span></div>
   <h4>缩放</h4>
   <div class="r"><span>触控板双指捏合，或 ⌘ / Ctrl + 滚轮</span><span></span></div>
   <div class="r"><span>适应全部 / 聚焦选中</span><span><kbd>⇧1</kbd><kbd>F</kbd></span></div>
@@ -136,6 +141,7 @@
   <div class="r"><span>框选时追加到已选：框选模式按住 ⇧，抓手模式按住 ⇧⌘</span><span></span></div>
   <div class="r"><span>加选 / 减选</span><span><kbd>⇧</kbd>+点击</span></div>
   <div class="r"><span>方向键微移（⇧ 加大步长）</span><span><kbd>←↑→↓</kbd></span></div>
+  <div class="r"><span>光标停在素材节点上时切换历史版本</span><span><kbd>←</kbd><kbd>→</kbd></span></div>
   <div class="r"><span>右键节点：菜单；右键空白处：添加节点</span><span></span></div>
   <div class="r"><span>双击空白处添加节点；双击名称重命名</span><span></span></div>
   <div class="r"><span>复制 / 粘贴 / 创建副本 / 全选</span><span><kbd>⌘C</kbd><kbd>⌘V</kbd><kbd>⌘D</kbd><kbd>⌘A</kbd></span></div>
@@ -342,11 +348,16 @@
 </dialog>
 <div id="pp">
   <div class="pgrip" title="按住拖动面板；双击回到节点下方"><svg class="i"><use href="#i-grip"/></svg><button class="rs" title="回到节点下方">↺ 跟随节点</button></div>
-  <div class="phead"><div class="refs" id="refs"></div><div class="seg" id="pmode"></div></div>
-  <textarea id="prompt" rows="3"></textarea>
-  <div id="pfields"></div>
-  <div class="ctl" id="ctl"></div>
+  <div class="ppbody">
+    <div class="phead"><div class="refs" id="refs"></div><div class="seg" id="pmode"></div></div>
+    <textarea id="prompt" rows="3"></textarea>
+    <div id="pfields"></div>
+    <div class="ctl" id="ctl"></div>
+  </div>
   <div id="more"></div>
+  <button type="button" id="ppResize" aria-label="调整提示词面板大小" title="拖动调整大小；方向键微调；双击恢复默认大小">
+    <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 15 15 3m-6 12 6-6m-1 6 1-1"/></svg>
+  </button>
 </div>
 
 <div id="drawer">
@@ -473,8 +484,8 @@
 <script src="/static/image-relight.js?v=4"></script>
 <script src="/static/image-camera.js?v=4"></script>
 <script src="/static/image-pixel-size.js?v=1"></script>
-<script src="/static/image-editor.js?v=13"></script>
-<script src="/static/editor-workspace.js?v=8"></script>
+<script src="/static/image-editor.js?v=15"></script>
+<script src="/static/editor-workspace.js?v=10"></script>
 <script src="/static/canvas-alignment.js?v=1"></script>
 <section id="assetTransferPanel" aria-label="素材下载进度" hidden>
   <div><strong data-transfer-state role="status"></strong><button type="button" data-transfer-close aria-label="关闭下载进度">×</button></div>
@@ -483,22 +494,22 @@
 </section>
 <iframe name="assetTransferDownload" title="素材下载" hidden></iframe>
 <script src="/static/canvas-groups.js?v=13"></script>
-<script src="/static/canvas-tools.js?v=13"></script>
-<script src="/static/video-tabs.js?v=37"></script>
-<link rel="stylesheet" href="/static/agent-chat.css?v=34">
+<script src="/static/canvas-tools.js?v=14"></script>
+<script src="/static/video-tabs.js?v=39"></script>
+<link rel="stylesheet" href="/static/agent-chat.css?v=42">
 <link rel="stylesheet" href="/static/creative-skills.css?v=1">
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
 <script src="/static/agent-markdown.js?v=3"></script>
-<script src="/static/agent-voice.js?v=4"></script>
-<script src="/static/creative-skills.js?v=1"></script>
+<script src="/static/agent-voice.js?v=5"></script>
+<script src="/static/creative-skills.js?v=2"></script>
 <script src="/static/creative-profile.js?v=1"></script>
-<script src="/static/agent-chat.js?v=97"></script>
+<script src="/static/agent-chat.js?v=110"></script>
 <script src="/static/canvas-conflicts.js?v=3"></script>
 <link rel="stylesheet" href="/static/canvas-document.css?v=3">
 <script src="/static/canvas-document.js?v=4"></script>
 <script src="/static/agent-editing.js?v=4"></script>
-<script src="/static/tools.js?v=34"></script>
+<script src="/static/tools.js?v=36"></script>
 <link rel="stylesheet" href="/static/creative-memory.css?v=8">
 <script src="/static/character-views.js?v=3"></script>
 <script src="/static/creative-memory.js?v=22"></script>
@@ -507,7 +518,7 @@
 <script src="/static/film-titles.js?v=3"></script>
 <script src="/static/film-cutaways.js?v=1"></script>
 <script src="/static/film-playlists.js?v=3"></script>
-<script src="/static/film.js?v=32"></script>
+<script src="/static/film.js?v=35"></script>
 <script src="/static/wizard.js?v=12"></script>
 <script src="/static/settings.js?v=3t"></script>
 <script src="/static/account.js?v=5t"></script>
@@ -524,10 +535,10 @@
 <script src="/static/canvas-live.js?v=3"></script>
 <script src="/static/canvas-review-region.js?v=1"></script>
 <link rel="stylesheet" href="/static/image-panorama.css?v=1">
-<script src="/static/canvas.js?v=104"></script>
+<script src="/static/canvas.js?v=113"></script>
 <script src="/static/image-panorama.js?v=1"></script>
-<script src="/static/canvas-generation.js?v=32"></script>
-<script src="/static/canvas-group-run.js?v=16"></script>
+<script src="/static/canvas-generation.js?v=33"></script>
+<script src="/static/canvas-group-run.js?v=19"></script>
 <script src="/static/video-extension.js?v=3"></script>
 <script src="/static/video-object.js?v=2"></script>
 <script src="/static/video-drafts.js?v=1"></script>
@@ -542,10 +553,10 @@
 <script src="/static/workflow-templates.js?v=14"></script>
 <link rel="stylesheet" href="/static/workflow-review.css?v=1">
 <script src="/static/workflow-review.js?v=4"></script>
-<link rel="stylesheet" href="/static/previs-editor.css?v=4">
-<script src="/static/previs-render.js?v=5"></script>
-<script src="/static/previs-glb.js?v=4"></script>
-<script src="/static/previs-editor.js?v=10"></script>
+<link rel="stylesheet" href="/static/previs-editor.css?v=8">
+<script src="/static/previs-render.js?v=6"></script>
+<script src="/static/previs-glb.js?v=5"></script>
+<script src="/static/previs-editor.js?v=15"></script>
 <script src="/static/canvas-projects.js?v=44"></script>
 <script src="/static/generation-history.js?v=8"></script>
 <script src="/static/broll.js?v=2"></script>

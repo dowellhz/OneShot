@@ -26,6 +26,7 @@ import providers
 import remote
 import local_admin
 import image_editor
+import image_upscale
 import image_camera
 import motion_reference
 import camera_plan
@@ -54,6 +55,7 @@ from aiohttp import web
 COMFY = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
 PORT = int(os.environ.get("H3STUDIO_PORT", "8190"))
 ROOT = Path(__file__).resolve().parent
+IMAGE_UPSCALE_MODELS = Path(os.environ.get("IMAGE_UPSCALE_MODELS", ROOT / "models" / "upscale"))
 DATA = ROOT / "data"
 COMFY_DIR = Path(os.environ.get("COMFY_DIR", str(Path.home() / "ComfyUI")))
 CLIENT_ID = "h3studio-" + uuid.uuid4().hex[:8]
@@ -2881,12 +2883,30 @@ async def image_draft_save(req):
 
 @routes.get("/api/image-edit/capabilities")
 async def image_edit_capabilities(req):
+    capabilities = {"segment": False, "cutout": False, "native": False, "decompose": False}
     try:
         async with req.app["http"].get(ENGINE + "/status", timeout=aiohttp.ClientTimeout(total=4)) as r:
             s = await r.json()
-        return web.json_response(s.get("editor", {}))
+        capabilities.update(s.get("editor", {}))
     except Exception:
-        return web.json_response({"segment": False, "cutout": False, "native": False})
+        pass
+    capabilities["upscale"] = await asyncio.to_thread(image_upscale.available_scales, IMAGE_UPSCALE_MODELS)
+    return web.json_response(capabilities)
+
+
+@routes.post("/api/image-edit/upscale")
+async def image_upscale_route(req):
+    p = await req.json()
+    if not isinstance(p, dict) or not isinstance(p.get("ref"), str):
+        raise bad("请选择要放大的图片")
+    require_media(req["user"], [p["ref"]])
+    try:
+        result = await asyncio.to_thread(image_upscale.upscale, COMFY_DIR, IMAGE_UPSCALE_MODELS,
+                                         p["ref"], p.get("scale"))
+    except (ValueError, OSError) as error:
+        raise bad(str(error)) from None
+    grant_media(req["user"], result["ref"])
+    return web.json_response(result)
 
 
 @routes.post("/api/image-edit/segment")
@@ -2901,11 +2921,32 @@ async def image_edit_tool(req):
     return web.json_response(result)
 
 
+@routes.post("/api/image-edit/decompose")
+async def image_decompose_route(req):
+    p = await req.json()
+    if not isinstance(p, dict) or not isinstance(p.get("ref"), str):
+        raise bad("请选择要分层的图片")
+    require_media(req["user"],[p["ref"]])
+    labels = await run_image_tool(req.app,"decompose",p)
+    path = tools.ref_path(COMFY_DIR,labels["ref"])
+    try:
+        result = await asyncio.to_thread(image_editor.decompose,COMFY_DIR,p["ref"],labels["ref"])
+    except (ValueError,OSError) as error:
+        raise bad(str(error)) from None
+    finally:
+        path.unlink(missing_ok=True)
+    grant_media(req["user"],result["ref"])
+    for layer in result["layer_stack"]["layers"]:
+        grant_media(req["user"],layer["ref"])
+    return web.json_response(result)
+
+
 async def run_image_tool(app, tool, p):
     try:
         image = tools.ref_path(COMFY_DIR, p.get("ref", ""))
         await asyncio.to_thread(image_editor.load, COMFY_DIR, p.get("ref", ""))
-        out, ref = tools._new(COMFY_DIR, "output", "selection" if tool == "segment" else "cutout", ".png")
+        prefix = {"segment":"selection","cutout":"cutout","decompose":"layer_labels"}[tool]
+        out, ref = tools._new(COMFY_DIR, "output", prefix, ".png")
         async with app["http"].post(ENGINE + "/tools/" + tool,
                                        json={"image": str(image), "points": p.get("points"), "out": str(out)},
                                        timeout=aiohttp.ClientTimeout(total=180)) as r:
@@ -3884,9 +3925,12 @@ async def render_previs(req):
         return auth.err(404, "白模节点已不存在")
     try:
         scene = previs.validate(node["data"]["previs"])
+        span = payload.get("span")
+        start, end = previs.render_span(scene,span)
     except ValueError as exc:
         raise bad(str(exc))
-    fingerprint = hashlib.sha256(json.dumps(scene, sort_keys=True).encode()).hexdigest()
+    render_input = scene if span is None else {"scene":scene,"span":[start,end]}
+    fingerprint = hashlib.sha256(json.dumps(render_input, sort_keys=True).encode()).hexdigest()
     jid = "r" + hashlib.sha256(f"previs:{user['id']}:{bid}:{nid}:{attempt}".encode()).hexdigest()[:12]
     if prior := db.one("SELECT request FROM tasks WHERE id=? AND user_id=?", jid, user["id"]):
         if json.loads(prior["request"] or "{}").get("fingerprint") != fingerprint:
@@ -3899,10 +3943,11 @@ async def render_previs(req):
         return auth.err(409, "这个白模正在渲染")
 
     def encode(progress, cancelled):
-        return previs.export(COMFY_DIR, scene, progress, cancelled)
+        return previs.export(COMFY_DIR, scene, progress, cancelled, span=(start,end))
 
-    response = enqueue_render(req, encode, seconds=scene["duration"], label="白模预演 · " + clean(node.get("name")),
-                              board=bid, jid=jid, request_data={"fingerprint":fingerprint}, mode="白模预演渲染")
+    label = "白模预演" if span is None else "白模分镜"
+    response = enqueue_render(req, encode, seconds=(end-start)/film.FPS, label=label+" · "+clean(node.get("name")),
+                              board=bid, jid=jid, request_data={"fingerprint":fingerprint}, mode=label+"渲染")
     JOBS[jid]["meta"]["previs_node"] = nid
     return response
 

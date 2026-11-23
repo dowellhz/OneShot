@@ -6,6 +6,8 @@ from urllib.parse import urlsplit
 
 import av
 import numpy as np
+from aiohttp import web
+from PIL import Image
 
 import db
 import previs
@@ -14,6 +16,189 @@ from test_agent_chat import ChatFixture, answer, call
 
 
 class PrevisIntegration(ChatFixture):
+    async def test_render_shot_span_is_frame_exact_idempotent_and_retained(self):
+        scene = self.motion_scene()
+        scene["aspect"] = "1:1"
+        base = scene["camera"][0]
+        scene["camera"] = [base,{**base,"t":36,"z":3,"ease":"cut"},{**base,"t":84,"z":9,"ease":"cut"}]
+        scene = previs.validate(scene)
+        self.board["nodes"].append({"id":"n3","type":"video","name":"白模","data":{"previs":scene},"versions":[],"cur":-1})
+        server.write_board(server.board_path("test"),self.board)
+        api = "/api/previs/render"
+        payload = {"board":"test","node":"n3","revision":1,"request_key":"previs-span-test-0001"}
+        for span in ([36,36],[-1,84],[True,42],[36,97],{"start":36,"end":84}):
+            self.assertEqual((await self.client.post(api,json={**payload,"span":span})).status,400)
+        response = await self.client.post(api,json={**payload,"span":[36,84]})
+        self.assertEqual(response.status,200,await response.text())
+        jid, = (await response.json())["ids"]
+        repeat = await self.client.post(api,json={**payload,"span":[36,84]})
+        self.assertEqual((await repeat.json())["ids"],[jid])
+        self.assertEqual((await self.client.post(api,json={**payload,"span":[24,72]})).status,409)
+        async with asyncio.timeout(8):
+            while server.JOBS[jid]["state"] not in ("done","error"):
+                await asyncio.sleep(.02)
+        job = server.JOBS[jid]
+        self.assertEqual(job["state"],"done",job.get("error"))
+        out, = job["outputs"]
+        self.assertEqual(out["meta"]["duration"],2)
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR,out["ref"]))) as video:
+            self.assertEqual(len(video.streams.audio),0)
+            frames = [frame.to_ndarray(format="rgb24").astype(np.int16) for frame in video.decode(video=0)]
+        self.assertEqual(len(frames),48)
+        errors = []
+        for tick,frame in ((36,frames[0]),(83,frames[-1])):
+            expected = np.asarray(previs.paint(scene,tick,720,720),dtype=np.int16)
+            errors.append(np.abs(frame-expected).mean())
+            self.assertLess(errors[-1],4)
+        cut_out = np.asarray(previs.paint(scene,84,720,720),dtype=np.int16)
+        self.assertGreater(np.abs(frames[-1]-cut_out).mean(),errors[-1]+.5)
+
+        self.svc.model.side_effect = [call("video_previs_render",{"node_id":"n3","span":[0,36]}),answer()]
+        rid = await self.send("单独渲染第一镜",selected=["n3"])
+        self.assertEqual((await self.wait(rid,timeout=12))["state"],"done")
+        version, = self.load()["nodes"][-1]["versions"]
+        self.assertEqual((version["source"],version["seconds"],version["previs_span"]),("previs",1.5,[0,36]))
+        self.assertEqual(version["previs_recipe"],scene)
+
+    async def test_lighting_renders_and_saved_scene_retains_settings(self):
+        scene = {"duration":2,"aspect":"1:1",
+                 "camera":[{"t":0,"x":0,"y":1,"z":5,"tx":0,"ty":1,"tz":0,"fov":42,"ease":"linear"}],
+                 "objects":[{"id":"box","label":"方块","shape":"box","width":2,"height":2,"depth":1,
+                             "keys":[{"t":0,"x":0,"y":0,"z":0,"yaw":0,"ease":"linear"}]}]}
+        settings = {"azimuth":0,"elevation":0,"key":.6,"ambient":.2,"tone":"warm"}
+        lit = previs.validate({**scene,"lighting":settings})
+        front = previs.paint(lit,0,160,160)
+        back = previs.paint(previs.validate({**scene,"lighting":{**settings,"azimuth":180}}),0,160,160)
+        original = previs.paint(previs.validate(scene),0,160,160)
+        self.assertEqual(front.getpixel((80,80)),(182,152,125))
+        self.assertEqual(back.getpixel((80,80)),(46,46,46))
+        self.assertEqual(original.getpixel((80,80)),(196,196,196))
+        for invalid in ({**settings,"ambient":1.3},{**settings,"tone":"green"},{"enabled":1}):
+            with self.assertRaisesRegex(ValueError,"灯光"):
+                previs.validate({**scene,"lighting":invalid})
+        result = await asyncio.to_thread(previs.export,server.COMFY_DIR,lit,lambda *_:None,lambda:False)
+        with av.open(str(server.tools.ref_path(server.COMFY_DIR,result["ref"]))) as video:
+            frame = next(video.decode(video=0)).to_ndarray(format="rgb24")
+            self.assertLess(np.max(np.abs(frame[360,360].astype(np.int16)-[182,152,125])),6)
+
+        self.svc.model.side_effect = [call("video_previs_save",{"scene":lit},"lit-preview"),answer()]
+        rid = await self.send("保留暖色主光",selected=[])
+        self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
+        node = self.load()["nodes"][-1]
+        self.assertEqual(node["data"]["previs"]["lighting"],settings)
+        for i,desired in enumerate((scene,{**scene,"lighting":{"enabled":False}})):
+            args = {"node_id":node["id"],"scene":desired,
+                    "scene_revision":server.agent_chat.agent_video.scene_revision(node["data"]["previs"])}
+            self.svc.model.side_effect = [call("video_previs_save",args,f"light-change-{i}"),answer()]
+            rid = await self.send("编辑灯光方案",key=f"lighting-{i}",selected=[node["id"]])
+            self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
+            node = self.load()["nodes"][-1]
+            self.assertEqual(node["data"]["previs"].get("lighting"),settings if i==0 else None)
+
+    async def test_assistant_generates_in_place_from_fixed_whitebox_and_checks_approval(self):
+        box = server.image_editor.save(server.COMFY_DIR,Image.new("RGB",(90,160),"gray"),"input")
+        older = server.image_editor.save(server.COMFY_DIR,Image.new("RGB",(90,160),"yellow"))
+        final = server.image_editor.save(server.COMFY_DIR,Image.new("RGB",(144,256),"blue"))
+        board = self.load()
+        board["nodes"][0]["versions"].append(older)
+        board["nodes"][0]["cur"] = 1
+        board["nodes"].extend([
+            {"id":"picture","type":"image","name":"镜1 · 分镜图","data":{"previs_composition":{"ref":box["ref"]},
+             "provider":"fixture-image","quality":"16mp"},
+             "versions":[{**box,"source":"previs-frame"},older],"cur":1},
+            {"id":"video","type":"video","name":"镜1","data":{},"versions":[],"cur":-1}])
+        board["edges"].extend([{"from":"n1","to":"picture","ref":self.source["ref"],"prompt_slot":3},
+                               {"from":"picture","to":"video","role":"first"}])
+        path = server.board_path("test")
+        server.write_board(path,board)
+        context = self.svc.context({"id":7,"role":"member"},"test",{"selected":["picture"]})
+        self.assertEqual(context["nodes"][0]["previs_composition"],box["ref"])
+        received = []
+        async def submit(req,payload):
+            received.append(payload)
+            jid = "e000000000061"
+            server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[
+                {"ref":final["ref"],"meta":{"width":144,"height":256}}]}
+            return web.json_response({"ids":[jid]})
+        args = {"node_id":"picture","prompt":"让 @图{3} 的角色出现在夜景里"}
+        self.svc.model.side_effect = [call("image_previs_frame",args),answer()]
+        with patch.object(server,"generate_request",submit):
+            rid = await self.send("用固定白模构图生成这一镜的首帧",selected=["picture"])
+            self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
+        request, = received
+        self.assertEqual((request["kind"],request["ar"]),("image",9/16))
+        self.assertEqual((request["provider"],request["quality"]),("fixture-image","16mp"))
+        self.assertEqual([im["ref"] for im in request["images"]],[self.source["ref"],box["ref"]])
+        self.assertIn("@图1 的角色",request["prompt"])
+        self.assertIn("按 @图2 的机位",request["prompt"])
+        after = self.load()
+        self.assertEqual(after["edges"],board["edges"])
+        picture, video = after["nodes"][-2:]
+        self.assertEqual([v["ref"] for v in picture["versions"]],[box["ref"],older["ref"],final["ref"]])
+        self.assertEqual(picture["cur"],2)
+        self.assertEqual(picture["versions"][2]["generation_record"]["inputs"][-1]["version"],1)
+        self.assertEqual(video["versions"],[])
+
+        self.svc.model.side_effect = [call("image_previs_frame",args),answer()]
+        with patch.object(server,"generate_request",submit):
+            response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages",json={
+                "text":"先确认，再生成首帧","request_key":"previs-approval","generation_mode":"manual","selected":["picture"]})
+            self.assertEqual(response.status,200)
+            rid = (await response.json())["id"]
+            async with asyncio.timeout(8):
+                while not (approval := db.one("""SELECT a.id FROM chat_approvals a JOIN chat_calls c ON c.id=a.call_id
+                                                  WHERE c.run_id=?""",rid)):
+                    await asyncio.sleep(.02)
+            picture["data"]["previs_composition"]["enabled"] = False
+            server.write_board(path,after)
+            approval_url = f"/api/chat/runs/{rid}/approvals/{approval['id']}"
+            self.assertEqual((await self.client.post(approval_url,json={"decision":"approve"})).status,200)
+            self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
+        result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+        self.assertIn("白模构图已变更",result["error"])
+        self.assertEqual(len(received),1)
+        self.assertEqual(len(self.load()["nodes"][-2]["versions"]),3)
+
+    async def test_assistant_plans_storyboard_without_generating_and_reads_actual_frame(self):
+        scene = self.motion_scene()
+        pose = scene["camera"][0]
+        scene["camera"] = [{**pose,"ease":"cut"}, {**pose,"t":31,"ease":"cut"},
+                           scene["camera"][1], {**pose,"t":96,"ease":"cut"}]
+        preview = {"id":"n3","type":"video","name":"开门预演","data":{"previs":scene},"versions":[],"cur":-1}
+        frame = {"ref":self.source["ref"],"source":"previs-frame","w":60,"h":32}
+        replacement = {**frame,"ref":"input:h3studio/final.png","source":"gen"}
+        script = {"id":"story","type":"script","name":"开门预演 · 分镜","data":{"previs_source":"n3",
+                  "shots":[{"id":"shot1","duration":31/24,"previs_range":[0,31],"frame":frame}],
+                  "made":[{"shot_id":"shot1","img":"picture","vid":"clip"}]},"versions":[],"cur":-1}
+        board = self.load()
+        board["nodes"].extend([preview,script,
+            {"id":"picture","type":"image","name":"分镜图","data":{},"versions":[frame,replacement],"cur":1},
+            {"id":"clip","type":"video","name":"镜1","data":{"duration":5},"versions":[],"cur":-1}])
+        board["edges"].append({"from":"picture","to":"clip","role":"first","ref":frame["ref"]})
+        path = server.board_path("test")
+        server.write_board(path,board)
+        baseline = path.read_text()
+        plan_call = call("video_previs_storyboard_plan",{"node_id":"n3"},"previs-storyboard")
+        blocked = call("canvas_create_text",{"text":"等待确认"},"premature-write")
+        self.svc.model.side_effect = [{**plan_call,"tool_calls":plan_call["tool_calls"] + blocked["tool_calls"]},
+                                       call("storyboard_context",{"node_id":"story"},"read-import"),answer()]
+        rid = await self.send("按白模切点导入分镜",selected=["n3"])
+        self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
+        results = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",rid)]
+        self.assertEqual(results[0]["previs_storyboard_plan"],{"board":"test","node":"n3","name":"开门预演",
+                                                              "aspect":"16:9","fps":24,"boundaries":[0,31,96]})
+        self.assertIn("核对并创建分镜",results[1]["error"])
+        shot = results[2]["storyboard"]["shots"][0]
+        self.assertEqual(shot["previs"],{"source_node":"n3","start":0,"end":31/24,"video_duration":5,
+                                         "first_frame":{"ref":frame["ref"],"source":"previs-frame"}})
+        board["edges"][-1].pop("ref")
+        unfixed = self.svc.storyboard_context(board,script)["shots"][0]
+        self.assertEqual(unfixed["previs"]["first_frame"],{"ref":replacement["ref"],"source":"gen"})
+        board["edges"].append({"from":"n3","to":"clip","relation":"previs"})
+        referenced = self.svc.storyboard_context(board,script)["shots"][0]
+        self.assertIsNone(referenced["previs"]["first_frame"])
+        self.assertEqual(path.read_text(),baseline)
+
     async def test_camera_cut_holds_until_the_exact_frame_in_saved_and_rendered_scene(self):
         scene = self.motion_scene()
         scene.update(duration=2,aspect="1:1")

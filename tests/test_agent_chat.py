@@ -823,9 +823,16 @@ class ChatIntegration(ChatFixture):
         session = await (await self.client.get(session_url)).json()
         self.assertEqual([item["id"] for item in session["queue"]],[second["id"],discarded["id"],third["id"]])
         self.assertEqual([event["data"]["text"] for event in session["events"] if event["kind"]=="user"],["第一条"])
+        directory = (await (await self.client.get("/api/chat/sessions?board=test")).json())["sessions"]
+        self.assertEqual(directory[0]["active_task_text"],"第一条")
+        self.assertEqual([(item["id"],item["text"],item["removable"]) for item in directory[0]["queued_tasks"]],
+                         [(second["id"],"排队生成",1),(discarded["id"],"移除这一条",1),(third["id"],"最后一条",1)])
         delete = f"/api/chat/runs/{discarded['id']}/queue"
         self.assertEqual((await self.client.delete(delete,headers={"X-Uid":"8"})).status,404)
         self.assertEqual((await self.client.delete(delete)).status,200)
+        directory = (await (await self.client.get("/api/chat/sessions?board=test")).json())["sessions"]
+        self.assertEqual(directory[0]["active_task_text"],"第一条")
+        self.assertEqual([item["id"] for item in directory[0]["queued_tasks"]],[second["id"],third["id"]])
         newest = image_editor.save(server.COMFY_DIR,Image.new("RGB",(48,64),"blue"),"input")
         board = self.load()
         board["nodes"][0]["versions"].append(newest)
@@ -913,6 +920,37 @@ class ChatIntegration(ChatFixture):
         self.assertNotIn("canvas_create_text",chat.scoped_tools({"execution_scope":"plan"}))
         self.assertNotIn("image_generate",chat.scoped_tools({"execution_scope":"brainstorm"}))
 
+    async def test_board_task_history_paginates_runs_in_the_same_conversation(self):
+        self.board["collaborators"] = {"8":"editor"}
+        server.board_path("test").write_text(chat.dumps(self.board))
+        colleague = await self.client.post("/api/chat/sessions", headers={"X-Uid":"8"}, json={"board":"test"})
+        self.assertEqual(colleague.status,200)
+        colleague_session = (await colleague.json())["id"]
+        for number in range(24):
+            uid, sid = (8,colleague_session) if number==21 else (7,self.sid)
+            state = "queued" if number==20 else "stopped" if number==19 else "done"
+            data = chat.dumps({"discarded_before_start":True}) if number==19 else "{}"
+            run_id = f"history-{number}"
+            db.run("INSERT INTO chat_runs VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   run_id,sid,uid,"test",run_id,state,data,None,number,number)
+            self.svc.emit(sid,run_id,"user",{"text":f"任务 {number}"})
+        path = "/api/chat/task-history?board=test"
+        first = await self.client.get(path)
+        self.assertEqual(first.status,200)
+        page = await first.json()
+        self.assertEqual([task["id"] for task in page["tasks"]],
+                         ["history-23","history-22"]+[f"history-{number}" for number in range(18,0,-1)])
+        self.assertEqual(page["tasks"][0]["text"],"任务 23")
+        self.assertTrue(all(task["session_id"]==self.sid for task in page["tasks"]))
+        next_page = await self.client.get(path+f"&before={page['before']}")
+        second = await next_page.json()
+        self.assertEqual([task["id"] for task in second["tasks"]],["history-0"])
+        self.assertIsNone(second["before"])
+        colleague_page = await self.client.get(path,headers={"X-Uid":"8"})
+        self.assertEqual([task["id"] for task in (await colleague_page.json())["tasks"]],["history-21"])
+        self.assertEqual((await self.client.get(path+"&before=-1")).status,400)
+        self.assertEqual((await self.client.get("/api/chat/task-history?board=missing")).status,403)
+
     async def test_independent_sessions_share_slots_without_blocking_eligible_queue_entries(self):
         sessions = [self.sid]
         for _ in range(3):
@@ -946,12 +984,19 @@ class ChatIntegration(ChatFixture):
         await asyncio.wait_for(entered["对话丙"].wait(),1)
         fourth = await send(sessions[3],"对话丁","parallel-d")
         self.assertEqual(fourth["state"],"queued")
-        directory = (await (await self.client.get("/api/chat/sessions?board=test")).json())["sessions"]
+        snapshot = await (await self.client.get("/api/chat/sessions?board=test")).json()
+        directory = snapshot["sessions"]
         self.assertEqual({item["id"] for item in directory if item["run_state"]=="thinking"},set(sessions[:3]))
         self.assertEqual({item["id"]:item["queued_count"] for item in directory if item["queued_count"]},
                          {sessions[0]:1,sessions[3]:1})
         self.assertEqual(next(item["node_activity"] for item in directory if item["id"]==sessions[0]),{"nodes":["n1"],"calls":[]})
+        self.assertEqual(next(item["active_task_id"] for item in directory if item["id"]==sessions[0]),first["id"])
+        active_task = next(item for item in directory if item["id"]==sessions[0])
+        self.assertLessEqual(active_task["active_task_updated"],snapshot["task_snapshot_at"])
+        conversation = await (await self.client.get(f"/api/chat/sessions/{sessions[0]}")).json()
+        self.assertGreaterEqual(conversation["task_snapshot_at"],snapshot["task_snapshot_at"])
         self.assertNotIn("node_activity",next(item for item in directory if item["id"]==sessions[3]))
+        self.assertNotIn("active_task_id",next(item for item in directory if item["id"]==sessions[3]))
         releases["对话乙"].set()
         self.assertEqual((await self.wait(second["id"]))["state"],"done")
         await asyncio.wait_for(entered["对话丁"].wait(),1)
@@ -966,6 +1011,12 @@ class ChatIntegration(ChatFixture):
         releases["甲的下一条"].set()
         self.assertEqual((await self.wait(fourth["id"]))["state"],"done")
         self.assertEqual((await self.wait(queued_same["id"]))["state"],"done")
+        directory = {item["id"]:item for item in
+                     (await (await self.client.get("/api/chat/sessions?board=test")).json())["sessions"]}
+        self.assertEqual(directory[sessions[0]]["recent_task"]["id"],queued_same["id"])
+        self.assertEqual(directory[sessions[1]]["recent_task"]["state"],"done")
+        self.assertEqual(directory[sessions[2]]["recent_task"]["state"],"stopped")
+        self.assertIsNone(directory[sessions[2]]["run_state"])
         self.assertEqual([len(contexts[name]) for name in entered],[1,1,1,1,2])
         self.assertTrue(contexts["甲的下一条"][0].startswith("对话甲"))
         self.assertTrue(contexts["甲的下一条"][1].startswith("甲的下一条"))
@@ -1551,6 +1602,53 @@ class ChatIntegration(ChatFixture):
         await self.wait(rid)
         out = self.load()["nodes"][0]["versions"][-1]
         self.assertEqual((out["w"], out["h"]), (96, 128))
+
+    async def test_upscale_routes_the_chosen_historical_image_and_keeps_both_versions(self):
+        old = self.source["ref"]
+        current = image_editor.save(server.COMFY_DIR,Image.new("RGB",(200,100),"blue"))
+        server.grant_media({"id":7},current["ref"])
+        board = self.load()
+        board["nodes"][0]["versions"].append(current)
+        board["nodes"][0]["cur"] = 1
+        response = await self.client.put("/api/board/test",json=board)
+        self.assertEqual(response.status,200,await response.text())
+
+        def upscale(root, directory, ref, scale):
+            self.assertEqual((ref,scale),(old,4))
+            image = image_editor.load(root,ref)
+            return image_editor.save(root,image.resize((image.width*scale,image.height*scale)))
+
+        self.svc.model.side_effect = [call("image_upscale",{"node_id":"n1","scale":4,"version":1}),answer()]
+        with patch.object(server.image_upscale,"upscale",side_effect=upscale) as invoked:
+            rid = await self.send("把第一版超分四倍")
+            self.assertEqual((await self.wait(rid))["state"],"done")
+            self.assertEqual(invoked.call_count,1)
+        versions = self.load()["nodes"][0]["versions"]
+        self.assertEqual([v["ref"] for v in versions[:2]],[old,current["ref"]])
+        self.assertEqual((versions[-1]["w"],versions[-1]["h"]),(512,384))
+        self.assertEqual(versions[-1]["edit"],{"source":old,"mode":"upscale","scale":4,"model":"FSRCNN"})
+
+    async def test_decompose_adds_a_reusable_layer_stack_to_the_source_node(self):
+        ref = self.source["ref"]
+
+        async def labels(_app, tool, payload):
+            self.assertEqual((tool,payload["ref"]),("decompose",ref))
+            image = Image.new("L",(128,96))
+            image.paste(1,(12,20,60,64))
+            image.paste(2,(72,14,100,80))
+            return image_editor.save(server.COMFY_DIR,image)
+
+        self.svc.model.side_effect = [call("image_decompose",{"node_id":"n1"}),answer()]
+        with patch.object(server,"run_image_tool",labels):
+            rid = await self.send("把选中的图片自动拆成独立图层")
+            self.assertEqual((await self.wait(rid))["state"],"done")
+        versions = self.load()["nodes"][0]["versions"]
+        self.assertEqual(len(versions),2)
+        self.assertEqual(versions[0]["ref"],ref)
+        self.assertEqual(versions[1]["edit"],{"source":ref,"mode":"decompose"})
+        layers = versions[1]["layer_stack"]["layers"]
+        self.assertEqual([(l["name"],l["x"],l["y"]) for l in layers],
+                         [("背景",0,0),("物体 1",12,20),("物体 2",72,14)])
 
     async def test_invalid_tools_and_mask_never_execute(self):
         self.svc.model.side_effect = [call("image_generate", {"prompt": "test", "count": 200}),

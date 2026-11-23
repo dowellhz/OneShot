@@ -5,7 +5,7 @@ const ewRefUrl=ref=>"/media?ref="+encodeURIComponent(ref);
 const ewId=()=>"l"+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 function ewNewState(n) { return {board:boardId,zoom:1,pan:{x:0,y:0},fitScale:1,redo:[],assets:new Map(),samPoints:[],layers:[],activeLayer:null,compareMode:"off",split:50,restoring:false,draftChain:Promise.resolve(),draftTimer:0,space:false,capabilities:{}}; }
 function ewToolbarHTML() { return `<div class="ie-viewtools"><button id="ieZoomOut" title="缩小">−</button><span id="ieZoomValue" class="num">100%</span><button id="ieZoomIn" title="放大">＋</button><button id="ieActualSize">100%</button><button id="ieFit">适应窗口</button><span class="ie-spacer"></span><select id="ieCompareMode" aria-label="原图对比方式"><option value="off">编辑视图</option><option value="wipe">滑杆对比</option><option value="split">并排对比</option></select><input id="ieWipe" type="range" min="0" max="100" value="50" aria-label="原图对比分界" hidden></div>`; }
-function ewLayersHTML() { return `<div class="ie-section" data-section="layers"><div class="ie-row"><button id="ieImportLayer">导入图片</button><button id="ieCutout">智能抠图</button></div><p class="ie-note">拖动图层调整位置，或修改坐标与尺寸。图层从上到下显示；隐藏背景可导出透明 PNG。</p><div id="ieLayerList"></div><div class="ie-row"><button id="ieLayerUp">上移</button><button id="ieLayerDown">下移</button><button id="ieLayerDelete">删除</button></div><div class="ie-padding">${[["X","X"],["Y","Y"],["Width","宽度"],["Height","高度"]].map(([k,t])=>`<label>${t}<input id="ieLayer${k}" type="number" step="1"></label>`).join("")}</div><label class="ie-label" for="ieLayerOpacity">图层不透明度<output id="ieLayerOpacityValue">100%</output></label><input id="ieLayerOpacity" type="range" min="0" max="100" value="100"><div class="ie-row"><button id="ieSelectionLayer">选区转图层</button><button id="ieResultLayer">提取生成图层</button></div><button id="ieSaveLayers" class="ie-primary">合并保存为新版本</button></div>`; }
+function ewLayersHTML() { return `<div class="ie-section" data-section="layers"><div class="ie-row"><button id="ieImportLayer">导入图片</button><button id="ieCutout">智能抠图</button><button id="ieDecompose" disabled>自动分层</button></div><p class="ie-note">拖动图层调整位置，或修改坐标与尺寸。图层从上到下显示；隐藏背景可导出透明 PNG。</p><div id="ieLayerList"></div><div class="ie-row"><button id="ieLayerUp">上移</button><button id="ieLayerDown">下移</button><button id="ieLayerDelete">删除</button></div><div class="ie-padding">${[["X","X"],["Y","Y"],["Width","宽度"],["Height","高度"]].map(([k,t])=>`<label>${t}<input id="ieLayer${k}" type="number" step="1"></label>`).join("")}</div><label class="ie-label" for="ieLayerOpacity">图层不透明度<output id="ieLayerOpacityValue">100%</output></label><input id="ieLayerOpacity" type="range" min="0" max="100" value="100"><div class="ie-row"><button id="ieSelectionLayer">选区转图层</button><button id="ieResultLayer">提取生成图层</button></div><button id="ieSaveLayers" class="ie-primary">合并保存为新版本</button></div>`; }
 function ewDraftUrl(E,ref) { return `/api/image-edit/drafts/${encodeURIComponent(E.board)}/${encodeURIComponent(E.n.id)}`+(ref ? "?ref="+encodeURIComponent(ref) : ""); }
 function ewDraftKey(E,ref) { return `oneshot.draft.${ME_USER?.id || "current"}.${E.board}.${E.n.id}.${ref}`; }
 function ewSnapshot(E) {
@@ -50,7 +50,7 @@ async function ewRestoreDraft(E) {
         E.pixelAnchor=draft.pixelSize.anchor;E.pixelBasis=null;
       }
       E.tool=["brush","rect","erase","smart"].includes(draft.tool) ? draft.tool : "brush";
-      ieMode(["region","whole","outpaint","local","layers","relight","relight_ai","camera"].includes(draft.mode) ? draft.mode : "region");
+      ieMode(["region","whole","outpaint","local","layers","relight","relight_ai","camera","upscale"].includes(draft.mode) ? draft.mode : "region");
       await ewPreload(E,[...E.layers.map(x=>x.ref),...[...E.strokes,...E.redo].filter(x=>x.tool==="mask").map(x=>x.ref)]);
       ieRebuildMask(); $("#ieDraftState").textContent="已恢复编辑草稿";
     } else $("#ieDraftState").textContent="草稿自动保存";
@@ -197,6 +197,42 @@ async function ewUtility(tool) {
   try {const ref=await ewFlatten(E);let result;if(tool==="cutout")result=await api("/api/image-edit/cutout",{ref});else {const mask=await ewExportMask(E);result=await api("/api/image-edit/selection-cutout",{ref,mask:mask.ref});}if(IMAGE_EDITOR!==E)return;await ewAddLayer(E,result,tool==="cutout" ? "智能抠图" : "选区图层",tool==="cutout");ieStatus("已添加透明图层，可调整后合并保存");}
   catch(err){ieStatus(err.message,true);}finally{E.busy=false;ieSync();}
 }
+function ewDecomposeControl(E) {
+  const button=$("#ieDecompose");
+  button.disabled=!E.capabilities?.decompose || E.busy || E.loading || E.restoring || !E.image ||
+    !!E.agentSelection || !vtCanCopyVersion(E.n,E.n.cur);
+  button.title=E.capabilities?.decompose?"将当前画面拆成可独立编辑的图层":"服务端未启用自动分层";
+}
+
+async function ewDecompose() {
+  const E=IMAGE_EDITOR;
+  if (!E || E.mode!=="layers" || $("#ieDecompose").disabled) return;
+  const board=B, source=E.ref;
+  const current=()=>IMAGE_EDITOR===E && B===board && vtCanCopyVersion(E.n,E.n.cur) && curV(E.n)?.ref===source;
+  E.busy=true;
+  ieSync();
+  ieStatus("正在识别可分离的物体…");
+  try {
+    const ref=await ewFlatten(E);
+    if (!current()) throw new Error("来源图片已更新，请重新选择版本");
+    const result=await api("/api/image-edit/decompose",{ref});
+    if (!current()) throw new Error("来源图片已更新，请重新选择版本");
+    addVersion(E.n,mediaVersion(result,{source:"edit",mode:"自动分层",layer_stack:result.layer_stack,
+      edit:{source,mode:"decompose"}}));
+    await ieLoad(curV(E.n));
+    if (IMAGE_EDITOR===E) {
+      ieMode("layers",true);
+      ieStatus("分层已保存为新版本，可移动或隐藏单独图层");
+    }
+    loadAssets();
+  } catch(error) {
+    if (IMAGE_EDITOR===E) ieStatus(error.message,true);
+  } finally {
+    E.busy=false;
+    ieSync();
+  }
+}
+
 async function ewCommitLayers() {const E=IMAGE_EDITOR;if(!E?.image || E.busy || E.n.job)return;E.busy=true;ieSync();ieStatus("正在合并图层…");try{const r=await api("/api/image-edit/layers",{ref:E.ref,layers:E.layers});ewScheduleDraft(true);addVersion(E.n,mediaVersion(r,{source:"edit",mode:"图层合并",layer_stack:{base_ref:E.layerBaseRef||E.ref,layers:JSON.parse(JSON.stringify(E.layers))},edit:{source:E.ref,mode:"layers"}}));ieLoad(curV(E.n));ieHistory();loadAssets();ieStatus("已保存为新的 PNG 版本，透明通道已保留");}catch(err){ieStatus(err.message,true);}finally{E.busy=false;ieSync();}}
 function ewRefreshControls() {for(const [key,unit]of [["Brush"," px"],["Feather"," px"],["Strength","%"],["Brightness","%"],["Contrast","%"],["Saturation","%"],["Denoise","%"]])$("#ie"+key+"Value").textContent=$("#ie"+key).value+unit;ewBackend();$$("[data-tool]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.tool===IMAGE_EDITOR?.tool));}
 function ewBackend() {const native=!["camera","relight_ai"].includes(IMAGE_EDITOR?.mode) && $("#ieBackend").value==="native";$("#ieNativeSettings").hidden=!native;$("#ieProvider").disabled=native;}
@@ -222,7 +258,7 @@ function ewInitEditor(host) {
   $("#ieRedoMask").onclick=()=>ewUndoMask(true);$("#ieUndoMask").onclick=()=>ewUndoMask();
   $("#ieClearMask").onclick=()=>{const E=IMAGE_EDITOR;if(E && !E.busy && !E.n.job){ewPushStroke(E,{tool:"clear"});E.samPoints=[];ieRebuildMask();ewScheduleDraft(true);}};
   $("#ieInvertMask").onclick=()=>{const E=IMAGE_EDITOR;if(E && !E.busy && !E.n.job){ewPushStroke(E,{tool:"invert"});ieRebuildMask();ewScheduleDraft(true);}};
-  $("#ieCutout").onclick=()=>ewUtility("cutout");$("#ieSelectionLayer").onclick=()=>ewUtility("selection");$("#ieCutSelection").onclick=()=>ewUtility("selection");$("#ieSaveLayers").onclick=ewCommitLayers;
+  $("#ieCutout").onclick=()=>ewUtility("cutout");$("#ieDecompose").onclick=ewDecompose;$("#ieSelectionLayer").onclick=()=>ewUtility("selection");$("#ieCutSelection").onclick=()=>ewUtility("selection");$("#ieSaveLayers").onclick=ewCommitLayers;
   $("#ieImportLayer").onclick=()=>{const E=IMAGE_EDITOR;if(!E || E.busy || E.n.job)return;pickFiles(async files=>{E.busy=true;ieSync();try{for(const f of files.filter(x=>x.type.startsWith("image/")))await ewAddLayer(E,await ewUpload(f),f.name.replace(/\.[^.]+$/,""));}catch(err){ieStatus(err.message,true);}finally{E.busy=false;ieSync();}});};
   for(const [id,delta]of [["ieLayerUp",1],["ieLayerDown",-1]])$("#"+id).onclick=()=>{const E=IMAGE_EDITOR;if(!E || E.busy || E.n.job)return;const i=E.layers.findIndex(x=>x.id===E.activeLayer),j=i+delta;if(j>=0 && j<E.layers.length){[E.layers[i],E.layers[j]]=[E.layers[j],E.layers[i]];ewRenderLayers();ieDraw();ewScheduleDraft();}};
   $("#ieLayerDelete").onclick=()=>{const E=IMAGE_EDITOR;if(!E || E.busy || E.n.job)return;if(E.layers.length<2)return ieStatus("至少保留一个图层",true);E.layers=E.layers.filter(x=>x.id!==E.activeLayer);ewRenderLayers();ieDraw();ewScheduleDraft();};
@@ -247,7 +283,7 @@ function ewInitEditor(host) {
   addEventListener("blur",()=>{if(IMAGE_EDITOR){IMAGE_EDITOR.space=false;IMAGE_EDITOR.panning=null;$("#ieBrushCursor").hidden=true;}});
   addEventListener("pagehide",()=>{const E=IMAGE_EDITOR;if(!E)return;const snapshot=ewSnapshot(E);if(!snapshot)return;const body=JSON.stringify(snapshot);try{localStorage.setItem(ewDraftKey(E,E.ref),body);}catch{}if(body.length<60000)navigator.sendBeacon(ewDraftUrl(E),new Blob([body],{type:"application/json"}));});
 }
-async function ewCapabilities(E) {try{const r=await fetch("/api/image-edit/capabilities");E.capabilities=await r.json();if(IMAGE_EDITOR!==E)return;$("[data-tool=smart]",$("#imageEditor")).disabled=!E.capabilities.segment;$("#ieCutout").disabled=!E.capabilities.cutout;$("#ieBackend option[value=native]").disabled=!E.capabilities.native;}catch{} }
+async function ewCapabilities(E) {try{const r=await fetch("/api/image-edit/capabilities");E.capabilities=await r.json();if(IMAGE_EDITOR!==E)return;ieUpscaleControls(E);ewDecomposeControl(E);$("[data-tool=smart]",$("#imageEditor")).disabled=!E.capabilities.segment;$("#ieCutout").disabled=!E.capabilities.cutout;$("#ieBackend option[value=native]").disabled=!E.capabilities.native;}catch{} }
 function ewKey(e) {
   const E=IMAGE_EDITOR;if(!E || e.target.closest("input,textarea,select"))return false;
   const mod=e.metaKey || e.ctrlKey,k=e.key.toLowerCase();

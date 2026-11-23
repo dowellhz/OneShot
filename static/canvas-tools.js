@@ -199,6 +199,7 @@ async function ctDownload(nodes=ctSelected()) {
 function ctAction(action) {
   if (action === "download") return ctDownload();
   if (!canvasCanEdit()) return;
+  if (action === "generate") return openCanvasSelectionRun(byPosition([...sel]));
   if (action === "collect") return alOpenCanvasImport(byPosition([...sel]));
   if (action === "fold") return ctGroup(true);
   if (action === "group") return ctGroup();
@@ -215,8 +216,9 @@ function ctAction(action) {
 }
 function ctRenderSelectionTools(){const box=$("#selectionTools");if(!box || !B)return;const nodes=ctSelected();box.classList.toggle("on",nodes.length>1);if(nodes.length<2)return;
   const edit=canvasCanEdit(), playlist=edit&&nodes.filter(playlistVideo).length>=2;
-  const collect=edit&&nodes.some(alCanvasCollectable);
-  const key=nodes.map(n=>n.id).sort().join(",")+":"+playlist+":"+edit+":"+collect;if(box.dataset.key!==key){box.dataset.key=key;box.innerHTML=CT_ACTIONS.map(([action,label,path])=>`<button data-action="${action}" aria-label="${label}" data-tip="${label}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg></button>`).join("");
+  const collect=edit&&nodes.some(alCanvasCollectable), generate=edit&&nodes.some(groupGeneratable);
+  const key=nodes.map(n=>n.id).sort().join(",")+":"+playlist+":"+edit+":"+collect+":"+generate;if(box.dataset.key!==key){box.dataset.key=key;box.innerHTML=CT_ACTIONS.map(([action,label,path])=>`<button data-action="${action}" aria-label="${label}" data-tip="${label}"><svg class="i" aria-hidden="true"><path d="${path}"/></svg></button>`).join("");
+    if(generate)box.insertAdjacentHTML("afterbegin",`<button data-action="generate" aria-label="批量生成选中节点" data-tip="批量生成选中节点">${ico("motion")}</button>`);
     if(edit)box.insertAdjacentHTML("beforeend",`<button data-action="fold" aria-label="收起为一组" data-tip="收起为一组">${ico("stack")}</button>`);
     if(edit)box.insertAdjacentHTML("beforeend",`<button data-action="pin" aria-label="颜色标记" data-tip="颜色标记">${ico("tag")}</button>`);
     if(collect)box.insertAdjacentHTML("beforeend",`<button data-action="collect" aria-label="收录到资产库" data-tip="收录到资产库">${ico("assets")}</button>`);

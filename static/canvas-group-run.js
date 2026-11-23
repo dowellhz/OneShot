@@ -5,7 +5,11 @@ let groupRun=null;
 
 const groupRunStorageKey=bid=>`h3.group-run.${ME_USER?.id??""}.${bid}`;
 
-function canvasRunScope({groupId,story,template}) {
+function canvasRunScope({groupId,story,template,selection}) {
+  if(Array.isArray(selection)){
+    const nodes=selection.filter(id=>node(id));
+    return nodes.length?{name:"选中节点",nodes,selection:true}:null;
+  }
   if(template&&Array.isArray(template.nodes)){
     const nodes=template.nodes.filter(id=>node(id));
     return nodes.length?{name:template.name,nodes}:null;
@@ -23,8 +27,14 @@ function canvasRunScope({groupId,story,template}) {
   if(!indices.length || indices.some((index,i)=>index<0 || i>0&&index!==indices[i-1]+1))return null;
   const first=indices[0]+1, last=indices.at(-1)+1;
   const name=`${script.name} · 第 ${first}${first===last?"":"–"+last} 镜`;
+  const previsTiming=new Map(indices.flatMap(index=>{
+    const ticks=script.data.shots[index]?.previs_range;
+    const video=links[index]?.vid;
+    return video && Array.isArray(ticks) && ticks.length===2 && ticks.every(Number.isInteger) && ticks[1]>ticks[0]
+      ? [[video,(ticks[1]-ticks[0])/PV_FPS]] : [];
+  }));
   return {name,nodes:targets.flatMap(target=>[target.imageId,target.videoId]).filter(Boolean),
-    images:targets.map(target=>target.imageId).filter(Boolean),videos:targets.map(target=>target.videoId).filter(Boolean),indices,links};
+    images:targets.map(target=>target.imageId).filter(Boolean),videos:targets.map(target=>target.videoId).filter(Boolean),indices,links,previsTiming};
 }
 
 function preserveCanvasGroupRun(run) {
@@ -32,7 +42,7 @@ function preserveCanvasGroupRun(run) {
     const key=groupRunStorageKey(run.boardId);
     if(groupRun!==run && (boardId===run.boardId || JSON.parse(sessionStorage.getItem(key)||"null")?.id!==run.id))return;
     const steps=run.steps.map(({id,name,type,count,status,error,outputRef})=>({id,name,type,count,status,error,outputRef}));
-    sessionStorage.setItem(key,JSON.stringify({id:run.id,groupId:run.groupId,story:run.story,template:run.template,
+    sessionStorage.setItem(key,JSON.stringify({id:run.id,groupId:run.groupId,story:run.story,template:run.template,selection:run.selection,
       name:run.name,stop:run.stop,refreshTails:run.refreshTails,connectTails:run.connectTails,steps}));
   }catch{}
 }
@@ -45,7 +55,7 @@ function restoreCanvasGroupRun() {
     renderCanvasGroupRun();
     return;
   }
-  const run=groupRun={...receipt,board:B,boardId,active:false,recovered:true};
+  const run=groupRun={...receipt,board:B,boardId,active:false,recovered:true,inFlight:new Map()};
   for(const step of run.steps){
     if(step.status!=="waiting" && step.status!=="running")continue;
     run.stop=true;
@@ -59,7 +69,7 @@ function restoreCanvasGroupRun() {
     if(refs.length)groupRunSetResult(step,{refs,errors:[]});
     else if(n?.job?.group_run_id===run.id){
       run.active=true;
-      run.inFlight={nodeId:step.id};
+      run.inFlight.set(step.id,{});
     }else {
       step.status="skipped";
       step.error="提交状态未记录，请检查节点后再重试";
@@ -92,7 +102,9 @@ function groupRunReferenceDetails(n, media, deps, completed) {
     const range=edge.relation==="video_ref"&&version?videoReferenceRange(edge,version,referenceDuration(n)):null;
     const interval=Number.isFinite(range?.end)?`${seconds(range.start??0)}–${seconds(range.end)} 秒`:
       Number.isFinite(range?.start)?`${seconds(range.start)} 秒起`:"";
-    return {name:source?.name||"来源节点已移除",label:[role,state,interval].filter(Boolean).join(" · "),
+    const draft=!followsRun && version?.source==="previs-frame" ? "白模草稿" : "";
+    return {name:source?.name||"来源节点已移除",label:[role,state,draft,interval].filter(Boolean).join(" · "),
+      whiteboxFirst:!!draft && imageRoles.get(edge)==="首帧",
       thumbnail:!followsRun&&source?.type==="image"?version?.ref:null};
   });
   return refs.concat(inputs(n,"text").map(source=>({name:source.name,label:"文字参考"})));
@@ -112,15 +124,16 @@ function groupRunAffected(group, changed) {
   return affected;
 }
 
+const groupGeneratable=n=>!!n&&["image","video","audio"].includes(n.type)&&!n.data.previs&&!n.data.film;
 function groupGenerationNodes(group, includeExisting, affected=null, completed=new Map(), tails=new Map()) {
-  const candidates=[...new Set(group.nodes)].map(node).filter(n=>n &&
-    ["image","video","audio"].includes(n.type) && !n.data.previs && !n.data.film &&
+  const candidates=[...new Set(group.nodes)].map(node).filter(n=>groupGeneratable(n) &&
     (!affected || affected.has(n.id)) &&
-    (includeExisting || !curV(n)));
+    (includeExisting || (group.previsTiming && n.type==="image" ? !storyboardFrameReady(n) : !curV(n))));
   const ids=new Set(candidates.map(n=>n.id));
   const steps=candidates.map(n=>{
     const media=groupRunInputs(n);
-    const deps=media.filter(({edge,source})=>!edge.ref&&source?.type==="image"&&ids.has(source.id)).map(({source})=>source.id);
+    const deps=media.filter(({edge,source})=>!edge.ref&&source&&ids.has(source.id)&&
+      (group.selection||source.type==="image")).map(({source})=>source.id);
     const continuity=tails.get(n.id), previous=node(continuity?.sourceId);
     const followsRun=!!previous&&ids.has(previous.id);
     const expectedRef=followsRun?null:curV(previous)?.ref;
@@ -137,15 +150,26 @@ function groupGenerationNodes(group, includeExisting, affected=null, completed=n
       version?.ref!==completed.get(edge.from).outputRef);
     const configured=n.type==="audio"?n.data.prompt?.trim():usesFields(n)?fieldsFilled(n):fullPrompt(n);
     const hasEditPlan=n.type==="video" && (n.data.camera_plan || n.data.object_edit) && videoInputs(n)[0]?.edge.segment_edit;
-    const error=n.job||prepping.has(n.id)?"节点已有任务":tailError|| (missing?`参考素材不可用${missing.source?` · ${missing.source.name}`:""}`:
+    const composition=previsComposition(n);
+    const compositionSlots=media.map(({version})=>version?.ref);
+    if(continuity?.connect)compositionSlots.push(null);
+    const compositionError=!composition?.enabled?"":!composition.version?"白模构图版本已移除":
+      n.data.model==="h3video"?"分镜图模型不支持参考图片":
+      !previsCompositionHasRoom(n,composition,compositionSlots)?"参考图过多，请为白模构图留出一个位置":"";
+    const error=n.job||prepping.has(n.id)?"节点已有任务":tailError||compositionError|| (missing?`参考素材不可用${missing.source?` · ${missing.source.name}`:""}`:
       switched?`「${switched.source.name}」已切换版本，请切回上轮结果或固定要用的版本`:
       !configured && !hasEditPlan?"尚未填写生成指令":"");
     const count=n.type==="audio"?1:Math.max(1,Math.min(4,Math.trunc(Number(n.data.count))||1));
     const references=groupRunReferenceDetails(n,usableMedia,deps,completed);
+    if(composition?.enabled)references.push({name:"白模构图",label:composition.version?"固定参考":"版本已移除",
+      thumbnail:composition.version?.ref});
+    const previsSeconds=group.previsTiming?.get(n.id);
+    const timing=Number.isFinite(previsSeconds) && Number.isFinite(n.data.duration)
+      ? `白模 ${Number(previsSeconds.toFixed(2))} 秒 · 视频设定 ${n.data.duration} 秒` : "";
     if(tail)references.unshift({name:previous?.name||"上一镜",label:(continuity.edge?"上一镜尾帧":"连接上一镜尾帧")+" · "+
       (tailError|| (followsRun?"取本轮生成视频":`取当前版本 ${previous.cur+1}`))});
     return {id:n.id,name:n.name,type:n.type,deps,count,error,tail,status:error?"skipped":"waiting",
-      recipe:groupRunRecipe(n,deps,media),references};
+      recipe:groupRunRecipe(n,deps,media),references,timing,whiteboxFirst:references.some(ref=>ref.whiteboxFirst)};
   });
   const ready=[], available=new Set();
   while(ready.length<steps.length){
@@ -170,6 +194,7 @@ function groupGenerationNodes(group, includeExisting, affected=null, completed=n
 
 function groupRunRecipe(n, deps, media=groupRunInputs(n)) {
   return JSON.stringify({data:n.data,edges:B.edges.filter(e=>e.to===n.id),
+    composition:previsComposition(n)?.version?.ref,
     media:media.map(({edge,source,version})=>[edge.from,deps.includes(edge.from)&&!edge.ref?null:version?.ref,
       source?.name,source?.data.caption,source?.data.asset?.id]),
     text:inputs(n,"text").map(t=>t.data.text)});
@@ -181,7 +206,7 @@ function groupRunRows(steps, expanded=null) {
       <summary>参考素材 ${step.references.length} 项</summary>
       ${step.references.map(({name,label,thumbnail})=>`<div>${thumbnail?`<img src="/media?ref=${encodeURIComponent(thumbnail)}" alt="" loading="lazy">`:""}
         <span>${esc(name)}<small>${esc(label)}</small></span></div>`).join("")}</details>`:"";
-    return `<li><strong>${esc(step.name)}</strong><span>${GROUP_RUN_LABELS[step.status]}${step.error?" · "+esc(step.error):" · "+step.count+" 项"}</span>${refs}</li>`;
+    return `<li><strong>${esc(step.name)}</strong><span>${GROUP_RUN_LABELS[step.status]}${step.error?" · "+esc(step.error):" · "+step.count+" 项"}${step.timing?" · "+esc(step.timing):""}${step.whiteboxFirst?" · 首帧仍为白模":""}</span>${refs}</li>`;
   }).join("");
 }
 
@@ -193,6 +218,11 @@ function groupRunRetryIds(run, group) {
 function openCanvasGroupRun(group, {changed=null,retry=null,plan=null}={}) {
   if(!(B.groups||[]).includes(group))return;
   openCanvasRun({groupId:group.id},{changed,retry,plan});
+}
+
+function openCanvasSelectionRun(nodes){
+  if(!nodes.some(groupGeneratable))return;
+  openCanvasRun({selection:nodes.map(n=>n.id)},{initialMode:"all"});
 }
 
 function openScriptShotRun(script,index,{mode="missing"}={}) {
@@ -253,7 +283,7 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     let canRefresh=false, canConnect=false;
     for(const index of current.indices||[]){
       const img=current.links[index]?.img, picture=node(img), edge=edges.get(img);
-      if(index===0||picture?.type!=="image"||(affected&&!affected.has(img))||(!includeExisting&&curV(picture)))continue;
+      if(index===0||picture?.type!=="image"||(affected&&!affected.has(img))||(!includeExisting&&storyboardFrameReady(picture)))continue;
       if(edge){
         pinned.add(img);
         canRefresh=true;
@@ -334,70 +364,87 @@ function renderCanvasGroupRun() {
   panel.hidden=false;
 }
 
+async function executeCanvasGroupStep(run,step,byId,current) {
+  const n=current()?node(step.id):null;
+  if(run.stop || !current()) {
+    run.stop=true;
+    step.status="skipped";step.error="已停止提交";
+    return;
+  }
+  const membership=canvasRunScope(run);
+  if(!n || !membership?.nodes.includes(step.id) || n.job || prepping.has(n.id) || groupRunRecipe(n,step.deps)!==step.recipe) {
+    step.status="skipped";step.error="节点或输入已修改，或正在生成";
+    return;
+  }
+  const upstream=step.deps.find(id=>{
+    const source=byId.get(id);
+    return source?.status!=="done" || source.outputRef!==curV(node(id))?.ref;
+  });
+  if(upstream) {
+    step.status="skipped";step.error=`上游「${byId.get(upstream).name}」的本轮结果不可用`;
+    return;
+  }
+  step.status="running";
+  preserveCanvasGroupRun(run);renderCanvasGroupRun();
+  const receipt={};
+  run.inFlight.set(n.id,receipt);
+  try {
+    if(step.tail){
+      const {sourceId,expectedRef,connect}=step.tail;
+      const expected=expectedRef||byId.get(sourceId)?.outputRef;
+      const findIndex=scope=>scope?.indices.find(index=>{
+        return scope.links[index]?.img===n.id&&scope.links[index-1]?.vid===sourceId;
+      });
+      const index=findIndex(membership);
+      const active=()=>!run.stop&&current()&&findIndex(canvasRunScope(run))===index&&
+        curV(node(sourceId))?.ref===expected&&groupRunRecipe(n,step.deps)===step.recipe;
+      if(index===undefined||!expected||!active())throw new Error("上一镜或视频版本已变化，请重新确认尾帧");
+      if(!await linkPreviousShotFrame(node(run.story.scriptId),index,{batch:true,allowNew:connect,active})){
+        throw new Error("未能连接上一镜尾帧，已跳过本镜生成");
+      }
+      if(run.stop||!current())throw new Error("已停止提交");
+    }
+    await generate(n,{batchLayout:"tabs",groupRunId:run.id});
+    while(current() && node(n.id)===n && n.job)await sleep(250);
+    const result=receipt.result;
+    if(!current() && result){
+      run.stop=true;
+      groupRunSetResult(step,result);
+    } else if(!current()){
+      run.stop=true;
+      step.error="已离开画布，等待已有任务";
+    } else if(node(n.id)===n && result) {
+      groupRunSetResult(step,result);
+    } else {
+      step.status="error";
+      step.error=result?.errors.join("、") || els.get(n.id)?.querySelector(".errbox")?.textContent || "未生成可用结果";
+    }
+  } catch(error) {step.status="error";step.error=error.message;}
+}
+
 async function executeCanvasGroup(run) {
   groupRun=run;
+  run.inFlight=new Map();
   preserveCanvasGroupRun(run);
   const byId=new Map(run.steps.map(step=>[step.id,step]));
   const current=()=>B===run.board && canvasCanEdit();
+  const concurrency=run.selection?3:1;
+  const submitted=new Map();
   try{
-    for(const step of run.steps) {
-      if(step.status!=="waiting")continue;
-      const n=current()?node(step.id):null;
-      if(run.stop || !current()) {
-        run.stop=true;
-        step.status="skipped";step.error="已停止提交";
-        continue;
+    while(true){
+      const halted=run.stop||!current();
+      const ready=run.steps.filter(step=>step.status==="waiting"&&(halted||step.deps.every(id=>
+        !["waiting","running"].includes(byId.get(id)?.status))));
+      for(const step of ready.slice(0,concurrency-submitted.size)){
+        const task=executeCanvasGroupStep(run,step,byId,current).finally(()=>{
+          submitted.delete(step.id);
+          run.inFlight.delete(step.id);
+          preserveCanvasGroupRun(run);renderCanvasGroupRun();
+        });
+        submitted.set(step.id,task);
       }
-      const membership=canvasRunScope(run);
-      if(!n || !membership?.nodes.includes(step.id) || n.job || prepping.has(n.id) || groupRunRecipe(n,step.deps)!==step.recipe) {
-        step.status="skipped";step.error="节点或输入已修改，或正在生成";
-        continue;
-      }
-      const upstream=step.deps.find(id=>{
-        const source=byId.get(id);
-        return source?.status!=="done" || source.outputRef!==curV(node(id))?.ref;
-      });
-      if(upstream) {
-        step.status="skipped";step.error=`上游「${byId.get(upstream).name}」的本轮结果不可用`;
-        continue;
-      }
-      step.status="running";
-      preserveCanvasGroupRun(run);renderCanvasGroupRun();
-      run.inFlight={nodeId:n.id};
-      try {
-        if(step.tail){
-          const {sourceId,expectedRef,connect}=step.tail;
-          const expected=expectedRef||byId.get(sourceId)?.outputRef;
-          const findIndex=scope=>scope?.indices.find(index=>{
-            return scope.links[index]?.img===n.id&&scope.links[index-1]?.vid===sourceId;
-          });
-          const index=findIndex(membership);
-          const active=()=>!run.stop&&current()&&findIndex(canvasRunScope(run))===index&&
-            curV(node(sourceId))?.ref===expected&&groupRunRecipe(n,step.deps)===step.recipe;
-          if(index===undefined||!expected||!active())throw new Error("上一镜或视频版本已变化，请重新确认尾帧");
-          if(!await linkPreviousShotFrame(node(run.story.scriptId),index,{batch:true,allowNew:connect,active})){
-            throw new Error("未能连接上一镜尾帧，已跳过本镜生成");
-          }
-          if(run.stop||!current())throw new Error("已停止提交");
-        }
-        await generate(n,{batchLayout:"tabs",groupRunId:run.id});
-        while(current() && node(n.id)===n && n.job)await sleep(250);
-        const result=run.inFlight.result;
-        if(!current() && result){
-          run.stop=true;
-          groupRunSetResult(step,result);
-        } else if(!current()){
-          run.stop=true;
-          step.error="已离开画布，等待已有任务";
-        } else if(node(n.id)===n && result) {
-          groupRunSetResult(step,result);
-        } else {
-          step.status="error";
-          step.error=result?.errors.join("、") || els.get(n.id)?.querySelector(".errbox")?.textContent || "未生成可用结果";
-        }
-      } catch(error) {step.status="error";step.error=error.message;}
-      preserveCanvasGroupRun(run);
-      renderCanvasGroupRun();
+      if(!submitted.size)break;
+      await Promise.race(submitted.values());
     }
   } finally {run.active=false;preserveCanvasGroupRun(run);renderCanvasGroupRun();}
 }
@@ -416,12 +463,14 @@ function groupRunSetResult(step, {refs,errors}) {
 
 function groupRunJobFinished(n, job, versions, errors) {
   const run=groupRun;
-  if(!run?.active || run.board!==B || job.group_run_id!==run.id || run.inFlight?.nodeId!==n.id)return;
+  const receipt=run?.inFlight?.get(n.id);
+  if(!run?.active || run.board!==B || job.group_run_id!==run.id || !receipt)return;
   const result={refs:versions.map(v=>v.ref).filter(Boolean),errors:errors.filter(Boolean)};
-  run.inFlight.result=result;
+  receipt.result=result;
   if(!run.recovered)return;
   groupRunSetResult(run.steps.find(step=>step.id===n.id),result);
-  run.active=false;
+  run.inFlight.delete(n.id);
+  run.active=run.inFlight.size>0;
   preserveCanvasGroupRun(run);renderCanvasGroupRun();
 }
 
@@ -448,7 +497,8 @@ function initCanvasGroupRun() {
     const run=groupRun;
     if(!run||run.active||run.boardId!==boardId)return;
     const scope=canvasRunScope(run);
-    if(scope&&groupRunRetryIds(run,scope).size)openCanvasRun({groupId:run.groupId,story:run.story,template:run.template},{retry:run});
+    if(scope&&groupRunRetryIds(run,scope).size)openCanvasRun({groupId:run.groupId,story:run.story,
+      template:run.template,selection:run.selection},{retry:run});
   };
   $("[data-dismiss]",panel).onclick=()=>{
     if(groupRun?.active)return;

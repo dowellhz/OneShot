@@ -34,13 +34,15 @@ w.fetch=async(url,options={})=>{
    ref:version===1?'input:h3studio/base.png':'input:h3studio/older.png',inputs:[],prompt:'<strong>原始提示</strong>'}]};
  }
  else if(pathname.startsWith('/api/board/'))result=method==='PUT'?{rev:++revision}:JSON.parse(JSON.stringify(board));
- else if(pathname==='/api/capabilities')result={image:[{id:'local_h3',name:'H3',local:true,default:true}],video:[]};
+ else if(pathname==='/api/capabilities')result=w.__capabilities||{image:[{id:'local_h3',name:'H3',local:true,default:true}],video:[]};
  else if(pathname==='/api/me')result={id:1,role:'admin',name:'Test'};
  else if(pathname==='/api/previs/render'){
-  (w.__previsRequests ||= []).push(JSON.parse(options.body));
+  const request=JSON.parse(options.body);
+  (w.__previsRequests ||= []).push(request);
   const serial=w.__previsRequests.length, jid='preview-render-'+serial, ref='output:h3studio/previs'+serial+'.mp4';
+  const duration=request.span?(request.span[1]-request.span[0])/24:4;
   jobs.set(jid,{state:'done',meta:{mode_name:'白模预演渲染'},outputs:[
-   {ref,url:'/media?ref='+encodeURIComponent(ref),meta:{width:720,height:1280,duration:4}}]});
+   {ref,url:'/media?ref='+encodeURIComponent(ref),meta:{width:720,height:1280,duration}}]});
   result={ids:[jid]};
  }
  else if(pathname==='/api/status')result={comfy:true};
@@ -116,7 +118,7 @@ w.fetch=async(url,options={})=>{
  }
  else if(pathname==='/api/library'||pathname==='/api/assets')result=[];
  else if(pathname.startsWith('/api/image-edit/drafts/')){if(method==='GET')result=drafts.get(pathname+'|'+u.searchParams.get('ref'))||null;else{const data=JSON.parse(options.body);drafts.set(pathname+'|'+data.ref,data);result={ok:true};}}
- else if(pathname==='/api/image-edit/capabilities')result={segment:true,cutout:true,native:true};
+ else if(pathname==='/api/image-edit/capabilities')result={segment:true,cutout:true,native:true,decompose:true,upscale:[2,4]};
  else if(pathname==='/api/image-edit/layers'||pathname==='/api/image-edit/transform')result={ref:`output:h3studio/result${++serial}.png`,url:`/media?ref=output:h3studio/result${serial}.png`,w:512,h:384};
  else if(pathname==='/api/image-edit/generate'){
   const recipe=JSON.parse(options.body);recipes.push(recipe);
@@ -141,6 +143,18 @@ async function ready(predicate,label,attempts=100){for(let i=0;i<attempts;i++){i
 async function run(){
  let notificationRequests=0;
  w.Notification={permission:"default",async requestPermission(){notificationRequests++;return this.permission="granted";}};
+ const taskNotes=[];
+ w.AudioContext=class {
+  state="suspended";
+  currentTime=10;
+  destination={};
+  async resume(){this.state="running";}
+  async close(){this.state="closed";}
+  createOscillator(){
+   return {frequency:{value:0},connect(){},disconnect(){},start(){taskNotes.push(this.frequency.value);},stop(){this.onended?.();}};
+  }
+  createGain(){return {gain:{setValueAtTime(){},linearRampToValueAtTime(){}},connect(){},disconnect(){}};}
+ };
  const staticFile = url => path.join(root, new URL(url, w.location.href).pathname);
  for (const link of w.document.querySelectorAll('link[rel=stylesheet]')) {
   const style = w.document.createElement('style');
@@ -257,6 +271,12 @@ async function run(){
  evaluate('$("#csRows [data-cs-action=choose]").click()');
  assert.equal(evaluate('AC.skill.name'),'色温检查');
  assert.equal(evaluate('$("#acInput").value.startsWith("保留构图")'),true);
+ evaluate(`$("#acSkillClear").click();$("#acInput").value="/";
+  $("#acInput").dispatchEvent(new InputEvent("input",{bubbles:true,inputType:"insertText",data:"/"}))`);
+ await ready('$("#creativeSkills").open&&!!$("#csRows [data-skill=qa-skill]")','the first slash opens the skill picker');
+ evaluate(`$("#csSearch").value="色温";$("#csSearch").dispatchEvent(new Event("input",{bubbles:true}));
+  $("#csSearch").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}))`);
+ equal(evaluate('[AC.skill.id,$("#acInput").value,document.activeElement.id]'),['qa-skill','','acInput']);
  evaluate('$("#acInput").value="改圈选区域";$("#acInput").dispatchEvent(new Event("input"));$("#acSend").click()');
  await ready('!!window.__chatPayload && !AC.sending','send selected source and mask together');
  equal(w.__chatPayload.selected,['n1'],'message references the source node');
@@ -285,7 +305,21 @@ async function run(){
  evaluate('document.getElementById("ieCollapse").click()');assert(w.document.getElementById('imageEditor').classList.contains('collapsed'));evaluate('document.getElementById("ieCollapse").click()');
  evaluate('closeImageEditor();sel=new Set(["n1","n2","n3"]);updateSel();ctAction("left")');equal(evaluate('B.nodes.map(n=>n.x)'),[120,120,120],'align nodes');
  evaluate('ctGroup()');equal(evaluate('B.groups.length'),1,'group nodes');evaluate('ctUngroup()');equal(evaluate('B.groups.length'),0,'ungroup nodes');evaluate('undo()');equal(evaluate('B.groups.length'),1,'undo restores group');
- assert.equal(w.document.querySelectorAll('#selectionTools button').length,14);
+ assert.equal(w.document.querySelectorAll('#selectionTools button').length,15);
+ evaluate(`selectOnly("n1");
+  const sizedPromptPanel=$("#pp"), oldPPRect=sizedPromptPanel.getBoundingClientRect, promptBeforeResize=$("#prompt").value;
+  sizedPromptPanel.getBoundingClientRect=()=>({left:60,top:70,width:ppSize?.width||560,height:ppSize?.height||220});
+  const resizePrompt=(type,x,y)=>$("#ppResize").dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientX:x,clientY:y}));
+  resizePrompt("pointerdown",620,290);resizePrompt("pointermove",710,355);resizePrompt("pointerup",710,355);`);
+ equal(evaluate('[ppSize,JSON.parse(localStorage.getItem("h3.ppSize")),sizedPromptPanel.classList.contains("resized")]'),
+  [{width:650,height:285},{width:650,height:285},true]);
+ evaluate(`const resizePromptKey=key=>$("#ppResize").dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true}));
+  resizePromptKey("ArrowDown");
+  resizePrompt("pointerdown",710,355);resizePrompt("pointermove",800,405);resizePrompt("pointercancel",800,405);`);
+ equal(evaluate('[ppSize,$("#prompt").value===promptBeforeResize,sel.has("n1")]'),[{width:650,height:301},true,true]);
+ evaluate('resizePrompt("dblclick",710,355);sizedPromptPanel.getBoundingClientRect=oldPPRect');
+ equal(evaluate('[ppSize,localStorage.getItem("h3.ppSize"),sizedPromptPanel.classList.contains("resized")]'),[null,null,false]);
+ console.log('Prompt panel resize passed: two axes, saved settings, keyboard adjustment, cancel and reset.');
  evaluate(`const foldFixture=snap();
   B.edges=[{from:"n1",to:"n2"},{from:"n1",to:"n3"},{from:"n2",to:"n3"}];
   sel=new Set(["n1","n2"]);updateSel();$("#selectionTools [data-action=fold]").click();`);
@@ -484,7 +518,18 @@ async function run(){
  assert.match(w.document.getElementById('acRefs').textContent,/Image/);
  evaluate('document.getElementById("acInput").value="生成图片"');
  await evaluate('acSend()');assert.equal(chatPosts.length,1);assert.equal(w.document.getElementById('acInput').value,'生成图片');
- assert(w.localStorage.getItem('h3.chat.outbox.s1'));await evaluate('acLoadSession("s1")');assert.equal(w.document.getElementById('acInput').value,'生成图片');await evaluate('acSend()');assert.equal(chatPosts.length,2);assert.equal(chatPosts[0].request_key,chatPosts[1].request_key,'ambiguous submission reuses idempotency key');
+ assert(w.localStorage.getItem('h3.chat.outbox.s1'));
+ await evaluate('acLoadSession("s1")');
+ assert.equal(evaluate('$("#acInput").value'),'生成图片');
+ assert.equal(evaluate('$("#acResend").hidden'),false);
+ evaluate('$("#acInput").value="尚未发送的新草稿";$("#acResend").click()');
+ await ready('!AC.sending&&$("#acResend").hidden','a resend receives a delivery receipt');
+ assert.equal(chatPosts.length,2);
+ assert.deepEqual(chatPosts[0],chatPosts[1],'ambiguous submission resends the exact original request');
+ equal(evaluate('[$("#acInput").value,$("#acDeliveryStatus").textContent]'),['尚未发送的新草稿','已送达 · Test chat']);
+ assert.equal(w.localStorage.getItem('h3.chat.outbox.s1'),null);
+ evaluate('$("#acInput").value=""');
+ console.log('Assistant composer shortcuts and receipts passed: skill search, exact resend, receipt and modified draft preservation.');
  equal(chatPosts[0].selected,['n1'],'selection bound at submit');
  await ready('!!node("agentResult")','server result reaches canvas');
  assert.equal(w.document.querySelectorAll('.ac-result').length,1);
@@ -572,6 +617,24 @@ async function run(){
  evaluate('switchVersion(node("pendingVideo"),1)');
  equal(evaluate('node("pendingVideo").data.duration'),8,'new duration restored');
  equal(evaluate('B.edges.filter(e=>e.to==="pendingVideo")'),[{from:'agentResult',to:'pendingVideo',role:'keyframe',time:2}],'new input role and time restored');
+ evaluate(`const versionPoint=target=>target.dispatchEvent(new MouseEvent("pointerover",{bubbles:true}));
+  const versionKey=(key,options={})=>document.body.dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true,...options}));
+  const initialVersionPosition=[node("n1").x,node("pendingVideo").x];
+  versionPoint($(".card",els.get("pendingVideo")));
+  versionKey("ArrowLeft");`);
+ equal(evaluate('[node("pendingVideo").cur,node("pendingVideo").data.prompt,[...sel],node("n1").x,node("pendingVideo").x]'),
+  [0,'old',['n1'],...evaluate('initialVersionPosition')],'the key targets the hovered node without moving the selection');
+ evaluate('versionKey("ArrowRight")');
+ equal(evaluate('[node("pendingVideo").cur,node("pendingVideo").data.duration,B.edges.find(e=>e.to==="pendingVideo").from]'),
+  [1,8,'agentResult'],'hover navigation restores the version inputs and settings');
+ evaluate('versionKey("ArrowLeft",{repeat:true});');
+ assert.equal(evaluate('node("pendingVideo").cur'),1);
+ evaluate('versionPoint(world);versionKey("ArrowRight")');
+ assert.equal(evaluate('node("n1").x'),evaluate('initialVersionPosition[0]+10'),'leaving the hover target restores arrow-key movement');
+ evaluate('versionKey("ArrowLeft")');
+ equal(evaluate('$$( ".vtabs img",els.get("n1")).map(img=>img.getAttribute("src"))'),
+  JSON.parse(evaluate('JSON.stringify(node("n1").versions.map(v=>v.url))')),'the image thumbnails use each exact version');
+ console.log('Hovered version navigation passed: thumbnails, pinned video inputs, stable selection and canvas nudge fallback.');
  equal(evaluate('B.nodes.length'),beforeTabs,'version tabs never add nodes');
  evaluate('node("pendingVideo").job={ids:[],agent_call:"busy"};switchVersion(node("pendingVideo"),0)');
  equal(evaluate('node("pendingVideo").cur'),1,'tabs cannot change an active job input graph');
@@ -1341,7 +1404,7 @@ async function run(){
   {number:1,job:"chat-remake-video",adopted:true},{number:2,job:"newer-remake-video"}],remake:{node_id:"pendingVideo",
   source_ref:originalRef,shot_number:2,shot_start:${locatedShot.start}}}));
  $("#acMessages [data-remake-video-job=chat-remake-video]").click();`);
- await ready('$("[data-result]")?.src.includes("chat-remake-video.mp4") && $(".rm-shot").textContent==="镜头 2"',
+ await ready('$("#videoRemake video[data-result]")?.src.includes("chat-remake-video.mp4") && $(".rm-shot").textContent==="镜头 2"',
   'the assistant review menu opens the exact earlier remake version');
  evaluate('$("#videoRemake [data-close]").click()');
  remakeSession.cut_revision++;
@@ -1970,9 +2033,80 @@ async function run(){
  equal(evaluate('[pvFrameDimensions,curV(node([...sel][0])).w,curV(node([...sel][0])).h,PV.editor.tick,previsNode.versions.length]'),
   [[405,720,true,'image/png'],405,720,48,1],'export uses the shot framing and keeps the original timeline and video');
  evaluate('HTMLCanvasElement.prototype.toBlob=pvEncode');
+ evaluate(`const pvFreeBefore=structuredClone(PV.editor.scene.camera), pvFreeCanvas=$("#previsEditor canvas");
+  const setPvView=value=>{pvPlanSelect.value=value;pvPlanSelect.dispatchEvent(new Event("change"));};
+  setPvView("free");
+  const freeStart=structuredClone(PV.editor.freeView);
+  const freeKey=key=>pvFreeCanvas.dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true}));
+  const freeDrag=(handler,x,y)=>pvFreeCanvas[handler]({button:0,pointerId:17,clientX:x,clientY:y});
+  freeKey("w");freeKey("e");
+  freeDrag("onpointerdown",80,90);freeDrag("onpointermove",120,105);freeDrag("onpointerup",120,105);
+  const freeShot=structuredClone(PV.editor.freeView);
+  const paintBeforeFree=pvPaint;
+  let freeCapturePose;
+  pvPaint=(canvas,scene,tick,...rest)=>{
+    if(canvas!==pvFreeCanvas)freeCapturePose=pvSample(scene.camera,tick);
+    paintBeforeFree(canvas,scene,tick,...rest);
+  };
+  $("[data-pv-free-capture]").click();`);
+ assert.equal(evaluate('freeShot.y===freeStart.y+.25 && freeShot.x!==freeStart.x && freeShot.tx!==freeStart.tx && !PV.editor.look'),true);
+ await ready('!PV.editor.sending && curV(node([...sel][0]))?.mode==="白模自由视图"','free view saves a separate camera still');
+ equal(evaluate(`[JSON.stringify(freeCapturePose)===JSON.stringify(freeShot),
+   JSON.stringify(PV.editor.scene.camera)===JSON.stringify(pvFreeBefore),
+   JSON.stringify(previsNode.data.previs.camera)===JSON.stringify(pvFreeBefore),PV.editor.tick]`),
+  [true,true,true,48],'free view capture does not change authored camera keys or move the playhead');
+ evaluate(`pvPaint=paintBeforeFree;
+  $("[data-pv-free-reset]").click();
+  const freeWasReset=JSON.stringify(PV.editor.freeView)===JSON.stringify(freeStart);
+  freeKey("d");freeKey("ArrowLeft");
+  const adoptedX=PV.editor.freeView.x,adoptedTarget=PV.editor.freeView.tz;
+  $("[data-pv-free-adopt]").click();`);
+ equal(evaluate(`[freeWasReset,PV.editor.view,$("[data-pv-free-controls]").hidden,
+  PV.editor.scene.camera.find(k=>k.t===48).x===adoptedX,PV.editor.scene.camera.find(k=>k.t===48).tz===adoptedTarget,
+  PV.editor.scene.camera[0].x===pvFreeBefore[0].x]`),
+  [true,"camera",true,true,true,true],'only explicit adoption writes the free pose into the current camera key');
+ evaluate('PV.editor.scene.camera=pvFreeBefore;pvRefreshTrack(PV.editor)');
+ evaluate(`const lightPreset=$("[data-pv-light-preset]");
+  const chooseLight=value=>{lightPreset.value=value;lightPreset.dispatchEvent(new Event("change"));};
+  chooseLight("back");
+  const updatePvLight=(field,value)=>{
+    const input=$('[data-pv-light-value="'+field+'"]');
+    input.value=String(value);input.dispatchEvent(new Event("change"));
+  };
+  updatePvLight("azimuth",0);updatePvLight("elevation",0);updatePvLight("key",.6);updatePvLight("ambient",.2);
+  const expectedPrevisLight={azimuth:0,elevation:0,key:.6,ambient:.2,tone:"warm"};
+  const lightProof={duration:2,aspect:"1:1",lighting:expectedPrevisLight,
+    camera:[{t:0,x:0,y:1,z:5,tx:0,ty:1,tz:0,fov:42,ease:"linear"}],
+    objects:[{id:"box",label:"方块",shape:"box",width:2,height:2,depth:1,
+      keys:[{t:0,x:0,y:0,z:0,yaw:0,ease:"linear"}]}]};
+  const lightColors=[], polygonBeforeLight=pvPolygon;
+  pvPolygon=(_ctx,_points,color)=>lightColors.push(color);
+  pvPaint(pvFreeCanvas,lightProof,0);pvPolygon=polygonBeforeLight;`);
+ equal(evaluate('[lightPreset.value,$("[data-pv-light-fields]").hidden,PV.editor.scene.lighting,lightColors.includes("rgb(182 152 125)")]'),
+  ["custom",false,{azimuth:0,elevation:0,key:.6,ambient:.2,tone:"warm"},true],
+  'lighting controls update the actual browser renderer');
+ const litGlb=evaluate('pvGlb(lightProof,0,"灯光验证")');
+ const lightingBytes=Buffer.from(await new Promise((resolve,reject)=>{
+  const reader=new w.FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error);
+  reader.readAsArrayBuffer(litGlb);
+ }));
+ const lightingJsonLength=lightingBytes.readUInt32LE(12);
+ const lightingJson=JSON.parse(lightingBytes.toString("utf8",20,20+lightingJsonLength));
+ const lightingAccessor=lightingJson.accessors[lightingJson.meshes[0].primitives[0].attributes.COLOR_0];
+ const lightingView=lightingJson.bufferViews[lightingAccessor.bufferView];
+ const faceStart=28+lightingJsonLength+(lightingView.byteOffset||0)+6*3*4;
+ for(const [i,channel] of [182,152,125].entries()){
+  const linear=((channel/255+.055)/1.055)**2.4;
+  assert.ok(Math.abs(lightingBytes.readFloatLE(faceStart+i*4)-linear)<1e-6,'GLB preserves the lit face at the exported frame');
+ }
+ evaluate('chooseLight("off")');
+ equal(evaluate('[PV.editor.scene.lighting,$("[data-pv-light-fields]").hidden]'),[null,true]);
+ evaluate('chooseLight("back");updatePvLight("azimuth",0);updatePvLight("elevation",0);updatePvLight("key",.6);updatePvLight("ambient",.2)');
  evaluate('pvHeight.value="7";pvHeight.dispatchEvent(new Event("change"));$("[data-pv-render]").click()');
  await ready('previsNode.versions.length===2','re-render remains on the same node',300);
+ equal(evaluate('previsNode.versions[1].previs_recipe.lighting'),{azimuth:0,elevation:0,key:.6,ambient:.2,tone:"warm"});
  evaluate('$("[data-pv-close]").click();switchVersion(previsNode,0);openPrevis(previsNode)');
+ assert.equal(evaluate('PV.editor.scene.lighting'),undefined,'the old render tab uses its original default lighting');
  equal(evaluate('PV.editor.scene.camera.find(x=>x.t===48).y'),5,'opening a prior tab restores the scene used for that render');
  evaluate(`CAPS_LIST.previs=[{id:"test-ark",name:"方舟测试",model:"ep-test"}];$("[data-pv-use]").click();
    const formal=[...sel].map(node)[0]; formal.data.prompt="跟拍人物走进花园";link(node("n1"),formal);`);
@@ -2012,6 +2146,249 @@ async function run(){
    $("[data-pv-close]").click();`);
  equal(evaluate('[$("#previsEditor").open,$("[data-pv-discard]").hidden,sceneOwner.data.previs.camera[0].y]'),[true,false,6],'conflicting manual edits cannot overwrite the assistant result');
  evaluate('$("[data-pv-discard]").click()');
+ const previsStoryFetch=w.fetch, previsStoryUploads=[];
+ let failPrevisStoryUpload=true;
+ w.fetch=(url,options)=>{
+  const name=String(url)==='/api/upload' && options?.body?.get('image')?.name;
+  if(name?.startsWith?.('白模镜头-')){
+   previsStoryUploads.push(name);
+   if(failPrevisStoryUpload && name.endsWith('-02.png')){
+    return Promise.resolve({ok:false,json:async()=>({error:'上传暂时失败'})});
+   }
+  }
+  return previsStoryFetch(url,options);
+ };
+ equal(evaluate('pvStoryboardBoundaries(pvInitialScene())'),[0,96],'a continuous preview still produces one shot');
+ evaluate(`openPrevis(sceneOwner);
+   const pvStoryScene=PV.editor.scene,pvStoryEnd=pvStoryScene.duration*PV_FPS;
+   pvStoryScene.camera[0].ease="cut";
+   pvStoryScene.camera.splice(1,0,{...pvStoryScene.camera[0],t:31,x:3});
+   pvStoryScene.camera.push({...pvStoryScene.camera.at(-1),t:pvStoryEnd,ease:"cut"});
+   pvCommit(PV.editor);
+   closePrevis();
+   const pvChatCard={board:boardId,node:sceneOwner.id,name:sceneOwner.name,aspect:pvStoryScene.aspect,fps:PV_FPS,boundaries:[0,31,pvStoryEnd]};
+   $("#acMessages").insertAdjacentHTML("beforeend",acResultCards({previs_storyboard_plan:pvChatCard}));
+   const pvChatButton=$("[data-open-previs-storyboard]",$("#acMessages"));
+   pvChatButton.dataset.openPrevisStoryboard=JSON.stringify({...pvChatCard,boundaries:[0,35,pvStoryEnd]});
+   pvChatButton.click();`);
+ equal(evaluate('!!PV.editor'),false,'an old assistant plan does not open after the cuts change');
+ assert.match(evaluate('pvChatButton.closest("section").textContent'),/0–1\.29 秒 · 1\.29 秒/);
+ evaluate('pvChatButton.dataset.openPrevisStoryboard=JSON.stringify(pvChatCard);pvChatButton.click()');
+ equal(evaluate('PV.editor.n.id'),evaluate('sceneOwner.id'),'the current assistant plan opens the source editor');
+ assert.equal(previsStoryUploads.length,0,'opening the plan submits no work');
+ evaluate(`
+   const pvStoryBefore=[B.nodes.length,B.edges.length,undoStack.length];
+   const pvStoryPainter=pvPaint,pvCapturedPoses=[];
+   pvPaint=(canvas,scene,tick,...rest)=>{
+    if(canvas!==$("#previsEditor canvas"))pvCapturedPoses.push([tick,pvSample(scene.camera,tick).x]);
+    pvStoryPainter(canvas,scene,tick,...rest);
+   };
+   const pvStoryView=$("[data-pv-view]");pvStoryView.value="plan";pvStoryView.dispatchEvent(new Event("change"));
+   $("[data-pv-storyboard]").click();`);
+ await ready('!PV.editor.sending && $("[data-pv-status]").textContent==="上传暂时失败"','failed upload leaves the storyboard retryable');
+ const beforePrevisStory=Array.from(evaluate('pvStoryBefore'));
+ equal(evaluate('[B.nodes.length,B.edges.length,undoStack.length]'),beforePrevisStory,'failed upload creates no partial canvas nodes');
+ failPrevisStoryUpload=false;
+ evaluate('$("[data-pv-storyboard]").click()');
+ await ready('!PV.editor.sending && B.nodes.some(n=>n.data.previs_source===sceneOwner.id)','cut export creates an editable storyboard');
+ equal(previsStoryUploads,['白模镜头-01.png','白模镜头-02.png','白模镜头-02.png'],'retry reuses successfully uploaded stills');
+ equal(evaluate('pvCapturedPoses'),[[0,5],[31,3],[31,3]],'stills use each new camera pose even from overhead layout');
+ evaluate('pvPaint=pvStoryPainter');
+ w.fetch=previsStoryFetch;
+ equal(evaluate(`const pvStoryboard=B.nodes.find(n=>n.data.previs_source===sceneOwner.id);
+   [pvStoryboard.data.shots.map(s=>s.previs_range),$$(".du",els.get(pvStoryboard.id)).map(e=>e.textContent),
+   pvStoryboard.data.made.map(({img,vid},i)=>{const first=videoReq(node(vid),"").images[0];return [
+     curV(node(img)).source,first.ref===pvStoryboard.data.shots[i].frame.ref,first.time,
+     B.edges.find(e=>e.from===img&&e.to===vid).role,node(vid).data.duration];}),
+   undoStack.length-pvStoryBefore[2]]`),
+   [[[0,31],[31,96]],['1.29s','2.71s'],[['previs-frame',true,0,'first',5],['previs-frame',true,0,'first',5]],1],
+   'each shot retains its original preview timing, generation duration, and first-frame connection');
+ evaluate(`$("[data-pv-close]").click();openScriptShotRangeRun(pvStoryboard,0,1,"missing_video");`);
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/白模 1\.29 秒 · 视频设定 5 秒/);
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/首帧仍为白模/);
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/首帧 · 版本 1（当前） · 白模草稿/);
+ evaluate(`closeCanvasGroupRunDialog();
+  const pvLayoutImage=node(pvStoryboard.data.made[0].img),pvLayoutVideo=node(pvStoryboard.data.made[0].vid);
+  const pvWhitebox=curV(pvLayoutImage).ref;
+  pvLayoutImage.data.prompt="以 @图{3} 的角色为主角，写实夜景";
+  pvLayoutVideo.data.fields.action="角色走进画面";
+  B.edges.push({from:"n1",to:pvLayoutImage.id,prompt_slot:3});
+  selectOnly(pvLayoutImage.id);`);
+ assert.equal(evaluate('$("[data-previs-composition]").getAttribute("aria-pressed")'),'true');
+ equal(evaluate(`const occupiedRefs=Array.from({length:9},(_,i)=>"ref-"+i), pvGuide=previsComposition(pvLayoutImage);
+  [previsCompositionHasRoom(pvLayoutImage,pvGuide,occupiedRefs),
+   previsCompositionHasRoom(pvLayoutImage,pvGuide,[...occupiedRefs.slice(0,8),pvGuide.ref])]`),
+  [false,true],'a local recipe must leave space for the composition unless it is already one of the inputs');
+ evaluate('$("[data-previs-composition]").click()');
+ assert.equal(evaluate('storyboardFrameReady(pvLayoutImage)'),true,'the whitebox can be adopted directly by disabling replacement');
+ evaluate(`undo();
+  const pvLayoutImageId=pvLayoutImage.id,pvLayoutVideoId=pvLayoutVideo.id;
+  openScriptShotRun(node(pvStoryboard.id),0);`);
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/白模构图固定参考/);
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/首帧 · 本轮生成/);
+ const previsGenerationFetch=w.fetch, previsGenerated=[];
+ w.fetch=(url,options)=>{
+  if(String(url)!=='/api/generate')return previsGenerationFetch(url,options);
+  const request=JSON.parse(options.body), id='previs-composition-'+request.kind;
+  const ref='output:h3studio/'+id+(request.kind==='image'?'.png':'.mp4');
+  previsGenerated.push(request);
+  jobs.set(id,{state:'done',meta:{seed:42},outputs:[{ref,url:'/media?ref='+encodeURIComponent(ref),meta:{width:405,height:720}}]});
+  return Promise.resolve({ok:true,text:async()=>JSON.stringify({ids:[id]})});
+ };
+ evaluate('$("#groupRunConfirm [type=submit]").click()');
+ await ready('groupRun?.steps.length===2 && !groupRun.active','the storyboard converts the whitebox then submits the video',1000);
+ w.fetch=previsGenerationFetch;
+ assert.equal(previsGenerated.length,2);
+ assert.deepEqual(previsGenerated[0].images.map(item=>item.ref),Array.from(evaluate('[curV(node("n1")).ref,pvWhitebox]')));
+ assert.match(previsGenerated[0].prompt,/以 @图1 的角色/);
+ assert.match(previsGenerated[0].prompt,/按 @图2 的机位/);
+ assert.equal(previsGenerated[1].images[0].ref,'output:h3studio/previs-composition-image.png');
+ equal(evaluate(`const pvFinalImage=node(pvLayoutImageId);
+  [pvFinalImage.versions.map(version=>version.source),previsComposition(pvFinalImage).ref,
+   curV(pvFinalImage).generation_record.inputs.at(-1).version,storyboardFrameReady(pvFinalImage)]`),
+  [['previs-frame','gen'],evaluate('pvWhitebox'),1,true],'the finished picture preserves the original whitebox tab and generation receipt');
+ evaluate(`$("#groupRunProgress [data-dismiss]").click();
+  const pvEditScript=node(pvStoryboard.id), pvEditVideo=node(pvEditScript.data.made[1].vid);
+  curV(node(pvLayoutVideoId)).seconds=5.2;
+  pvEditVideo.versions=[{ref:"output:h3studio/short-whitebox-take.mp4",seconds:2.25,w:405,h:720}];pvEditVideo.cur=0;
+  openStoryFilm(pvEditScript,0,1,"fade");$("#fmV").onloadedmetadata?.();`);
+ equal(evaluate(`[FILM.spec.clips.map(c=>[c.out*FILM_FPS,c.story_frames,c.trans,c.tight]),$("#fmTotal").textContent]`),
+  [[[31,31,"cut",true],[54,65,"cut",true]],"2 段 · 3.54 秒"],'the new cut preserves planned frames and clamps a short original');
+ evaluate('$("[data-a=reset]",$("#fmClip")).click()');
+ assert.equal(evaluate('FILM.spec.clips[0].out'),null,'full-length playback is still available');
+ evaluate('$("[data-a=story-length]",$("#fmClip")).click();selectClip(1);$("#fmV").onloadedmetadata?.()');
+ assert.equal(evaluate('FILM.spec.clips[0].out*FILM_FPS'),31);
+ assert.match(evaluate('$("#fmClip").textContent'),/素材时长不足/);
+ evaluate(`const slowPreview=$("#fmSlowdownDialog"), slowClip=FILM.spec.clips[1];
+  const slowOriginal=JSON.stringify(slowClip), openSlow=()=>$("[data-story-slowdown]",$("#fmClip")).click();
+  const applySlow=()=>$("form",slowPreview).dispatchEvent(new Event("submit",{cancelable:true}));
+  openSlow();$("video",slowPreview).onloadedmetadata();`);
+ assert.match(evaluate('$("[data-slowdown-result]",slowPreview).textContent'),/2\.25 秒素材，以 0\.831 倍速播放 2\.71 秒/);
+ assert.equal(evaluate('$("video",slowPreview).playbackRate'),2.25/(65/24));
+ evaluate('$("[data-close]",slowPreview).click()');
+ assert.equal(evaluate('JSON.stringify(slowClip)===slowOriginal'),true,'preview and cancel leave timeline settings intact');
+ evaluate('openSlow();slowClip.out=2;applySlow()');
+ equal(evaluate('[slowPreview.open,slowClip.out,filmSpeed(slowClip)]'),[false,2,1],'a stale preview does not overwrite the timeline');
+ evaluate('slowClip.out=2.25;openSlow();applySlow();$("#fmV").onloadedmetadata?.()');
+ equal(evaluate('[clipLen(slowClip)*24,$("#fmTotal").textContent,!!$("[data-story-slowdown]",$("#fmClip"))]'),
+  [65,"2 段 · 4.00 秒",false],'confirmed slowdown reaches the exact planned timeline length');
+ equal(evaluate(`[storySlowdownPlan({kind:"video",story_frames:120},2.49),
+  storySlowdownPlan({kind:"video",story_frames:120},2.5).rate]`),
+  [null,.5],'the minimum supported speed bounds the available fix');
+ evaluate(`FILM.spec.clips[0].out=20/FILM_FPS;
+  closeFilm();openStoryFilm(pvEditScript);$("#fmV").onloadedmetadata?.();`);
+ assert.equal(evaluate('FILM.spec.clips[0].out*FILM_FPS'),20,'reopening preserves manually edited timing');
+ assert.equal(evaluate('clipLen(FILM.spec.clips[1])*24'),65,'reopening preserves the accepted slowdown');
+ evaluate(`const pvAltSource=node(pvEditVideo.id), pvLong={ref:"output:h3studio/long-whitebox-take.mp4",seconds:4.75};
+  pvAltSource.versions.push({ref:"output:h3studio/shorter-whitebox-take.mp4",seconds:1.75},pvLong,
+    {ref:"output:h3studio/probe-whitebox-take.mp4"});
+  selectClip(1);$("#fmV").onloadedmetadata?.();$("[data-update-version]",$("#fmClip")).click();
+  const pvAltForm=$(".fm-version-picker"), pvAltPicker=$("select",pvAltForm), pvFit=$("[data-fit-story]",pvAltForm),
+    pvAltPreview=$("video",pvAltForm), pvAltStatus=$("[role=status]",pvAltForm);
+  const chooseAlt=index=>{pvAltPicker.value=String(index);pvAltPicker.dispatchEvent(new Event("change"));};
+  const applyAlt=()=>$('[type=submit]',pvAltForm).click();`);
+ equal(evaluate('[...pvAltPicker.options].map(o=>o.textContent.split(" · ").at(-1))'),
+  ['缺 0.96 秒','够计划镜长','待核实时长']);
+ assert.equal(evaluate('pvFit.disabled'),true);
+ evaluate('chooseAlt(2)');
+ assert.equal(evaluate('pvFit.disabled'),true,'unknown source duration cannot be applied as an exact planned cut');
+ evaluate(`chooseAlt(1);pvFit.click();$("[data-preview-version]",pvAltForm).click();
+  pvAltPreview.onloadedmetadata();`);
+ assert.match(evaluate('pvAltStatus.textContent'),/以原速取用 2\.71 秒/);
+ assert.match(evaluate('pvAltPreview.src'),/long-whitebox-take\.mp4/);
+ equal(evaluate('[pvAltPreview.hidden,pvAltPreview.playbackRate,pvAltPreview.currentTime,FILM.spec.clips[1].ref]'),
+  [false,1,0,'output:h3studio/short-whitebox-take.mp4'],'preview uses the candidate and the plan without replacing the draft');
+ evaluate('pvLong.seconds=4.5;applyAlt()');
+ assert.match(evaluate('pvAltStatus.textContent'),/素材已更新，请再次确认/);
+ assert.equal(evaluate('FILM.spec.clips[1].ref'),'output:h3studio/short-whitebox-take.mp4');
+ evaluate('applyAlt();$("#fmV").onloadedmetadata?.()');
+ equal(evaluate(`[FILM.spec.clips[1].ref,clipLen(FILM.spec.clips[1])*24,filmSpeed(FILM.spec.clips[1]),
+  pvAltSource.cur,pvAltPreview.getAttribute("src")]`),
+  ['output:h3studio/long-whitebox-take.mp4',65,1,0,null],'applying at original speed retains the plan and the canvas version selection');
+ evaluate(`const oneFrameClip={story_frames:1,in:0,media_seconds:5};
+  alignStoryClipLength(oneFrameClip,5);closeFilm();`);
+ assert.equal(evaluate('clipLen(oneFrameClip)'),1/24);
+ evaluate(`const shotMotionSource=node(sceneOwner.id);
+  const shotMotionTarget=node(node(pvStoryboard.id).data.made[1].vid);
+  openPrevis(shotMotionSource);
+  const chooseMotionSpan=span=>{
+    const select=$("[data-pv-shot-range]");select.value=JSON.stringify(span);select.dispatchEvent(new Event("change"));
+    $("[data-pv-render-shot]").click();
+  };
+  chooseMotionSpan([0,31]);`);
+ await ready('!PV.editor.sending && curV(shotMotionSource)?.previs_span?.[1]===31','renders the first cut independently',450);
+ equal(evaluate('[curV(shotMotionSource).seconds,$("[data-pv-use]").disabled,$("[data-pv-shot-guide]").hidden]'),
+  [31/24,true,true],'short previews remain available for editing without becoming invalid motion references');
+ evaluate('chooseMotionSpan([31,96])');
+ await ready('!PV.editor.sending && curV(shotMotionSource)?.previs_span?.[0]===31','renders the eligible second interval',450);
+ assert.deepEqual(w.__previsRequests.slice(-2).map(request=>request.span),[[0,31],[31,96]]);
+ assert.notEqual(w.__previsRequests.at(-1).request_key,w.__previsRequests.at(-2).request_key);
+ equal(evaluate('[PV.editor.tick,$("[data-pv-shot-guide]").hidden,$("[data-pv-guide-target]").value===shotMotionTarget.id]'),
+  [31,false,true],'exports the selected interval and offers only the corresponding storyboard video');
+ evaluate('$("[data-pv-apply-shot-guide]").click()');
+ equal(evaluate(`[!PV.editor,previsInput(shotMotionTarget).edge.ref===curV(shotMotionSource).ref,
+  previsInput(shotMotionTarget).version.previs_span,videoReq(shotMotionTarget,"").previs_guide.version]`),
+  [true,true,[31,96],evaluate('shotMotionSource.cur+1')],'explicit attachment pins exactly the rendered motion version');
+ evaluate(`const [motionCopy,scriptCopy,videoCopy]=paste([shotMotionSource,node(pvStoryboard.id),shotMotionTarget].map(o=>structuredClone(o)));
+  const copiedMotion=node(motionCopy);`);
+ equal(evaluate('[node(scriptCopy).data.previs_source,pvShotGuideTargets({n:copiedMotion},curV(copiedMotion)).has(videoCopy)]'),
+  [evaluate('motionCopy'),true],'copied shots bind to the copied whitebox and video');
+ evaluate('undo()');
+ evaluate('undo()');
+ assert.equal(evaluate('previsInput(node(shotMotionTarget.id))'),null);
+ evaluate('undo()');
+ equal(evaluate('[B.nodes.length,B.edges.length,undoStack.length]'),beforePrevisStory,'one undo removes every imported shot and connection');
+ evaluate(`const beforeMotionBatch=snap(), motionBase=pvInitialScene();
+  motionBase.duration=10;
+  const guideSpans=[[0,24],[24,80],[80,136],[136,184],[184,240]];
+  motionBase.camera=guideSpans.map(([t],i)=>({...motionBase.camera[0],t,ease:i?"cut":"linear"}));
+  const batchMotion=addNode("video",0,0,{previs:motionBase},{name:"批量白模"});
+  const batchGuide=(span,ref)=>({ref,source:"previs",seconds:(span[1]-span[0])/24,
+    url:"/media?ref="+encodeURIComponent(ref),previs_span:span,previs_recipe:structuredClone(motionBase)});
+  const reusableGuide=batchGuide(guideSpans[1],"output:h3studio/reusable-motion.mp4");
+  const retainedGuide=batchGuide(guideSpans[4],"output:h3studio/existing-motion.mp4");
+  batchMotion.versions.push(reusableGuide,retainedGuide);batchMotion.cur=1;
+  const guideShots=guideSpans.map((span,i)=>({id:"batch-shot-"+i,previs_range:span,duration:(span[1]-span[0])/24,
+    shot_size:"",camera:"",action:[],dialogue:[]}));
+  const batchGuideVideos=guideShots.map((_,i)=>addNode("video",1000+i*400,0));
+  const guideBoardScript=addNode("script",0,0,{previs_source:batchMotion.id,shots:guideShots,
+    made:batchGuideVideos.map((video,i)=>({shot_id:guideShots[i].id,vid:video.id}))});
+  const retainedEdge={from:batchMotion.id,to:batchGuideVideos[4].id,relation:"previs",ref:retainedGuide.ref};
+  B.edges.push(retainedEdge);
+  openPrevis(batchMotion);$("[data-pv-batch-open]").click();
+  const guideBatchConfirm=$("[data-pv-batch-confirm]"), guideBatchRows=$("[data-pv-batch-rows]");`);
+ assert.match(evaluate('guideBatchRows.textContent'),/少于 2 秒.*复用当前场景.*渲染并绑定.*已有动作参考/);
+ const batchMotionRequests=w.__previsRequests.length;
+ evaluate('B.edges.push({...retainedEdge,to:batchGuideVideos[3].id});guideBatchConfirm.click()');
+ assert.equal(w.__previsRequests.length,batchMotionRequests);
+ assert.match(evaluate('$("[data-pv-status]").textContent'),/请核对后再次确认/);
+ evaluate('B.edges.pop();$("[data-pv-batch-open]").click()');
+ const guideBatchFetch=w.fetch;
+ let heldMotionJob;
+ w.fetch=async(url,options)=>{
+  const response=await guideBatchFetch(url,options);
+  if(String(url)==='/api/previs/render'&&JSON.parse(options.body).span?.[0]===80){
+   const {ids:[id]}=await response.json(), completed=jobs.get(id);
+   heldMotionJob={id,completed};jobs.set(id,{...completed,state:"running"});
+  }
+  return response;
+ };
+ evaluate('guideBatchConfirm.click()');
+ await ready('batchMotion.job && PV.editor.guideBatch','the confirmed batch submits the first pending render',500);
+ assert.equal(w.__previsRequests.length,batchMotionRequests+1,'the next render waits for the current job');
+ jobs.set(heldMotionJob.id,heldMotionJob.completed);
+ await ready('!PV.editor.guideBatch','the motion batch finishes and binds its results',650);
+ w.fetch=guideBatchFetch;
+ assert.deepEqual(w.__previsRequests.slice(batchMotionRequests).map(request=>request.span),[[80,136],[136,184]]);
+ equal(evaluate('batchGuideVideos.map(v=>previsInput(v)?.version?.previs_span)'),
+  [null,[24,80],[80,136],[136,184],[184,240]],'the batch reuses matching takes, renders pending shots and preserves existing inputs');
+ assert.match(evaluate('$("[data-pv-status]").textContent'),/已绑定 3 镜/);
+ evaluate(`const batchGuideIds=batchGuideVideos.map(v=>v.id), batchMotionId=batchMotion.id;
+  closePrevis();undo();`);
+ equal(evaluate('[batchGuideIds.map(id=>!!previsInput(node(id))),node(batchMotionId).versions.length]'),
+  [[false,false,false,false,true],4],'one undo clears the new edges and retains rendered takes');
+ evaluate('restore(beforeMotionBatch)');
+ console.log('Previs storyboard DOM passed: cut poses, timing, upload retry, composition input, dependent video generation, frame-accurate editing, version choice and single undo.');
  await evaluate(`const soundNode=addNode("audio",140,140);
    uploadInto(soundNode,new File(["fixture"],"旁白.wav",{type:"audio/wav"}));`);
  equal(evaluate('[$("audio",els.get(soundNode.id)).getAttribute("src"),soundNode.name,curV(soundNode).seconds]'),
@@ -3192,6 +3569,39 @@ async function run(){
  evaluate('$("#groupRunProgress [data-dismiss]").click();restore(groupRunBase);delete B.batch_layout;save()');
  assert.equal(evaluate('sessionStorage.getItem(groupRunStorageKey(boardId))'),null,'dismissing progress removes the saved receipt');
  const groupBatchFetch=w.fetch;
+ const selectionBatchStart=submittedBatches.length;
+ let selectionAudio;
+ w.fetch=async(url,options)=>{
+  if(String(url)!=="/api/audio/generate")return groupBatchFetch(url,options);
+  selectionAudio=JSON.parse(options.body);
+  jobs.set("selection-audio-job",{state:"running"});
+  return {ok:true,text:async()=>JSON.stringify({ids:["selection-audio-job"],recipe:selectionAudio})};
+ };
+ evaluate(`const selectionBatchBase=snap(), oldBatchAudio=CAPS_LIST.audio_generation;
+  CAPS_LIST.audio_generation={tts:[{id:"selection-voice",name:"旁白服务",voices:[{id:"v1",name:"旁白"}]}]};
+  const selectedImage=addNode("image",1100,450,{prompt:"批量首帧",count:1},{name:"选区首帧"});
+  const selectedVideo=addNode("video",1600,450,{prompt:"批量镜头",count:1},{name:"选区视频"});
+  const selectedAudio=addNode("audio",2100,450,{mode:"tts",prompt:"选区旁白"},{name:"选区旁白"});
+  link(selectedImage,selectedVideo,true);
+  sel=new Set([selectedImage.id,selectedVideo.id,selectedAudio.id]);updateSel();
+  $("#selectionTools [data-action=generate]").click();`);
+ equal(evaluate('[$("#groupRunConfirm select").value,$$("#groupRunConfirm li strong").map(el=>el.textContent)]'),
+  ['all',['选区首帧','选区视频','选区旁白']]);
+ assert.equal(submittedBatches.length,selectionBatchStart);
+ assert.equal(selectionAudio,undefined);
+ evaluate('approveWorkflow()');
+ await ready('selectedImage.job&&selectedAudio.job&&!selectedVideo.job','independent image and audio submit before the dependent video',350);
+ assert.equal(selectionAudio.prompt,"选区旁白");
+ finishBatch(selectionBatchStart,1);
+ await ready('selectedVideo.job&&selectedAudio.job','the dependent video starts once its image finishes without waiting for the independent audio',350);
+ assert.equal(submittedBatches[selectionBatchStart+1].req.images[0].ref,`output:h3studio/layout-job-${selectionBatchStart}-0.png`);
+ finishBatch(selectionBatchStart+1,1);
+ jobs.set("selection-audio-job",{state:"done",outputs:[{ref:"output:h3studio/selection-voice.wav",url:"/media?ref=output:h3studio/selection-voice.wav",meta:{duration:2}}]});
+ await ready('!groupRun.active','selected nodes reach a terminal state',350);
+ equal(evaluate('[groupRun.name,groupRun.steps.map(step=>step.status),B.groups.length]'),
+  ['选中节点',['done','done','done'],evaluate('JSON.parse(selectionBatchBase).groups.length')]);
+ evaluate('$("#groupRunProgress [data-dismiss]").click();restore(selectionBatchBase);CAPS_LIST.audio_generation=oldBatchAudio;');
+ console.log('Selection batch generation passed: no persistent group, parallel image and audio, pinned dependent video and completion.');
  w.fetch=generationFetch;
  console.log('Group run DOM passed: confirmation, dependency order, pinned result reuse, failure isolation and stopping later submissions.');
  evaluate(`const runRangeBase=snap();
@@ -3973,15 +4383,34 @@ async function run(){
  ["沿用@图{1} ","沿用@图1 ","output:h3studio/prompt-new.png"],'video field resolves the pinned reference without following the source tab');
  evaluate('$("[data-image-update]").click();');
  equal(evaluate('videoReq(wiredVideo,"").images[0].ref'),"output:h3studio/prompt-old.png",'an explicit action adopts the current source version');
- evaluate('cutEdge(imageInputs(wiredVideo)[0].edge)');
+ evaluate(`const promptReferenceLine=()=>$$('#edges .hit').find(hit=>hit.getAttribute("aria-label")?.includes(
+   promptReference.name+" · 固定版本 1 → "+wiredVideo.name));
+  const edgeKey=key=>promptReferenceLine().dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true}));
+  const edgeAccess=B.access;B.access="reviewer";edgeKey("Enter");`);
+ equal(evaluate('[!!$(".edge-inspector"),!!$("[data-edge-cut]")]'),[true,false]);
+ evaluate('B.access=edgeAccess;drawEdges();edgeKey("Enter")');
+ assert.match(evaluate('$("title",promptReferenceLine()).textContent'),/固定版本 1/);
+ assert.equal(evaluate('document.activeElement.hasAttribute("data-edge-cut")'),true);
+ evaluate(`const edgeGesture=(type,x,y)=>$("[data-edge-cut]").dispatchEvent(new MouseEvent(type,
+  {button:0,bubbles:true,cancelable:true,clientX:x,clientY:y,detail:1}));
+  edgeGesture("pointerdown",100,100);edgeGesture("pointermove",100,68);edgeGesture("pointerup",100,68);
+  edgeGesture("click",100,68);`);
+ assert.equal(evaluate('imageInputs(wiredVideo).length'),1,'dragging upwards cannot cut a connection');
+ evaluate('edgeGesture("pointerdown",100,100);edgeGesture("pointermove",100,131);edgeGesture("pointercancel",100,131)');
+ assert.equal(evaluate('imageInputs(wiredVideo).length'),1,'cancelling the gesture leaves the connection intact');
+ evaluate('edgeGesture("pointerdown",100,100);edgeGesture("pointermove",100,131);edgeGesture("pointerup",100,131)');
  equal(evaluate('videoReq(wiredVideo,"")'),null,'an orphaned prompt token stops submission');
  assert.match(evaluate('$(".errbox",els.get(wiredVideo.id)).textContent'),/图片引用已断开/);
+ evaluate('undo()');
+ assert.equal(evaluate('imageInputs(node(wiredVideo.id))[0].edge.ref'),"output:h3studio/prompt-old.png");
+ console.log('Connection inspection passed: exact source version, reviewer access, directed scissors gesture and undo.');
  evaluate('restore(wirePromptBase)');
  w.fetch=promptFetch;
  console.log('Generation mention DOM passed: image and structured video, pinned edges, undo, version adoption and missing reference validation.');
  evaluate(`const avPromptBase=snap(),capsBeforeAV={audio:CAPS_LIST.audio_reference,video:CAPS_LIST.previs};
   CAPS_LIST.audio_reference=[{id:"audio-qa",name:"仅声音参考",model:"seedance-2"}];
   CAPS_LIST.previs=[{id:"multimodal-qa",name:"视频参考服务",model:"seedance-2-5"}];
+  window.__capabilities={...CAPS_LIST};
   const avTarget=addNode("video",1200,650,{prompt:""}, {name:"成片"});
   const avVideo=addNode("video",600,650,{}, {name:"画布运镜实拍",versions:[
    copyAsset("move-old.mp4",{seconds:12,w:640,h:480}),copyAsset("move-now.mp4",{seconds:12,w:640,h:480})],cur:0});
@@ -4008,7 +4437,7 @@ async function run(){
  equal(evaluate('videoReq(avTarget,fullPrompt(avTarget)).prompt'),"按@音1 与@视频2",'video reference numbering accounts for a whitebox guide');
  evaluate('cutEdge(audioInputs(avTarget)[0].edge)');
  equal(evaluate('videoReq(avTarget,fullPrompt(avTarget))'),null,'a removed audio edge cannot silently change the reference');
- evaluate('CAPS_LIST.audio_reference=capsBeforeAV.audio;CAPS_LIST.previs=capsBeforeAV.video;restore(avPromptBase)');
+ evaluate('delete window.__capabilities;CAPS_LIST.audio_reference=capsBeforeAV.audio;CAPS_LIST.previs=capsBeforeAV.video;restore(avPromptBase)');
  console.log('Multimodal mention DOM passed: clip and sound selection, pinned media, trimming, routing, guide numbering and detached tokens.');
  const collaborationFetch=w.fetch, heartbeats=[], liveDeletes=[], savedLiveViews=[];
  const collaborationPeer={id:"8:other-tab",name:"审片同事",view:{cx:800,cy:460,k:.5},presenting:true,cursor:{x:160,y:130}};
@@ -4575,6 +5004,51 @@ async function run(){
  evaluate('closeImageEditor()');
  w.fetch=oldSizeFetch;
  console.log('Exact image sizing passed: crop-aware aspect lock, fit preview, draft restore and same-node save.');
+ const oldUpscaleFetch=w.fetch;
+ let upscaleRequest;
+ w.fetch=async(url,options={})=>{
+  if(String(url)!=='/api/image-edit/upscale')return oldUpscaleFetch(url,options);
+  upscaleRequest=JSON.parse(options.body);
+  const ref="output:h3studio/super-resolution.png";
+  return {ok:true,text:async()=>JSON.stringify({ref,url:"/media?ref="+encodeURIComponent(ref),w:1024,h:768})};
+ };
+ await evaluate('switchVersion(pixelInput,0);nodeAction(pixelInput,"image-upscale")');
+ await ready(`!$('[data-upscale="2"]').disabled`,'upscale becomes available on the selected historical image');
+ equal(evaluate('[IMAGE_EDITOR.mode,$("#ieAI").hidden,$$("[data-upscale]").map(b=>b.textContent)]'),
+  ['upscale',true,['2× · 1024 × 768','4× · 2048 × 1536']]);
+ await evaluate(`$('[data-upscale="2"]').onclick()`);
+ await ready('pixelInput.versions.length===3 && !IMAGE_EDITOR.loading','model upscale is saved as a new image version');
+ equal(upscaleRequest,{ref:"output:h3studio/pixel-original.png",scale:2});
+ equal(evaluate('[curV(pixelInput).w,curV(pixelInput).h,curV(pixelInput).edit,pixelInput.versions[0].ref]'),
+  [1024,768,{source:"output:h3studio/pixel-original.png",mode:"upscale",scale:2,model:"FSRCNN"},"output:h3studio/pixel-original.png"]);
+ evaluate('closeImageEditor()');
+ w.fetch=oldUpscaleFetch;
+ console.log('Model upscale DOM passed: historical source, dimensions, request and non-destructive version save.');
+ const decomposeFetch=w.fetch;
+ let decomposeRequest;
+ w.fetch=async(url,options={})=>{
+  if(String(url)!=="/api/image-edit/decompose")return decomposeFetch(url,options);
+  decomposeRequest=JSON.parse(options.body);
+  const layer=(id,name,x,y,w,h)=>({id,name,x,y,w,h,ref:"output:h3studio/"+id+".png",visible:true,opacity:1});
+  const ref="output:h3studio/decomposed.png";
+  return {ok:true,text:async()=>JSON.stringify({ref,url:"/media?ref="+encodeURIComponent(ref),w:512,h:384,
+    layer_stack:{base_ref:decomposeRequest.ref,layers:[layer("background","背景",0,0,512,384),
+      layer("object-1","物体 1",12,14,100,144),layer("object-2","物体 2",170,100,200,150)]}})};
+ };
+ await evaluate(`const decomposeSource=addNode("image",300,700,{}, {versions:[copyAsset("objects.png",{w:512,h:384})],cur:0});
+   nodeAction(decomposeSource,"image-decompose")`);
+ await ready('!$("#ieDecompose").disabled','automatic decomposition is available');
+ await evaluate('$("#ieDecompose").onclick()');
+ equal(decomposeRequest,{ref:"output:h3studio/objects.png"});
+ equal(evaluate('[IMAGE_EDITOR.mode,decomposeSource.versions.length,IMAGE_EDITOR.layers.map(layer=>[layer.name,layer.x,layer.y])]'),
+   ["layers",2,[["背景",0,0],["物体 1",12,14],["物体 2",170,100]]]);
+ evaluate(`$("#ieLayerX").value="188";$("#ieLayerX").dispatchEvent(new Event("change"));closeImageEditor();`);
+ await evaluate('openImageEditor(decomposeSource)');
+ equal(evaluate('[IMAGE_EDITOR.layers.at(-1).x,curV(decomposeSource).layer_stack.layers.at(-1).x,decomposeSource.versions[0].ref]'),
+   [188,170,"output:h3studio/objects.png"]);
+ evaluate('closeImageEditor()');
+ w.fetch=decomposeFetch;
+ console.log('Image decomposition DOM passed: separate layers, source retention and movement draft restore.');
  evaluate(`const previewImage=addNode("image",0,100000,{}, {name:"预览图片",versions:[
    copyAsset("preview-first.png",{generation_record:{prompt:"历史版本 <img src=x>",effective_prompt:"生成时实际使用"},
     memory_used:[{name:"林森 <img src=x>",references:[{view:"face",ref:"input:h3studio/past-face.png"}]}]}),
@@ -4755,8 +5229,15 @@ async function run(){
   [0,0,55,300]);
  console.log('Canvas drag alignment passed: settings, zoom-scaled guides, modifier bypass, undo, pointer cancellation, grid and folded group offsets.');
  const voicePointFetch=w.fetch;
- let failPlacementSend=false;
+ let failPlacementSend=false, voiceCommand=null;
+ const voiceStops=[];
  w.fetch=async(url,options={})=>{
+  if(options.method==="POST" && String(url)==="/api/transcription" && voiceCommand!==null)
+   return {ok:true,json:async()=>({text:voiceCommand})};
+  if(options.method==="POST" && /^\/api\/chat\/runs\/voice-scope-[^/]+\/stop$/.test(String(url))){
+   voiceStops.push(String(url));
+   return {ok:true,json:async()=>({ok:true})};
+  }
   if(options.method==='POST' && /^\/api\/chat\/sessions\/[^/]+\/messages$/.test(String(url))){
    w.__chatPayload=JSON.parse(options.body);
    if(failPlacementSend){failPlacementSend=false;return {ok:false,json:async()=>({error:'模拟发送失败'})};}
@@ -4819,6 +5300,27 @@ async function run(){
  equal(evaluate('[acVoiceActive,spaceDown,window.__chatPayload,localStorage.getItem("h3.chat.voiceKey")]'),[null,false,null,'Space']);
  evaluate('voiceKey("keydown"," ","Space",$("#acInput"))');
  assert.equal(evaluate('acVoiceActive'),null,'typing a space cannot activate recording');
+ voiceCommand="停止当前任务。";
+ evaluate(`const voiceSelector=$("#acVoiceKey");
+   voiceSelector.value="custom";voiceSelector.dispatchEvent(new Event("change"));
+   voiceKey("keydown","q","KeyQ",voiceSelector);
+   AC.runs=[{id:"voice-scope-original",state:"running"}];window.__chatPayload=null;
+   voiceKey("keydown","q","KeyQ");`);
+ await ready('acVoiceActive?.phase==="recording"','custom shortcut starts a scoped voice command');
+ equal(evaluate('[voiceSelector.value,localStorage.getItem("h3.chat.voiceKey")]'),['KeyQ','KeyQ']);
+ evaluate('voiceKey("keyup","q","KeyQ")');
+ await ready('$("#acVoiceStatus").textContent==="已请求停止当前任务"','voice sends the stop request and acknowledges it');
+ assert.deepEqual(voiceStops,["/api/chat/runs/voice-scope-original/stop"]);
+ equal(evaluate('[$("#acInput").value,window.__chatPayload]'),['现有草稿\n把背景调暖',null]);
+ evaluate(`AC.runs=[{id:"voice-scope-ending",state:"running"}];voiceKey("keydown","q","KeyQ");`);
+ await ready('acVoiceActive?.phase==="recording"','recording captures the active task before the queue advances');
+ evaluate(`AC.runs=[{id:"voice-scope-next",state:"running"}];voiceKey("keyup","q","KeyQ");`);
+ await ready('$("#acVoiceStatus").textContent==="录音开始时的任务已无法停止"','the newly activated task is spared');
+ assert.equal(voiceStops.length,1);
+ assert.equal(evaluate('window.__chatPayload'),null);
+ evaluate('AC.runs=[];voiceSelector.value="Space";voiceSelector.dispatchEvent(new Event("change"))');
+ voiceCommand=null;
+ console.log('Voice command DOM passed: custom shortcut, draft preservation, scoped stop and queue transition.');
  evaluate(`$("#acPickPlacement").click();
    vp.dispatchEvent(new MouseEvent("pointerdown",{button:0,bubbles:true,cancelable:true,clientX:430,clientY:320}));
    B.view.x+=20;applyView();`);
@@ -4947,6 +5449,37 @@ async function run(){
  evaluate('closeImageEditor()');
  w.fetch=fullscreenFetch;
  console.log('Fullscreen assistant passed: shared session and draft, explicit version pins, mention picker, keyboard and review permissions.');
+
+ evaluate(`const assistantKey=(target,key,options={})=>target.dispatchEvent(new KeyboardEvent("keydown",
+   {key,bubbles:true,cancelable:true,...options}));
+   $("#acInput").value="保留键盘草稿";$("#acInput").focus()`);
+ assert.equal(evaluate('assistantKey($("#acInput"),"/")'),true,'the slash works as text in the composer');
+ equal(evaluate('[assistantKey($("#acInput"),"j",{metaKey:true}),$("#agentChat").hidden,document.activeElement.id]'),
+  [false,true,'chatLaunch']);
+ assert.equal(evaluate('assistantKey($("#chatLaunch"),"j",{ctrlKey:true,repeat:true})'),false);
+ assert.equal(evaluate('$("#agentChat").hidden'),true,'holding the shortcut does not reopen the pane');
+ evaluate('$("#acTaskCenterBtn").click()');
+ assert.equal(evaluate('assistantKey($("[data-task-close]"),"/")'),true,'an open modal owns keyboard focus');
+ assert.equal(evaluate('$("#agentChat").hidden'),true);
+ evaluate('acCloseTaskCenter()');
+ assert.equal(evaluate('assistantKey($("#prompt"),"/")'),true,'the node prompt retains its slash tools');
+ assert.equal(evaluate('assistantKey($("#chatLaunch"),"/",{isComposing:true})'),true,'composition keeps its keystrokes');
+ assert.equal(evaluate('assistantKey($("#chatLaunch"),"/")'),false);
+ await ready('document.activeElement.id==="acInput"','canvas shortcut focuses the composer');
+ equal(evaluate('[$("#acInput").value,AC.session]'),['保留键盘草稿',approvalSid]);
+ evaluate('lightbox(previewImage.versions[0],previewImage);assistantKey($("[data-light-close]"),"j",{ctrlKey:true})');
+ await ready('document.activeElement.id==="acInput"&&$("#agentChat").parentElement.id==="light"','toggle opens the assistant inside the preview');
+ equal(evaluate('[$("#acInput").value,AC.referencePins.get(previewImage.id).ref]'),
+  ['保留键盘草稿','output:h3studio/preview-first.png']);
+ evaluate('assistantKey($("#acInput"),"j",{metaKey:true})');
+ equal(evaluate('[$("#light").open,$("#agentChat").hidden,document.activeElement.hasAttribute("data-light-agent")]'),
+  [true,true,true]);
+ evaluate('assistantKey($("[data-light-agent]"),"a")');
+ assert.equal(evaluate('$(".light-region-drawing")!==null&&$("#light").open'),true);
+ evaluate('closeLightbox();assistantKey($("#chatLaunch"),"a")');
+ equal(evaluate('[$("#canvasComments").hidden,document.activeElement.id]'),[false,'ccBody']);
+ evaluate('$("#ccClose").click();AC.open=true;$("#agentChat").hidden=false;$("#chatLaunch").hidden=true');
+ console.log('Assistant keyboard shortcuts passed: composition and modal isolation, preserved drafts, media version pins and annotation.');
 
  const retryFetch=w.fetch, retryRequests=[];
  let replyRetry=false;
@@ -5083,27 +5616,42 @@ async function run(){
  w.fetch=stemFetch;
  console.log('Audio separation passed: historical version, background receipt recovery, duplicate-safe placement and aligned film tracks.');
 
- const parallelFetch=w.fetch, parallelCalls=[], scopedMessages=[];
+ const parallelFetch=w.fetch, parallelCalls=[], scopedMessages=[], dashboardRemovals=[];
  const parallelSessions=[
-  {id:'parallel-ui-a',title:'写分镜',run_state:'waiting_approval',queued_count:1,node_activity:{nodes:['n1'],calls:[]}},
-  {id:'parallel-ui-b',title:'剪旁白',run_state:'thinking',queued_count:0,node_activity:{nodes:[evaluate('stemTestVideo.id')],calls:['badge-pending']}},
+  {id:'parallel-ui-a',title:'写分镜',run_state:'waiting_approval',active_task_id:'parallel-run-a',active_task_text:'画三个夜景镜头',
+   queued_count:2,queued_tasks:[{id:'parallel-queue-a',text:'继续',position:4},{id:'parallel-queue-remove',text:'生成封面',position:5}],
+   node_activity:{nodes:['n1'],calls:[]}},
+  {id:'parallel-ui-b',title:'剪旁白',run_state:'thinking',active_task_id:'parallel-run-b',queued_count:0,node_activity:{nodes:[evaluate('stemTestVideo.id')],calls:['badge-pending']}},
+  {id:'parallel-ui-ready',title:'导出海报',run_state:null,queued_count:0,recent_task:{id:'ready-run',state:'done',updated:7}},
  ];
- let releaseParallelPoll, holdParallel=false, parallelCreates=0;
+ let releaseParallelPoll, holdParallel=false, parallelCreates=0, taskClock=10;
  w.fetch=async(url,options={})=>{
   const request=new URL(String(url),'http://oneshot.test');
+  if(request.pathname==='/api/chat/task-history'){
+   const older=request.searchParams.get('before')==='8';
+   return {ok:true,json:async()=>older?{tasks:[
+    {id:'history-older',session_id:'parallel-ui-old',title:'旧对话',state:'stopped',text:'整理第一版'}
+   ],before:null}:{tasks:[
+    {id:'ready-run',session_id:'parallel-ui-ready',title:'导出海报',state:'done',text:'保存海报'}
+   ],before:8}};
+  }
   if(request.pathname==='/api/chat/sessions'){
    if(options.method==='POST'){
     const session={id:'parallel-ui-'+['c','d','e'][parallelCreates++],title:'新对话',run_state:null,queued_count:0};
     parallelSessions.unshift(session);
     return {ok:true,json:async()=>({id:session.id})};
    }
-   return {ok:true,json:async()=>({sessions:structuredClone(parallelSessions)})};
+   return {ok:true,json:async()=>({sessions:structuredClone(parallelSessions),task_snapshot_at:taskClock})};
   }
   if(request.pathname==='/api/chat/sessions/parallel-ui-e/messages'){
    scopedMessages.push(JSON.parse(options.body));
    return {ok:true,json:async()=>({id:'scope-run',state:'done'})};
   }
-  const match=request.pathname.match(/^\/api\/chat\/sessions\/(parallel-ui-[abcde])$/);
+  if(request.pathname==='/api/chat/sessions/parallel-ui-old'){
+   return {ok:true,json:async()=>({session:{id:'parallel-ui-old',title:'旧对话'},sessions:structuredClone(parallelSessions),runs:[],
+    events:request.searchParams.get('after')==='0'?[{id:490,kind:'user',run_id:'history-older',data:{text:'整理第一版'}}]:[]})};
+  }
+  const match=request.pathname.match(/^\/api\/chat\/sessions\/(parallel-ui-(?:[abcde]|ready))$/);
   if(match){
    const session=parallelSessions.find(s=>s.id===match[1]);
    const id=session.id.slice(-1);
@@ -5113,9 +5661,17 @@ async function run(){
    }
    return {ok:true,json:async()=>({
     session,sessions:structuredClone(parallelSessions),runs:session.run_state?[{id:'parallel-run-'+id,state:session.run_state}]:[],
-    queue:session.queued_count?[{id:'parallel-queue-a',text:'继续'}]:[],
-    events:request.searchParams.get('after')==='0'?[{id:820,kind:'assistant',data:{text:'助手 '+id+' 的回复'}}]:[]
+    queue:structuredClone(session.queued_tasks||[]),
+    approvals:session.run_state==="waiting_approval"?[{id:"task-center-approval",name:"image_generate",plan:{kind:"image",count:1}}]:[],
+    events:request.searchParams.get('after')==='0'?[{id:820,kind:'assistant',run_id:session.recent_task?.id,
+      data:{text:id==='y'?'海报已完成':'助手 '+id+' 的回复'}}]:[]
    })};
+  }
+  if(request.pathname==='/api/chat/runs/parallel-queue-remove/queue'&&options.method==='DELETE'){
+   dashboardRemovals.push(request.pathname);
+   parallelSessions[0].queued_tasks.pop();
+   parallelSessions[0].queued_count--;
+   return {ok:true,text:async()=>'{"ok":true}',json:async()=>({ok:true})};
   }
   if(request.pathname.startsWith('/api/chat/runs/parallel-run-')&&request.pathname.endsWith('/stop')){
    parallelCalls.push(request.pathname);
@@ -5127,6 +5683,138 @@ async function run(){
  evaluate('AC.open=false;AC.board=null;$("#agentChat").hidden=true');
  await evaluate('acRefreshNodeDirectory()');
  assert.equal(evaluate('$("[data-node-agent-session=parallel-ui-a] span",els.get("n1")).textContent'),'待确认');
+ equal(evaluate('[$("#agentChat").hidden,$("#acTaskCenterBtn").hidden,$("#acTaskCenterBtn [data-task-attention]").textContent]'),
+   [true,false,"1 待处理"]);
+ evaluate('$("#acTaskCenterBtn").click();$("#acTaskSound").click();$("#acTaskBadge").value="dot";$("#acTaskBadge").onchange()');
+ await ready('AC.taskSoundSnapshot?.observedAt===10','sound starts from the current directory state');
+ assert.deepEqual(taskNotes,[]);
+ assert.equal(evaluate('$("[data-node-agent-session=parallel-ui-a] .ac-task-dot.needs-input").closest("button").getAttribute("aria-label")'),
+  '查看任务 写分镜 · 待确认');
+ evaluate('acCloseTaskCenter();$("#acTaskCenterBtn").click()');
+ equal(evaluate('[$("#acTaskSound").checked,$("#acTaskBadge").value]'),[true,'dot']);
+ await ready('!AC.nodeDirectoryRequest','reopened task center has refreshed its baseline');
+ evaluate('acCloseTaskCenter()');
+ Object.assign(parallelSessions[1],{run_state:'waiting_input',active_task_updated:11});
+ taskClock=12;
+ await evaluate('acRefreshNodeDirectory()');
+ await ready('AC.taskSoundSnapshot.observedAt===12','the waiting state reaches the task directory');
+ assert.deepEqual(taskNotes,[587,440]);
+ await evaluate('acRefreshNodeDirectory()');
+ assert.deepEqual(taskNotes,[587,440],'repeated observations do not replay the alert');
+ Object.assign(parallelSessions[1],{run_state:'thinking',recent_task:{id:'sound-preview',state:'done',updated:13}});
+ taskClock=14;
+ await evaluate('acRefreshNodeDirectory()');
+ assert.deepEqual(taskNotes,[587,440,523,659]);
+ taskClock=12;
+ await evaluate('acRefreshNodeDirectory()');
+ assert.equal(evaluate('AC.taskSoundSnapshot.observedAt'),14,'an older response cannot replay alerts');
+ evaluate('$("#acTaskCenterBtn").click();$("#acTaskSound").click();$("#acTaskBadge").value="label";$("#acTaskBadge").onchange();acCloseTaskCenter()');
+ await ready('!AC.nodeDirectoryRequest','task center refresh has settled after disabling audio');
+ parallelSessions[1].recent_task.updated=15;
+ taskClock=16;
+ await evaluate('acRefreshNodeDirectory()');
+ assert.deepEqual(taskNotes,[587,440,523,659],'disabling audio silences subsequent changes');
+ delete parallelSessions[1].recent_task;
+ delete parallelSessions[1].active_task_updated;
+ await evaluate('acRefreshNodeDirectory()');
+ console.log('Assistant task preferences passed: opt-in alerts for new transitions, silence after disabling, and accessible compact markers.');
+ evaluate('$("#acTaskCenterBtn").click()');
+ equal(evaluate(`$$("#acTaskCenterRows section").map(section=>[$("h3",section).textContent,
+   $$("[data-task-session]",section).map(button=>button.dataset.taskSession)])`),
+   [["待处理",["parallel-ui-a"]],["执行中",["parallel-ui-b"]],["排队指令",["parallel-ui-a","parallel-ui-a"]],
+    ["近期结果",["parallel-ui-ready"]]]);
+ assert.equal(evaluate('$("[data-task-running]").textContent'),'1 执行中');
+ assert.match(evaluate('$("[data-task-session=parallel-ui-a]").textContent'),/画三个夜景镜头/);
+ evaluate('$("[data-task-queued=parallel-queue-remove]").click()');
+ await ready('AC.session==="parallel-ui-a"&&document.activeElement.dataset.queuedTask==="parallel-queue-remove"',
+  'an individual queued request opens its conversation and focuses the exact queue entry');
+ await evaluate('acLoadSession("parallel-ui-b")');
+ evaluate('$("#acTaskCenterBtn").click();$("[data-task-remove=parallel-queue-remove]").click()');
+ await ready('!$("[data-task-queued=parallel-queue-remove]")&&!!$("[data-task-queued=parallel-queue-a]")',
+  'removing a queued request leaves the other instruction in place');
+ assert.deepEqual(dashboardRemovals,["/api/chat/runs/parallel-queue-remove/queue"]);
+ equal(evaluate('[AC.session,$("[data-task-stop=parallel-run-a]").disabled]'),['parallel-ui-b',false]);
+ console.log('Assistant task queue passed: running count, active prompt, exact queue focus and scoped queue removal.');
+ evaluate('$("[data-task-session=parallel-ui-a]").click()');
+ await ready('!$("#acTaskCenter").open&&AC.session==="parallel-ui-a"&&document.activeElement.id==="acApprovals"',
+   'task center opens the correct waiting approval');
+ evaluate('$("#acTaskCenterBtn").click();$("[data-task-locate=parallel-ui-b]").click()');
+ await ready('AC.session==="parallel-ui-b"&&sel.has(stemTestVideo.id)','task center can locate an offscreen source node');
+ assert.equal(evaluate('$("#acTaskCenter").open'),false);
+ assert.equal(evaluate('$("[data-task-results]").textContent'),"1 新结果");
+ evaluate('$("#acTaskCenterBtn").click();$("[data-task-result=ready-run]").click()');
+ await ready('AC.session==="parallel-ui-ready"&&document.activeElement.dataset.taskRun==="ready-run"',
+   'opening the finished task navigates to the exact result');
+ equal(evaluate('[$("[data-task-results]").hidden,acTaskSeen().has("ready-run")]'),[true,true]);
+ evaluate(`const reopenCompleted=()=>{$("#acTaskCenterBtn").click();$("[data-task-continue-run=ready-run]").click();};
+  $("#acInput").value="继续原来的设计";reopenCompleted()`);
+ await ready('!$("#acContinuation").hidden&&AC.session==="parallel-ui-ready"','continue in the completed task conversation');
+ evaluate(`const continuationClick=(target,x,y)=>target.dispatchEvent(new MouseEvent("pointerdown",
+  {bubbles:true,cancelable:true,button:0,clientX:x,clientY:y}));
+  continuationClick($(".card",els.get("n1")),200,150)`);
+ equal(evaluate('[$("#acContinuation").hidden,document.activeElement.id,$("#acInput").value,AC.referencePins.get("n1").ref===curV(node("n1")).ref]'),
+  [true,'acInput','继续原来的设计',true]);
+ evaluate('reopenCompleted()');
+ await ready('!$("#acContinuation").hidden','completed task can be targeted again');
+ evaluate(`const nextDropCoords=toW(300,200), transferredContinuation=new Map();
+  const continuationData={setData:(type,value)=>transferredContinuation.set(type,value),
+   getData:type=>transferredContinuation.get(type),get types(){return [...transferredContinuation.keys()];}};
+  const continuationDrag=(target,type)=>{
+   const event=new MouseEvent(type,{bubbles:true,cancelable:true,clientX:300,clientY:200});
+   Object.defineProperty(event,"dataTransfer",{value:continuationData});return target.dispatchEvent(event);
+  };
+  continuationDrag($("#acContinuationDrag"),"dragstart");
+  continuationDrag(vp,"dragover");
+  continuationDrag(vp,"drop");`);
+ equal(evaluate('[AC.session,$("#acContinuation").hidden,AC.placement,$("#acInput").value]'),
+  ['parallel-ui-ready',true,JSON.parse(evaluate('JSON.stringify(acPlacementPoint(nextDropCoords))')),'继续原来的设计']);
+ evaluate('reopenCompleted()');
+ await ready('!$("#acContinuation").hidden','targeting mode can be cancelled');
+ evaluate('$("#acContinuationCancel").click()');
+ equal(evaluate('[$("#acContinuation").hidden,document.activeElement.id,$("#acInput").value]'),[true,'acInput','继续原来的设计']);
+ console.log('Assistant continuation passed: same conversation and draft, exact version pin, drag placement and cancel.');
+ parallelSessions.push({id:"parallel-ui-x",title:"测试配音",run_state:"running",active_task_id:"parallel-run-x",queued_count:1,
+  active_task_text:"保留背景，只替换旁白",node_activity:{nodes:["n1"],calls:[]}});
+ await evaluate('acRefreshNodeDirectory()');
+ await evaluate('acStopTaskRow("parallel-ui-x","previous-run")');
+ assert.equal(parallelCalls.length,0);
+ evaluate('$("#acTaskCenterBtn").click();$("[data-task-stop=parallel-run-x]").click()');
+ await ready('!$("[data-task-stop=parallel-run-x]")&&$("#acTaskCenter").open','scoped stop refreshes directly in the task center');
+ assert.deepEqual(parallelCalls.splice(0),["/api/chat/runs/parallel-run-x/stop"]);
+ equal(evaluate('[AC.session,acTaskDirectory().find(row=>row.id==="parallel-ui-x").queued_count]'),["parallel-ui-ready",1]);
+ evaluate('acCloseTaskCenter()');
+ Object.assign(parallelSessions.at(-1),{run_state:"running",active_task_id:"parallel-run-next-x"});
+ await evaluate('acRefreshNodeDirectory()');
+ evaluate('$("[data-node-agent-session=parallel-ui-x]",els.get("n1")).click()');
+ equal(evaluate('[$("#acNodeTask").open,$("#acNodeTaskPrompt").textContent,$("#acNodeTaskStatus").textContent,AC.session]'),
+  [true,"保留背景，只替换旁白","正在执行…","parallel-ui-ready"]);
+ Object.assign(parallelSessions.at(-1),{active_task_id:"parallel-run-later-x",
+  recent_task:{id:"parallel-run-next-x",state:"done",updated:23}});
+ await evaluate('acRefreshNodeDirectory()');
+ equal(evaluate('[$("#acNodeTaskStop").disabled,$("#acNodeTaskStatus").textContent]'),[true,"本轮已结束"]);
+ evaluate('$("#acNodeTaskStop").click()');
+ assert.deepEqual(parallelCalls,[],'the open node task card cannot stop its replacement run');
+ evaluate('$("[data-node-task-close]").click();$("[data-node-agent-session=parallel-ui-x]",els.get("n1")).click();$("#acNodeTaskStop").click()');
+ await ready('$("#acNodeTask").open&&$("#acNodeTaskStop").hidden','node task stop refreshes the selected run in place');
+ assert.deepEqual(parallelCalls.splice(0),["/api/chat/runs/parallel-run-later-x/stop"]);
+ equal(evaluate('AC.session'),"parallel-ui-ready");
+ evaluate('acCloseNodeTask()');
+ parallelSessions.pop();
+ await evaluate('acRefreshNodeDirectory()');
+ console.log('Assistant node task card passed: live instruction, exact-run stop and replacement-race protection.');
+ console.log('Assistant task actions DOM passed: completion badge, exact result focus, read receipt and scoped stop.');
+ console.log('Assistant task center DOM passed: closed-panel updates, grouping, approval focus and node location.');
+ evaluate('$("#acTaskCenterBtn").click()');
+ await evaluate('$("#acTaskHistoryMore").onclick()');
+ equal(evaluate('[$("#acTaskHistoryRows strong").textContent,$("#acTaskHistoryMore").textContent]'),
+  ['保存海报','加载更早的任务']);
+ await evaluate('$("#acTaskHistoryMore").onclick()');
+ equal(evaluate('[$$("#acTaskHistoryRows strong").map(node=>node.textContent),$("#acTaskHistoryMore").hidden]'),
+  [['保存海报','整理第一版'],true]);
+ evaluate('$("#acTaskHistoryRows [data-task-result=history-older]").click()');
+ await ready('AC.session==="parallel-ui-old"&&document.activeElement.dataset.taskRequest==="history-older"',
+  'task history opens an older session and focuses the originating request if the run produced no output');
+ console.log('Assistant task history passed: pagination and navigation outside the session directory.');
  evaluate('AC.open=true;AC.board=boardId;$("#agentChat").hidden=false');
  await evaluate('acLoadSession("parallel-ui-a")');
  equal(evaluate(`[$("#acNew").disabled,$("#acParallel").hidden,$$("[data-parallel-session]").map(b=>[...b.children].map(e=>e.textContent))]`),
@@ -5141,7 +5829,7 @@ async function run(){
  const oldParallelPoll=evaluate('acPoll()');
  await new Promise(resolve=>setTimeout(resolve,0));
  assert.equal(typeof releaseParallelPoll,'function');
- evaluate('$("[data-node-agent-session=parallel-ui-b]",els.get(stemTestVideo.id)).click()');
+ evaluate('$("[data-node-agent-session=parallel-ui-b]",els.get(stemTestVideo.id)).click();$("#acNodeTaskOpen").click()');
  await ready('AC.session==="parallel-ui-b"&&$("#acMessages").textContent.includes("助手 b")','second session loads before an older poll returns');
  releaseParallelPoll();
  await oldParallelPoll;

@@ -29,7 +29,7 @@ import document_import
 import document_review
 import image_camera
 import image_relight
-from render import GIF_FPS, GIF_SIZES
+from render import FPS, GIF_FPS, GIF_SIZES
 import workflow_review
 import web_research
 
@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS chat_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, run_id TEXT,
  kind TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS chat_events_session ON chat_events(session_id, id);
+CREATE INDEX IF NOT EXISTS chat_events_user_run ON chat_events(run_id, id) WHERE kind='user';
 CREATE TABLE IF NOT EXISTS chat_documents (
  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL, created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS chat_documents_session ON chat_documents(session_id,created);
@@ -99,19 +100,53 @@ def session_waits(session_id, active):
             bool(db.one("SELECT 1 FROM chat_runs WHERE session_id=? AND state='queued'",session_id)))
 
 
+QUEUED_TASK_FIELDS = """id,COALESCE(json_extract(data,'$.queued_turn.event.text'),
+                            CASE WHEN json_type(data,'$.retry_call') IS NOT NULL THEN '按原参数重试' END) AS text,
+                            json_type(data,'$.retry_call') IS NULL AS removable"""
+
+
 def session_directory(user_id, board_id):
-    rows = db.q(f"""SELECT s.*,r.state AS run_state,r.id AS active_run,json_extract(r.data,'$.selected') AS run_nodes,
+    rows = db.q(f"""SELECT s.*,r.state AS run_state,r.id AS active_run,r.updated AS active_updated,
+                   json_extract(r.data,'$.selected') AS run_nodes,
+                   (SELECT SUBSTR(json_extract(e.data,'$.text'),1,180) FROM chat_events e
+                    WHERE e.run_id=r.id AND e.kind='user' ORDER BY e.id LIMIT 1) AS active_text,
+                   recent.id AS recent_run,recent.state AS recent_state,recent.updated AS recent_updated,
                    (SELECT COUNT(*) FROM chat_runs r WHERE r.session_id=s.id AND r.state='queued') AS queued_count
                    FROM chat_sessions s LEFT JOIN chat_runs r ON r.id=(SELECT id FROM chat_runs
                        WHERE session_id=s.id AND {ACTIVE_RUN_SQL} ORDER BY created LIMIT 1)
+                   LEFT JOIN chat_runs recent ON recent.id=(SELECT id FROM chat_runs WHERE session_id=s.id
+                       AND state IN ('done','error','stopped') AND json_type(data,'$.discarded_before_start') IS NULL
+                       ORDER BY created DESC,id DESC LIMIT 1)
                    WHERE s.user_id=? AND s.board_id=?
                    ORDER BY (run_state IS NOT NULL OR queued_count>0) DESC,s.updated DESC LIMIT 40""",user_id,board_id)
+    queued = {}
+    for task in db.q(f"""SELECT session_id,{QUEUED_TASK_FIELDS},rowid AS position FROM chat_runs
+                         WHERE board_id=? AND user_id=? AND state='queued' ORDER BY rowid""",board_id,user_id):
+        sid = task.pop("session_id")
+        task["text"] = task["text"][:180] if task["text"] else ""
+        queued.setdefault(sid,[]).append(task)
     for row in rows:
         run, nodes = row.pop("active_run"),row.pop("run_nodes")
+        active_updated = row.pop("active_updated")
+        active_text = row.pop("active_text")
+        recent, state, updated = row.pop("recent_run"),row.pop("recent_state"),row.pop("recent_updated")
+        if recent:
+            row["recent_task"] = {"id":recent,"state":state,"updated":updated}
         if run:
+            row["active_task_id"] = run
+            row["active_task_updated"] = active_updated
+            if active_text:
+                row["active_task_text"] = active_text
             calls = db.q("SELECT id FROM chat_calls WHERE run_id=? AND state!='done'",run)
             row["node_activity"] = {"nodes":json.loads(nodes) if nodes else [],"calls":[call["id"] for call in calls]}
+        if tasks := queued.get(row["id"]):
+            row["queued_tasks"] = tasks
     return rows
+
+
+def task_directory_snapshot(user_id, board_id):
+    sessions = session_directory(user_id,board_id)
+    return {"sessions":sessions,"task_snapshot_at":time.time()}
 
 
 THINKING_LEVELS = ("off", "low", "high", "max")
@@ -270,6 +305,8 @@ tool("image_generate", "通过已配置的默认生图服务生成图片。可�
     "prompt": PROMPT, "reference_ids": prop("array", items=NODE, maxItems=4), "count": prop("integer", minimum=1, maximum=4),
     "memory_views":creative_memory.view_selection_schema(prop),
     "aspect": prop("string", enum=["auto", "1:1", "3:4", "4:3", "9:16", "16:9"]), "name": NODE}, ["prompt"])
+tool("image_previs_frame", "用已导入分镜图节点的固定白模构图生成正式画面，在原节点追加版本，沿用白模画幅。reference_ids 省略时沿用已连接的参考图，提供时按给定顺序对应 @图1 等。prompt 描述实际人物、环境与风格。不会提交视频。", {
+    "node_id": NODE,"prompt": PROMPT,"reference_ids":prop("array",items=NODE,maxItems=8)}, ["node_id","prompt"])
 tool("image_export_gif", "从一张宫格序列帧图生成可下载的循环 GIF。画面按行从左到右、从上到下。rows/cols 为准确行列，first/last 从 1 开始且包含两端，至少两格。省略 version 时用本轮绑定版本。", {
     "node_id":NODE,"version":prop("integer",minimum=1,maximum=5000),
     "rows":prop("integer",minimum=1,maximum=6),"cols":prop("integer",minimum=1,maximum=6),
@@ -301,6 +338,10 @@ tool("image_transform", "裁剪、旋转、翻转、调色或调整到精确像�
     "resize": prop("object", properties={"width":prop("integer", minimum=1, maximum=8192),
         "height":prop("integer", minimum=1, maximum=8192), "fit":prop("string", enum=["contain","cover","stretch"])},
         required=["width","height"], additionalProperties=False)}, ["node_id"])
+tool("image_upscale", "用本地超分模型放大图片，在原节点追加透明 PNG。2× 或 4×，默认 2×。省略 version 时沿用本轮绑定。", {
+    "node_id":NODE, "scale":prop("integer",enum=[2,4]), "version":prop("integer",minimum=1,maximum=5000)}, ["node_id"])
+tool("image_decompose", "识别图片中的多个物体，保存为可移动、隐藏及重排的透明图层，在原节点追加分层版本。省略 version 时沿用本轮绑定。", {
+    "node_id":NODE, "version":prop("integer",minimum=1,maximum=5000)}, ["node_id"])
 agent_editing.register(TOOLS, tool, prop, NODE, STR, PROMPT)
 agent_video.register(tool, prop, NODE, PROMPT)
 agent_playlist.register(tool, prop, NODE)
@@ -318,13 +359,13 @@ ANALYSIS_TOOLS = frozenset({"canvas_context","canvas_workflow_review","web_searc
     "video_object_settings","video_draft_status","video_titles_get","video_cutaways_get","video_previs_get",
     "video_remake_status","video_playlist_read"})
 PLAN_TOOLS = ANALYSIS_TOOLS | {"canvas_reference_plan","canvas_group_run_plan","storyboard_next_shot_plan",
-    "storyboard_revision_plan","storyboard_range_run_plan","workflow_template_plan","video_remake_plan"}
+    "storyboard_revision_plan","storyboard_range_run_plan","workflow_template_plan","video_remake_plan","video_previs_storyboard_plan"}
 
 
 def scoped_tools(data):
     scope = data.get("execution_scope","full")
     allowed = {"analysis":ANALYSIS_TOOLS,"brainstorm":ANALYSIS_TOOLS,"plan":PLAN_TOOLS}.get(scope,TOOL_MAP.keys())
-    if data.get("shot_range_pending"):
+    if data.get("shot_range_pending") or data.get("previs_storyboard_pending"):
         allowed = PLAN_TOOLS & allowed
     if data.get("review_revision"):
         allowed = {"storyboard_revision_plan"} & allowed
@@ -339,12 +380,16 @@ SYSTEM = """你是 OneShot 创作助手。默认用中文帮助用户操作当�
 用户说只改背景、主体不动时，image_edit必须使用target=background；仅改主体用foreground。自动分割是建议，不能保证语义识别完全正确；需要精确局部时用image_select的manual模式等待用户画选区。已有选区可按selection_id跨轮复用。
 用户明确要求图片换角度、构图机位或指定镜头参数时，用image_camera保留结构化参数。沿用用户明确引用的图片版本，未指定的镜头参数可留空。生成或重生成视频时，如果用户指定焦段、光圈、传感器或镜头质感，通过 video_optics 传入明确指定的参数。重生成省略此字段会沿用已有参数；要清除镜头参数时传空对象。
 用户要求按明确的光位、曝光或色温重新布光时，用image_relight，保留源图的构图和内容。
+用户要求超分或按倍率增强图片时，用image_upscale。指定精确宽高时用image_transform的resize。
+用户要求自动拆分物体为可编辑图层时，用image_decompose；读取或修改已有图层时用对应的图层工具。
 image_select manual会等待真实用户输入，工具返回后才能继续编辑；不能绕过选区等待改做整图。图层先用image_layers_get读取ID再操作。减弱生成效果优先调生成区域图层不透明度；沿用参数重新生成用image_reuse，它复用编辑前原图，不能在结果上重复叠加。支持Markdown回复，复杂结果可用列表或表格。
 生成新视频用video_generate；重生成现有视频用video_regenerate。沿用图片时省略frames；只替换个别关键帧或人物图用replacements；重新指定整组参考图片用frames，两者不可同传。image_generate只会生成静态图片，不能用于视频，也不能把图片结果叫视频或归咎服务配置。以返回的media_type和文件类型为准。media_describe支持视频抽帧分析。
 续拍或补拍用video_extend。用户指定本地时传method=frame，由本地H3使用原片接点帧和可选图片参考。自动模式可从连续画面切换为接点帧；不要把接点帧说成原片运动参考。每条用户指令最多提交一段视频，已有成片时请说明下一段可作为新消息入队。
 用户要制作机位、构图或走位白模时用video_previs_save。修改现有白模先用video_previs_get，保留未要求修改的轨道，再保存到同一节点。需要可播放预演时调用video_previs_render。只有用户要求生成正式视频，才在video_generate或video_regenerate中用previs指定已渲染的白模版本；它是动作参考，角色图和场景图提供外观。
 用户明确要给已有白模加推进、拉远、横移、环绕或跟拍时，先用video_previs_get核对时长、目标物体及场景版本，再用video_previs_camera_motion写入指定区间。只在用户需要视频预览时渲染。
 用户明确要已有白模的物体经过指定位置时，先用video_previs_get确认物体和时间，再用video_previs_object_motion写入走位路线。起点由该时刻的现有位置确定。如果用户只提供相对方位，按已有场景坐标落点。
+用户要按白模切点创建分镜或提取每镜首帧时，用video_previs_storyboard_plan准备核对卡。实际导入由用户在白模编辑器确认，同一轮不要调用生成工具。读取这类分镜时，previs 的 start/end 是原始白模时间，video_duration 是当前视频节点的设定时长，first_frame.source 为 previs-frame 时该视频还在用白模首帧。
+用户明确要求把导入分镜里的白模出成正式画面时，用 image_previs_frame，node_id 指向该镜的分镜图节点。沿用用户已指定的角色、场景素材或现有连接。用户只要求出首帧时不再生成视频。
 用户要求在特定时刻从一个构图硬切到另一个构图时，先读取白模场景，再通过video_previs_save把新机位与镜头参数放在对应的机位关键帧，并设置ease为cut。关键帧之前保持上一机位，切点使用新机位。此过渡仅用于机位。
 用户要求用某段音频参考声音或节奏时，在video_generate或video_regenerate的audio_refs中传入画布音频节点和所选版本。音频参考由模型重新生成声音，用户明确要求保留原音频时，应在剪辑台采用该音频。
 用户要求配音、音乐或音效时，调用audio_generate。用户指定音色时先用audio_services查实际音色编号。用户要求用音频或图片参考生成声音时，选择seed_audio并传入reference_ids。重新生成在原音频节点增加版本。生成后的音频可在剪辑台加入时间线或作为视频声音参考。
@@ -518,11 +563,13 @@ class AgentService:
             v = self.current(n)
             ref = bindings.get(n["id"])
             index = next((i for i,version in enumerate(n.get("versions",[]),1) if version.get("ref")==ref),None) if ref else None
+            composition = self.previs_composition(n) if n["type"]=="image" else None
             nodes.append({"id": n["id"], "type": n["type"], "name": n.get("name"), "x": n.get("x"), "y": n.get("y"),
                           "version_count": len(n.get("versions") or []), "current": v and {k: (v.get(k) or "")[:500] if k == "prompt" else v.get(k) for k in ("ref", "w", "h", "seconds", "prompt", "source", "draft_expires")},
                           **({"reference_version":index} if index else {}),
                           **({"locked":True} if n.get("locked") is True else {}),
                           **({"previs":True} if n.get("data", {}).get("previs") else {}),
+                          **({"previs_composition":composition["ref"]} if composition else {}),
                           **({"playlist":True} if n.get("data", {}).get("playlist") else {}),
                           "has_recipe": bool((v or {}).get("edit", {}).get("recipe")), "has_layers": bool((v or {}).get("layer_stack") or (v or {}).get("edit", {}).get("layer")),
                           "text": (n.get("data", {}).get("text") or "")[:400]})
@@ -566,10 +613,21 @@ class AgentService:
                 pairs[index]=pair
         images = []
         tails = {}
+        first_frames = {}
+        automatic_frames = {}
+        video_references = set()
         for edge in board.get("edges",[]):
             source = nodes.get(edge["from"])
             if edge.get("story_continuity"):
                 tails.setdefault(edge["to"],edge)
+            if edge.get("relation") in ("previs","video_ref","audio_ref"):
+                video_references.add(edge["to"])
+            if source and source["type"]=="image":
+                role = edge.get("role") or "auto"
+                if role=="first":
+                    first_frames.setdefault(edge["to"],edge)
+                elif role=="auto":
+                    automatic_frames.setdefault(edge["to"],edge)
             if edge["to"] != script["id"] or not source or source["type"] != "image":
                 continue
             versions = source.get("versions",[])
@@ -589,6 +647,24 @@ class AgentService:
             frame, video = nodes.get(pair.get("img")), nodes.get(pair.get("vid"))
             row = {"number":i+1,**{key:shots[i].get(key) for key in (*STORYBOARD_SHOT_FIELDS,"frame")},
                    "canvas":{"image_node":frame["id"] if frame else None,"video_node":video["id"] if video else None}}
+            ticks = shots[i].get("previs_range")
+            if isinstance(ticks,list) and len(ticks)==2 and all(type(t) is int for t in ticks) and 0<=ticks[0]<ticks[1]:
+                vid = pair.get("vid")
+                video_data = (video or {}).get("data",{})
+                first = first_frames.get(vid) if video and vid not in video_references else None
+                if not first and video and vid not in video_references and video_data.get("mode")!="reference":
+                    first = automatic_frames.get(vid)
+                selected = None
+                if first:
+                    source = nodes[first["from"]]
+                    selected = self.current(source)
+                    if ref := first.get("ref"):
+                        selected = next((v for v in source.get("versions",[]) if v.get("ref")==ref),None)
+                row["previs"] = {"source_node":data.get("previs_source"),"start":ticks[0]/FPS,"end":ticks[1]/FPS,
+                                 "video_duration":video_data.get("duration"),
+                                 "first_frame":{"ref":selected.get("ref"),"source":selected.get("source")} if selected else None}
+                if frame and (guide := self.previs_composition(frame)):
+                    row["previs"]["composition_ref"] = guide["ref"]
             tail = tails.get(pair.get("img"))
             if i or tail:
                 previous = nodes.get((pairs[i-1] or {}).get("vid")) if i else None
@@ -1156,6 +1232,8 @@ class AgentService:
             raise ToolError(f"本轮执行范围为「{label}」，无法调用这个工具")
         if run["data"].get("shot_range_pending") and name not in PLAN_TOOLS:
             raise ToolError("请先在批量生成计划中核对并确认运行")
+        if run["data"].get("previs_storyboard_pending") and name not in PLAN_TOOLS:
+            raise ToolError("请先在白模编辑器核对并创建分镜")
         if revision := run["data"].get("review_revision"):
             if name!="storyboard_revision_plan":
                 raise ToolError("本轮只为已审阅的镜头拟定修改")
@@ -1465,6 +1543,8 @@ class AgentService:
                 return await self.submit_image_set(run,user,cid,args,images)
             return await self.submit_generation(run,user,cid,self.image_request(args,images),
                                                 args.get("name") or "助手生成",h.generate_request)
+        if name == "image_previs_frame":
+            return await self.generate_previs_frame(run,user,cid,args)
         n, v = self.source(run, user, args["node_id"])
         if name == "image_export_gif":
             if "version" in args:
@@ -1483,8 +1563,25 @@ class AgentService:
             payload = {"ref": v["ref"], "mode": "region" if mask else "whole", "prompt": args["prompt"],
                        "backend": args.get("backend", "h3"), "mask": mask, "feather": 4, "strength": 1, "seed": -1}
             return await self.submit_generation(run, user, cid, payload, args.get("name") or n.get("name", "图片") + " · 修改", h.image_edit_generate, target_id=n["id"])
-        if name == "image_transform":
-            result = await self.response(h.image_transform, user, {"ref": v["ref"], **{k: val for k, val in args.items() if k != "node_id"}})
+        if name in ("image_transform","image_upscale","image_decompose"):
+            if name in ("image_upscale","image_decompose"):
+                if "version" in args:
+                    if args["version"] > len(n["versions"]):
+                        raise ToolError("所选图片版本已移除，请重新选择")
+                    v = n["versions"][args["version"]-1]
+                if name == "image_upscale":
+                    scale = args.get("scale",2)
+                    result = await self.response(h.image_upscale_route, user, {"ref":v["ref"],"scale":scale})
+                    result.update(mode=f"智能放大 {scale}×",edit={"source":v["ref"],"mode":"upscale",
+                                                                "scale":scale,"model":"FSRCNN"})
+                else:
+                    result = await self.response(h.image_decompose_route, user, {"ref":v["ref"]})
+                    result.update(mode="自动分层",edit={"source":v["ref"],"mode":"decompose"})
+                if self.stopped(run):
+                    raise ToolError("用户已停止本轮任务")
+                self.source(run,user,n["id"],pinned_ref=v["ref"])
+            else:
+                result = await self.response(h.image_transform, user, {"ref": v["ref"], **{k: val for k, val in args.items() if k != "node_id"}})
             if run["data"].get("external_tool"):
                 if self.stopped(run):
                     raise ToolError("用户已停止本轮任务")
@@ -1552,14 +1649,60 @@ class AgentService:
             await asyncio.sleep(.2)
         raise ToolError("用户已停止本轮任务")
 
-    def image_references(self, run, user, ids):
+    def image_references(self, run, user, ids, fixed=None):
         images = []
         for nid in ids:
-            n,v = self.source(run,user,nid)
+            n,v = self.source(run,user,nid,pinned_ref=(fixed or {}).get(nid))
             position = next(i for i,item in enumerate(n["versions"],1) if item["ref"]==v["ref"])
             images.append({"ref":v["ref"],"node_id":nid,"version":position,"name":n.get("name"),
                            "w":v.get("w"),"h":v.get("h")})
         return images
+
+    @staticmethod
+    def previs_composition(n):
+        data = n.get("data",{}).get("previs_composition")
+        if isinstance(data,dict) and data.get("enabled") is not False and data.get("ref"):
+            return next((v for v in n.get("versions",[]) if v.get("ref")==data["ref"] and v.get("source")=="previs-frame"),None)
+        return None
+
+    async def generate_previs_frame(self, run, user, cid, args):
+        board = self.board(user,run["board_id"])
+        nodes = {n["id"]:n for n in board["nodes"]}
+        target = nodes.get(args["node_id"])
+        guide = self.previs_composition(target) if target and target["type"]=="image" else None
+        if not guide:
+            raise ToolError("没有可用的白模构图，请确认使用的是导入的分镜图节点，且构图参考已启用")
+        nid = target["id"]
+        edges = [edge for edge in board.get("edges",[]) if edge["to"]==nid and edge["from"]!=nid and
+                 nodes.get(edge["from"],{}).get("type")=="image"]
+        ids = list(dict.fromkeys(args.get("reference_ids",[edge["from"] for edge in edges])))
+        if nid in ids:
+            raise ToolError("白模构图会自动加入，请只指定其他参考图")
+        if len(ids)>8:
+            raise ToolError("请减少其他参考图，为白模构图保留一个位置")
+        fixed = {} if "reference_ids" in args else {edge["from"]:edge.get("ref") for edge in edges}
+        images = self.image_references(run,user,ids,fixed)
+        by_node = {img["node_id"]:i for i,img in enumerate(images,1)}
+        slots = {str(edge["prompt_slot"]):by_node[edge["from"]] for edge in edges
+                 if edge.get("prompt_slot") and edge["from"] in by_node}
+        def resolve(match):
+            if (number := slots.get(match[1])) is None:
+                raise ToolError("提示词使用的图片引用已断开，请重新选择")
+            return f"@图{number}"
+        guide_index = next((i for i,img in enumerate(images,1) if img["ref"]==guide["ref"]),len(images)+1)
+        if guide_index>len(images):
+            version = next(i for i,v in enumerate(target["versions"],1) if v is guide)
+            images.append({"ref":guide["ref"],"node_id":nid,"version":version,"name":"白模构图","w":guide.get("w"),"h":guide.get("h")})
+        prompt = re.sub(r"@图\{(\d+)\}",resolve,args["prompt"])
+        prompt += f"\n按 @图{guide_index} 的机位、透视和主体位置构图。按提示词制作角色、环境、材质与光线。"
+        payload = self.image_request({"prompt":prompt},[guide])
+        payload["images"] = images
+        if target["data"].get("quality")=="16mp":
+            payload["quality"] = "16mp"
+        if provider := target["data"].get("provider"):
+            payload["provider"] = provider
+        return await self.submit_generation(run,user,cid,payload,target["name"],self.host.generate_request,
+                                            target_id=nid,composition_ref=guide["ref"])
 
     @staticmethod
     def image_request(args, images):
@@ -1783,7 +1926,8 @@ class AgentService:
             "settings":{k:v for k,v in recipe.items() if k not in ("mode","prompt","references")},
             "inputs":[{"node_id":item["node_id"],"ref":item["ref"],"role":"reference"} for item in recipe.get("references",[])]}})
 
-    async def submit_generation(self, run, user, cid, payload, name, fn, target_id=None, target_data=None, replay_ref=None):
+    async def submit_generation(self, run, user, cid, payload, name, fn, target_id=None, target_data=None, replay_ref=None,
+                                composition_ref=None):
         if run["data"].get("uncertain"):
             raise ToolError("本轮存在提交状态待核实的任务，已停止追加生成，请先查看任务中心")
         count = payload.get("count", 1)
@@ -1806,6 +1950,11 @@ class AgentService:
                                               edit_prompt=kind == "image" or simple_video,
                                               edit_count=kind == "image" and not target_id and fn == self.host.generate_request)
         payload.update(changes)
+        if composition_ref:
+            target = next((n for n in self.board(user,run["board_id"])["nodes"] if n["id"]==target_id),None)
+            current = self.previs_composition(target) if target else None
+            if not current or current["ref"]!=composition_ref:
+                raise ToolError("白模构图已变更，请重新核对后生成")
         if target_data is not None and "prompt" in changes:
             target_data = {**target_data,"prompt":changes["prompt"],"pmode":"free"}
         payload.update(board=run["board_id"], label=name)
@@ -2325,8 +2474,36 @@ async def list_sessions(req):
         service(req).board(req["user"], bid)
     except (ToolError, web.HTTPException) as e:
         return web.json_response({"error": str(e)}, status=403)
-    return web.json_response({"sessions": session_directory(req["user"]["id"],bid),
+    return web.json_response({**task_directory_snapshot(req["user"]["id"],bid),
                               "models": [chat_model_option(route) for route in chat_model_routes().values()]})
+
+
+@routes.get("/api/chat/task-history")
+async def task_history(req):
+    user, bid = req["user"], req.query.get("board", "")
+    try:
+        service(req).board(user,bid)
+    except (ToolError, web.HTTPException) as e:
+        return web.json_response({"error": str(e)}, status=403)
+    try:
+        before = int(req.query.get("before","0"))
+        if not 0 <= before <= 2**63-1:
+            raise ValueError()
+    except ValueError:
+        return web.json_response({"error":"游标格式错误"},status=400)
+    page_size = 20
+    rows = db.q("""SELECT r.rowid AS cursor,r.id,r.session_id,s.title,r.state,
+                   (SELECT SUBSTR(json_extract(e.data,'$.text'),1,180) FROM chat_events e
+                    WHERE e.run_id=r.id AND e.kind='user' ORDER BY e.id LIMIT 1) AS text
+                   FROM chat_runs r JOIN chat_sessions s ON s.id=r.session_id
+                   WHERE r.board_id=? AND r.user_id=? AND s.board_id=r.board_id AND s.user_id=r.user_id
+                   AND r.state IN ('done','error','stopped') AND json_type(r.data,'$.discarded_before_start') IS NULL
+                   AND (?=0 OR r.rowid<?) ORDER BY r.rowid DESC LIMIT ?""",bid,user["id"],before,before,page_size+1)
+    page = rows[:page_size]
+    more = page[-1]["cursor"] if len(rows)>page_size else None
+    for row in page:
+        row.pop("cursor")
+    return web.json_response({"tasks":page,"before":more})
 
 
 @routes.post("/api/chat/sessions")
@@ -2429,8 +2606,8 @@ async def get_session(req):
     for r in runs:
         data = json.loads(r.pop("data"))
         r["model"] = data.get("model")
-    queue = db.q("""SELECT id,json_extract(data,'$.queued_turn.event.text') AS text
-                    FROM chat_runs WHERE session_id=? AND state='queued' ORDER BY rowid""",s["id"])
+    queue = db.q(f"""SELECT {QUEUED_TASK_FIELDS}
+                     FROM chat_runs WHERE session_id=? AND state='queued' ORDER BY rowid""",s["id"])
     approvals = db.q("""SELECT a.id,a.plan,c.name,r.id AS run_id FROM chat_approvals a
                         JOIN chat_calls c ON c.id=a.call_id JOIN chat_runs r ON r.id=c.run_id
                         WHERE r.session_id=? AND r.state='waiting_approval' AND c.state='approval' AND a.decision IS NULL""",s["id"])
@@ -2450,7 +2627,7 @@ async def get_session(req):
                                                 for row in questionnaires],
                               "model_options":[chat_model_option(route) for route in chat_model_routes().values()],
                               "chat_model":chat_model_session(s["id"]),"thinking_level":level["level"] if level else "off",
-                              "sessions":session_directory(req["user"]["id"],s["board_id"]),
+                              **task_directory_snapshot(req["user"]["id"],s["board_id"]),
                               "board_rev": svc.board(req["user"], s["board_id"]).get("rev", 0)})
 
 

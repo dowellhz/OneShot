@@ -8,6 +8,12 @@ const PV_PARAMS = {
 };
 const PV_MOVES = {push:"推进",pull:"拉远",slide_left:"向左横移",slide_right:"向右横移",
   orbit_left:"向左环绕",orbit_right:"向右环绕",follow:"跟拍物体"};
+const PV_LIGHT_PRESETS={
+  side:{label:"中性侧光",settings:{azimuth:45,elevation:30,key:.8,ambient:.32,tone:"neutral"}},
+  back:{label:"暖色后光",settings:{azimuth:-145,elevation:28,key:.95,ambient:.23,tone:"warm"}},
+  top:{label:"冷色顶光",settings:{azimuth:15,elevation:75,key:1,ambient:.28,tone:"cool"}},
+};
+const PV_LIGHT_LABELS={azimuth:"方位角（°）",elevation:"高度角（°）",key:"主光强度",ambient:"环境光"};
 
 function pvInitialScene() {
   return {duration:4,aspect:"16:9",
@@ -46,7 +52,10 @@ function pvUsableScene(scene) {
     return triangleCount<=PV_TRIANGLE_LIMIT && o.triangles.every(face=>
       Array.isArray(face)&&face.length===9&&face.every(v=>Number.isFinite(v)&&Math.abs(v)<=1));
   };
-  return !!scene && Number.isInteger(scene.duration) && scene.duration>=2 && scene.duration<=14 && !!PV_SIZE[scene.aspect] &&
+  const lighting=scene?.lighting;
+  const usableLight=lighting===undefined || !!lighting && Object.hasOwn(PV_LIGHT_TONES,lighting.tone) &&
+    Object.entries(PV_LIGHT_LIMITS).every(([key,[min,max]])=>Number.isFinite(lighting[key]) && lighting[key]>=min && lighting[key]<=max);
+  return !!scene && usableLight && Number.isInteger(scene.duration) && scene.duration>=2 && scene.duration<=14 && !!PV_SIZE[scene.aspect] &&
     trackValid(scene.camera,PV_PARAMS.camera) && Array.isArray(scene.objects) && scene.objects.every(o=>
       o && o.id!=="camera" && validShape(o) && PV_PARAMS.size.every(([p])=>Number.isFinite(o[p])) && trackValid(o.keys,PV_PARAMS.object));
 }
@@ -55,13 +64,30 @@ function pvUpdateRenderState(n) {
   const E=PV.editor;
   if (!E || E.n!==n) return;
   const submit=pvElement("[data-pv-render]");
-  submit.disabled=E.sending || !!n.job;
+  const busy=E.sending || !!E.guideBatch;
+  submit.disabled=busy || !!n.job;
   submit.textContent=n.job?"渲染中…":"渲染预演";
   const use=pvElement("[data-pv-use]");
-  use.hidden=curV(n)?.source!=="previs";
-  use.disabled=E.sending;
-  pvElement("[data-pv-close]").disabled=E.sending;
-  pvElement("fieldset").disabled=E.sending;
+  const version=curV(n);
+  use.hidden=version?.source!=="previs";
+  use.disabled=busy || !pvGuideAvailable(version);
+  use.title=use.disabled && !busy?"动作参考至少需要 2 秒":"";
+  pvElement("[data-pv-render-shot]").disabled=submit.disabled;
+  pvRefreshShotGuide(E,version);
+  pvElement("[data-pv-batch-open]").hidden=!pvGuideScripts(E).length;
+  pvElement("[data-pv-batch-open]").disabled=submit.disabled;
+  const stop=pvElement("[data-pv-batch-stop]");
+  stop.hidden=!E.guideBatch;
+  stop.disabled=!!E.guideBatch?.stopping;
+  pvElement("[data-pv-close]").disabled=busy;
+  pvElement("fieldset").disabled=busy;
+}
+
+function pvGuideAvailable(version) {
+  if(version?.source!=="previs")return false;
+  const span=version.previs_span;
+  if(Array.isArray(span))return span[1]-span[0]>=2*PV_FPS;
+  return !Number.isFinite(version.seconds) || version.seconds>=2;
 }
 
 function previsInput(n) {
@@ -72,18 +98,22 @@ function previsInput(n) {
   return {edge, source, version:source?.versions[index], index};
 }
 
-function attachPrevis(source, video) {
-  const version = curV(source), guide = previsInput(video);
+function setPrevisGuide(source,video,version) {
+  const guide=previsInput(video);
   if (guide) B.edges = B.edges.filter(e => e !== guide.edge);
   const services = CAPS_LIST.previs || [];
   if (!services.some(s => s.id === video.data.provider)) video.data.provider = services[0]?.id || "";
   B.edges.push({from:source.id, to:video.id, relation:"previs", ref:version.ref});
+}
+
+function attachPrevis(source, video) {
+  setPrevisGuide(source,video,curV(source));
   save(); refresh(video); selectOnly(video.id);
   $("#prompt").focus();
 }
 
 function usePrevisForVideo(source) {
-  if (!canvasCanEdit() || curV(source)?.source !== "previs") return;
+  if (!canvasCanEdit() || !pvGuideAvailable(curV(source))) return;
   const version = curV(source), s = size(source);
   const at = freeSpot(source.x + s.w + 110, source.y, "video");
   const aspect = version.previs_recipe?.aspect || (version.w === version.h ? "1:1" : version.w < version.h ? "9:16" : "16:9");
@@ -96,7 +126,7 @@ function usePrevisForVideo(source) {
 function updatePrevisInput(n) {
   if (!canvasCanEdit() || n.job || prepping.has(n.id)) return;
   const guide = previsInput(n), next = curV(guide?.source);
-  if (!guide || next?.source !== "previs" || guide.edge.ref === next.ref) return;
+  if (!guide || !pvGuideAvailable(next) || guide.edge.ref === next.ref) return;
   checkpoint(); rememberVideoVersion(n);
   guide.edge.ref = next.ref;
   save(); refresh(n);
@@ -105,7 +135,9 @@ function updatePrevisInput(n) {
 function pvFinished(n, error) {
   if (PV.editor?.n !== n) return;
   pvUpdateRenderState(n);
-  pvStatus(error || "预演视频已加入此节点。");
+  if(PV.editor.guideBatch)return;
+  const version=curV(n), span=version?.previs_span;
+  pvStatus(error || (span ? `镜头 ${pvSpanLabel(span)} 已加入此节点的版本。${pvGuideAvailable(version)?"":"素材短于 2 秒，可用于剪辑。"}` : "预演视频已加入此节点。"));
 }
 
 function pvSyncBoard() {
@@ -121,10 +153,23 @@ function pvSyncBoard() {
     if (!pvActive(E)) E.active="camera";
     pvElement("[data-pv-duration]").value=E.scene.duration;
     pvElement("[data-pv-aspect]").value=E.scene.aspect;
+    pvRefreshLighting(E);
     pvRefreshTrack(E);
   }
   pvElement("[data-pv-heading]").textContent=E.n.name;
   pvUpdateRenderState(E.n);
+}
+
+function pvRefreshLighting(E) {
+  const light=E.scene.lighting;
+  pvElement("[data-pv-light-fields]").hidden=!light;
+  const match=light && Object.entries(PV_LIGHT_PRESETS).find(([,preset])=>
+    Object.entries(preset.settings).every(([key,value])=>value===light[key]));
+  pvElement("[data-pv-light-preset]").value=light?match?.[0]||"custom":"off";
+  if(light){
+    for(const key of Object.keys(PV_LIGHT_LIMITS))pvElement(`[data-pv-light-value="${key}"]`).value=light[key];
+    pvElement("[data-pv-light-tone]").value=light.tone;
+  }
 }
 
 function pvFrame(E) {
@@ -133,12 +178,70 @@ function pvFrame(E) {
     canvas.width=width;
     canvas.height=height;
   }
+  const free=E.view==="free";
+  canvas.tabIndex=free?0:-1;
+  canvas.toggleAttribute("data-pv-free",free);
+  pvElement("[data-pv-free-controls]").hidden=!free;
   if (E.view==="plan") pvPaintPlan(canvas,E.scene,E.tick,E.active,E.drag?.layout,E.route);
+  else if (free) pvPaint(canvas,pvFreeScene(E),E.tick);
   else pvPaint(canvas,E.scene,E.tick,E.active);
   pvElement("[data-pv-time]").textContent=pvTime(E.tick);
   const scrub=pvElement("[data-pv-scrub]");
   scrub.max=E.scene.duration*PV_FPS;
   scrub.value=E.tick;
+}
+
+function pvFreeScene(E) {
+  return {...E.scene,camera:[E.freeView]};
+}
+
+function pvResetFreeView(E) {
+  E.freeView=pvSample(E.scene.camera,E.tick);
+  pvFrame(E);
+}
+
+function pvTurnFreeView(E, dx, dy) {
+  const camera=E.freeView;
+  const x=camera.tx-camera.x, y=camera.ty-camera.y, z=camera.tz-camera.z;
+  const distance=Math.max(1,Math.hypot(x,y,z));
+  const yaw=Math.atan2(x,z)-dx*.006;
+  const pitch=Math.max(-1.48,Math.min(1.48,Math.atan2(y,Math.hypot(x,z))-dy*.006));
+  Object.assign(camera,{tx:camera.x+distance*Math.cos(pitch)*Math.sin(yaw),
+    ty:camera.y+distance*Math.sin(pitch),tz:camera.z+distance*Math.cos(pitch)*Math.cos(yaw)});
+  pvFrame(E);
+}
+
+function pvMoveFreeView(E, key, step) {
+  const camera=E.freeView;
+  const yaw=Math.atan2(camera.tx-camera.x,camera.tz-camera.z);
+  const forward=["w","s"].includes(key)?(key==="w"?step:-step):0;
+  const sideways=["a","d"].includes(key)?(key==="d"?step:-step):0;
+  const delta=[forward*Math.sin(yaw)-sideways*Math.cos(yaw),key==="e"?step:key==="q"?-step:0,
+    forward*Math.cos(yaw)+sideways*Math.sin(yaw)];
+  for(const [i,axis] of ["x","y","z"].entries()){
+    const next=Math.max(-50,Math.min(50,camera[axis]+delta[i]));
+    camera["t"+axis]+=next-camera[axis];
+    camera[axis]=next;
+  }
+  pvFrame(E);
+}
+
+function pvAdoptFreeView(E) {
+  if (E.view!=="free" || !E.freeView)return;
+  pvPause(E);
+  const pose=Object.fromEntries(PV_PARAMS.camera.map(([key])=>[key,E.freeView[key]]));
+  if(PV_PARAMS.camera.some(([key])=>key!=="fov" && Math.abs(pose[key])>50)){
+    pvStatus("视线超出机位可记录范围，请向场景内部移动后再设为机位。");return;
+  }
+  E.active="camera";
+  if(!pvChangePose(E,pose)){pvRefreshTrack(E);pvStatus("机位轨道已满，请移除一个关键帧后再试。");return;}
+  E.view="camera";
+  E.look=null;
+  const view=pvElement("[data-pv-view]");
+  view.value="camera";
+  pvFrame(E);
+  view.focus();
+  pvStatus(`已将自由视图设为 ${pvTime(E.tick)} 的机位`);
 }
 
 function pvRefreshFields(E) {
@@ -180,6 +283,7 @@ function pvRefreshTrack(E) {
   cutSource.replaceChildren(new Option("当前构图","current"),...E.scene.camera.map(key=>
     new Option(pvTime(key.t),String(key.t))));
   if ([...cutSource.options].some(option=>option.value===chosen)) cutSource.value=chosen;
+  pvRefreshShotRanges(E);
   const marker = pvElement("[data-pv-keys]");
   marker.replaceChildren(...pvTrack(E).map(key=>{
     const b=document.createElement("button");
@@ -370,7 +474,7 @@ function pvPlayback(E) {
 
 function closePrevis(discard=false) {
   const E=PV.editor;
-  if (!E || E.sending) return !E;
+  if (!E || E.sending || E.guideBatch) return !E;
   pvPause(E);
   if (discard!==true && pvValidNode(E) && !pvCommit(E)) return false;
   PV.editor=null;
@@ -385,14 +489,19 @@ function openPrevis(n) {
   if (!pvUsableScene(n.data.previs)) return toast("白模场景记录无法读取");
   if (PV.editor && !closePrevis()) return;
   const scene=structuredClone(n.data.previs);
-  const E=PV.editor={n,board:boardId,scene,savedScene:JSON.stringify(scene),active:"camera",tick:0,view:"camera",sending:false};
+  const start=curV(n)?.previs_span?.[0];
+  const tick=Number.isInteger(start)?Math.max(0,Math.min(start,scene.duration*PV_FPS)):0;
+  const E=PV.editor={n,board:boardId,scene,savedScene:JSON.stringify(scene),active:"camera",tick,view:"camera",sending:false};
   const panel=$("#previsEditor");
   if (panel.showModal) panel.showModal();
   else panel.setAttribute("open","");
   pvElement("[data-pv-duration]").value=scene.duration;
   pvElement("[data-pv-aspect]").value=scene.aspect;
   pvElement("[data-pv-view]").value="camera";
+  pvElement("[data-pv-batch-panel]").hidden=true;
+  pvElement("[data-pv-shot-range]").selectedIndex=-1;
   pvElement("[data-pv-motion]").open=false;
+  pvElement("[data-pv-lighting]").open=false;
   pvElement("[data-pv-motion-mode]").value="push";
   pvElement("[data-pv-motion-end]").value=scene.duration;
   pvElement("[data-pv-motion-amount]").value="1";
@@ -400,6 +509,7 @@ function openPrevis(n) {
   pvElement("[data-pv-discard]").hidden=true;
   pvElement("[data-pv-import-model]").textContent="导入 3D 模型";
   pvStatus("");
+  pvRefreshLighting(E);
   pvRefreshTrack(E);
   pvUpdateRenderState(n);
 }
@@ -466,8 +576,8 @@ async function pvImportModel(E,picked) {
   }
 }
 
-async function pvExportFrame(E, download) {
-  if (!pvValidNode(E) || E.sending) return;
+async function pvExportFrame(E, download, free=false) {
+  if (!pvValidNode(E) || E.sending || free && (E.view!=="free" || !E.freeView)) return;
   pvPause(E);
   if (!download && !pvCommit(E)) return;
   const tick=E.tick, time=pvTime(tick), board=B, savedScene=E.savedScene;
@@ -476,13 +586,8 @@ async function pvExportFrame(E, download) {
   pvUpdateRenderState(E.n);
   pvStatus(download ? "正在导出 PNG…" : "正在将当前帧放入画布…");
   try {
-    const frame=document.createElement("canvas");
-    frame.width=w;
-    frame.height=h;
-    pvPaint(frame,E.scene,tick);
-    const blob=await new Promise(resolve=>frame.toBlob(resolve,"image/png"));
-    if (!blob) throw new Error("无法导出当前帧");
-    const name=E.n.name+" · "+time;
+    const blob=await pvFramePng(free?pvFreeScene(E):E.scene,tick);
+    const name=E.n.name+(free?" · 自由视图 · ":" · ")+time;
     const filename=name.replace(/[\\/:*?"<>|]/g,"_")+".png";
     if (download) {
       pvDownload(blob,filename);
@@ -493,7 +598,7 @@ async function pvExportFrame(E, download) {
     if (PV.editor!==E || B!==board || !pvValidNode(E) || JSON.stringify(E.n.data.previs)!==savedScene) {
       throw new Error("画布或白模场景已更新，请重新打开场景后再截帧");
     }
-    const version=mediaVersion({...asset,w,h},{source:"previs-frame",mode:"白模机位截帧"});
+    const version=mediaVersion({...asset,w,h},{source:"previs-frame",mode:free?"白模自由视图":"白模机位截帧"});
     const data={aspect:E.scene.aspect};
     const extra={name,versions:[version],cur:0};
     const dimensions=size({type:"image",data,...extra});
@@ -512,7 +617,232 @@ async function pvExportFrame(E, download) {
   }
 }
 
-async function pvRender(E) {
+async function pvFramePng(scene,tick) {
+  const frame=document.createElement("canvas");
+  [frame.width,frame.height]=PV_SIZE[scene.aspect];
+  pvPaint(frame,scene,tick);
+  const blob=await new Promise(resolve=>frame.toBlob(resolve,"image/png"));
+  if (!blob) throw new Error("无法导出机位帧");
+  return blob;
+}
+
+function pvStoryboardBoundaries(scene) {
+  const end=scene.duration*PV_FPS;
+  return [0,...scene.camera.filter(key=>key.ease==="cut" && key.t>0 && key.t<end).map(key=>key.t),end];
+}
+
+function pvSpanLabel([start,end]) {
+  return `${(start/PV_FPS).toFixed(2)}–${pvTime(end)}`;
+}
+
+function pvRefreshShotRanges(E) {
+  const boundaries=pvStoryboardBoundaries(E.scene);
+  const control=pvElement("[data-pv-shot-range]"), previous=control.value;
+  pvElement("[data-pv-shot-render-tools]").hidden=boundaries.length<=2;
+  const options=boundaries.slice(0,-1).map((start,i)=>{
+    const span=[start,boundaries[i+1]];
+    return new Option(`第 ${i+1} 镜 · ${pvSpanLabel(span)}`,JSON.stringify(span));
+  });
+  control.replaceChildren(...options);
+  const at=Math.min(E.tick,boundaries.at(-1)-1);
+  const current=boundaries.findIndex((start,i)=>start<=at && at<boundaries[i+1]);
+  if(options.some(option=>option.value===previous))control.value=previous;
+  else control.selectedIndex=Math.max(0,current);
+}
+
+function pvShotGuideTargets(E,version) {
+  if(!pvGuideAvailable(version) || !Array.isArray(version.previs_span))return new Map();
+  const [start,end]=version.previs_span, matches=new Map();
+  for(const script of B.nodes){
+    if(script.type!=="script" || script.data.previs_source!==E.n.id)continue;
+    const pairs=scriptShotLinks(script);
+    script.data.shots?.forEach((shot,i)=>{
+      const input=shot.previs_range, video=node(pairs[i]?.vid);
+      if(input?.[0]!==start || input?.[1]!==end || video?.type!=="video" ||
+         video.data.previs || video.data.film || video.job || prepping.has(video.id))return;
+      matches.set(video.id,`${script.name} · 第 ${i+1} 镜`);
+    });
+  }
+  return matches;
+}
+
+function pvRefreshShotGuide(E,version) {
+  const targets=pvShotGuideTargets(E,version), choice=pvElement("[data-pv-guide-target]"), previous=choice.value;
+  pvElement("[data-pv-shot-guide]").hidden=targets.size===0;
+  choice.replaceChildren(...[...targets].map(([id,label])=>new Option(label,id)));
+  if(targets.has(previous))choice.value=previous;
+}
+
+function pvAttachShotGuide(E) {
+  const version=curV(E.n), id=pvElement("[data-pv-guide-target]").value;
+  if(!pvShotGuideTargets(E,version).has(id))return pvStatus("对应镜头已移除或正在生成，请重新核对");
+  if(!closePrevis())return;
+  const video=node(id);
+  checkpoint();rememberVideoVersion(video);
+  attachPrevis(E.n,video);
+  toast(`已为「${video.name}」绑定 ${pvSpanLabel(version.previs_span)} 的白模动作`);
+}
+
+function pvGuideScripts(E) {
+  return B.nodes.filter(n=>n.type==="script" && n.data.previs_source===E.n.id && n.data.shots?.length);
+}
+
+function pvGuideBatchPlan(E,script) {
+  if(!pvGuideScripts(E).includes(script))return [];
+  const boundaries=pvStoryboardBoundaries(E.scene);
+  const allowed=new Set(boundaries.slice(0,-1).map((start,i)=>JSON.stringify([start,boundaries[i+1]])));
+  const scene=JSON.stringify(E.scene), links=scriptShotLinks(script);
+  return script.data.shots.map((shot,i)=>{
+    const span=shot.previs_range, video=node(links[i]?.vid);
+    let skip="";
+    if(!allowed.has(JSON.stringify(span)))skip="切点已变化或缺少白模区间";
+    else if(span[1]-span[0]<2*PV_FPS)skip="少于 2 秒";
+    else if(video?.type!=="video" || video.data.previs || video.data.film)skip="缺少对应分镜视频";
+    else if(video.job || prepping.has(video.id))skip="分镜视频正在生成";
+    else if(previsInput(video))skip="已有动作参考";
+    const existing=!skip && E.n.versions.findLast(version=>pvGuideAvailable(version) &&
+      JSON.stringify(version.previs_span)===JSON.stringify(span) && JSON.stringify(version.previs_recipe)===scene);
+    return {index:i,span,video:video?.id,name:video?.name,skip,ref:existing?.ref};
+  });
+}
+
+function pvDrawGuideBatch(rows) {
+  const list=pvElement("[data-pv-batch-rows]");
+  list.replaceChildren(...rows.map(row=>{
+    const item=document.createElement("li");
+    const label=Array.isArray(row.span)?` · ${pvSpanLabel(row.span)}`:"";
+    item.textContent=`第 ${row.index+1} 镜${label}${row.name?" · "+row.name:""} · ${row.state || (row.skip?`跳过（${row.skip}）`:row.ref?"复用当前场景的已渲染动作":"渲染并绑定")}`;
+    return item;
+  }));
+}
+
+function pvPreviewGuideBatch(E) {
+  const panel=pvElement("[data-pv-batch-panel]"), choice=pvElement("[data-pv-batch-script]"), previous=choice.value;
+  choice.replaceChildren(...pvGuideScripts(E).map(script=>new Option(script.name,script.id)));
+  if([...choice.options].some(option=>option.value===previous))choice.value=previous;
+  const script=node(choice.value), rows=pvGuideBatchPlan(E,script);
+  E.guideReview={script:script?.id,scene:JSON.stringify(E.scene),rows};
+  panel.hidden=false;
+  pvDrawGuideBatch(rows);
+  pvElement("[data-pv-batch-confirm]").disabled=!rows.some(row=>!row.skip);
+}
+
+async function pvRunGuideBatch(E) {
+  if(!pvValidNode(E) || E.n.job || E.guideBatch || !E.guideReview)return;
+  const {script:scriptId,scene,rows:planned}=E.guideReview;
+  const review=pvGuideBatchPlan(E,node(scriptId));
+  if(scene!==JSON.stringify(E.scene) || JSON.stringify(review)!==JSON.stringify(planned)){
+    pvPreviewGuideBatch(E);pvStatus("分镜或白模已变化，请核对后再次确认。");return;
+  }
+  pvPause(E);
+  if(!review.some(row=>!row.skip) || !pvCommit(E))return;
+  const batch=E.guideBatch={stopping:false}, rows=review.map(row=>({...row})), staged=[];
+  const current=()=>PV.editor===E && pvValidNode(E) && JSON.stringify(E.n.data.previs)===scene &&
+    JSON.stringify(E.scene)===scene;
+  const target=row=>{
+    const linked=pvGuideBatchPlan(E,node(scriptId))[row.index];
+    return linked && !linked.skip && linked.video===row.video &&
+      JSON.stringify(linked.span)===JSON.stringify(row.span) ? node(linked.video) : null;
+  };
+  let bound=0;
+  pvUpdateRenderState(E.n);
+  try {
+    for(const row of rows){
+      if(!current() || batch.stopping)break;
+      if(row.skip)continue;
+      if(!target(row)){row.state="分镜已变化，已跳过";continue;}
+      let version=E.n.versions.find(v=>v.ref===row.ref);
+      if(!version){
+        const before=new Set(E.n.versions.map(v=>v.ref));
+        row.state="渲染中";
+        pvDrawGuideBatch(rows);
+        const job=await pvRender(E,row.span);
+        if(!job){row.state="未确认渲染已提交";break;}
+        const id=job.ids[0];
+        while(current() && E.n.job?.ids?.includes(id))await sleep(200);
+        if(!current())break;
+        version=E.n.versions.findLast(v=>!before.has(v.ref) && JSON.stringify(v.previs_span)===JSON.stringify(row.span) &&
+          pvGuideAvailable(v) && JSON.stringify(v.previs_recipe)===scene);
+      }
+      if(!version){row.state="渲染未完成，可重试";continue;}
+      row.state="待绑定";
+      staged.push({row,version});
+      pvDrawGuideBatch(rows);
+    }
+    if(current())for(const {row,version} of staged){
+      const video=target(row);
+      if(!video || !E.n.versions.some(item=>item.ref===version.ref)){row.state="分镜或白模版本已变化，已跳过";continue;}
+      if(!bound)checkpoint();
+      rememberVideoVersion(video);
+      setPrevisGuide(E.n,video,version);
+      render(video);
+      row.state="已绑定";
+      bound++;
+    }
+    if(bound){drawEdges();showPanel();save();}
+    for(const row of rows)if(!row.skip && (!row.state || row.state==="待绑定" || row.state==="渲染中"))row.state="等待重新核对";
+  } finally {
+    E.guideBatch=null;
+    E.guideReview=null;
+    if(PV.editor===E){
+      if(!pvValidNode(E))closePrevis(true);
+      else {
+        pvUpdateRenderState(E.n);
+        pvDrawGuideBatch(rows);
+        pvElement("[data-pv-batch-confirm]").disabled=true;
+        pvStatus(`已绑定 ${bound} 镜。${batch.stopping?"已停止后续渲染。":"可核对各镜头的处理结果。"}`);
+      }
+    }
+  }
+}
+
+async function pvExportStoryboard(E) {
+  if (!pvValidNode(E) || E.sending) return;
+  pvPause(E);
+  if (!pvCommit(E)) return;
+  const scene=structuredClone(E.scene), board=B, savedScene=E.savedScene;
+  const [w,h]=PV_SIZE[scene.aspect], boundaries=pvStoryboardBoundaries(scene);
+  const count=boundaries.length-1;
+  if (E.storyboardDraft?.scene!==savedScene) E.storyboardDraft={scene:savedScene,shots:[]};
+  const {shots}=E.storyboardDraft;
+  const current=()=>PV.editor===E && B===board && pvValidNode(E) && JSON.stringify(E.n.data.previs)===savedScene;
+  E.sending=true;
+  pvUpdateRenderState(E.n);
+  try {
+    for (let i=shots.length;i<count;i++) {
+      pvStatus(`正在准备镜头首帧 ${i+1}/${count}…`);
+      const start=boundaries[i], end=boundaries[i+1];
+      const blob=await pvFramePng(scene,start);
+      if (!current()) throw new Error("画布或白模场景已更新，请重新打开场景后再创建分镜");
+      const {ref}=await ewUpload(blob,`白模镜头-${String(i+1).padStart(2,"0")}.png`);
+      if (!current()) throw new Error("画布或白模场景已更新，请重新打开场景后再创建分镜");
+      if (!ref) throw new Error("机位帧上传失败");
+      shots.push({duration:(end-start)/PV_FPS,frame:{ref,w,h,source:"previs-frame"},previs_range:[start,end],
+        shot_size:"",camera:"",scene:"",keyframe:"",characters:[],action:[],dialogue:[],sound:""});
+    }
+    const title=E.n.name+" · 分镜";
+    const data={title,aspect:scene.aspect,shots,previs_source:E.n.id};
+    const scriptSize=size({type:"script",data});
+    const imageSize=size({type:"image",data,versions:[],cur:-1});
+    const videoSize=size({type:"video",data,versions:[],cur:-1});
+    const area={w:scriptSize.w+140+count*(Math.max(imageSize.w,videoSize.w)+80)-80,
+      h:Math.max(scriptSize.h,Math.max(imageSize.h,300)+110+videoSize.h)};
+    const at=freeSpot(E.n.x+size(E.n).w+110,E.n.y,"script",area);
+    checkpoint();
+    const script=addNode("script",at.x,at.y,data,{name:title});
+    expandScript(script,null,{recordUndo:false});
+    E.storyboardDraft=null;
+    loadAssets();
+    if (PV.editor===E) pvStatus(`已创建 ${count} 镜，关闭预演即可查看分镜和首帧`);
+  } catch(error) {
+    if (PV.editor===E) pvStatus(error.message);
+  } finally {
+    E.sending=false;
+    pvUpdateRenderState(E.n);
+  }
+}
+
+async function pvRender(E,span=null) {
   if (!pvValidNode(E) || E.sending || E.n.job) return;
   pvPause(E);
   if (!pvCommit(E)) return;
@@ -524,20 +854,21 @@ async function pvRender(E) {
     await flushSave();
     if (!pvValidNode(E)) return;
     if (JSON.stringify(E.n.data.previs)!==JSON.stringify(scene)) throw new Error("白模场景已更新，请重新打开后渲染");
-    const key=JSON.stringify([E.board,E.n.id,E.n.data.previs]);
+    const key=JSON.stringify([E.board,E.n.id,E.n.data.previs,span]);
     let attempt=PV.attempts.get(key);
     if (!attempt) {
       attempt=crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), b=>b.toString(16).padStart(2,"0")).join("");
       PV.attempts.set(key,attempt);
     }
-    const result=await api("/api/previs/render",{board:E.board,node:E.n.id,revision:B.rev,request_key:attempt});
+    const result=await api("/api/previs/render",{board:E.board,node:E.n.id,revision:B.rev,request_key:attempt,...(span?{span}:{})});
     if (!pvValidNode(E)) return;
     PV.attempts.delete(key);
     E.n.job={ids:result.ids,prompt:"",source:"previs",t0:Date.now(),st:{},history:{
-      previs_recipe:scene,node_data:structuredClone(E.n.data),input_edges:[],
+      previs_recipe:scene,node_data:structuredClone(E.n.data),input_edges:[],...(span?{previs_span:span}:{}),
     }};
     save(); render(E.n); poll();
     pvStatus("已提交渲染，完成后会加入此节点的版本列表。");
+    return E.n.job;
   } catch(error) {
     pvStatus(error.message);
   } finally {
@@ -555,10 +886,17 @@ function pvPointer(canvas,ev,width,height) {
   return [(ev.clientX-rect.left)*width/rect.width,(ev.clientY-rect.top)*height/rect.height];
 }
 
-function pvBindPlan(canvas) {
+function pvBindCanvas(canvas) {
   canvas.onpointerdown=ev=>{
     const E=PV.editor;
-    if (!E || E.view!=="plan" || E.sending || ev.button!==0) return;
+    if (!E || E.sending || E.guideBatch || ev.button!==0) return;
+    if(E.view==="free"){
+      canvas.focus();
+      E.look={id:ev.pointerId,x:ev.clientX,y:ev.clientY};
+      canvas.setPointerCapture?.(ev.pointerId);
+      return;
+    }
+    if(E.view!=="plan")return;
     pvPause(E);
     const layout=pvPlan(E.scene,E.tick,canvas.width,canvas.height,E.active);
     const [x,z]=layout.world(...pvPointer(canvas,ev,canvas.width,canvas.height));
@@ -587,18 +925,35 @@ function pvBindPlan(canvas) {
   };
   canvas.onpointermove=ev=>{
     const E=PV.editor,drag=E?.drag;
+    if(E?.sending || E?.guideBatch)return;
+    if(E?.view==="free" && E.look && E.look.id===ev.pointerId){
+      const look=E.look;
+      pvTurnFreeView(E,ev.clientX-look.x,ev.clientY-look.y);
+      Object.assign(look,{x:ev.clientX,y:ev.clientY});
+      return;
+    }
     if (!drag || drag.id!==ev.pointerId) return;
     const [x,z]=drag.layout.world(...pvPointer(canvas,ev,canvas.width,canvas.height));
     const limit=v=>Math.max(-50,Math.min(50,Math.round(v*100)/100));
     if (pvChangePose(E,{x:limit(x-drag.dx),z:limit(z-drag.dz)},false)) pvFrame(E);
   };
-  const end=()=>{
+  const end=ev=>{
     const E=PV.editor;
+    if(E?.look && E.look.id===ev?.pointerId)E.look=null;
     if (!E?.drag) return;
     E.drag=null;
     pvRefreshTrack(E);
   };
   canvas.onpointerup=canvas.onpointercancel=canvas.onlostpointercapture=end;
+  canvas.onkeydown=event=>{
+    const E=PV.editor;
+    if(E?.view!=="free" || E.sending || E.guideBatch || event.altKey || event.ctrlKey || event.metaKey)return;
+    const key=event.key.toLowerCase(), turns={arrowleft:[-12,0],arrowright:[12,0],arrowup:[0,-12],arrowdown:[0,12]};
+    if(Object.hasOwn(turns,key))pvTurnFreeView(E,...turns[key]);
+    else if(["w","a","s","d","q","e"].includes(key))pvMoveFreeView(E,key,event.shiftKey ? .8 : .25);
+    else return;
+    event.preventDefault();
+  };
 }
 
 function initPrevis() {
@@ -607,21 +962,41 @@ function initPrevis() {
     const max=owner==="size"?20:key==="fov"?95:key==="yaw"?360:50;
     return `<label>${label}<input type="number" min="${min}" max="${max}" step=".1" data-owner="${owner}" data-pv-param="${key}"></label>`;
   })).join("");
+  const lightControls=Object.entries(PV_LIGHT_LIMITS).map(([key,[min,max]])=>
+    `<label>${PV_LIGHT_LABELS[key]}<input type="number" min="${min}" max="${max}" step="${max>2?1:.05}" data-pv-light-value="${key}"></label>`).join("");
   document.body.insertAdjacentHTML("beforeend",`<dialog id="previsEditor" aria-labelledby="pvTitle">
     <header class="pv-head"><div><strong id="pvTitle">3D 白模预演</strong><span data-pv-heading></span></div>
-      <button type="button" data-pv-render>渲染预演</button><button type="button" data-pv-use hidden>用作动作参考</button><button type="button" data-pv-close>保存并关闭</button></header>
+      <button type="button" data-pv-render>渲染预演</button><button type="button" data-pv-use hidden>用作动作参考</button>
+      <button type="button" data-pv-batch-stop hidden>停止后续渲染</button><button type="button" data-pv-close>保存并关闭</button></header>
     <fieldset><div class="pv-layout">
       <section class="pv-stage"><div class="pv-controls">
-        <label>视图<select data-pv-view><option value="camera">机位预览</option><option value="plan">俯视摆位</option></select></label>
+        <label>视图<select data-pv-view><option value="camera">机位预览</option><option value="plan">俯视摆位</option><option value="free">自由视图</option></select></label>
         <label>画幅<select data-pv-aspect><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
         <label>时长<input type="number" min="2" max="14" step="1" data-pv-duration> 秒</label>
       </div><canvas aria-label="白模场景预览"></canvas>
+      <div class="pv-controls pv-free-controls" data-pv-free-controls hidden>
+        <span>拖动或方向键转向，WASD 移动，Q/E 升降</span>
+        <button type="button" data-pv-free-reset>回到当前机位</button>
+        <button type="button" data-pv-free-capture>截图到画布</button>
+        <button type="button" data-pv-free-adopt>设为当前机位</button>
+      </div>
       <div class="pv-controls pv-timeline"><button type="button" data-pv-play>播放</button>
         <input type="range" min="0" max="96" step="1" data-pv-scrub aria-label="预演时间轴">
         <output data-pv-time></output></div>
       <div class="pv-controls"><button type="button" data-pv-frame-canvas>机位帧放入画布</button>
         <button type="button" data-pv-frame-download>下载机位帧 PNG</button>
+        <button type="button" data-pv-storyboard>按切点创建分镜</button>
+        <button type="button" data-pv-batch-open hidden>批量绑定动作</button>
         <button type="button" data-pv-scene-download>导出场景 GLB</button></div>
+      <div class="pv-controls pv-shot-controls" data-pv-shot-render-tools hidden>
+        <label>镜头<select data-pv-shot-range></select></label><button type="button" data-pv-render-shot>渲染这一镜</button></div>
+      <div class="pv-controls pv-shot-controls" data-pv-shot-guide hidden>
+        <label>分镜视频<select data-pv-guide-target></select></label><button type="button" data-pv-apply-shot-guide>绑定本镜动作</button></div>
+      <section data-pv-batch-panel class="pv-batch-panel" aria-label="批量绑定白模动作" hidden>
+        <label>分镜<select data-pv-batch-script></select></label><ol data-pv-batch-rows></ol>
+        <div class="pv-controls"><button type="button" data-pv-batch-hide>收起</button>
+          <button type="button" data-pv-batch-confirm>确认渲染并绑定</button></div>
+      </section>
       <div class="pv-keys" data-pv-keys aria-label="当前轨道的关键帧"></div></section>
       <section class="pv-inspector">
         <label class="pv-wide">轨道<select data-pv-track></select></label>
@@ -636,6 +1011,16 @@ function initPrevis() {
         <div class="pv-controls pv-cut-tools" data-pv-cut-tools>
           <label>切镜构图<select data-pv-cut-source></select></label>
           <button type="button" data-pv-add-cut>添加切镜</button></div>
+        <details data-pv-lighting>
+          <summary>场景灯光</summary>
+          <label class="pv-wide">预设<select data-pv-light-preset><option value="off">默认白模</option>
+            ${Object.entries(PV_LIGHT_PRESETS).map(([id,preset])=>`<option value="${id}">${preset.label}</option>`).join("")}
+            <option value="custom" disabled>自定义</option></select></label>
+          <div data-pv-light-fields hidden>
+            <div class="pv-fields">${lightControls}</div>
+            <label class="pv-wide">色调<select data-pv-light-tone><option value="neutral">中性</option><option value="warm">暖光</option><option value="cool">冷光</option></select></label>
+          </div>
+        </details>
         <details data-pv-motion><summary>运镜预设</summary>
           <label class="pv-wide">方式<select data-pv-motion-mode>${Object.entries(PV_MOVES).map(([id,label])=>`<option value="${id}">${label}</option>`).join("")}</select></label>
           <p>起点用当前播放头 <output data-pv-motion-start></output></p>
@@ -659,15 +1044,40 @@ function initPrevis() {
   const panel=$("#previsEditor"), canvas=pvElement("canvas");
   panel.addEventListener("keydown", ev=>ev.stopPropagation());
   panel.addEventListener("cancel", ev=>{ev.preventDefault();closePrevis();});
-  pvBindPlan(canvas);
-  const on=(selector,key,fn)=>{pvElement(selector)[key]=event=>{const E=PV.editor;if(E&&!E.sending)fn(E,event);};};
-  on("[data-pv-render]","onclick",pvRender);
+  pvBindCanvas(canvas);
+  const on=(selector,key,fn)=>{pvElement(selector)[key]=event=>{const E=PV.editor;if(E&&!E.sending&&!E.guideBatch)fn(E,event);};};
+  on("[data-pv-render]","onclick",E=>pvRender(E));
+  on("[data-pv-shot-range]","onchange",(E,ev)=>{
+    pvPause(E);
+    E.tick=JSON.parse(ev.target.value)[0];
+    pvRefreshFields(E);pvFrame(E);
+  });
+  on("[data-pv-render-shot]","onclick",E=>{
+    const value=pvElement("[data-pv-shot-range]").value;
+    if(value)pvRender(E,JSON.parse(value));
+  });
+  on("[data-pv-apply-shot-guide]","onclick",pvAttachShotGuide);
+  on("[data-pv-batch-open]","onclick",pvPreviewGuideBatch);
+  on("[data-pv-batch-script]","onchange",pvPreviewGuideBatch);
+  on("[data-pv-batch-hide]","onclick",()=>{pvElement("[data-pv-batch-panel]").hidden=true;});
+  on("[data-pv-batch-confirm]","onclick",pvRunGuideBatch);
+  pvElement("[data-pv-batch-stop]").onclick=()=>{
+    const E=PV.editor;
+    if(!E?.guideBatch)return;
+    E.guideBatch.stopping=true;
+    pvUpdateRenderState(E.n);
+    pvStatus("当前镜头将完成，后续镜头停止提交。");
+  };
   on("[data-pv-use]","onclick",E=>{if(closePrevis())usePrevisForVideo(E.n);});
   on("[data-pv-close]","onclick",()=>closePrevis());
   on("[data-pv-discard]","onclick",()=>closePrevis(true));
   on("[data-pv-play]","onclick",pvPlayback);
   on("[data-pv-frame-canvas]","onclick",E=>pvExportFrame(E,false));
   on("[data-pv-frame-download]","onclick",E=>pvExportFrame(E,true));
+  on("[data-pv-free-reset]","onclick",E=>{pvResetFreeView(E);canvas.focus();});
+  on("[data-pv-free-capture]","onclick",E=>pvExportFrame(E,false,true));
+  on("[data-pv-free-adopt]","onclick",pvAdoptFreeView);
+  on("[data-pv-storyboard]","onclick",pvExportStoryboard);
   on("[data-pv-scene-download]","onclick",pvDownloadScene);
   on("[data-pv-import-model]","onclick",()=>pvElement("[data-pv-model-file]").click());
   on("[data-pv-model-file]","onchange",(E,ev)=>{
@@ -677,8 +1087,29 @@ function initPrevis() {
   });
   on("[data-pv-scrub]","oninput",(E,ev)=>{pvPause(E);E.tick=Number(ev.target.value);pvRefreshFields(E);pvFrame(E);});
   on("[data-pv-track]","onchange",(E,ev)=>{pvPause(E);E.active=ev.target.value;pvRefreshTrack(E);});
-  on("[data-pv-view]","onchange",(E,ev)=>{E.view=ev.target.value;pvFrame(E);});
+  on("[data-pv-view]","onchange",(E,ev)=>{
+    E.view=ev.target.value;
+    E.look=E.drag=null;
+    if(E.view==="free"){
+      pvPause(E);
+      if(!E.freeView)pvResetFreeView(E);else pvFrame(E);
+      canvas.focus();
+    }else pvFrame(E);
+  });
   on("[data-pv-aspect]","onchange",(E,ev)=>{E.scene.aspect=ev.target.value;pvFrame(E);});
+  on("[data-pv-light-preset]","onchange",(E,ev)=>{
+    const preset=PV_LIGHT_PRESETS[ev.target.value];
+    if(preset)E.scene.lighting={...preset.settings};
+    else if(ev.target.value==="off")delete E.scene.lighting;
+    pvRefreshLighting(E);pvFrame(E);
+  });
+  function updateLight(E,key,value) {
+    if(E.scene.lighting && value!==null)E.scene.lighting[key]=value;
+    pvRefreshLighting(E);pvFrame(E);
+  }
+  for(const key of Object.keys(PV_LIGHT_LIMITS))on(`[data-pv-light-value="${key}"]`,"onchange",(E,ev)=>
+    updateLight(E,key,pvNumber(ev.target)));
+  on("[data-pv-light-tone]","onchange",(E,ev)=>updateLight(E,"tone",ev.target.value));
   on("[data-pv-duration]","onchange",(E,ev)=>{
     pvPause(E);
     const seconds=pvNumber(ev.target);

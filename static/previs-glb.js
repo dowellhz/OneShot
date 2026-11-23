@@ -223,17 +223,22 @@ function pvGlb(scene,tick,name) {
     yfov:verticalFov(camera),znear:PV_NEAR,aspectRatio:width/height,
   }});
   gltf.nodes.push({name:"预演机位",camera:0,translation:translation(camera),rotation:pvCameraRotation(camera)});
-  const shapes=new Map();
+  const shapes=new Map(), lighting=pvLightSetup(scene.lighting);
+  const linearColor=byte=>{
+    const tone=byte/255;
+    return tone<=.04045?tone/12.92:((tone+.055)/1.055)**2.4;
+  };
   for (const item of scene.objects) {
-    const meshKey=item.shape==="mesh"?item.triangles:item.shape;
+    const pose=pvSample(item.keys,tick), angle=pose.yaw*Math.PI/180;
+    const c=Math.cos(angle),s=Math.sin(angle);
+    const meshKey=lighting?item:item.shape==="mesh"?item.triangles:item.shape;
     if (!shapes.has(meshKey)) {
       const positions=[],colors=[];
       for (const [points,light] of pvFaces(item)) {
-        const tone=Math.round(228*light)/255;
-        const linear=((tone+.055)/1.055)**2.4;
+        const color=pvFaceColor(lighting?pvWorldFace(points,item,pose,c,s):points,light,lighting).map(linearColor);
         for (let i=1;i<points.length-1;i++) {
           positions.push(...points[0],...points[i],...points[i+1]);
-          colors.push(linear,linear,linear,linear,linear,linear,linear,linear,linear);
+          colors.push(...color,...color,...color);
         }
       }
       if (positions.length) {
@@ -244,7 +249,6 @@ function pvGlb(scene,tick,name) {
         shapes.set(meshKey,gltf.meshes.push({name:PV_SHAPES[item.shape]||item.label,primitives:[{attributes,material:0}]})-1);
       }
     }
-    const pose=pvSample(item.keys,tick);
     gltf.nodes.push({name:item.label,mesh:shapes.get(meshKey),scale:[item.width,item.height,item.depth],
       translation:translation(pose),rotation:objectRotation(pose)});
   }

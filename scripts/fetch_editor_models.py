@@ -11,12 +11,35 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORIES = {"sam2": "facebook/sam2.1-hiera-tiny", "inpaint": "AI-ModelScope/stable-diffusion-inpainting"}
+UPSCALE_RELEASE = "https://raw.githubusercontent.com/Saafke/FSRCNN_Tensorflow/6a4812c4ef1c4f5947d79beafa32a05a6eb4a94d/models/"
+UPSCALE_CHECKSUMS = {
+    "FSRCNN_x2.pb": "366b33f0084c7b3f2bf6724f0a2c77bca94fcec9d7b6d72389d330073b380d5c",
+    "FSRCNN_x4.pb": "5c68d18db561aed8ead4ffedf1b897ea615baaf60ebf6c35f8e641f8fa4a21bf",
+}
+
+
+def fetch_upscale(directory):
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, checksum in UPSCALE_CHECKSUMS.items():
+        path = directory / name
+        if path.is_file() and digest(path) == checksum:
+            continue
+        with urllib.request.urlopen(UPSCALE_RELEASE + name, timeout=30) as response:
+            weights = response.read()
+        if hashlib.sha256(weights).hexdigest() != checksum:
+            raise RuntimeError("超分模型校验失败：" + name)
+        with tempfile.NamedTemporaryFile(dir=directory, suffix=".part", delete=False) as output:
+            partial = Path(output.name)
+            output.write(weights)
+        partial.replace(path)
+        print("ready upscale", name, flush=True)
 
 
 def digest(path):
@@ -58,7 +81,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--models-dir", type=Path, default=ROOT / "models")
     parser.add_argument("--with-u2net", action="store_true", help="Optional isolated U²-Netp background-removal backend")
+    parser.add_argument("--upscale-only", action="store_true", help="Download only the 2× and 4× FSRCNN models")
     args = parser.parse_args()
+    if args.upscale_only:
+        fetch_upscale(args.models_dir / "upscale")
+        return
     files, manifest = [], {}
     for model, repo in REPOSITORIES.items():
         with urllib.request.urlopen(f"https://modelscope.cn/api/v1/models/{repo}/repo/files?Recursive=true&Revision=master", timeout=30) as response:

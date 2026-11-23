@@ -5,6 +5,8 @@ const PV_SIZE = {"16:9":[720,405],"9:16":[405,720],"1:1":[540,540]};
 const PV_SHAPES = {box:"方块", column:"圆柱", figure:"人物"};
 const PV_TRIANGLE_LIMIT = 2000;
 const PV_NEAR = .12;
+const PV_LIGHT_LIMITS={azimuth:[-180,180],elevation:[-90,90],key:[0,1.5],ambient:[0,1]};
+const PV_LIGHT_TONES={neutral:[1,1,1],warm:[1,.78,.58],cool:[.64,.81,1]};
 
 function pvSample(track, tick) {
   const right = track.findIndex(pose => pose.t >= tick);
@@ -22,16 +24,16 @@ function pvBox(cx=0,bottom=0,cz=0,width=1,height=1,depth=1,shade=1) {
   const x0=cx-width/2,x1=cx+width/2,y1=bottom+height,z0=cz-depth/2,z1=cz+depth/2;
   const vertices=[[x0,bottom,z0],[x1,bottom,z0],[x1,y1,z0],[x0,y1,z0],
     [x0,bottom,z1],[x1,bottom,z1],[x1,y1,z1],[x0,y1,z1]];
-  return [[[0,1,2,3],.74],[[4,5,6,7],.86],[[0,4,7,3],.68],[[1,5,6,2],.78],
-    [[3,2,6,7],1],[[0,1,5,4],.62]].map(([order,light])=>[order.map(i=>vertices[i]),light*shade]);
+  return [[[0,3,2,1],.74],[[4,5,6,7],.86],[[0,4,7,3],.68],[[1,2,6,5],.78],
+    [[3,7,6,2],1],[[0,1,5,4],.62]].map(([order,light])=>[order.map(i=>vertices[i]),light*shade]);
 }
 
 function pvColumn() {
   const base=Array.from({length:16},(_,i)=>[Math.cos(i*Math.PI/8)/2,0,Math.sin(i*Math.PI/8)/2]);
   const top=base.map(([x,_,z])=>[x,1,z]);
-  return [[base,.62],[top,1],...base.map((point,i)=>{
+  return [[base,.62],[top.slice().reverse(),1],...base.map((point,i)=>{
     const j=(i+1)%16;
-    return [[point,base[j],top[j],top[i]],.76+.14*Math.cos((i+2)*Math.PI/8)];
+    return [[point,top[i],top[j],base[j]],.76+.14*Math.cos((i+2)*Math.PI/8)];
   })];
 }
 
@@ -71,6 +73,27 @@ function pvCameraBasis(camera) {
 function pvCamera(camera) {
   const basis=pvCameraBasis(camera);
   return ([x,y,z])=>basis.map(a=>a[0]*(x-camera.x)+a[1]*(y-camera.y)+a[2]*(z-camera.z));
+}
+
+function pvLightSetup(settings) {
+  if(!settings)return null;
+  const a=settings.azimuth*Math.PI/180, e=settings.elevation*Math.PI/180;
+  return {direction:[Math.sin(a)*Math.cos(e),Math.sin(e),Math.cos(a)*Math.cos(e)],
+    tint:PV_LIGHT_TONES[settings.tone],key:settings.key,ambient:settings.ambient};
+}
+
+function pvWorldFace(vertices,item,pose,c,s) {
+  return vertices.map(([x,y,z])=>[pose.x+x*item.width*c-z*item.depth*s,
+    pose.y+y*item.height,pose.z+x*item.width*s+z*item.depth*c]);
+}
+
+function pvFaceColor(vertices,legacy,light) {
+  if(!light)return Array(3).fill(Math.round(228*legacy));
+  const [a,b,c]=vertices, u=b.map((axis,i)=>axis-a[i]), v=c.map((axis,i)=>axis-a[i]);
+  const normal=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+  const length=Math.hypot(...normal);
+  const direct=length>1e-6?light.key*Math.max(0,normal.reduce((dot,value,i)=>dot+value*light.direction[i],0)/length):0;
+  return light.tint.map(tint=>Math.min(255,Math.round(228*(light.ambient+direct*tint))));
 }
 
 function pvNearHit(a,b) {
@@ -122,22 +145,21 @@ function pvPaint(cameraCanvas,scene,tick,active) {
     if (b[2]<PV_NEAR) b=pvNearHit(b,a);
     pvLine(ctx,project(a),project(b),o?"#3c3e44":"#64666c");
   }
-  const faces=[];
+  const faces=[], lighting=pvLightSetup(scene.lighting);
   for (const item of scene.objects) {
     const pose=pvSample(item.keys,tick),a=pose.yaw*Math.PI/180,c=Math.cos(a),s=Math.sin(a);
     for (const [verts,light] of pvFaces(item)) {
-      const points=pvClip(verts.map(([x,y,z])=>toCamera([pose.x+x*item.width*c-z*item.depth*s,
-        pose.y+y*item.height,pose.z+x*item.width*s+z*item.depth*c])));
+      const world=pvWorldFace(verts,item,pose,c,s);
+      const points=pvClip(world.map(toCamera));
       if (points.length>=3) {
         const depth=points.reduce((sum,p)=>sum+p[2],0)/points.length;
-        faces.push({depth,points:points.map(project),light,selected:item.id===active});
+        faces.push({depth,points:points.map(project),color:pvFaceColor(world,light,lighting),selected:item.id===active});
       }
     }
   }
   faces.sort((a,b)=>b.depth-a.depth);
   for (const face of faces) {
-    const v=Math.round(228*face.light);
-    pvPolygon(ctx,face.points,`rgb(${v} ${v} ${v})`,face.selected?"#a5b8db":"#555861");
+    pvPolygon(ctx,face.points,`rgb(${face.color.join(" ")})`,face.selected?"#a5b8db":"#555861");
   }
 }
 

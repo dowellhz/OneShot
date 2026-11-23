@@ -193,6 +193,7 @@ function vtCopyVersion(n,index,at=null) {
     }
   }
   if(n.type!=="audio")data.count=1;
+  if(data.previs_composition?.ref!==v.ref)delete data.previs_composition;
   delete data.asset;
   delete data.character_draft;
   delete v.tab_nodes;
@@ -213,6 +214,11 @@ function vtCopyVersion(n,index,at=null) {
   return result;
 }
 
+function vtAdjacentIndex(n,index,direction) {
+  const count=n.versions.length;
+  return (Math.max(0,index)+direction+count)%count;
+}
+
 function vtWireTab(button,n) {
   const index=Number(button.dataset.i);
   button.onclick=event=>{
@@ -227,8 +233,8 @@ function vtWireTab(button,n) {
   button.onkeydown=event=>{
     if(canvasCanEdit() && (event.key==="ContextMenu" || event.shiftKey&&event.key==="F10"))return menu(event);
     if(event.altKey || event.metaKey || event.ctrlKey || event.shiftKey)return;
-    const last=n.versions.length-1, offset={ArrowUp:-1,ArrowLeft:-1,ArrowDown:1,ArrowRight:1}[event.key];
-    const target=event.key==="Home"?0:event.key==="End"?last:offset?(index+offset+last+1)%(last+1):null;
+    const offset={ArrowUp:-1,ArrowLeft:-1,ArrowDown:1,ArrowRight:1}[event.key];
+    const target=event.key==="Home"?0:event.key==="End"?n.versions.length-1:offset?vtAdjacentIndex(n,index,offset):null;
     if(target===null)return;
     event.preventDefault();event.stopPropagation();
     if(switchVersion(n,target))els.get(n.id)?.querySelector(`.vtabs button[data-i="${target}"]`)?.focus();

@@ -226,15 +226,17 @@ async def status(_):
 @routes.post("/tools/{tool}")
 async def editor_tool(req):
     tool = req.match_info["tool"]
-    if tool not in ("segment", "cutout"):
+    if tool not in ("segment", "cutout", "decompose"):
         raise web.HTTPNotFound()
     p = await req.json()
     try:
         async with EDITOR_CPU_LOCK:
             if tool == "segment":
                 result = await asyncio.to_thread(EDITOR.segment, p["image"], p.get("points"), p["out"])
-            else:
+            elif tool == "cutout":
                 result = await asyncio.to_thread(EDITOR.cutout, p["image"], p["out"])
+            else:
+                result = await asyncio.to_thread(EDITOR.decompose, p["image"], p["out"])
         return web.json_response(result)
     except Exception as e:
         return web.json_response({"error": str(e)[:500]}, status=400)

@@ -7,13 +7,14 @@ AC.models=[];
 AC.modelSelection={};
 const AC_THINKING_LEVELS={off:"关闭",low:"轻量",high:"标准",max:"深度"};
 AC.drafts=new Map();
+AC.delivery=new Map();
 const AC_REVIEW_LIMIT=8;
 const AC_GENERATION_MODES={auto:"自动生成",smart:"智能确认",manual:"每次确认"};
 const AC_EXECUTION_SCOPES={full:"正常执行",analysis:"仅分析",plan:"仅拟方案",brainstorm:"头脑风暴"};
 AC.executionScope="full";
 let acGenerationMode=localStorage.getItem("h3.chat.generationMode") || "auto";
 if(!Object.hasOwn(AC_GENERATION_MODES,acGenerationMode))acGenerationMode="auto";
-const AC_LABELS={audio_separate:"人声分离",video_remake_plan:"确认换角计划",video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",video_remake_preview:"提交换角预览",video_remake_generate:"提交重制镜头视频",video_remake_export:"合成并保留原声",video_remake_review:"保存镜头审核决定",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
+const AC_LABELS={audio_separate:"人声分离",video_remake_plan:"确认换角计划",video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",video_remake_preview:"提交换角预览",video_remake_generate:"提交重制镜头视频",video_remake_export:"合成并保留原声",video_remake_review:"保存镜头审核决定",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",image_upscale:"智能放大",image_decompose:"自动分层",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
 const AC_STATES={thinking:"正在理解与规划…",running:"正在执行…",stopping:"正在停止，保留已完成结果…",stopped:"本轮已停止",done:"本轮已结束",error:"本轮执行中断"};
 const AC_PHASES={queued:"排队",loading:"加载模型",encoding:"处理提示词与图片",sampling:"生成",decoding:"解码",compositing:"合成",watermark:"写入 AI 水印",done:"完成",error:"失败"};
 AC_LABELS.creative_skill_load="加载创作技能";
@@ -33,6 +34,7 @@ AC_LABELS.storyboard_visual_review="审阅镜头衔接";
 AC_LABELS.storyboard_next_shot_plan="准备下一镜";
 AC_LABELS.storyboard_revision_plan="准备镜头修改";
 AC_LABELS.storyboard_range_run_plan="准备批量生成镜头";
+AC_LABELS.image_previs_frame="生成白模分镜图";
 AC_LABELS.creative_directions="比较创意方向";
 AC_LABELS.image_camera="图片换机位";
 AC_LABELS.image_relight="图片重新布光";
@@ -66,10 +68,18 @@ Object.assign(AC_LABELS,{video_generate:"生成视频",video_regenerate:"重新�
  video_broll_generate:"制作 B-roll 动态画面",
  video_playlist_create:"创建播放列表",video_playlist_read:"读取播放列表",video_playlist_edit:"调整播放列表",video_playlist_export:"导出播放列表",
  video_previs_get:"读取白模场景",video_previs_save:"保存白模场景",video_previs_render:"渲染白模预演",
+ video_previs_storyboard_plan:"准备白模分镜",
  video_previs_camera_motion:"应用白模运镜",video_previs_object_motion:"设置白模走位",
  audio_services:"读取配音与音乐服务",audio_generate:"生成音频"});
 const acClone=v=>JSON.parse(JSON.stringify(v));
 function acActive(){return AC.runs.find(r=>!["done","error","stopped"].includes(r.state));}
+async function acStopCurrent(expectedId=acActive()?.id){
+ const run=acActive();
+ if(!run || run.id!==expectedId || run.state==="stopping")return false;
+ await acApi(`/api/chat/runs/${run.id}/stop`,{});
+ await acPoll();
+ return true;
+}
 async function acApi(url,body){const r=await fetch(url,body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});let j;try{j=await r.json();}catch{throw new Error("服务返回异常，请稍后重试");}if(!r.ok)throw new Error(j.error||"请求失败");return j;}
 function acRememberBoard(id,b){AC.base.set(id,acClone(b));}
 // Incoming links to one node form an ordered list of references.
@@ -197,6 +207,7 @@ function acRefs(){
 }
 let acPickingPlacement = false;
 const acCanvasBackground = target => [vp,world,svg].includes(target);
+const AC_CONTINUATION_DRAG="application/x-oneshot-assistant-continuation";
 function acRenderPlacement() {
  const marker = $("#acPlacementMarker");
  const point = AC.open && AC.board === boardId && (acVoiceActive?.placement || AC.placement);
@@ -214,10 +225,39 @@ function acPlacementPoint(point) {
  }
  return {x,y};
 }
-function acPickPlacement(active) {
+function acPickPlacement(active, continuation=null) {
  acPickingPlacement = active;
+ AC.continuation=active?continuation:null;
  vp.classList.toggle("ac-placement-picking",active);
+ vp.classList.toggle("ac-continuation-picking",!!AC.continuation);
  $("#acPickPlacement").setAttribute("aria-pressed",String(active));
+ $("#acContinuation").hidden=!AC.continuation;
+ if(AC.continuation)$("#acContinuationDrag").textContent=AC.continuation.title;
+}
+
+function acContinuationTarget(target){
+ if(acCanvasBackground(target))return {valid:true,node:null};
+ const element=target.closest?.(".node");
+ const targetNode=element&&els.get(element.dataset.id)===element?node(element.dataset.id):null;
+ return {valid:!!targetNode,node:targetNode};
+}
+
+function acApplyContinuation(target,x,y){
+ const turn=AC.continuation;
+ if(!turn||turn.board!==boardId||turn.session!==AC.session||!AC.open||!canvasCanEdit()||
+    AC.sending||AC.loadingSessions||acVoicePointing())return;
+ const hit=acContinuationTarget(target);
+ if(!hit.valid)return;
+ if(hit.node){
+  if(!acAttachNodeReference(hit.node))return;
+ }else{
+  const point=acPlacementPoint(toW(x,y));
+  if(!point)return;
+  AC.placement=point;
+ }
+ acPickPlacement(false);
+ acRenderState();
+ $("#acInput").focus();
 }
 function acNodeReferenceMarkup(n,selection,reviews){
  const pin=AC.referencePins.get(n.id);
@@ -402,6 +442,16 @@ function acResultCards(result){
     <dt>第一步</dt><dd>${esc(direction.first_step)}</dd></dl>
     <div class="ac-storyboard-actions"><button type="button" data-explore-direction>继续讨论这个方向</button>
     <button type="button" data-plan-direction>拟制作方案</button></div></section>`).join("");
+ }
+ if(result.previs_storyboard_plan){
+  const p=result.previs_storyboard_plan;
+  const time=tick=>Number((tick/p.fps).toFixed(2));
+  return `<section class="ac-storyboard-plan"><strong>${esc(p.name)} · ${p.boundaries.length-1} 镜 · ${esc(p.aspect)}</strong>
+   <details><summary>查看切点与镜长</summary><ol>${p.boundaries.slice(0,-1).map((start,i)=>{
+    const end=p.boundaries[i+1];
+    return `<li>${time(start)}–${time(end)} 秒 · ${time(end-start)} 秒</li>`;
+   }).join("")}</ol></details>
+   <button type="button" data-open-previs-storyboard="${esc(JSON.stringify(p))}">打开白模核对</button></section>`;
  }
  if(result.shot_range_plan){
   const plan=result.shot_range_plan;
@@ -815,12 +865,13 @@ function acAppendEvent(e,replay=false){
  if(e.kind==="tool_end"){
   el=AC.calls.get(d.call_id);
   if(!el)return;
+  if(e.run_id)el.dataset.taskRun=e.run_id;
   const result=d.result, output=$(".ac-output",el);
-  if(result.creative_directions?.length||result.previs_node||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
+  if(result.creative_directions?.length||result.previs_node||result.previs_storyboard_plan||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
      result.preview?.completed?.length||result.video?.completed||result.gif||d.name==="video_remake_export"&&result.export_ref||
      ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length||result.memories?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
-  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.template_fill_plan?"等待确认":"完成";
+  const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.previs_storyboard_plan||result.template_fill_plan?"等待确认":"完成";
   $("summary",el).textContent=el.dataset.label+" · "+state;
   $(".ac-progress",el).textContent="";
   const detail=document.createElement("pre");
@@ -857,7 +908,11 @@ function acAppendEvent(e,replay=false){
  }
  if(e.kind==="focus"&&!replay){acFocus(d.node_ids,d.open_editor);return;}
  if(typeof aeAppendEvent==="function"&&aeAppendEvent(e,replay))return;
- if(el){$(".ac-empty",box)?.remove();box.append(el);}
+ if(el){
+  if(e.run_id&&e.kind==="user")el.dataset.taskRequest=e.run_id;
+  if(e.run_id&&["assistant","notice"].includes(e.kind))el.dataset.taskRun=e.run_id;
+  $(".ac-empty",box)?.remove();box.append(el);
+ }
 }
 function acWorkflowResult(target, report){
  const button=document.createElement("button");
@@ -972,7 +1027,8 @@ function acRenderState(){
  $("#acStatus").textContent=active?AC_STATES[active.state]:(latest?.error||AC_STATES[latest?.state]||"可以讨论，也可以直接操作当前画布");
  if(AC.questionnaires.length)$("#acStatus").textContent="请完成创作确认后继续";
  const queue=$("#acQueue");
- const queueMarkup=AC.queue.map((item,index)=>`<li><span title="${esc(item.text)}">${esc(item.text)}</span><button type="button" data-remove-queued="${esc(item.id)}" aria-label="移除第 ${index+1} 条排队消息">移除</button></li>`).join("");
+ const queueMarkup=AC.queue.map((item,index)=>`<li data-queued-task="${esc(item.id)}" tabindex="-1"><span title="${esc(item.text)}">${esc(item.text)}</span>
+  ${item.removable===0?"":`<button type="button" data-remove-queued="${esc(item.id)}" aria-label="移除第 ${index+1} 条排队消息"${acQueueRemovals.has(item.id)?" disabled":""}>移除</button>`}</li>`).join("");
  if(queue._items!==queueMarkup){queue._items=queueMarkup;$("ol",queue).innerHTML=queueMarkup;}
  queue.hidden=!AC.queue.length;
  $("[data-queued-count]",queue).textContent="待执行 · "+AC.queue.length;
@@ -988,6 +1044,13 @@ function acRenderState(){
  $("#acStop").hidden=!active;$("#acStop").disabled=active?.state==="stopping";
  $("#acSend").disabled=AC.sending||!!AC.documentUpload||!!AC.loadingSessions||!AC.session||(!$("#acInput").value.trim()&&!AC.documents.length&&!AC.reviews.length);
  $("#acSend").textContent=active||AC.queue.length?"加入队列":"发送";
+ const delivery=AC.delivery.get(AC.session);
+ $("#acDelivery").hidden=!delivery;
+ const status=$("#acDeliveryStatus");
+ if(status.textContent!==(delivery?.message||""))status.textContent=delivery?.message||"";
+ const resend=$("#acResend");
+ resend.hidden=delivery?.state!=="failed";
+ resend.disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
  $("#acUndo").hidden=!latest||!!active||!!AC.queue.length;
  $("#acNew").disabled=$("#acSessions").disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
  $("#acExecutionScope").value=AC.executionScope;
@@ -995,6 +1058,7 @@ function acRenderState(){
  $("#acInput").placeholder=AC.executionScope==="brainstorm"?"描述创作目标，输入 @ 引用素材，一起探索不同方向…":"描述你想做什么，输入 @ 引用素材…";
  $("#acGenerationMode").disabled=AC.executionScope!=="full"||AC.sending||!!AC.loadingSessions;
  acRenderParallel();
+ acRenderTaskCenter();
  acRenderNodeActivity();
  $("#acModel").textContent=latest?.model?latest.model.provider+" · "+latest.model.model:"";
  acRenderModelPicker();
@@ -1023,8 +1087,13 @@ function acRenderModelPicker(){
  thinking.disabled=AC.sending||!!AC.loadingSessions;
 }
 
-function acSessionDirectory(sessions, selected=AC.session){
+function acSessionDirectory(sessions, selected=AC.session, observedAt){
  AC.sessions=sessions;
+ if(AC.board===boardId){
+  AC.nodeDirectory={board:boardId,rows:sessions};
+  acObserveTaskSounds(sessions,observedAt);
+  if(AC.nodeDirectoryRequest?.board===boardId)AC.nodeDirectoryRequest=null;
+ }
  const select=$("#acSessions");
  const options=AC.sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.title)}</option>`).join("");
  if(select._items!==options){select._items=options;select.innerHTML=options;}
@@ -1046,9 +1115,303 @@ function acRenderParallel(){
  if(panel._items!==list){panel._items=list;panel.innerHTML=list;}
 }
 
+const acTaskStops = new Set();
+const acQueueRemovals = new Set();
+
+function acTaskDirectory(){
+ return AC.nodeDirectory?.board===boardId ? AC.nodeDirectory.rows : [];
+}
+
+const acTaskAudio = window.AudioContext || window.webkitAudioContext;
+let acTaskSoundContext;
+function acTaskPreferenceKey(name){
+ return "h3.chat."+name+"."+ME_USER?.id;
+}
+function acTaskPreference(name){
+ try{return localStorage.getItem(acTaskPreferenceKey(name));}catch{return null;}
+}
+function acSetTaskPreference(name,value){
+ try{localStorage.setItem(acTaskPreferenceKey(name),value);}catch{}
+}
+
+function acUnlockTaskSound(){
+ if(!acTaskAudio||acTaskPreference("taskSound")!=="on")return;
+ try{
+  acTaskSoundContext??=new acTaskAudio();
+  if(acTaskSoundContext.state==="suspended")void acTaskSoundContext.resume().catch(()=>{});
+ }catch{}
+}
+
+function acPlayTaskSound(attention){
+ const audio=acTaskSoundContext;
+ if(audio?.state!=="running")return;
+ const notes=attention?[587,440]:[523,659];
+ const when=audio.currentTime;
+ notes.forEach((frequency,i)=>{
+  const start=when+i*0.13;
+  const tone=audio.createOscillator(), volume=audio.createGain();
+  tone.frequency.value=frequency;
+  volume.gain.setValueAtTime(0,start);
+  volume.gain.linearRampToValueAtTime(0.055,start+0.014);
+  volume.gain.linearRampToValueAtTime(0,start+0.15);
+  tone.connect(volume);
+  volume.connect(audio.destination);
+  tone.onended=()=>{tone.disconnect();volume.disconnect();};
+  tone.start(start);
+  tone.stop(start+0.15);
+ });
+}
+
+const acTaskNeedsInput=session=>["waiting_input","waiting_approval"].includes(session.run_state);
+function acObserveTaskSounds(sessions,observedAt){
+ if(!B||!canvasCanEdit()||!Number.isFinite(observedAt)||acTaskPreference("taskSound")!=="on")return;
+ const prior=AC.taskSoundSnapshot;
+ const user=ME_USER?.id;
+ const sameScope=prior?.board===boardId&&prior.user===user;
+ if(sameScope&&observedAt<=prior.observedAt)return;
+ AC.taskSoundSnapshot={board:boardId,user,observedAt};
+ if(!sameScope)return;
+ const changed=time=>time>prior.observedAt&&time<=observedAt;
+ const attention=sessions.some(row=>(acTaskNeedsInput(row)&&changed(row.active_task_updated))||
+  (row.recent_task?.state==="error"&&changed(row.recent_task.updated)));
+ const done=sessions.some(row=>row.recent_task?.state==="done"&&changed(row.recent_task.updated));
+ if(attention||done){try{acPlayTaskSound(attention);}catch{}}
+}
+
+function acTaskSeenKey(){
+ return "h3.chat.taskSeen."+JSON.stringify([ME_USER?.id??null,boardId]);
+}
+
+function acTaskSeen(){
+ try{
+  const ids=JSON.parse(localStorage.getItem(acTaskSeenKey())||"[]");
+  return new Set(Array.isArray(ids)?ids:[]);
+ }catch{return new Set();}
+}
+
+function acTaskMarkSeen(runId){
+ const ids=acTaskSeen();
+ if(ids.has(runId))return;
+ ids.add(runId);
+ try{localStorage.setItem(acTaskSeenKey(),JSON.stringify([...ids].slice(-80)));}catch{}
+}
+
+function acTaskResultElement(runId){
+ return [...$("#acMessages").children].findLast(el=>el.dataset.taskRun===runId);
+}
+
+function acJumpToTaskResult(){
+ const target=AC.taskResult;
+ if(!target||target.board!==boardId||target.session!==AC.session||!AC.open)return;
+ const request=[...$("#acMessages").children].find(message=>message.dataset.taskRequest===target.run);
+ const el=target.queued
+  ? $$("[data-queued-task]",$("#acQueue")).find(item=>item.dataset.queuedTask===target.run)||request
+  : AC.moreEvents?null:acTaskResultElement(target.run)||request;
+ if(!el)return;
+ AC.taskResult=null;
+ if(el.matches("details"))el.open=true;
+ el.tabIndex=-1;
+ el.scrollIntoView?.({block:"nearest"});
+ el.focus();
+ if(!target.queued)acTaskMarkSeen(target.run);
+ acRenderTaskCenter();
+}
+
+async function acStopTaskRow(sessionId,runId,onError=toast){
+ const board=boardId, session=acTaskDirectory().find(item=>item.id===sessionId);
+ if(!canvasCanEdit()||session?.active_task_id!==runId||!session.run_state||
+    session.run_state==="stopping"||acTaskStops.has(runId))return;
+ acTaskStops.add(runId);
+ acRenderTaskCenter();
+ try{
+  await acApi(`/api/chat/runs/${encodeURIComponent(runId)}/stop`,{});
+  if(board===boardId){
+   await acRefreshNodeDirectory(true);
+   if(sessionId===AC.session&&AC.open)await acPoll();
+  }
+ }catch(error){if(board===boardId)onError(error.message);}
+ finally{acTaskStops.delete(runId);acRenderTaskCenter();}
+}
+
+async function acRemoveQueuedTask(sid,runId){
+ const board=boardId;
+ const task=acTaskDirectory().find(row=>row.id===sid)?.queued_tasks?.find(item=>item.id===runId)||
+  (sid===AC.session&&AC.board===board?AC.queue.find(item=>item.id===runId):null);
+ if(!canvasCanEdit()||!task||task.removable===0||acQueueRemovals.has(runId))return;
+ acQueueRemovals.add(runId);
+ acRenderState();
+ try{
+  await boardRequest(`/api/chat/runs/${encodeURIComponent(runId)}/queue`,"DELETE");
+  if(board!==boardId)return;
+  if(sid===AC.session&&AC.board===board)AC.queue=AC.queue.filter(item=>item.id!==runId);
+  const row=acTaskDirectory().find(item=>item.id===sid);
+  if(row?.queued_tasks?.some(item=>item.id===runId)){
+   row.queued_tasks=row.queued_tasks.filter(item=>item.id!==runId);
+   row.queued_count=row.queued_tasks.length;
+  }
+ }catch(error){if(board===boardId)toast(error.message);}
+ finally{
+  acQueueRemovals.delete(runId);
+  if(board===boardId){
+   acRenderState();
+   await acRefreshNodeDirectory(true);
+   if(sid===AC.session&&AC.open)await acPoll();
+  }
+ }
+}
+
+function acCloseTaskCenter(){
+ const dialog=$("#acTaskCenter");
+ if(dialog.close)dialog.close();
+ else dialog.removeAttribute("open");
+}
+
+async function acLoadTaskHistory(){
+ const history=AC.taskHistory;
+ if(history.board!==boardId||history.loading||history.before===null)return;
+ history.loading=true;
+ history.error="";
+ acRenderTaskHistory();
+ const query=new URLSearchParams({board:history.board,before:history.before});
+ try{
+  const data=await acApi("/api/chat/task-history?"+query);
+  if(history!==AC.taskHistory||history.board!==boardId)return;
+  history.tasks.push(...data.tasks);
+  history.before=data.before;
+ }catch(error){history.error=error.message;}
+ finally{
+  history.loading=false;
+  if(history===AC.taskHistory&&history.board===boardId)acRenderTaskCenter();
+ }
+}
+
+function acRenderTaskHistory(){
+ const history=AC.taskHistory;
+ const status=$("#acTaskHistoryStatus"), more=$("#acTaskHistoryMore"), list=$("#acTaskHistoryRows");
+ if(!history||history.board!==boardId)return;
+ status.textContent=history.loading?"正在读取任务历史…":history.error||
+  (history.before===null&&!history.tasks.length?"当前画布还没有已结束的助手任务。":"");
+ more.hidden=history.before===null;
+ more.disabled=history.loading;
+ more.textContent=history.tasks.length?"加载更早的任务":"查看任务历史";
+ const disabled=AC.sending||AC.documentUpload||AC.loadingSessions;
+ const markup=history.tasks.map(task=>{
+  const label=task.text||task.title;
+  const state=(AC_STATES[task.state]||"").replace(/[….]+$/u,"");
+  return `<li><button type="button" class="ac-task-open" data-task-session="${esc(task.session_id)}"
+    data-task-result="${esc(task.id)}"${disabled?" disabled":""}>
+    <strong>${esc(label)}</strong><small>${esc(task.title===label?state:task.title+" · "+state)}</small></button>
+    ${acContinueTaskButton(task.session_id,task.id,task.state,disabled)}</li>`;
+ }).join("");
+ if(list._items!==markup){list._items=markup;list.innerHTML=markup;}
+}
+
+function acContinueTaskButton(session,run,state,disabled){
+ if(state!=="done")return "";
+ return `<button type="button" data-task-continue="${esc(session)}" data-task-continue-run="${esc(run)}"
+  ${disabled?" disabled":""}>继续创作</button>`;
+}
+
+function acCloseNodeTask(){
+ const panel=$("#acNodeTask"), target=AC.nodeTask;
+ AC.nodeTask=null;
+ if(panel.close)panel.close();
+ else panel.removeAttribute("open");
+ if(target?.board!==boardId)return;
+ const element=els.get(target.node);
+ const launcher=element&&$$("[data-node-agent-session]",element).find(button=>button.dataset.nodeAgentSession===target.session);
+ (launcher||$("#acTaskCenterBtn")).focus({preventScroll:true});
+}
+
+function acShowNodeTask(nodeId,sessionId){
+ const session=acTaskDirectory().find(row=>row.id===sessionId);
+ if(!B||!canvasCanEdit()||!session?.active_task_id||!session.run_state)return;
+ const panel=$("#acNodeTask");
+ AC.nodeTask={board:boardId,node:nodeId,session:sessionId,run:session.active_task_id,
+  title:session.title,text:session.active_task_text};
+ if(!panel.open){
+  if(panel.showModal)panel.showModal();
+  else panel.setAttribute("open","");
+ }
+ acRenderNodeTask();
+ $("[data-node-task-close]",panel).focus();
+}
+
+function acRenderNodeTask(){
+ const target=AC.nodeTask;
+ if(!target)return;
+ if(target.board!==boardId||!B||!canvasCanEdit()||!els.has(target.node)){acCloseNodeTask();return;}
+ const session=acTaskDirectory().find(row=>row.id===target.session);
+ const active=session?.active_task_id===target.run&&!!session.run_state;
+ const recent=session?.recent_task?.id===target.run?session.recent_task:null;
+ const status=active?(AC_STATES[session.run_state]||"正在执行…"):
+  recent?(AC_STATES[recent.state]||"本轮已结束"):"本轮已离开执行列表";
+ $("#acNodeTaskTitle").textContent=session?.title||target.title;
+ $("#acNodeTaskPrompt").textContent=session?.active_task_id===target.run?session.active_task_text||"":target.text||"";
+ const state=$("#acNodeTaskStatus"), message=target.error||status;
+ if(state.textContent!==message)state.textContent=message;
+ const stop=$("#acNodeTaskStop"), open=$("#acNodeTaskOpen");
+ stop.hidden=!active;
+ stop.disabled=!active||session.run_state==="stopping"||acTaskStops.has(target.run);
+ open.disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
+ open.textContent=active&&session.run_state==="waiting_approval"?"去确认":
+  active&&session.run_state==="waiting_input"?"去补充":"打开对话";
+}
+
+function acRenderTaskCenter(){
+ acRenderNodeTask();
+ const button=$("#acTaskCenterBtn"), body=$("#acTaskCenterRows");
+ const editable=!!B && canvasCanEdit();
+ button.hidden=!editable;
+ if(!editable){if($("#acTaskCenter").open)acCloseTaskCenter();return;}
+ const rows=acTaskDirectory();
+ const pending=rows.filter(acTaskNeedsInput);
+ const running=rows.filter(session=>session.run_state&&!acTaskNeedsInput(session));
+ const queued=rows.flatMap(session=>(session.queued_tasks||[]).map(task=>({session,task})))
+  .sort((a,b)=>a.task.position-b.task.position);
+ const recent=rows.filter(session=>session.recent_task)
+  .sort((a,b)=>b.recent_task.updated-a.recent_task.updated).slice(0,12);
+ const seen=acTaskSeen(), newResult=session=>session.recent_task?.state==="done"&&!seen.has(session.recent_task.id);
+ const unread=recent.filter(newResult).length;
+ const count=$("[data-task-attention]",button);
+ count.textContent=pending.length?pending.length+" 待处理":"";
+ count.hidden=!pending.length;
+ const active=$("[data-task-running]",button);
+ active.textContent=running.length?running.length+" 执行中":"";
+ active.hidden=!running.length;
+ const results=$("[data-task-results]",button);
+ results.textContent=unread?unread+" 新结果":"";
+ results.hidden=!unread;
+ if(!$("#acTaskCenter").open)return;
+ const disabled=AC.sending||AC.documentUpload||AC.loadingSessions;
+ const section=(title,entries,terminal=false)=>entries.length?`<section><h3>${title}</h3><ul>${entries.map(session=>{
+  const phase=terminal?session.recent_task.state:session.run_state;
+  const state=terminal&&newResult(session)?"新结果":phase?(AC_STATES[phase]||"等待执行").replace(/[….]+$/u,""):"等待执行";
+  const located=!terminal&&session.node_activity?.nodes?.some(id=>els.has(id));
+  const text=terminal?session.title:session.active_task_text||session.title;
+  return `<li><button type="button" class="ac-task-open" data-task-session="${esc(session.id)}"${terminal?` data-task-result="${esc(session.recent_task.id)}"`:""}${disabled?" disabled":""}>
+    <strong>${esc(text)}${text!==session.title?`<small>${esc(session.title)}</small>`:""}</strong><small>${esc(state)}</small></button>
+    ${located?`<button type="button" data-task-locate="${esc(session.id)}"${disabled?" disabled":""}>定位节点</button>`:""}
+    ${terminal?acContinueTaskButton(session.id,session.recent_task.id,phase,disabled):""}
+    ${!terminal&&session.active_task_id&&session.run_state?`<button type="button" data-task-stop="${esc(session.active_task_id)}" data-task-owner="${esc(session.id)}"
+       aria-label="停止 ${esc(session.title)} 的当前任务"${session.run_state==="stopping"||acTaskStops.has(session.active_task_id)?" disabled":""}>停止</button>`:""}</li>`;
+ }).join("")}</ul></section>`:"";
+ const queueSection=queued.length?`<section><h3>排队指令</h3><ul>${queued.map(({session,task})=>`
+  <li><button type="button" class="ac-task-open" data-task-session="${esc(session.id)}" data-task-queued="${esc(task.id)}"${disabled?" disabled":""}>
+  <strong>${esc(task.text||session.title)}<small>${esc(session.title)}</small></strong></button>
+  ${task.removable===0?"":`<button type="button" data-task-remove="${esc(task.id)}" data-task-owner="${esc(session.id)}"
+   aria-label="移除排队指令 ${esc(task.text||session.title)}"${acQueueRemovals.has(task.id)?" disabled":""}>移除</button>`}</li>`).join("")}</ul></section>`:"";
+ const status=AC.nodeDirectory?.board===boardId&&AC.nodeDirectory.error;
+ const markup=(status?'<p role="status">任务列表更新失败，稍后将重试。</p>':"")+
+  (section("待处理",pending)+section("执行中",running)+queueSection+section("近期结果",recent,true)||
+   (AC.nodeDirectoryRequest?.board===boardId?'<p role="status">正在读取任务…</p>':"<p>当前画布还没有助手任务。</p>"));
+ if(body._items!==markup){body._items=markup;body.innerHTML=markup;}
+ acRenderTaskHistory();
+}
+
 function acRenderNodeActivity(){
- const directory=AC.board===boardId&&AC.session?AC.sessions:AC.nodeDirectory?.board===boardId?AC.nodeDirectory.rows:[];
- const sessions=directory.filter(session=>session.run_state&&session.node_activity);
+ const directory=acTaskDirectory();
+ const sessions=directory.filter(session=>session.run_state&&session.node_activity&&session.active_task_id);
  const calls=new Map(sessions.flatMap(session=>session.node_activity.calls.map(id=>[id,session])));
  const active=new Map();
  const attach=(id,session)=>{
@@ -1064,6 +1427,7 @@ function acRenderNodeActivity(){
  }
  for(const box of $$(".node-agent-activity",world))if(!active.has(box.dataset.nodeId))box.remove();
  const disabled=AC.sending||AC.documentUpload||AC.loadingSessions;
+ const compact=acTaskPreference("taskBadge")==="dot";
  for(const [id,relevant] of active){
   const element=els.get(id);
   let box=$(".node-agent-activity",element);
@@ -1073,40 +1437,68 @@ function acRenderNodeActivity(){
    box.addEventListener("dblclick",event=>event.stopPropagation());
    box.onclick=event=>{
     const btn=event.target.closest("[data-node-agent-session]");
-    if(!btn)return;
+    if(!btn||btn.disabled)return;
     event.stopPropagation();
-    acOpenNodeSession(btn.dataset.nodeAgentSession).catch(error=>toast(error.message));
+    acShowNodeTask(id,btn.dataset.nodeAgentSession);
    };
    $(".card",element).append(box);
   }
   const labels={thinking:"规划中",running:"执行中",waiting_approval:"待确认",waiting_input:"待补充",stopping:"正在停止"};
-  const markup=[...relevant].map(session=>`<button type="button" data-node-agent-session="${esc(session.id)}"${disabled?" disabled":""}
-   title="${esc(session.title)}" aria-label="打开对话 ${esc(session.title)} · ${esc(labels[session.run_state]||"")}">
-   ${ico("script")}<span>${esc(labels[session.run_state]||"助手")}</span></button>`).join("");
+  const markup=[...relevant].map(session=>{
+   const label=session.title+" · "+(labels[session.run_state]||"助手");
+   return `<button type="button" data-node-agent-session="${esc(session.id)}"${disabled?" disabled":""}
+   title="${esc(label)}" aria-haspopup="dialog" aria-controls="acNodeTask" aria-label="查看任务 ${esc(label)}">${compact
+    ?`<span class="ac-task-dot${acTaskNeedsInput(session)?" needs-input":""}" aria-hidden="true"></span>`
+    :ico("script")+"<span>"+esc(labels[session.run_state]||"助手")+"</span>"}</button>`;
+  }).join("");
   if(box._items!==markup){box._items=markup;box.innerHTML=markup;}
  }
 }
 
-async function acRefreshNodeDirectory(){
+async function acRefreshNodeDirectory(fresh=false){
  const board=boardId;
- if(!board||AC.nodeDirectoryRequest?.board===board)return;
+ if(!board||!fresh&&AC.nodeDirectoryRequest?.board===board)return;
  const request=AC.nodeDirectoryRequest={board};
+ acRenderTaskCenter();
  try {
   const data=await acApi("/api/chat/sessions?board="+encodeURIComponent(board));
   if(board!==boardId||AC.nodeDirectoryRequest!==request)return;
   AC.nodeDirectory={board,rows:Array.isArray(data.sessions)?data.sessions:[]};
+  acObserveTaskSounds(AC.nodeDirectory.rows,data.task_snapshot_at);
   acRenderNodeActivity();
- }catch{}
- finally{if(AC.nodeDirectoryRequest===request)AC.nodeDirectoryRequest=null;}
+ }catch{
+  if(board===boardId&&AC.nodeDirectoryRequest===request)AC.nodeDirectory={board,rows:acTaskDirectory(),error:true};
+ }finally{
+  if(AC.nodeDirectoryRequest===request){AC.nodeDirectoryRequest=null;acRenderTaskCenter();}
+ }
 }
 
-async function acOpenNodeSession(id){
+async function acOpenNodeSession(id, {attention=false, locate=false, result=null, queued=null, history=false}={}){
  if(AC.sending||AC.documentUpload||AC.loadingSessions)return;
  const board=boardId;
  await acOpen({focus:false});
- if(board!==boardId || AC.board!==board || !AC.sessions.some(session=>session.id===id))return;
+ if(board!==boardId || AC.board!==board || (!history&&!AC.sessions.some(session=>session.id===id)))return;
  if(id!==AC.session)await acLoadSession(id);
+ if(board!==boardId || id!==AC.session)return;
+ if(result||queued){AC.taskResult={session:id,board,run:result||queued,queued:!!queued};acJumpToTaskResult();return;}
+ if(locate){
+  const session=AC.sessions.find(row=>row.id===id);
+  if(session?.node_activity?.nodes.length)await acFocus(session.node_activity.nodes);
+ }
+ if(attention){
+  const card=$("#acQuestions:not([hidden]),#acApprovals:not([hidden]),#acInputRequest:not([hidden])");
+  if(card){card.tabIndex=-1;card.scrollIntoView?.({block:"nearest"});card.focus();return;}
+ }
  $("#acInput").focus();
+}
+
+async function acContinueTask(session,title,history){
+ const board=boardId;
+ await acOpenNodeSession(session,{history});
+ if(board!==boardId||AC.board!==board||AC.session!==session||!AC.open||!canvasCanEdit())return;
+ acVoiceCancel();
+ acPickPlacement(true,{board,session,title});
+ $("#acContinuationCancel").focus();
 }
 
 function acRememberDraft(){
@@ -1173,7 +1565,7 @@ async function acPoll(background=false){
  const sid=AC.session,epoch=AC.epoch,polling={epoch};
  AC.polling=polling;
  try{const j=await acApi(`/api/chat/sessions/${sid}?after=${AC.cursor}`);if(epoch!==AC.epoch||sid!==AC.session)return;await acSyncBoard(j.board_rev);if(epoch!==AC.epoch)return;
-  AC.runs=j.runs;AC.queue=j.queue||[];AC.inputs=j.inputs||[];AC.approvals=j.approvals||[];AC.questionnaires=j.questionnaires||[];const box=$("#acMessages"),bottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;
+  AC.runs=Array.isArray(j.runs)?j.runs:[];AC.queue=j.queue||[];AC.inputs=j.inputs||[];AC.approvals=j.approvals||[];AC.questionnaires=j.questionnaires||[];const box=$("#acMessages"),bottom=box.scrollHeight-box.scrollTop-box.clientHeight<90;
   if(Array.isArray(j.model_options))AC.models=j.model_options;
   if(j.chat_model!==undefined){
    AC.modelSelection.locked=j.chat_model;
@@ -1182,15 +1574,21 @@ async function acPoll(background=false){
   if(Array.isArray(j.sessions)){
    const listed=j.sessions;
    if(j.session&&!listed.some(item=>item.id===sid))listed.push(j.session);
-   acSessionDirectory(listed);
+   acSessionDirectory(listed,AC.session,j.task_snapshot_at);
   }
+  AC.moreEvents=j.events.length===300;
   for(const e of j.events){AC.cursor=e.id;AC.events.push(e);acAppendEvent(e,AC.replaying||!AC.open);}
   acRenderReplyPreview(box,j.reply_previews);
+  const current=AC.sessions.find(item=>item.id===sid)?.recent_task;
+  if(AC.open&&bottom&&!$("#acTaskCenter").open&&current?.state==="done"&&acTaskResultElement(current.id))acTaskMarkSeen(current.id);
   AC.replaying=false;acRenderState();if(bottom)box.scrollTop=box.scrollHeight;$("#acError").hidden=true;
+  acJumpToTaskResult();
  }catch(e){if(epoch===AC.epoch){$("#acError").textContent="连接中断，将自动重连："+e.message;$("#acError").hidden=false;}}finally{if(AC.polling===polling)AC.polling=false;}
 }
 function acResetSession(id){
  acVoiceCancel();
+ AC.taskResult=null;
+ AC.moreEvents=false;
  AC.approvals=[];acDecidedApprovals.clear();
  AC.questionnaires=[];
  acPickPlacement(false);AC.placement=null;
@@ -1212,9 +1610,9 @@ async function acLoadSession(id){
  try{
   const outbox=JSON.parse(localStorage.getItem("h3.chat.outbox."+id));
   if(outbox?.payload){
-   const {text,selected,selection_id,review_id,review_ids,skill_id,document_ids,selected_versions,placement,generation_mode,chat_model,thinking_level,execution_scope}=outbox.payload;
+   const {text,selected,skill_id,selected_versions,placement,chat_model,thinking_level,execution_scope}=outbox.payload;
    if(!draft){
-    $("#acInput").value=outbox.payload.text;AC.refs=outbox.payload.selected;
+    $("#acInput").value=outbox.draft??text;AC.refs=selected;
     AC.selection=outbox.selection||null;AC.reviews=outbox.reviews||(outbox.review?[outbox.review]:[]);
     AC.placement=placement||null;
     for(const {node_id,ref} of selected_versions||[])AC.referencePins.set(node_id,{ref,name:node(node_id)?.name||node_id});
@@ -1224,7 +1622,10 @@ async function acLoadSession(id){
     AC.executionScope=Object.hasOwn(AC_EXECUTION_SCOPES,execution_scope)?execution_scope:"full";
     if(skill_id)csChoose(outbox.skill||{id:skill_id,name:"已选技能"});
    }
-   AC.pending.set(JSON.stringify([boardId,id,text,selected,selection_id,review_ids||(review_id?[review_id]:[]),skill_id,document_ids||[],selected_versions||[],placement||null,generation_mode||"auto",chat_model||"",thinking_level||"off",execution_scope||"full"]),outbox.payload);
+   const key=acMessageKey(boardId,id,outbox.payload);
+   AC.pending.set(key,outbox.payload);
+   AC.delivery.set(id,{board:boardId,sid:id,key,payload:outbox.payload,draft:outbox.draft??text,
+    state:"failed",message:"上一条消息的送达状态待确认"});
   }
  }catch{}
  acRenderRefs();acRenderState();await acPoll();
@@ -1252,7 +1653,7 @@ async function acSessions(fresh=false){
    if(!current())return;
    chosen=made.id;j.sessions.unshift({id:chosen,title:"新对话"});
   }
-  acSessionDirectory(j.sessions,chosen);
+  acSessionDirectory(j.sessions,chosen,j.task_snapshot_at);
   await acLoadSession(chosen);
   if(id===boardId&&chosen===AC.session)return chosen;
  }finally{
@@ -1260,74 +1661,141 @@ async function acSessions(fresh=false){
  }
 }
 function acRenderEmpty(){const box=$("#acMessages");if(box.children.length)return;box.innerHTML=`<div class="ac-empty"><b>告诉我你想怎么创作</b><div>引用画布素材，我可以生成、编辑和整理结果。</div><button data-example="描述一下选中的图片">理解这张图片</button><button data-example="以选中图片为参考生成三个暖色版本，横向排列在原图右边">生成三个暖色版本</button><button data-example="把选中的节点横向排齐">整理选中的节点</button></div>`;$$("[data-example]",box).forEach(b=>b.onclick=()=>{$("#acInput").value=b.dataset.example;acRenderState();$("#acInput").focus();});}
-async function acSend(choiceText){
- if(AC.sending||AC.documentUpload||AC.loadingSessions||!AC.session||(typeof choiceText==="string"&&(acActive()||AC.queue.length)))return;
- const input = $("#acInput"), draft = input.value;
+function acMessageKey(board,sid,payload){
+ const {text,selected,selection_id,review_id,review_ids,skill_id,document_ids,selected_versions,
+  placement,generation_mode,chat_model,thinking_level,execution_scope,enqueue}=payload;
+ return JSON.stringify([board,sid,text,selected,selection_id,review_ids||(review_id?[review_id]:[]),skill_id,
+  document_ids||[],selected_versions||[],placement||null,generation_mode||"auto",chat_model||"",thinking_level||"off",execution_scope||"full",enqueue]);
+}
+
+function acComposeMessage(choiceText){
+ const choice=typeof choiceText==="string", draft=$("#acInput").value;
  const reviews=AC.reviews, reviewIds=reviews.map(review=>review.id);
- const documents=typeof choiceText==="string"?[]:AC.documents.slice(), documentIds=documents.map(doc=>doc.id);
- const text=typeof choiceText==="string"?choiceText:draft.trim()||(reviewIds.length
+ const documents=choice?[]:AC.documents.slice(), documentIds=documents.map(doc=>doc.id);
+ const text=choice?choiceText:draft.trim()||(reviewIds.length
   ? documentIds.length ? "请阅读引用的审阅评论和附件，汇总修改建议。" : "请汇总这些审阅评论并给出修改建议。"
   : documentIds.length?"请阅读我上传的文档":"");
- if(!text)return;
- const sid=AC.session,id=boardId,selection=AC.selection,selected=acRefs().map(n=>n.id);
- const skill=typeof choiceText==="string"?null:AC.skill;
- const placement=typeof choiceText==="string"?null:AC.placement;
- if(AC.board!==id)return;
- if(selected.length>30){toast("每条消息最多引用 30 个画布节点");return;}
+ const board=boardId, sid=AC.session, selection=AC.selection, selected=acRefs().map(n=>n.id);
+ const skill=choice?null:AC.skill, placement=choice?null:AC.placement;
  const selectedVersions=[...AC.referencePins].filter(([nid])=>AC.refs?.includes(nid))
   .map(([node_id,{ref}])=>({node_id,ref}));
- if(selectedVersions.some(({node_id,ref})=>!node(node_id)?.versions.some(v=>v.ref===ref))){
+ const modelChoice=$("#acModelChoice").value, thinking=$("#acThinkingLevel").value||"off";
+ const scope=choice?(AC.events.findLast(event=>event.kind==="user")?.data.execution_scope||"full"):AC.executionScope;
+ const generation=scope==="full"?acGenerationMode:"auto";
+ const payload={text,selected,enqueue:!choice};
+ if(selection)payload.selection_id=selection.selection_id;
+ if(reviewIds.length===1)payload.review_id=reviewIds[0];
+ if(reviewIds.length>1)payload.review_ids=reviewIds;
+ if(skill)payload.skill_id=skill.id;
+ if(documentIds.length)payload.document_ids=documentIds;
+ if(selectedVersions.length)payload.selected_versions=selectedVersions;
+ if(placement)payload.placement=placement;
+ if(generation!=="auto")payload.generation_mode=generation;
+ if(scope!=="full")payload.execution_scope=scope;
+ if(modelChoice)payload.chat_model=modelChoice;
+ if(thinking!=="off")payload.thinking_level=thinking;
+ return {board,sid,draft,payload,key:acMessageKey(board,sid,payload),selection,reviews,documents,skill};
+}
+
+async function acSend(choiceText){
+ if(AC.sending||AC.documentUpload||AC.loadingSessions||!AC.session||AC.board!==boardId||
+    (typeof choiceText==="string"&&(acActive()||AC.queue.length)))return;
+ const submission=acComposeMessage(choiceText);
+ const {payload,key,selection,reviews,documents,skill,draft,sid}=submission;
+ if(!payload.text)return;
+ if(payload.selected.length>30){toast("每条消息最多引用 30 个画布节点");return;}
+ if(payload.selected_versions?.some(({node_id,ref})=>!node(node_id)?.versions.some(v=>v.ref===ref))){
   toast("引用的节点或版本已移除，请重新选择");return;
  }
- if(selection&&(!selected.includes(selection.node_id)||!node(selection.node_id)?.versions.some(v=>v.ref===selection.source_ref))){
+ if(selection&&(!payload.selected.includes(selection.node_id)||!node(selection.node_id)?.versions.some(v=>v.ref===selection.source_ref))){
   toast("选区源图已失效，请移除选区或重新圈选");return;
  }
  const reviewConflict=acCheckReviews(reviews);
  if(reviewConflict){toast(reviewConflict);return;}
- const modelChoice=$("#acModelChoice").value, thinking=$("#acThinkingLevel").value||"off";
- const scope=typeof choiceText==="string"?(AC.events.findLast(event=>event.kind==="user")?.data.execution_scope||"full"):AC.executionScope;
- const generation=scope==="full"?acGenerationMode:"auto";
- const key=JSON.stringify([id,sid,text,selected,selection?.selection_id,reviewIds,skill?.id,documentIds,selectedVersions,placement,generation,modelChoice,thinking,scope]);
- let pending=AC.pending.get(key);
- if(!pending){
-  pending={text,selected,request_key:crypto.randomUUID?.()||("req"+Date.now()+Math.random()),enqueue:typeof choiceText!=="string"};
-  if(selection)pending.selection_id=selection.selection_id;
-  if(reviewIds.length===1)pending.review_id=reviewIds[0];
-  if(reviewIds.length>1)pending.review_ids=reviewIds;
-  if(skill)pending.skill_id=skill.id;
-  if(documentIds.length)pending.document_ids=documentIds;
-  if(selectedVersions.length)pending.selected_versions=selectedVersions;
-  if(placement)pending.placement=placement;
-  if(generation!=="auto")pending.generation_mode=generation;
-  if(scope!=="full")pending.execution_scope=scope;
-  if(modelChoice)pending.chat_model=modelChoice;
-  if(thinking!=="off")pending.thinking_level=thinking;
-  AC.pending.set(key,pending);
-  try{localStorage.setItem("h3.chat.outbox."+sid,JSON.stringify({payload:pending,selection,reviews,skill,documents}));}catch{}
- }
- if(typeof choiceText!=="string"){acPickPlacement(false);acVoiceCancel();}
- AC.sending=true;acRenderState();try{await flushSave();if(id!==boardId||sid!==AC.session)throw new Error("画布已切换，请重新发送");if(AC.pending.has(id))throw new Error("请先处理画布保存冲突");
-  const sent=await acApi(`/api/chat/sessions/${sid}/messages`,pending);
-  AC.pending.delete(key);localStorage.removeItem("h3.chat.outbox."+sid);
-  if(id!==boardId||sid!==AC.session)return;
-  AC.modelSelection.locked??=AC.models.find(model=>model.id===modelChoice)||{id:""};
+ submission.payload=AC.pending.get(key)||{...payload,request_key:crypto.randomUUID?.()||("req"+Date.now()+Math.random())};
+ AC.pending.set(key,submission.payload);
+ try{localStorage.setItem("h3.chat.outbox."+sid,JSON.stringify({payload:submission.payload,draft,selection,reviews,skill,documents}));}catch{}
+ await acSubmitMessage(submission);
+}
+
+async function acSubmitMessage(submission){
+ const {key,payload,board,sid,draft}=submission;
+ if(AC.sending||AC.documentUpload||AC.loadingSessions||sid!==AC.session||AC.board!==board||boardId!==board)return;
+ const current=()=>board===boardId&&sid===AC.session;
+ AC.delivery.set(sid,{...submission,state:"sending",message:"正在发送…"});
+ if(payload.enqueue){acPickPlacement(false);acVoiceCancel();}
+ AC.sending=true;acRenderState();
+ try{
+  await flushSave();
+  if(!current())throw new Error("画布已切换，请重新发送");
+  if(AC.pending.has(board))throw new Error("请先处理画布保存冲突");
+  const sent=await acApi(`/api/chat/sessions/${sid}/messages`,payload);
+  AC.pending.delete(key);
+  try{
+   const outbox="h3.chat.outbox."+sid;
+   if(JSON.parse(localStorage.getItem(outbox))?.payload?.request_key===payload.request_key)localStorage.removeItem(outbox);
+  }catch{}
+  if(!current()){
+   AC.delivery.set(sid,{state:"accepted",message:sent.state==="queued"?"已加入队列":"已送达"});
+   return;
+  }
+  const option=$("#acSessions").selectedOptions[0];
+  if(option?.textContent==="新对话")option.textContent=payload.text.slice(0,30);
+  const title=option?.textContent||"当前对话";
+  AC.delivery.set(sid,{state:"accepted",message:(sent.state==="queued"?"已加入队列 · ":"已送达 · ")+title});
+  const input=$("#acInput");
+  const sameDraft=input.value===draft&&acComposeMessage(payload.enqueue?undefined:payload.text).key===key;
+  AC.modelSelection.locked??=AC.models.find(model=>model.id===payload.chat_model)||{id:""};
   if(sent.state==="queued"){
-   if(!AC.queue.some(item=>item.id===sent.id))AC.queue.push({id:sent.id,text});
+   if(!AC.queue.some(item=>item.id===sent.id))AC.queue.push({id:sent.id,text:payload.text});
    toast("已加入创作助手队列");
   }else if(!AC.runs.some(r=>r.id===sent.id))AC.runs.unshift(sent);
-  const option=$("#acSessions").selectedOptions[0];if(option?.textContent==="新对话")option.textContent=text.slice(0,30);
-  if(typeof choiceText!=="string"&&input.value===draft)input.value="";
-  AC.documents=AC.documents.filter(doc=>!documentIds.includes(doc.id));
-  AC.referencePins.clear();
-  if(AC.selection===selection){AC.refs=null;AC.selection=null;}
-  if(AC.reviews===reviews)AC.reviews=[];
-  if(AC.placement===placement)AC.placement=null;
-  if(skill&&AC.skill===skill)csChoose(null);
+  const consumedDocuments=payload.document_ids||[];
+  AC.documents=AC.documents.filter(doc=>!consumedDocuments.includes(doc.id));
+  if(sameDraft){
+   if(payload.enqueue)input.value="";
+   AC.referencePins.clear();
+   AC.refs=null;AC.selection=null;AC.reviews=[];
+   if(payload.enqueue){AC.placement=null;if(AC.skill)csChoose(null);}
+  }
   await acPoll();acRenderRefs();
- }catch(e){toast(e.message,6000);}finally{AC.sending=false;acRenderState();}
+ }catch(error){
+  AC.delivery.set(sid,{...submission,state:"failed",message:error.message||"消息未能确认送达"});
+  if(current())toast(error.message,6000);
+ }finally{AC.sending=false;acRenderState();}
 }
 function acShowPane(){AC.open=true;$("#agentChat").hidden=false;$("#chatLaunch").hidden=true;acRenderPlacement();acVoiceRefresh();}
 async function acOpen({focus=true}={}){if(!B)return;acShowPane();try{await flushSave();if(AC.board!==boardId||!AC.session)await acSessions();else await acPoll();}catch(e){$("#acError").textContent=e.message;$("#acError").hidden=false;}if(focus&&AC.open)$("#acInput").focus();}
+function acClosePane(){
+ const pane=$("#agentChat"), launch=$("#chatLaunch");
+ const restoreFocus=pane.contains(document.activeElement)&&pane.parentElement.id!=="light";
+ cpClose();lightDockAssistant(false);acVoiceCancel();acPickPlacement(false);csClose();
+ AC.open=false;acRenderPlacement();pane.hidden=true;launch.hidden=false;
+ if(restoreFocus)launch.focus();
+}
+
+function acKeyboardShortcut(event){
+ if(event.defaultPrevented||event.isComposing||event.altKey||!B||!canvasCanEdit())return;
+ const mod=event.metaKey||event.ctrlKey;
+ const toggle=mod&&!event.shiftKey&&event.key.toLowerCase()==="j";
+ const compose=!mod&&event.key==="/";
+ if(!toggle&&!compose)return;
+ const inChat=!!event.target.closest?.("#agentChat");
+ const editing=event.target.closest?.("input,textarea,select,[contenteditable]:not([contenteditable=false]),video,audio");
+ if(editing&&(!toggle||!inChat))return;
+ if(document.querySelector("dialog[open]:not(#light),#film.on,#wiz.on,#wzSample.on,#pv.on,#settings.on,#help.on,#assetLibrary:not([hidden]),#imageEditor.on,#videoRemake,.playlist-picking"))return;
+ const preview=$("#light").open;
+ const previewButton=preview?$("#light [data-light-agent]"):null;
+ if(preview&&!previewButton)return;
+ event.preventDefault();
+ event.stopPropagation();
+ if(event.repeat)return;
+ const visible=AC.open&&(!preview||$("#agentChat").parentElement.id==="light");
+ if(toggle&&visible)acClosePane();
+ else if(preview&&!visible)previewButton.click();
+ else void acOpen();
+}
+
 async function acSendShotRequest(board, payload, expectedSession=null){
  if(board!==boardId || !canvasCanEdit())throw new Error("请回到对应的可编辑画布");
  await acOpen({focus:false});
@@ -1342,10 +1810,143 @@ async function acSendShotRequest(board, payload, expectedSession=null){
   await acPoll();
  }
 }
-function acBoardChanged(){cpClose();if(!AC.open){void acRefreshNodeDirectory();return;}acSessions().catch(e=>toast(e.message));}
+function acBoardChanged(){
+ cpClose();
+ if(AC.continuation&&(AC.continuation.board!==boardId||!canvasCanEdit()))acPickPlacement(false);
+ if(AC.taskSoundSnapshot?.board!==boardId||!canvasCanEdit())AC.taskSoundSnapshot=null;
+ acRenderTaskCenter();
+ if(!AC.open){void acRefreshNodeDirectory();return;}
+ acSessions().catch(e=>toast(e.message));
+}
 function initAgentChat(){
- const launch=document.createElement("button");launch.id="chatLaunch";launch.innerHTML=`${ico("script")}<span>创作助手</span>`;launch.setAttribute("aria-controls","agentChat");launch.onclick=acOpen;document.body.append(launch);
+ const launch=document.createElement("button");launch.id="chatLaunch";launch.innerHTML=`${ico("script")}<span>创作助手</span>`;launch.setAttribute("aria-controls","agentChat");launch.setAttribute("aria-keyshortcuts","Meta+J Control+J /");launch.onclick=acOpen;document.body.append(launch);
+ $("#tr").insertAdjacentHTML("afterbegin",`<button type="button" id="acTaskCenterBtn" aria-haspopup="dialog" aria-controls="acTaskCenter" hidden>
+   助手任务 <span data-task-attention hidden></span><span data-task-running hidden></span><span data-task-results hidden></span></button>`);
+ document.body.insertAdjacentHTML("beforeend",`<dialog id="acTaskCenter" aria-labelledby="acTaskCenterTitle">
+   <header><strong id="acTaskCenterTitle">当前画布的助手任务</strong><button type="button" data-task-close aria-label="关闭助手任务">×</button></header>
+   <div id="acTaskCenterRows"></div>
+   <div id="acTaskHistory"><ul id="acTaskHistoryRows" aria-label="任务历史"></ul>
+   <p id="acTaskHistoryStatus" role="status"></p><button type="button" id="acTaskHistoryMore">查看任务历史</button></div>
+   <footer class="ac-task-preferences">
+   <label><input type="checkbox" id="acTaskSound">任务提示音</label>
+   <label>节点上的任务标记 <select id="acTaskBadge"><option value="label">状态文字</option><option value="dot">圆点</option></select></label>
+   </footer></dialog>`);
+ const taskCenter=$("#acTaskCenter");
+ document.body.insertAdjacentHTML("beforeend",`<dialog id="acNodeTask" aria-labelledby="acNodeTaskTitle">
+  <header><strong id="acNodeTaskTitle"></strong><button type="button" data-node-task-close aria-label="关闭任务详情">×</button></header>
+  <p id="acNodeTaskPrompt"></p><p id="acNodeTaskStatus" role="status"></p>
+  <footer><button type="button" id="acNodeTaskOpen">打开对话</button><button type="button" id="acNodeTaskStop">停止本轮</button></footer>
+ </dialog>`);
+ const nodeTask=$("#acNodeTask");
+ $("[data-node-task-close]",nodeTask).onclick=acCloseNodeTask;
+ nodeTask.oncancel=event=>{event.preventDefault();acCloseNodeTask();};
+ nodeTask.onkeydown=event=>{
+  event.stopPropagation();
+  if(event.key==="Escape"&&!nodeTask.close)acCloseNodeTask();
+ };
+ $("#acNodeTaskOpen").onclick=()=>{
+  const target=AC.nodeTask;
+  if(!target)return;
+  const active=acTaskDirectory().find(row=>row.id===target.session)?.active_task_id===target.run;
+  acCloseNodeTask();
+  void acOpenNodeSession(target.session,{attention:active,result:active?null:target.run}).catch(error=>toast(error.message));
+ };
+ $("#acNodeTaskStop").onclick=()=>{
+  const target=AC.nodeTask;
+  if(!target)return;
+  target.error="";
+  void acStopTaskRow(target.session,target.run,message=>{
+   if(AC.nodeTask===target){target.error=message;acRenderNodeTask();}
+  });
+ };
+ const sound=$("#acTaskSound"), badge=$("#acTaskBadge");
+ sound.parentElement.hidden=!acTaskAudio;
+ sound.onchange=()=>{
+  acSetTaskPreference("taskSound",sound.checked?"on":"off");
+  AC.taskSoundSnapshot=null;
+  if(sound.checked){
+   acUnlockTaskSound();
+   void acRefreshNodeDirectory();
+  }else if(acTaskSoundContext){
+   void acTaskSoundContext.close().catch(()=>{});
+   acTaskSoundContext=null;
+  }
+ };
+ badge.onchange=()=>{
+  acSetTaskPreference("taskBadge",badge.value);
+  acRenderNodeActivity();
+ };
+ if(acTaskAudio){
+  document.addEventListener("click",acUnlockTaskSound,true);
+  document.addEventListener("keydown",acUnlockTaskSound,true);
+ }
+ $("#acTaskCenterBtn").onclick=()=>{
+  if(taskCenter.open)return;
+  sound.checked=acTaskPreference("taskSound")==="on";
+  badge.value=acTaskPreference("taskBadge")==="dot"?"dot":"label";
+  AC.taskHistory={board:boardId,before:0,tasks:[]};
+  if(taskCenter.showModal)taskCenter.showModal();
+  else taskCenter.setAttribute("open","");
+  void acRefreshNodeDirectory();
+  acRenderTaskCenter();
+ };
+ $("#acTaskHistoryMore").onclick=acLoadTaskHistory;
+ $("[data-task-close]",taskCenter).onclick=acCloseTaskCenter;
+ taskCenter.onkeydown=event=>{
+  event.stopPropagation();
+  if(event.key==="Escape"&&!taskCenter.close)acCloseTaskCenter();
+ };
+ taskCenter.onclick=event=>{
+  const next=event.target.closest("[data-task-continue]");
+  if(next&&!next.disabled){
+   const sid=next.dataset.taskContinue, run=next.dataset.taskContinueRun;
+   const fromHistory=!!next.closest("#acTaskHistoryRows")&&AC.taskHistory?.board===boardId;
+   const entry=fromHistory
+    ? AC.taskHistory.tasks.find(task=>task.session_id===sid&&task.id===run&&task.state==="done")
+    : acTaskDirectory().find(session=>session.id===sid&&session.recent_task?.id===run&&session.recent_task.state==="done");
+   if(entry){
+    acCloseTaskCenter();
+    void acContinueTask(sid,entry.title,fromHistory).catch(error=>toast(error.message));
+   }
+   return;
+  }
+  const remove=event.target.closest("[data-task-remove]");
+  if(remove&&!remove.disabled){
+   void acRemoveQueuedTask(remove.dataset.taskOwner,remove.dataset.taskRemove);
+   return;
+  }
+  const stop=event.target.closest("[data-task-stop]");
+  if(stop&&!stop.disabled){
+   void acStopTaskRow(stop.dataset.taskOwner,stop.dataset.taskStop);
+   return;
+  }
+  const action=event.target.closest("[data-task-session],[data-task-locate]");
+  const id=action&&(action.dataset.taskSession||action.dataset.taskLocate);
+  if(!id||action.disabled)return;
+  const result=action.dataset.taskResult;
+  const history=!!action.closest("#acTaskHistoryRows")&&AC.taskHistory?.board===boardId&&
+   AC.taskHistory.tasks.some(task=>task.session_id===id&&task.id===result);
+  if(!history&&!acTaskDirectory().some(session=>session.id===id))return;
+  acCloseTaskCenter();
+  acOpenNodeSession(id,{attention:true,locate:!!action.dataset.taskLocate,result,queued:action.dataset.taskQueued,history}).catch(error=>toast(error.message));
+ };
  const pane=document.createElement("section");pane.id="agentChat";pane.hidden=true;pane.setAttribute("role","region");pane.setAttribute("aria-label","创作助手");pane.innerHTML=`<header class="ac-head"><strong>创作助手</strong><button id="acDock" title="切换停靠 / 浮动" aria-label="切换停靠 / 浮动">${ico("full")}</button><button id="acClose" title="收起，任务继续运行" aria-label="收起助手">×</button></header><div class="ac-subhead"><select id="acSessions" aria-label="对话历史"></select><button id="acNew">新对话</button></div><div id="acModel" class="ac-model">使用平台配置的文本模型</div><div id="acMessages" class="ac-messages" role="log" aria-label="对话与操作记录"></div><div id="acError" class="ac-status" hidden></div><div id="acStatus" class="ac-status" role="status"></div><div class="ac-composer"><div id="acRefs" class="ac-refs"></div><div id="acPicker" class="ac-picker" hidden></div><textarea id="acInput" aria-label="告诉助手要做什么" placeholder="描述你想做什么，输入 @ 引用素材…" maxlength="8000"></textarea><div class="ac-actions"><button id="acReference" title="引用画布节点">@ 引用</button><button id="acUndo" hidden>撤销本轮</button><span class="ac-hint">Enter 发送</span><button id="acStop" hidden>停止</button><button id="acSend" disabled>发送</button></div></div>`;document.body.append(pane);
+ $("#acInput").insertAdjacentHTML("beforebegin",'<div id="acDelivery" hidden><span id="acDeliveryStatus" role="status"></span><button type="button" id="acResend" hidden>重新发送</button></div>');
+ $("#acInput").insertAdjacentHTML("beforebegin",`<div id="acContinuation" hidden>
+  <strong id="acContinuationDrag" draggable="true"></strong>
+  <span role="status">点击节点或空白处，也可拖动任务名称到目标位置。</span>
+  <button type="button" id="acContinuationCancel">取消</button>
+ </div>`);
+ $("#acContinuationCancel").onclick=()=>{acPickPlacement(false);$("#acInput").focus();};
+ $("#acContinuationDrag").ondragstart=event=>{
+  if(!AC.continuation||!event.dataTransfer){event.preventDefault();return;}
+  event.dataTransfer.setData(AC_CONTINUATION_DRAG,AC.continuation.session);
+  event.dataTransfer.effectAllowed="copy";
+ };
+ $("#acResend").onclick=()=>{
+  const delivery=AC.delivery.get(AC.session);
+  if(delivery?.state==="failed")void acSubmitMessage(delivery);
+ };
  $("#acModel").insertAdjacentHTML("afterend",'<section id="acParallel" aria-label="并行对话" hidden></section>');
  $("#acModel").insertAdjacentHTML("beforebegin",`<div class="ac-model-settings">
    <label>对话模型<select id="acModelChoice"></select></label>
@@ -1430,29 +2031,24 @@ function initAgentChat(){
   AC.documents=AC.documents.filter(doc=>doc.id!==id);acRenderState();
   void boardRequest(acDocumentUrl(AC.session,id),"DELETE").catch(()=>{});
  };
- $("#acQueue").onclick=async event=>{
+ $("#acQueue").onclick=event=>{
   const button=event.target.closest("[data-remove-queued]");
-  if(!button||button.disabled)return;
-  const sid=AC.session,id=button.dataset.removeQueued;
-  button.disabled=true;
-  try{
-   await boardRequest(`/api/chat/runs/${encodeURIComponent(id)}/queue`,"DELETE");
-   if(sid===AC.session){AC.queue=AC.queue.filter(item=>item.id!==id);acRenderState();}
-  }catch(e){toast(e.message);}
-  finally {button.disabled=false;if(sid===AC.session)await acPoll();}
+  if(button&&!button.disabled)void acRemoveQueuedTask(AC.session,button.dataset.removeQueued);
  };
- $("#acClose").onclick=()=>{cpClose();lightDockAssistant(false);acVoiceCancel();acPickPlacement(false);csClose();AC.open=false;acRenderPlacement();pane.hidden=true;launch.hidden=false;};$("#acDock").onclick=()=>{pane.classList.toggle("floating");pane.style.left=pane.style.top=pane.style.height=pane.style.width="";acStoreWindow();};
+ $("#acClose").onclick=acClosePane;$("#acDock").onclick=()=>{pane.classList.toggle("floating");pane.style.left=pane.style.top=pane.style.height=pane.style.width="";acStoreWindow();};
  $("#acPickPlacement").onclick=()=>{
   if (AC.sending || !AC.session || AC.board!==boardId || !canvasCanEdit() || acVoicePointing()) return;
   acPickPlacement(!acPickingPlacement);
   if(acPickingPlacement)toast("点击画布空白处指定放置位置，按 Esc 取消");
  };
  document.addEventListener("keydown",event=>{
+  acKeyboardShortcut(event);
   if(event.key==="Escape"&&acPickingPlacement){event.preventDefault();event.stopPropagation();acPickPlacement(false);}
  },true);
  vp.addEventListener("pointerdown",event=>{
-  if(!acPickingPlacement || event.button!==0)return;
+  if(!acPickingPlacement || event.defaultPrevented || event.button!==0)return;
   event.preventDefault();event.stopPropagation();
+  if(AC.continuation){acApplyContinuation(event.target,event.clientX,event.clientY);return;}
   if(!acCanvasBackground(event.target))return;
   acPickPlacement(false);
   if(AC.open&&AC.board===boardId&&canvasCanEdit()){
@@ -1460,10 +2056,25 @@ function initAgentChat(){
    if(point){AC.placement=point;acRenderRefs();}
   }
  },true);
+ vp.addEventListener("dragover",event=>{
+  if(!AC.continuation||!event.dataTransfer?.types.includes(AC_CONTINUATION_DRAG)||!acContinuationTarget(event.target).valid)return;
+  event.preventDefault();event.stopPropagation();
+  event.dataTransfer.dropEffect="copy";
+ },true);
+ vp.addEventListener("drop",event=>{
+  if(!AC.continuation||event.dataTransfer?.getData(AC_CONTINUATION_DRAG)!==AC.continuation.session)return;
+  event.preventDefault();event.stopPropagation();
+  acApplyContinuation(event.target,event.clientX,event.clientY);
+ },true);
  $("#acNew").onclick=()=>acSessions(true).catch(e=>toast(e.message));$("#acSessions").onchange=e=>acLoadSession(e.target.value).catch(e=>toast(e.message));$("#acReference").onclick=acPick;$("#acSend").onclick=acSend;
  $("#acStop").title="停止此对话的当前任务，队列继续执行";
- $("#acInput").oninput=()=>{acRenderState();};$("#acInput").onkeydown=e=>{e.stopPropagation();if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();acSend();}};
- $("#acStop").onclick=async()=>{const r=acActive();if(!r)return;try{await acApi(`/api/chat/runs/${r.id}/stop`,{});await acPoll();}catch(e){toast(e.message);}};
+ $("#acInput").oninput=event=>{
+  acRenderState();
+  if(event.inputType==="insertText"&&event.data==="/"&&!event.isComposing&&event.target.value==="/"&&
+    AC.session&&!AC.sending&&!AC.loadingSessions&&canvasCanEdit())void csOpen(true);
+ };
+ $("#acInput").onkeydown=e=>{e.stopPropagation();if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();acSend();}};
+ $("#acStop").onclick=async()=>{try{await acStopCurrent();}catch(e){toast(e.message);}};
  $("#acUndo").onclick=async()=>{const rid=AC.runs[0]?.id;if(!rid)return;try{await flushSave();await acApi(`/api/chat/runs/${rid}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=async e=>{
   const gif=e.target.closest("[data-gif-showcase]");
@@ -1656,6 +2267,20 @@ function initAgentChat(){
     previewJob:remake.dataset.remakePreviewJob,videoJob:remake.dataset.remakeVideoJob});
    return;
   }
+  const previsStoryboard=e.target.closest("[data-open-previs-storyboard]");
+  if(previsStoryboard){
+   const p=JSON.parse(previsStoryboard.dataset.openPrevisStoryboard);
+   if(p.board!==boardId || !canvasCanEdit())return toast("请打开可编辑的原画布");
+   const target=node(p.node), scene=target?.data?.previs;
+   if(!pvUsableScene(scene))return toast("白模场景已移除或尚未同步");
+   if(p.fps!==PV_FPS || p.aspect!==scene.aspect || JSON.stringify(p.boundaries)!==JSON.stringify(pvStoryboardBoundaries(scene))){
+    return toast("白模切点或画幅已更新，请重新准备分镜");
+   }
+   closeLightbox();
+   openPrevis(target);
+   if(PV.editor?.n===target)pvElement("[data-pv-storyboard]").focus();
+   return;
+  }
   const previsButton=e.target.closest("[data-previs-open]");
   if(previsButton&&AC.board===boardId){
    const ref=previsButton.dataset.previsRef;
@@ -1683,7 +2308,7 @@ function initAgentChat(){
  try{const layout=JSON.parse(localStorage.getItem("h3.chat.window"));if(layout?.floating){pane.classList.add("floating");for(const k of ["left","top","width","height"])if(Number.isFinite(layout[k]))pane.style[k]=Math.max(k==="width"?300:k==="height"?300:8,Math.min(layout[k],k==="left"?innerWidth-300:k==="top"?innerHeight-150:k==="width"?innerWidth-16:innerHeight-24))+"px";}}catch{}
  if(typeof aeInit==="function")aeInit();
  const resize=new ResizeObserver(()=>{if(pane.classList.contains("floating")&&!pane.hidden)acStoreWindow();});resize.observe(pane);
- let nextPoll=0;
+ let nextPoll=0, nextDirectory=0;
  setInterval(()=>{
   const now=performance.now();
   if(now<nextPoll)return;
@@ -1693,7 +2318,10 @@ function initAgentChat(){
    else acPoll();
    acRenderRefs();
   }else if(AC.board===boardId&&(acActive()||AC.queue.length||AC.sessions.some(s=>s.run_state||s.queued_count)))acPoll(true);
-  else if(AC.nodeDirectory?.board===boardId&&AC.nodeDirectory.rows.some(session=>session.run_state||session.queued_count))void acRefreshNodeDirectory();
+  else if(B&&canvasCanEdit()&&(acTaskDirectory().some(session=>session.run_state||session.queued_count)||now>=nextDirectory)){
+   nextDirectory=now+8000;
+   void acRefreshNodeDirectory();
+  }
  },200);
 }
 function acStoreWindow(){const p=$("#agentChat");if(p.parentElement.id==="light")return;const r=p.getBoundingClientRect();try{localStorage.setItem("h3.chat.window",JSON.stringify({floating:p.classList.contains("floating"),left:r.left,top:r.top,width:r.width,height:r.height}));}catch{}}

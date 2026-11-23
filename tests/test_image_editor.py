@@ -11,9 +11,10 @@ from unittest.mock import patch
 import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 import image_editor as editor
+import image_upscale
 import server
 
 
@@ -172,6 +173,64 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
         r = await self.client.post("/api/image-edit/transform", json={"ref": self.source, "rotate": 90})
         self.assertEqual(r.status, 200)
         self.assertEqual((await r.json())["w"], 192)
+
+    async def test_decompose_stores_independent_layers_and_preserves_the_original(self):
+        original = Image.new("RGBA",(64,48),(25,64,90,190))
+        draw = ImageDraw.Draw(original)
+        draw.rectangle((8,8,19,23),fill=(210,30,20,255))
+        draw.rectangle((31,12,45,37),fill=(20,190,92,255))
+        source = editor.save(self.root,original,kind="input")["ref"]
+
+        async def segmentation(_app, tool, payload):
+            self.assertEqual((tool,payload["ref"]),("decompose",source))
+            labels = Image.new("L",original.size)
+            draw = ImageDraw.Draw(labels)
+            draw.rectangle((8,8,19,23),fill=1)
+            draw.rectangle((31,12,45,37),fill=2)
+            return editor.save(self.root,labels)
+
+        with patch.object(server,"run_image_tool",segmentation):
+            response = await self.client.post("/api/image-edit/decompose",json={"ref":source})
+        self.assertEqual(response.status,200,await response.text())
+        result = await response.json()
+        layers = result["layer_stack"]["layers"]
+        self.assertEqual([(l["name"],l["x"],l["y"],l["w"],l["h"]) for l in layers],
+                         [("背景",0,0,64,48),("物体 1",8,8,12,16),("物体 2",31,12,15,26)])
+        self.assertEqual(editor.load(self.root,layers[0]["ref"]).getpixel((9,9))[3],0)
+        combined = editor.compose_layers(self.root,{"ref":source,"layers":layers})
+        self.assertEqual(editor.load(self.root,combined["ref"]).tobytes(),original.tobytes())
+        layers[1]["x"] += 12
+        moved = editor.compose_layers(self.root,{"ref":source,"layers":layers})
+        self.assertEqual(editor.load(self.root,moved["ref"]).getpixel((9,9))[3],0)
+        self.assertEqual(editor.load(self.root,source).tobytes(),original.tobytes())
+
+    async def test_upscale_rejects_invalid_scale_and_reports_missing_models(self):
+        url = "/api/image-edit/upscale"
+        with patch.object(server, "IMAGE_UPSCALE_MODELS", self.root / "uninstalled"):
+            for scale, message in ((True,"2× 或 4×"),(3,"2× 或 4×"),("2","2× 或 4×"),(2,"超分模型")):
+                response = await self.client.post(url, json={"ref":self.source,"scale":scale})
+                self.assertEqual(response.status,400)
+                self.assertIn(message,(await response.json())["error"])
+
+    async def test_real_upscale_preserves_alpha_and_increases_resolution(self):
+        if image_upscale.available_scales(server.IMAGE_UPSCALE_MODELS) != [2, 4]:
+            self.skipTest("FSRCNN model fixtures not installed")
+        source = Image.new("RGBA",(271,99),(30,60,90,180))
+        ImageDraw.Draw(source).rectangle((180,20,270,60),fill=(225,10,40,255))
+        path = editor.save(self.root,source,kind="input")["ref"]
+        for scale in (2,4):
+            response = await self.client.post("/api/image-edit/upscale",json={"ref":path,"scale":scale})
+            self.assertEqual(response.status,200,await response.text())
+            result = await response.json()
+            self.assertNotEqual(result["ref"],path)
+            image = editor.load(self.root,result["ref"])
+            size = (271*scale,99*scale)
+            self.assertEqual(image.size,size)
+            alpha = source.getchannel("A").resize(size,Image.Resampling.LANCZOS)
+            self.assertEqual(image.getchannel("A").tobytes(),alpha.tobytes())
+            resized = source.convert("RGB").resize(size,Image.Resampling.LANCZOS)
+            self.assertIsNotNone(ImageChops.difference(resized,image.convert("RGB")).getbbox())
+        self.assertEqual(editor.load(self.root,path).tobytes(),source.tobytes())
 
     async def test_resize_fits_keep_exact_dimensions_and_alpha(self):
         original = Image.new("RGBA", (80,40), (80,100,120,160))

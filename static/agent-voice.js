@@ -8,9 +8,29 @@ const acVoiceFormats = [
 const acVoiceLimit = 8 * 1024 * 1024;
 let acVoiceActive = null;
 let acVoiceAvailable = false, acVoiceHold = null;
+let acVoiceChoosingKey = false;
 const acVoiceKeys = {KeyR:"R",Space:"空格",off:"关闭"};
+const acVoiceKeyValid = code => Object.hasOwn(acVoiceKeys,code) || /^(?:Key[A-Z]|Digit[0-9])$/.test(code);
+const acVoiceKeyLabel = code => acVoiceKeys[code] || code.replace(/^(?:Key|Digit)/,"");
+const acVoiceStopCommands = new Set(["停止","停止任务","停止当前任务","取消当前任务","stop","stop the current task"]);
 let acVoiceKey = localStorage.getItem("h3.chat.voiceKey") || "KeyR";
-if (!Object.hasOwn(acVoiceKeys,acVoiceKey)) acVoiceKey = "KeyR";
+if (!acVoiceKeyValid(acVoiceKey)) acVoiceKey = "KeyR";
+
+function acVoiceKeyOptions() {
+ const picker = $("#acVoiceKey");
+ const codes = new Set(["KeyR","Space",acVoiceKey,"off"]);
+ picker.replaceChildren(...[...codes].map(code=>new Option(acVoiceKeyLabel(code),code)),
+  new Option("自定义按键…","custom"));
+ picker.value=acVoiceKey;
+}
+
+function acVoiceSetKey(code) {
+ acVoiceKey=code;
+ acVoiceChoosingKey=false;
+ localStorage.setItem("h3.chat.voiceKey",code);
+ acVoiceKeyOptions();
+ acVoiceRender();
+}
 
 function acVoicePointing() {
  return acVoiceActive?.refs && ["permission","recording"].includes(acVoiceActive.phase);
@@ -28,6 +48,7 @@ function acVoiceRender(message = "") {
  record.setAttribute("aria-pressed", String(active?.phase === "recording"));
  record.disabled = !!active && active.phase !== "recording";
  upload.disabled = !!active;
+ $("#acVoiceKey").disabled = !!active;
  cancel.hidden = !active;
  const status = $("#acVoiceStatus");
  status.textContent = message;
@@ -53,6 +74,10 @@ function acVoiceEnd(active, message = "") {
 }
 
 function acVoiceCancel() {
+ if (acVoiceChoosingKey) {
+  acVoiceChoosingKey=false;
+  acVoiceKeyOptions();
+ }
  if (acVoiceActive) acVoiceEnd(acVoiceActive);
  else if ($("#acVoiceStatus")) acVoiceRender();
 }
@@ -94,6 +119,13 @@ async function acVoiceSubmit(active, blob, filename) {
   const transcript = result.text.trim();
   if (!transcript) {
    message = "没有识别到语音";
+   return;
+  }
+  const command = transcript.toLocaleLowerCase().replace(/[.!?。！？]+$/u,"").trim();
+  if (active.hold && acVoiceStopCommands.has(command)) {
+   const stopped = active.stopRun && await acStopCurrent(active.stopRun);
+   message = stopped ? "已请求停止当前任务" :
+    active.stopRun ? "录音开始时的任务已无法停止" : "录音开始时没有可停止的任务";
    return;
   }
   const input = $("#acInput");
@@ -150,6 +182,7 @@ async function acVoiceRecord({hold = null} = {}) {
  acPickPlacement(false);
  active.hold = hold;
  active.autoSend = !!hold;
+ active.stopRun = hold ? acActive()?.id : null;
  active.refs = new Map(acRefs().slice(0,30).map(n => {
   const explicit = AC.referencePins.get(n.id)?.ref || (AC.selection?.node_id === n.id ? AC.selection.source_ref : null) ||
    acReviewVersion(n);
@@ -268,6 +301,15 @@ function acVoicePoint(event) {
 }
 
 function acVoiceHotkey(event) {
+ if (acVoiceChoosingKey && !event.isComposing) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key==="Escape") return acVoiceCancel();
+  if (event.repeat || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (acVoiceKeyValid(event.code)) acVoiceSetKey(event.code);
+  else acVoiceRender("请选择一个字母、数字或空格键");
+  return;
+ }
  if (event.key === "Escape" && (acVoiceActive?.refs || acVoiceHold)) {
   event.preventDefault(); event.stopPropagation(); acVoiceHold = null; acVoiceCancel(); return;
  }
@@ -303,7 +345,7 @@ function acVoiceInit() {
  box.hidden = true;
  box.innerHTML = `<button type="button" id="acVoiceRecord" aria-pressed="false">录音</button>
   <button type="button" id="acVoiceUpload" title="将音频转写为草稿">音频</button>
-  <label class="ac-voice-key">按住说话 <select id="acVoiceKey" aria-label="按住说话快捷键">${Object.entries(acVoiceKeys).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></label>
+  <label class="ac-voice-key">按住说话 <select id="acVoiceKey" aria-label="按住说话快捷键"></select></label>
   <button type="button" id="acVoiceCancel" title="取消录音或转写" hidden>取消</button>
   <input type="file" id="acVoiceFile" accept=".wav,.webm,.ogg,.m4a,.mp4,.mp3,.flac" hidden>
   <span id="acVoiceStatus" role="status" hidden></span>`;
@@ -313,15 +355,18 @@ function acVoiceInit() {
  $("#acVoiceUpload").onclick = () => picker.click();
  $("#acVoiceCancel").onclick = acVoiceCancel;
  const shortcut = $("#acVoiceKey");
- shortcut.value = acVoiceKey;
+ acVoiceKeyOptions();
  shortcut.onchange = () => {
-  acVoiceKey = shortcut.value;
-  localStorage.setItem("h3.chat.voiceKey",acVoiceKey);
+  if (shortcut.value==="custom") {
+   acVoiceChoosingKey=true;
+   acVoiceRender("按下一个字母、数字或空格键，Esc 取消");
+  } else acVoiceSetKey(shortcut.value);
  };
  document.addEventListener("keydown",acVoiceHotkey,true);
  document.addEventListener("keyup",acVoiceHotkeyUp,true);
  addEventListener("blur",() => {
   acVoiceHold = null;
+  if (acVoiceChoosingKey) acVoiceCancel();
   const active = acVoiceActive;
   if (active?.phase === "recording" || active?.phase === "permission" && active.hold) acVoiceEnd(active,"录音已取消");
  });

@@ -11,4 +11,4 @@ pillow
 pypdf>=6.21,<8
 numpy
 cryptography
-opencv-python-headless>=4.10,<5
+opencv-contrib-python-headless>=4.10,<5

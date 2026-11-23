@@ -91,7 +91,7 @@ function initImageEditor() {
       <div id="ieProgress" class="ie-progress" role="progressbar" aria-label="图像编辑进度" aria-valuemin="0" aria-valuemax="100" hidden><i></i></div></div>
       <button id="ieCancel" hidden>取消生成</button></div>
     <div class="ie-layout"><div class="ie-main">${ewToolbarHTML()}<div class="ie-stage"><canvas class="ie-canvas" aria-label="图片编辑画布"></canvas><span id="ieBrushCursor" hidden></span><span class="ie-stage-note"></span></div><div class="ie-history-actions"><span id="ieDraftState">草稿自动保存</span><span class="ie-spacer"></span><button id="ieReuse">复用参数</button><button id="ieRetry" hidden>重新生成</button></div><div class="ie-history" aria-label="历史版本"></div></div>
-    <aside class="ie-side"><div class="ie-group-title">编辑方式</div><div class="ie-tabs"><button data-mode="region" class="on">局部重绘</button><button data-mode="whole">整图编辑</button><button data-mode="outpaint">智能扩图</button><button data-mode="local">裁剪 / 调色</button><button data-mode="relight">布光</button><button data-mode="camera">换机位</button><button data-mode="layers">图层 / 抠图</button></div>
+    <aside class="ie-side"><div class="ie-group-title">编辑方式</div><div class="ie-tabs"><button data-mode="region" class="on">局部重绘</button><button data-mode="whole">整图编辑</button><button data-mode="outpaint">智能扩图</button><button data-mode="local">裁剪 / 调色</button><button data-mode="upscale">智能放大</button><button data-mode="relight">布光</button><button data-mode="camera">换机位</button><button data-mode="layers">图层 / 抠图</button></div>
     <div class="ie-section on" data-section="region"><div class="ie-row"><button data-tool="brush" class="on">画笔</button><button data-tool="rect">矩形</button><button data-tool="erase">擦除</button><button data-tool="smart" title="点击选中物体，Shift 点击排除">智能选物</button></div>
       <label class="ie-label" for="ieBrush">画笔大小 <output id="ieBrushValue">64 px</output></label><input id="ieBrush" type="range" min="4" max="512" value="64">
       <div class="ie-row"><button id="ieUndoMask">撤销</button><button id="ieRedoMask">重做</button><button id="ieClearMask">清空</button><button id="ieInvertMask">反选</button></div>
@@ -106,6 +106,8 @@ function initImageEditor() {
       <div class="ie-row"><button data-flip="flip_x">水平翻转</button><button data-flip="flip_y">垂直翻转</button></div>
       ${[["Brightness", "亮度"], ["Contrast", "对比度"], ["Saturation", "饱和度"]].map(([k,t])=>`<label class="ie-label" for="ie${k}">${t}<output id="ie${k}Value">100%</output></label><input id="ie${k}" type="range" min="0" max="200" value="100">`).join("")}
       <div class="ie-row"><button id="ieResetLocal">重置调整</button></div><button id="ieSaveLocal" class="ie-primary">保存为新版本</button>${pixelSizeHTML()}</div>
+    <div class="ie-section" data-section="upscale"><p class="ie-note" id="ieUpscaleNote"></p>
+      <div class="ie-row"><button type="button" data-upscale="2" disabled>2×</button><button type="button" data-upscale="4" disabled>4×</button></div></div>
     ${relightHTML()}${imageCameraHTML()}${ewLayersHTML()}<div id="ieAI"><div class="ie-group-title">生成设置</div><label class="ie-label" for="iePrompt">修改要求</label><textarea id="iePrompt" maxlength="8000" placeholder="例如：把选中的衣服改为深蓝色，保留布料质感和光影"></textarea>
       <div class="ie-row" id="iePresets"><button data-preset="移除选中的物体，用自然连贯的背景填补，匹配周围纹理和光线">移除物体</button><button data-preset="修复选中区域的模糊与瑕疵，恢复自然清晰的纹理和细节">修复细节</button></div>
       <div id="ieBlend"><label class="ie-label" for="ieStrength">结果融合比例 <output id="ieStrengthValue">100%</output></label><input id="ieStrength" type="range" min="1" max="100" value="100"><p class="ie-note">控制生成结果与原图的混合比例。</p></div>
@@ -127,6 +129,7 @@ function initImageEditor() {
   $$("[data-flip]", host).forEach(b=>b.onclick=()=>ieLocal({[b.dataset.flip]:true}));
   $$("[data-preset]", host).forEach(b=>b.onclick=()=>$("#iePrompt").value=b.dataset.preset);
   $("#ieSaveLocal").onclick = () => ieLocal();
+  $$("[data-upscale]",host).forEach(button=>button.onclick=()=>ieUpscale(+button.dataset.upscale));
   $("#ieGenerate").onclick = ieGenerate;
   $("#ieCancel").onclick = () => IMAGE_EDITOR && cancel(IMAGE_EDITOR.n);
   const compare = on => { if (IMAGE_EDITOR) { IMAGE_EDITOR.compare=on; ieDraw(); } };
@@ -217,7 +220,11 @@ async function ieLoad(v, original=false) {
   })().catch(err=>{if(IMAGE_EDITOR===E && E.loadToken===token){E.failedRef=v.ref;ieStatus(err.message,true);}}).finally(()=>{
     if(E.loadToken!==token)return;
     E.loading=null;
-    if(IMAGE_EDITOR===E && typeof aeEditorControls==="function")aeEditorControls();
+    if (IMAGE_EDITOR===E) {
+      ieUpscaleControls(E);
+      ewDecomposeControl(E);
+      if (typeof aeEditorControls==="function") aeEditorControls();
+    }
   });
   return E.loadPromise;
 }
@@ -234,12 +241,13 @@ function ieMode(mode, force=false) {
   $("#ieExportLight").hidden=modelLight;
   $("#ieLocateLight").hidden=modelLight || !E.lightExportId || !node(E.lightExportId);
   $("#ieRelightAI").textContent=modelLight?"返回手动布光":"交给模型重打光";
-  $("#ieAI").hidden=["local","layers","relight"].includes(mode); $("#ieBlend").hidden=mode==="outpaint"||structured;
+  $("#ieAI").hidden=["local","layers","relight","upscale"].includes(mode); $("#ieBlend").hidden=mode==="outpaint"||structured;
   $("#iePresets").hidden=$("#ieBackend").hidden=$('label[for="ieBackend"]').hidden=structured;
   $('label[for="iePrompt"]').textContent = structured ? "补充要求（可选）" : "修改要求";
   $("#iePrompt").placeholder=modelLight?"例如：保留眼睛里的高光":camera?"例如：保持原来的灯光方向":
     "例如：把选中的衣服改为深蓝色，保留布料质感和光影";
   ewBackend();
+  ieUpscaleControls(E);
   if(typeof aeEditorControls==="function")aeEditorControls();
   ieDraw();
 }
@@ -323,6 +331,48 @@ async function ieLocal(extra={}) {
   finally { E.busy=false; ieSync(); }
 }
 
+function ieUpscaleControls(E) {
+  const image=E.image, scales=E.capabilities?.upscale || [];
+  const note=$("#ieUpscaleNote");
+  note.textContent=scales.length?"用超分模型放大当前图像，结果保存为 PNG 新版本。":"服务端尚未安装超分模型。";
+  for (const button of $$("[data-upscale]",$("#imageEditor"))) {
+    const scale=+button.dataset.upscale;
+    const w=(image?.naturalWidth || 0)*scale, h=(image?.naturalHeight || 0)*scale;
+    const tooLarge=Math.max(w,h)>8192 || w*h>32*1024*1024;
+    button.textContent=image?`${scale}× · ${w} × ${h}`:`${scale}×`;
+    button.disabled=E.busy || E.loading || E.restoring || !image || !scales.includes(scale) ||
+      tooLarge || !vtCanCopyVersion(E.n,E.n.cur) || !!E.agentSelection;
+    button.title=tooLarge?"输出超过单边 8192 像素或总像素上限":"";
+  }
+}
+
+async function ieUpscale(scale) {
+  const E=IMAGE_EDITOR;
+  if (!E || E.mode!=="upscale" || $("[data-upscale='"+scale+"']")?.disabled!==false) return;
+  const board=B, source=E.ref;
+  const current=()=>IMAGE_EDITOR===E && B===board && vtCanCopyVersion(E.n,E.n.cur) && curV(E.n)?.ref===source;
+  E.busy=true;
+  ieSync();
+  ieStatus("正在运行超分模型…");
+  try {
+    const ref=await ewFlatten(E);
+    if (!current()) throw new Error("来源图片已更新，请重新选择版本");
+    const result=await api("/api/image-edit/upscale",{ref,scale});
+    if (!current()) throw new Error("来源图片已更新，请重新选择版本");
+    addVersion(E.n,mediaVersion(result,{source:"edit",mode:`智能放大 ${scale}×`,
+      edit:{source,mode:"upscale",scale,model:"FSRCNN"}}));
+    ieLoad(curV(E.n));
+    ieHistory();
+    loadAssets();
+    ieStatus("已保存放大后的 PNG 新版本");
+  } catch(error) {
+    if (IMAGE_EDITOR===E) ieStatus(error.message,true);
+  } finally {
+    E.busy=false;
+    ieSync();
+  }
+}
+
 async function ieGenerate() {
   const E=IMAGE_EDITOR; if (!E?.image || E.busy || E.n.job || E.agentSelection || !canvasCanEdit()) return;
   const camera=E.mode==="camera", modelLight=E.mode==="relight_ai", structured=camera||modelLight;
@@ -362,6 +412,8 @@ function ieSync() {
   $("#ieLocateLight").disabled=busy;
   for (const id of imageCameraDraftIds) $("#"+id).disabled=busy || !canvasCanEdit();
   if(E.image)updatePixelPreview(E);
+  ieUpscaleControls(E);
+  ewDecomposeControl(E);
   $$("[data-camera-preset]").forEach(button=>button.disabled=busy || !canvasCanEdit());
   $$("[data-rotate], [data-flip]",$("#imageEditor")).forEach(b=>b.disabled=busy);
   $("#ieCancel").hidden=!E.n.job;

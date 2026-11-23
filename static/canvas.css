@@ -30,6 +30,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #edges .hit { stroke: transparent; stroke-width: 16; fill: none; pointer-events: stroke; cursor: pointer; }
 #edges .vis { fill: none; stroke: var(--edge); stroke-width: 2; transition: stroke .15s; }
 #edges g:hover .vis, #edges g.sel .vis { stroke: #9a9aa4; }
+#edges .hit:focus-visible + .vis { stroke:var(--text); stroke-width:3; }
 #edges .remake-edge .vis { stroke-dasharray: 6 5; }
 .elabel.remake-label { pointer-events: none; }
 .audio-preview { display:flex; flex-direction:column; justify-content:center; gap:8px; padding:9px 12px; height:100%; min-width:0; color:var(--dim); }
@@ -147,6 +148,10 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .elabel { position: absolute; transform: translate(-50%, -50%); z-index: 4; padding: 2px 9px; border-radius: 9px; background: #1d1d21; border: 1px solid var(--line2);
   color: #cfcfd5; font-size: var(--fs-caption); white-space: nowrap; cursor: pointer; }
 .elabel:hover { border-color: #777; color: #fff; }
+.edge-inspector { display:flex; align-items:center; gap:7px; max-width:320px; padding:4px 6px 4px 9px; white-space:normal; overflow-wrap:anywhere; }
+.edge-inspector button { flex:none; display:grid; place-items:center; width:26px; height:26px; border:1px solid var(--line2); border-radius:6px; background:var(--card-hi); color:var(--text); cursor:ns-resize; touch-action:none; }
+.edge-inspector button:hover { color:#fff; border-color:#777; }
+.edge-inspector button .i { width:14px; height:14px; }
 .elabel.subj { background: #2a2236; border-color: #5b4a86; color: #d9c8ff; }
 .elabel select, .rsel select { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
 .rsel { position: relative; cursor: pointer; }
@@ -230,6 +235,13 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .vtabs button { flex:none; width:100%; height: 24px; padding: 0 3px; border-radius: 7px; border: 1px solid var(--line2); background: rgba(20,20,22,.9); color: var(--dim); font: var(--fs-small)/22px inherit; cursor: pointer; }
 .vtabs button:hover { color: #fff; border-color: #777; }
 .vtabs button.on { background: #fff; color: #111; border-color: #fff; font-weight: 600; }
+.vtabs button { position:relative; overflow:hidden; }
+.vt-thumb { position:absolute; inset:0; display:none; align-items:center; justify-content:center; pointer-events:none; }
+.vt-thumb img { width:100%; height:100%; object-fit:cover; }
+.vt-thumb .i { width:13px; height:13px; opacity:.7; }
+.node:hover .vt-thumb,.vtabs:focus-within .vt-thumb { display:flex; }
+.node:hover .vt-number,.vtabs:focus-within .vt-number { position:absolute; bottom:1px; right:2px; padding:0 3px; background:#15151ad9; color:#fff; border-radius:4px; font-size:10px; line-height:13px; }
+.vtabs button.on .vt-thumb { inset:1px; border-radius:4px; overflow:hidden; }
 :is(.version-drag-label,.cg-member-drag-label){position:fixed;pointer-events:none;z-index:65;padding:5px 9px;border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--dim);font-size:var(--fs-caption)}
 :is(.version-drag-label,.cg-member-drag-label).can-drop{border-color:var(--text);color:var(--text)}
 .node:hover .plus { opacity: 1; }
@@ -260,6 +272,18 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #pp.pinned .pgrip .rs { display: block; }
 #pp.dragging, #pp.dragging * { cursor: grabbing !important; user-select: none; }
 #pp.wide { width: 700px; }
+#pp { max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); padding-bottom:16px; }
+#pp .ppbody { display:flex; flex-direction:column; gap:inherit; min-height:0; overflow:auto; }
+#pp.resized { width:var(--pp-width); height:var(--pp-height); }
+#pp.resized .ppbody { flex:1; }
+#pp.resized #prompt,#pp.resized #pfields.on { flex:1 1 0; min-height:48px; max-height:none; }
+#pp.resized .phead { max-height:28%; overflow:auto; flex-shrink:0; }
+#pp.resized .ctl { flex-shrink:0; }
+#ppResize { position:absolute; right:3px; bottom:3px; display:grid; place-items:center; width:24px; height:24px; padding:0;
+  background:transparent; color:var(--dim); border:0; border-radius:5px; cursor:nwse-resize; touch-action:none; }
+#ppResize:hover,#ppResize:focus-visible { background:var(--card-hi); color:var(--text); }
+#ppResize svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; }
+#pp.resizing,#pp.resizing * { cursor:nwse-resize !important; user-select:none; }
 #pp .refs { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
 #pp .phead { display: flex; align-items: flex-start; gap: 8px; }
 #pp .phead:empty { display: none; }

@@ -501,9 +501,10 @@ function renderScript(n, body) {
   }
   const total = shots.reduce((a, s) => a + (s.duration || 0), 0);
   const links=scriptShotLinks(n);
-  body.innerHTML = `<div class="sb"><div class="sbh"><b>${esc(d.title || "分镜")}</b><span>${shots.length} 镜 · ${total}s</span></div>
+  const seconds = duration => Number(Number(duration).toFixed(2));
+  body.innerHTML = `<div class="sb"><div class="sbh"><b>${esc(d.title || "分镜")}</b><span>${shots.length} 镜 · ${seconds(total)}s</span></div>
     ${d.style ? `<div class="sbs">${esc(d.style)}</div>` : ""}
-    ${shots.map((s, i) => `<div class="shot"><div class="sh1"><span class="no">${i + 1}</span>${s.frame ? `<img src="/media?ref=${encodeURIComponent(s.frame.ref)}">` : ""}<span>${esc(s.shot_size)}</span><span class="dim">${esc(s.camera)}</span><span class="du">${s.duration}s</span>
+    ${shots.map((s, i) => `<div class="shot"><div class="sh1"><span class="no">${i + 1}</span>${s.frame ? `<img src="/media?ref=${encodeURIComponent(s.frame.ref)}">` : ""}<span>${esc(s.shot_size)}</span><span class="dim">${esc(s.camera)}</span><span class="du">${seconds(s.duration)}s</span>
       ${links[i]||canvasCanEdit()&&!nodeLocked(n)?`<button type="button" data-script-shot="${i}" aria-label="${links[i]?"定位":"展开"}第 ${i+1} 镜">${links[i]?"定位":"展开"}</button>`:""}</div>
       ${s.action.length ? `<div class="sa">${s.action.map(esc).join("<br>")}</div>` : ""}
       ${s.dialogue.length ? `<div class="sd">${s.dialogue.map(esc).join("<br>")}</div>` : ""}
@@ -537,7 +538,7 @@ function scriptCtl(n) {
     h += `<button class="pill" data-sa="expand" title="每个镜头建一张分镜图 + 一个视频节点（分栏已填好、连好人物设定）">${made.length ? "再展开一组" : "展开到画布"}</button>`;
     if (made.length) {
       if(scriptShotLinks(n).some(shotNeedsNodes))h += '<button class="pill" data-sa="missing">补齐画布节点</button>';
-      h += `<button class="pill" data-sa="imgs" title="依次生成还没有画面的分镜图">批量出分镜图</button>`;
+      h += `<button class="pill" data-sa="imgs" title="补齐未生成的分镜图，沿用已启用的白模构图参考">批量出分镜图</button>`;
       h += `<button class="pill" data-sa="vids" title="分镜图就绪的镜头依次生成视频">批量生成视频</button>`;
       h += `<button class="pill" data-sa="cat" title="打开剪辑台：调整顺序、裁剪、字幕、音乐，再导出成片">剪辑成片</button>`;
     }
@@ -645,13 +646,14 @@ function applyScriptShotRevision(script,plan) {
   return {index,updated,retained:[...retained],already:false};
 }
 
-function expandScript(n, indexes=null) {
+function expandScript(n, indexes=null, {recordUndo=true}={}) {
   if(!canvasCanEdit() || node(n.id)!==n || nodeLocked(n))return;
   const d = n.data, shots = d.shots || []; if (!shots.length) return;
   const links=indexes?scriptShotLinks(n):null;
   const selected=indexes?[...new Set(indexes)].filter(i=>shots[i]&&shotNeedsNodes(links[i])):shots.map((_,i)=>i);
   if(!selected.length)return;
-  checkpoint();ensureScriptShotIds(n);
+  if(recordUndo)checkpoint();
+  ensureScriptShotIds(n);
   const refs=scriptRefs(n);
   const s0 = size(n), x0 = n.x + s0.w + 140;
   let y0 = n.y;
@@ -664,8 +666,14 @@ function expandScript(n, indexes=null) {
     const created=[];
     let img=node(pair?.img), vid=node(pair?.vid);
     if(!img){
-      img=addNode("image",x,y0,{...settings.image,aspect:d.aspect,quality:"4mp"},{name:`镜${i+1} · 分镜图`});
-      if(s.frame){img.versions.push({ref:s.frame.ref,url:"/media?ref="+encodeURIComponent(s.frame.ref),w:s.frame.w,h:s.frame.h,source:"frame",prompt:""});img.cur=0;}
+      const composition=s.frame?.source==="previs-frame" ? {previs_composition:{ref:s.frame.ref}} : {};
+      img=addNode("image",x,y0,{...settings.image,...composition,aspect:d.aspect,quality:"4mp"},{name:`镜${i+1} · 分镜图`});
+      if(s.frame){
+        const {ref,w,h}=s.frame;
+        const source=s.frame.source==="previs-frame" ? "previs-frame" : "frame";
+        img.versions.push({ref,url:"/media?ref="+encodeURIComponent(ref),w,h,source,prompt:""});
+        img.cur=0;
+      }
       settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,...(r.pinned?{ref:r.ref}:{})}));
       created.push(img);
     }
@@ -688,14 +696,23 @@ function expandScript(n, indexes=null) {
   B.nodes.forEach(m => render(m)); drawEdges(); save();
   sel = new Set(made.flatMap(m => [m.img, m.vid])); updateSel();
   fit([n, ...made.flatMap(m => [node(m.img), node(m.vid)])]);
-  const need = made.filter(m => !curV(node(m.img))).length;
+  const need = made.filter(m => !storyboardFrameReady(node(m.img))).length;
   toast(`已展开 ${made.length} 个镜头。${need ? "点「批量出分镜图」生成分镜图，满意后" : "分镜图已就位，"}点「批量生成视频」。每个镜头的分栏都可以单独改`, 5000);
 }
 async function batchImages(n) {
-  const todo = madeShots(n).map(x => node(x.img)).filter(m => m && !curV(m) && !m.job);
+  const board=B;
+  const todo = madeShots(n).map(x => node(x.img)).filter(m => m && !storyboardFrameReady(m) && !m.job && !prepping.has(m.id));
   if (!todo.length) return toast("分镜图都已经生成了；想重画某一张就选中它单独生成");
-  for (const m of todo) await generate(m);
-  toast(`已排队 ${todo.length} 张分镜图（每张约 ${IMG_T.mp4} 秒）`, 3000);
+  let queued=0;
+  for (const m of todo){
+    if(B!==board || node(n.id)!==n)return;
+    if(node(m.id)!==m || !fullPrompt(m))continue;
+    await generate(m);
+    if(m.job)queued++;
+  }
+  if(B!==board || node(n.id)!==n)return;
+  const skipped=todo.length-queued;
+  toast(`已提交 ${queued} 张分镜图${skipped?`，${skipped} 张未提交，请检查提示词或参考图`:""}`,3000);
 }
 async function batchVideos(n) {
   const all = madeShots(n), ready = [], wait = [];

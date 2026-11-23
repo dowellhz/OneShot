@@ -158,7 +158,7 @@ def localized_clip(root, source_ref, video_ref, mask_ref, start, end, progress, 
     try:
         import cv2 as cv
     except ImportError as error:
-        raise RuntimeError("局部合成需要安装 opencv-python-headless") from error
+        raise RuntimeError("局部合成需要安装 OpenCV") from error
 
     original = render._ref_path(root, source_ref)
     replacement = render._ref_path(root, video_ref)

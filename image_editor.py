@@ -153,6 +153,34 @@ def cut_selection(root: Path, p: dict) -> dict:
     return save(root, source, "cutout")
 
 
+def decompose(root: Path, source_ref: str, label_ref: str) -> dict:
+    source = load(root, source_ref)
+    with Image.open(ref_path(root,label_ref)) as image:
+        if image.mode != "L" or image.size != source.size or image.getextrema()[1] > 4:
+            raise ValueError("模型返回的图层标记无效")
+        labels = image.copy()
+    alpha = source.getchannel("A")
+    foreground = labels.point(lambda label:255 if label else 0)
+    if not ImageChops.multiply(alpha,foreground).getbbox():
+        raise ValueError("未找到可分离的主体")
+    layers = []
+    for index, count in enumerate(labels.histogram()[:5]):
+        if not count:
+            continue
+        mask = labels.point(lambda label:255 if label==index else 0)
+        layer_alpha = ImageChops.multiply(alpha,mask)
+        box = layer_alpha.getbbox()
+        if not box:
+            continue
+        layer = source.crop(box)
+        layer.putalpha(layer_alpha.crop(box))
+        media = save(root,layer,"object_layer")
+        layers.append({"id":f"object-{index}","name":f"物体 {index}" if index else "背景",
+                       "ref":media["ref"],"x":box[0],"y":box[1],"w":media["w"],"h":media["h"],
+                       "opacity":1,"visible":True})
+    return {**save(root,source,"decomposed"),"layer_stack":{"base_ref":source_ref,"layers":layers}}
+
+
 def prepare(root: Path, p: dict) -> dict:
     """Validate an AI edit and return generation fields plus a private compositing spec.
 

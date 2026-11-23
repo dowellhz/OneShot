@@ -1,6 +1,6 @@
 """Deterministic CPU output for the canvas blockout editor."""
 from bisect import bisect_left
-from math import ceil, cos, hypot, isfinite, pi, radians, sin, sqrt, tan
+from math import ceil, cos, floor, hypot, isfinite, pi, radians, sin, sqrt, tan
 import re
 
 from PIL import Image, ImageDraw
@@ -16,6 +16,8 @@ CAMERA_FIELDS = ("x", "y", "z", "tx", "ty", "tz", "fov")
 CAMERA_TRANSITIONS = ("linear","smooth","cut")
 NEAR = .12
 CAMERA_MOVES = ("push", "pull", "slide_left", "slide_right", "orbit_left", "orbit_right", "follow")
+LIGHT_LIMITS = {"azimuth":(-180,180),"elevation":(-90,90),"key":(0,1.5),"ambient":(0,1)}
+LIGHT_TONES = {"neutral":(1,1,1),"warm":(1,.78,.58),"cool":(.64,.81,1)}
 
 
 def bounded(value, low, high):
@@ -76,7 +78,21 @@ def validate(value):
                 raise ValueError("导入模型的三角网格无效")
             entry["triangles"] = [[bounded(value, -1, 1) for value in face] for face in triangles]
         result.append(entry)
-    return {"duration":value["duration"], "aspect":aspect, "camera":camera, "objects":result}
+    scene = {"duration":value["duration"], "aspect":aspect, "camera":camera, "objects":result}
+    if "lighting" in value:
+        light = value["lighting"]
+        try:
+            if not isinstance(light,dict) or type(light.get("enabled",True)) is not bool:
+                raise ValueError
+            if light.get("enabled", True):
+                tone = light.get("tone")
+                if not isinstance(tone,str) or tone not in LIGHT_TONES:
+                    raise ValueError
+                scene["lighting"] = {**{key:bounded(light.get(key),*limits) for key,limits in LIGHT_LIMITS.items()},
+                                     "tone":tone}
+        except ValueError:
+            raise ValueError("白模灯光设置超出范围或缺少参数") from None
+    return scene
 
 
 def sample(track, t, fields):
@@ -216,8 +232,8 @@ def box(cx=0, bottom=0, cz=0, width=1, height=1, depth=1, shade=1):
     z0, z1 = cz - depth/2, cz + depth/2
     vertices = [(x0,y0,z0),(x1,y0,z0),(x1,y1,z0),(x0,y1,z0),
                 (x0,y0,z1),(x1,y0,z1),(x1,y1,z1),(x0,y1,z1)]
-    faces = [((0,1,2,3),.74), ((4,5,6,7),.86), ((0,4,7,3),.68),
-             ((1,5,6,2),.78), ((3,2,6,7),1), ((0,1,5,4),.62)]
+    faces = [((0,3,2,1),.74), ((4,5,6,7),.86), ((0,4,7,3),.68),
+             ((1,2,6,5),.78), ((3,7,6,2),1), ((0,1,5,4),.62)]
     return [([vertices[i] for i in order], intensity * shade) for order, intensity in faces]
 
 
@@ -225,10 +241,10 @@ def column():
     rim = [(cos(i*pi/8)/2, sin(i*pi/8)/2) for i in range(16)]
     bottom = [(x,0,z) for x,z in rim]
     top = [(x,1,z) for x,z in rim]
-    faces = [(bottom,.62), (top,1)]
+    faces = [(bottom,.62), (top[::-1],1)]
     for i in range(16):
         j = (i+1)%16
-        faces.append(([bottom[i],bottom[j],top[j],top[i]], .76 + .14 * cos((i+2)*pi/8)))
+        faces.append(([bottom[i],top[i],top[j],bottom[j]], .76 + .14 * cos((i+2)*pi/8)))
     return faces
 
 
@@ -291,6 +307,23 @@ def clip(points):
     return result
 
 
+def light_setup(settings):
+    if not settings:
+        return None
+    a, e = map(radians,(settings["azimuth"],settings["elevation"]))
+    return (sin(a)*cos(e),sin(e),cos(a)*cos(e)), LIGHT_TONES[settings["tone"]], settings["key"], settings["ambient"]
+
+
+def light_color(vertices, legacy, lighting):
+    if lighting is None:
+        return (round(228*legacy),)*3
+    a, b, c = vertices[:3]
+    normal = unit(cross(tuple(v-u for u,v in zip(a,b)),tuple(v-u for u,v in zip(a,c))),(0,0,0))
+    direction, tint, key, ambient = lighting
+    direct = key*max(0,sum(u*v for u,v in zip(normal,direction)))
+    return tuple(min(255,floor(228*(ambient+direct*channel)+.5)) for channel in tint)
+
+
 def paint(scene, tick, width, height, meshes=None):
     if meshes is None:
         meshes = {item["id"]:mesh_faces(item["triangles"]) for item in scene["objects"] if item["shape"] == "mesh"}
@@ -315,32 +348,42 @@ def paint(scene, tick, width, height, meshes=None):
                 b = near_hit(b, a)
             draw.line((project(a),project(b)), fill="#64666c" if not offset else "#3c3e44")
 
-    faces = []
+    faces, lighting = [], light_setup(scene.get("lighting"))
     for item in scene["objects"]:
         pose = sample(item["keys"], tick, POSE_FIELDS)
         a = radians(pose["yaw"])
         c, s = cos(a), sin(a)
         geometry = meshes[item["id"]] if item["shape"] == "mesh" else MESHES[item["shape"]]
         for vertices, light in geometry:
-            points = clip([transform((pose["x"] + x*item["width"]*c - z*item["depth"]*s,
-                                      pose["y"] + y*item["height"],
-                                      pose["z"] + x*item["width"]*s + z*item["depth"]*c))
-                           for x,y,z in vertices])
+            world = [(pose["x"] + x*item["width"]*c - z*item["depth"]*s,
+                      pose["y"] + y*item["height"],
+                      pose["z"] + x*item["width"]*s + z*item["depth"]*c) for x,y,z in vertices]
+            points = clip([transform(vertex) for vertex in world])
             if len(points) >= 3:
-                faces.append((sum(p[2] for p in points)/len(points), [project(p) for p in points], light))
-    for _, points, light in sorted(faces, key=lambda face:face[0], reverse=True):
-        brightness = round(228 * light)
-        draw.polygon(points, fill=(brightness,brightness,brightness), outline="#555861")
+                faces.append((sum(p[2] for p in points)/len(points), [project(p) for p in points], light_color(world,light,lighting)))
+    for _, points, color in sorted(faces, key=lambda face:face[0], reverse=True):
+        draw.polygon(points, fill=color, outline="#555861")
     return image
 
 
-def export(comfy_dir, scene, progress, cancelled):
+def render_span(scene, span=None):
+    end = scene["duration"] * render.FPS
+    if span is None:
+        return 0, end
+    if (not isinstance(span,(list,tuple)) or len(span)!=2 or any(type(t) is not int for t in span)
+            or not 0 <= span[0] < span[1] <= end):
+        raise ValueError("白模渲染区间超出时间轴")
+    return tuple(span)
+
+
+def export(comfy_dir, scene, progress, cancelled, *, span=None):
     width, height = ASPECTS[scene["aspect"]]
-    total = scene["duration"] * render.FPS
+    start, end = render_span(scene,span)
+    total = end - start
     path, ref = render._new(comfy_dir, "output", "previs", ".mp4")
     try:
         meshes = {item["id"]:mesh_faces(item["triangles"]) for item in scene["objects"] if item["shape"] == "mesh"}
-        frames = (paint(scene, tick, width, height, meshes) for tick in range(total))
+        frames = (paint(scene, tick, width, height, meshes) for tick in range(start,end))
         count = render.encode_silent(path, frames, width, height, render.FPS, cancelled,
                                      lambda n:progress(n,total))
         if cancelled():

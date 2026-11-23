@@ -11,8 +11,8 @@ _sam = _processor = _rembg = _inpaint = None
 
 
 def capabilities():
-    return {"segment": (MODELS / "sam2/model.safetensors").is_file(),
-            "cutout": (MODELS / "sam2/model.safetensors").is_file(),
+    sam = (MODELS / "sam2/model.safetensors").is_file()
+    return {"segment": sam, "cutout": sam, "decompose": sam,
             "native": (MODELS / "inpaint/unet/diffusion_pytorch_model.fp16.safetensors").is_file()}
 
 
@@ -24,10 +24,21 @@ def image(path):
         return ImageOps.exif_transpose(im).convert("RGBA")
 
 
-def segment(path, points, out):
+def sam_masks(source, points, labels):
     global _sam, _processor
     import torch
     from transformers import Sam2Model, Sam2Processor
+    if _sam is None:
+        _processor = Sam2Processor.from_pretrained(str(MODELS / "sam2"), local_files_only=True)
+        _sam = Sam2Model.from_pretrained(str(MODELS / "sam2"), local_files_only=True).eval().to("cpu")
+    inputs = _processor(images=source.convert("RGB"), input_points=[points], input_labels=[labels], return_tensors="pt")
+    with torch.inference_mode():
+        output = _sam(**inputs)
+    masks = _processor.post_process_masks(output.pred_masks.cpu(), inputs["original_sizes"])[0]
+    return masks.numpy(), output.iou_scores[0].cpu().numpy()
+
+
+def segment(path, points, out):
     from PIL import Image
     if not capabilities()["segment"]:
         raise RuntimeError("SAM2 模型尚未准备完成")
@@ -42,17 +53,11 @@ def segment(path, points, out):
         coords.append([x, y]); labels.append(point.get("label", 1))
     if 1 not in labels:
         raise ValueError("至少点击一个要保留的物体")
-    if _sam is None:
-        _processor = Sam2Processor.from_pretrained(str(MODELS / "sam2"), local_files_only=True)
-        _sam = Sam2Model.from_pretrained(str(MODELS / "sam2"), local_files_only=True).eval().to("cpu")
-    inputs = _processor(images=source.convert("RGB"), input_points=[[coords]], input_labels=[[labels]], return_tensors="pt")
-    with torch.inference_mode():
-        outputs = _sam(**inputs)
-    masks = _processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"])[0]
-    best = int(outputs.iou_scores[0, 0].argmax())
-    mask = Image.fromarray(masks[0, best].numpy().astype("uint8") * 255, "L")
+    masks, scores = sam_masks(source, [coords], [labels])
+    best = int(scores[0].argmax())
+    mask = Image.fromarray(masks[0, best].astype("uint8") * 255, "L")
     rgba = Image.new("RGBA", source.size, "white"); rgba.putalpha(mask); rgba.save(out)
-    return {"width": source.width, "height": source.height, "score": float(outputs.iou_scores[0, 0, best])}
+    return {"width": source.width, "height": source.height, "score": float(scores[0, best])}
 
 
 def cutout(path, out):
@@ -77,33 +82,23 @@ def auto_cutout(path, out):
     Several independent point prompts share one image encoder pass. The result is
     an automatic foreground suggestion; click selections remain available for refinement.
     """
-    global _sam, _processor
-    import torch
     import numpy as np
-    from transformers import Sam2Model, Sam2Processor
     from PIL import Image, ImageChops, ImageFilter
     source = image(path)
     if not capabilities()["segment"]:
         raise RuntimeError("智能抠图模型尚未准备完成")
-    if _sam is None:
-        _processor = Sam2Processor.from_pretrained(str(MODELS / "sam2"), local_files_only=True)
-        _sam = Sam2Model.from_pretrained(str(MODELS / "sam2"), local_files_only=True).eval().to("cpu")
     points = [[[source.width * x, source.height * y]] for y in (.3, .5, .7) for x in (.3, .5, .7)]
-    # Processor label shape is (image, object, point).
-    inputs = _processor(images=source.convert("RGB"), input_points=[points], input_labels=[[[1] for _ in points]], return_tensors="pt")
-    with torch.inference_mode():
-        outputs = _sam(**inputs)
-    masks = _processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"])[0]
+    masks, scores = sam_masks(source, points, [[1] for _ in points])
     best, best_score = None, -float("inf")
     for obj in range(masks.shape[0]):
         for candidate in range(masks.shape[1]):
-            mask = masks[obj, candidate].numpy().astype(bool)
+            mask = masks[obj, candidate].astype(bool)
             area = float(mask.mean())
             if not .005 < area < .95:
                 continue
             border = np.concatenate((mask[0], mask[-1], mask[:, 0], mask[:, -1])).mean()
             central = mask[int(source.height * .35):int(source.height * .65), int(source.width * .35):int(source.width * .65)].mean()
-            quality = float(outputs.iou_scores[0, obj, candidate])
+            quality = float(scores[obj, candidate])
             score = .6 * quality + .25 * area ** .25 + .15 * central - .8 * border
             if score > best_score:
                 best, best_score = mask, score
@@ -113,6 +108,48 @@ def auto_cutout(path, out):
     mask = ImageChops.multiply(mask, mask.filter(ImageFilter.GaussianBlur(.7)))
     source.putalpha(ImageChops.multiply(source.getchannel("A"), mask)); source.save(out)
     return {"width": source.width, "height": source.height, "score": float(best_score)}
+
+
+def decompose(path, out):
+    """Return disjoint segment labels. Zero represents the rest of the image."""
+    import numpy as np
+    from PIL import Image
+
+    if not capabilities()["decompose"]:
+        raise RuntimeError("SAM2 模型尚未准备完成")
+    source = image(path)
+    preview = source.copy()
+    preview.thumbnail((768, 768))
+    grid = (.12, .31, .50, .69, .88)
+    points = [[[preview.width * x, preview.height * y]] for y in grid for x in grid]
+    masks, scores = sam_masks(preview, points, [[1] for _ in points])
+    visible = np.asarray(preview.getchannel("A")) > 0
+    margin_x = max(1, round(preview.width * .025))
+    margin_y = max(1, round(preview.height * .025))
+    candidates = []
+    for mask, confidence in zip(masks.reshape(-1, preview.height, preview.width), scores.flat):
+        mask = mask.astype(bool) & visible
+        area = float(mask.mean())
+        if not .005 < area < .8 or not confidence >= .72:
+            continue
+        # Scene-spanning regions belong in the remainder layer.
+        if all(strip.any() for strip in (mask[:margin_y],mask[-margin_y:],mask[:,:margin_x],mask[:,-margin_x:])):
+            continue
+        border = np.concatenate((mask[0], mask[-1], mask[:, 0], mask[:, -1])).mean()
+        candidates.append((float(confidence) + .25 * area ** .25 - .55 * border, mask))
+    labels = np.zeros(visible.shape, dtype=np.uint8)
+    count = 0
+    for _, mask in sorted(candidates, key=lambda item: item[0], reverse=True):
+        if np.count_nonzero(labels[mask]) > .25 * mask.sum():
+            continue
+        count += 1
+        labels[mask & (labels == 0)] = count
+        if count == 4:
+            break
+    if not count:
+        raise ValueError("未找到可分离的主体，可用选区转图层手动提取")
+    Image.fromarray(labels).resize(source.size, Image.Resampling.NEAREST).save(out)
+    return {"width": source.width, "height": source.height}
 
 
 def drop_inpaint():
