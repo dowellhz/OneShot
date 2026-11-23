@@ -13,6 +13,35 @@ from test_agent_chat import ChatFixture, call, answer
 
 
 class MemoryIntegration(ChatFixture):
+    async def test_batch_generation_asset_review_is_scoped_and_blocks_changed_references(self):
+        hero = await self.create(character_view="main")
+        await self.client.put("/api/board/another",json={"nodes":[]})
+        other = await self.create(board="another",name="只在另一画布")
+        token = "@{"+hero["id"]+"#main|林森}"
+        raw = {"kind":"image","prompt":token+" 站在街上","images":[],"board":"test"}
+        entries = [{"id":"ready","kind":"image","prompt":raw["prompt"]},
+                   {"id":"bad-view","kind":"video","prompt":"","fields":{"scene":token.replace("#main","#back")}},
+                   {"id":"wrong-board","kind":"image","prompt":"@{"+other["id"]+"|其他素材}"}]
+        route = "/api/memory/review-generation"
+        reviewed = await self.client.post(route,json={"board":"test","entries":entries})
+        self.assertEqual(reviewed.status,200,await reviewed.text())
+        current, undrafted, hidden = await reviewed.json()
+        self.assertEqual(current["assets"][0]["references"],[{"view":"main","ref":hero["ref"]}])
+        self.assertIn("尚未定稿",undrafted["error"])
+        self.assertIn("不可访问",hidden["error"])
+        response = await self.client.post(route,json={"board":"test","entries":entries},headers={"X-Uid":"8"})
+        self.assertEqual(response.status,403)
+
+        with patch.object(server,"_generate_request",new_callable=AsyncMock) as submit:
+            submit.return_value = web.json_response({"ids":[]})
+            confirmed = await self.client.post("/api/generate",json={**raw,"asset_review_key":current["key"]})
+            self.assertEqual(confirmed.status,200,await confirmed.text())
+            user = {"id":7,"role":"member"}
+            self.app["creative_memory"].put(user,{"id":hero["id"],"desc":"改用另一套服装"})
+            stale = await self.client.post("/api/generate",json={**raw,"asset_review_key":current["key"]})
+            self.assertEqual(stale.status,409,await stale.text())
+            submit.assert_awaited_once()
+
     async def test_batch_resolution_returns_full_ordered_assets_and_requires_access_to_all(self):
         private = await self.create(name="相机",board="")
         document = await self.create(name="拍摄说明",board="",kind="document",shared=True,ref="",

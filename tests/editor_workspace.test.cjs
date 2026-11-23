@@ -128,6 +128,10 @@ w.fetch=async(url,options={})=>{
   w.__semanticSearch=JSON.parse(options.body);
   result={method:'semantic',items:['doc','char'].map(id=>w.__memories.find(item=>item.id===id))};
  }
+ else if(pathname==='/api/memory/review-generation'){
+  const {entries}=JSON.parse(options.body);
+  result=entries.map(entry=>({id:entry.id,...(w.__groupAssetReview?.(entry)||{assets:[],key:'a'.repeat(64)})}));
+ }
  else if(pathname==='/api/memory/char/impact')result={canvas:[{node:'n1',name:'Image',ref:'input:h3studio/base.png',version:1}],remake:[]};
  else if(pathname==='/api/memory/import-canvas'){
   const p=JSON.parse(options.body);w.__batchImports=(w.__batchImports||[]).concat(p);
@@ -3941,6 +3945,28 @@ async function run(){
   ['选中节点',['done','done','done'],evaluate('JSON.parse(selectionBatchBase).groups.length')]);
  evaluate('$("#groupRunProgress [data-dismiss]").click();restore(selectionBatchBase);CAPS_LIST.audio_generation=oldBatchAudio;');
  console.log('Selection batch generation passed: no persistent group, parallel image and audio, pinned dependent video and completion.');
+ const reviewedBatchStart=submittedBatches.length;
+ w.__groupAssetReview=entry=>entry.prompt.includes("lost-asset")?{error:"参考资产已移除"}:{
+  key:'c'.repeat(64),assets:[{id:'batch-hero',name:'批次角色',kind:'character',ref:'input:h3studio/batch-face.png',
+   references:[{view:'face',ref:'input:h3studio/batch-face.png'}]}]};
+ evaluate(`const reviewBatchBase=snap();
+  const validAssetFrame=addNode("image",1600,150,{prompt:"用 @{batch-hero#face|批次角色} 生成"});
+  const removedAssetFrame=addNode("image",1600,450,{prompt:"用 @{lost-asset|已删除} 生成"});
+  const removedAssetVideo=addNode("video",2100,450,{prompt:"使用本轮画面"});
+  link(removedAssetFrame,removedAssetVideo,true);
+  openCanvasSelectionRun([validAssetFrame,removedAssetFrame,removedAssetVideo]);`);
+ assert.equal(evaluate('$("#groupRunConfirm [type=submit]").disabled'),true,'confirm waits for the asset review');
+ await ready('!$("#groupRunConfirm [type=submit]").disabled','batch confirms only after reference review');
+ assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/批次角色.*正面头肩.*参考资产已移除.*上游节点无法生成/s);
+ evaluate('approveWorkflow()');
+ await ready('validAssetFrame.job','confirmed asset dependencies leave the independent valid step runnable',350);
+ assert.equal(submittedBatches[reviewedBatchStart].req.asset_review_key,'c'.repeat(64));
+ assert.equal(submittedBatches.length,reviewedBatchStart+1);
+ finishBatch(reviewedBatchStart,1);
+ await ready('!groupRun.active','reviewed batch completes',350);
+ equal(evaluate('groupRun.steps.map(step=>step.status)'),['done','skipped','skipped']);
+ evaluate('$("#groupRunProgress [data-dismiss]").click();restore(reviewBatchBase)');
+ delete w.__groupAssetReview;
  w.fetch=generationFetch;
  console.log('Group run DOM passed: confirmation, dependency order, pinned result reuse, failure isolation and stopping later submissions.');
  evaluate(`const runRangeBase=snap();
@@ -4007,6 +4033,7 @@ async function run(){
  assert.equal(evaluate('!!originalRangeTail() || rangeFollowingFrame.data.prompt!==rangeFramePrompt'),false);
  assert.equal(batchTailRequests.length,0,'preview does not capture a frame or alter the prompt');
  assert.equal(submittedBatches.length,newChainStart,'the assistant plan and opening its preview submit no work');
+ await ready('!rangeRunSubmit.disabled','tail chain references finish review');
  evaluate('rangeRunSubmit.click()');
  await ready('rangePriorVideo.job','the prior missing video is submitted first',1000);
  assert.equal(submittedBatches.length,newChainStart+1);
@@ -4031,6 +4058,7 @@ async function run(){
  assert.match(evaluate('$("#groupRunConfirm ol").textContent'),/上一镜尾帧 · 取本轮生成视频/);
  assert.equal(batchTailRequests.length,1,'checking the option makes no media request');
  assert.equal(submittedBatches.length,rangeBatchStart);
+ await ready('!rangeRunSubmit.disabled','refreshed tail references finish asset review');
  evaluate('rangeRunSubmit.click()');
  await ready('groupRun.steps[0]?.status==="running" && node(groupRun.steps[0].id).job','first frame is running',1000);
  finishBatch(rangeBatchStart,1);
@@ -4050,7 +4078,9 @@ async function run(){
  await ready('!groupRun.active','tail refresh batch completes',1000);
  equal(evaluate('groupRun.steps.map(step=>step.status)'),['done','done','done','done']);
  evaluate(`openScriptShotRangeRun(runRangeScript,1,2,"all");
-  tailRefreshOption.checked=true;tailRefreshOption.dispatchEvent(new Event("change"));rangeRunSubmit.click();`);
+  tailRefreshOption.checked=true;tailRefreshOption.dispatchEvent(new Event("change"));`);
+ await ready('!rangeRunSubmit.disabled','retry references finish asset review');
+ evaluate('rangeRunSubmit.click()');
  await ready('groupRun.steps[0]?.status==="running" && node(groupRun.steps[0].id).job','first frame is retried',1000);
  finishBatch(rangeBatchStart+4,1);
  await ready('rangePriorVideo.job','the prior video is retried',1000);

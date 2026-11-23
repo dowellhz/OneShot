@@ -154,7 +154,7 @@ function previsCompositionHasRoom(n, guide, refs) {
   return isRemote(n) || refs.length<9 || refs.slice(0,9).includes(guide.ref);
 }
 
-async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false}={}) {
+async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false,assetReviewKey}={}) {
   if (n.type === "audio") return generateAudio(n,{groupRunId});
   if (n.data.previs) return openPrevis(n);
   if (n.type === "script") return planStoryboard(n);
@@ -233,7 +233,8 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     }
     const preview=videoReferencePreviews.get(n);
     const checked=preview?.signature===videoPreviewSignature(req);
-    const r = await api("/api/generate",checked?{...req,reference_preview:preview.key}:req);
+    const r = await api("/api/generate",{...req,...(checked?{reference_preview:preview.key}:{}),
+      ...(assetReviewKey?{asset_review_key:assetReviewKey}:{})});
     if (B!==sourceBoard || node(n.id)!==n) return;
     if(history?.video_recipe && r.memory_context)Object.assign(history.video_recipe,r.memory_context);
     if(history?.video_recipe && r.video_model) {

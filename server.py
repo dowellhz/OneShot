@@ -2877,6 +2877,10 @@ async def generate(req):
         if not isinstance(preview_key,str) or not re.fullmatch(r"[a-f0-9]{64}",preview_key):
             raise bad("素材预览编号无效")
         req["reference_preview"] = preview_key
+    if (asset_key := raw.pop("asset_review_key",None)) is not None:
+        if not isinstance(asset_key,str) or not re.fullmatch(r"[a-f0-9]{64}",asset_key):
+            raise bad("资产核对编号无效")
+        req["asset_review_key"] = asset_key
     return await generate_request(req, raw)
 
 
@@ -3204,6 +3208,8 @@ async def generate_request(req, raw):
         draft = memory.character_draft_request(req["user"], raw, draft)
     options = {"owner_only":True} if req.get("connector_own_assets") else {}
     payload = memory.prepare(req["user"], raw, replay_ref=req.get("replay_memory_ref"), **options)
+    if (asset_key := req.get("asset_review_key")) and asset_key != creative_memory.generation_asset_key(payload.get("memory_used",[])):
+        creative_memory.fail("参考资产已变化，请重新核对运行计划",409)
     return await submit_prepared_generation(req, payload, draft=draft)
 
 

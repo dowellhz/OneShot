@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import re
@@ -127,6 +128,11 @@ def view_tokens(content):
             if view not in slots:
                 slots.append(view)
     return result
+
+
+def generation_asset_key(assets):
+    bindings = [[asset["id"],asset["mtime"],asset.get("ref"),asset.get("references",[])] for asset in assets]
+    return hashlib.sha256(dumps(bindings).encode()).hexdigest()
 
 
 def view_selections(views):
@@ -1247,6 +1253,35 @@ async def resolve_assets(req):
         asset = s.get(user,mid,board)
         assets.append({key:asset[key] for key in fields if key in asset})
     return web.json_response(assets,headers={"Cache-Control":"no-store"})
+
+
+@routes.post("/api/memory/review-generation")
+async def review_generation_assets(req):
+    payload = await req.json()
+    if not isinstance(payload,dict) or not isinstance(payload.get("entries"),list) or not 1<=len(payload["entries"])<=100:
+        fail("请选择要核对的生成节点")
+    user, s = req["user"], store(req)
+    bid = payload.get("board")
+    s.board(user,bid)
+    reviewed = []
+    for entry in payload["entries"]:
+        if (not isinstance(entry,dict) or not isinstance(entry.get("id"),str) or
+                entry.get("kind") not in ("image","video") or not isinstance(entry.get("prompt"),str) or
+                not isinstance(entry.get("fields",{}),dict)):
+            fail("生成参考核对参数无效")
+        raw = {key:entry[key] for key in ("kind","prompt","fields","memory_ids","memory_views") if key in entry}
+        try:
+            replay_ref = s.h.checked_asset_replay({"replay_memory_ref":entry.get("replay_memory_ref")})
+            prepared = s.prepare(user,{**raw,"board":bid},replay_ref=replay_ref,
+                                 video_reference_check=True)
+        except web.HTTPException as error:
+            reviewed.append({"id":entry["id"],"error":json.loads(error.text).get("error",error.reason)})
+            continue
+        assets = prepared.get("memory_used",[])
+        reviewed.append({"id":entry["id"],"key":generation_asset_key(assets),"assets":[
+            {key:asset[key] for key in ("id","name","kind","ref","references") if key in asset} for asset in assets
+        ]})
+    return web.json_response(reviewed,headers={"Cache-Control":"no-store"})
 
 
 @routes.post("/api/memory/{mid}/duplicate")

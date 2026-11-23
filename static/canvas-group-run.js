@@ -110,6 +110,51 @@ function groupRunReferenceDetails(n, media, deps, completed) {
   return refs.concat(inputs(n,"text").map(source=>({name:source.name,label:"文字参考"})));
 }
 
+function groupRunAssetRequest(n) {
+  if(n.type==="audio")return null;
+  const text=value=>typeof value==="string"?value.replace(/@(?:图|视频|音频|音)(?:\{\d{1,16}\}|\d+)/g,""):value;
+  const request={id:n.id,kind:n.type,prompt:text(fullPrompt(n))};
+  if(usesFields(n))request.fields=Object.fromEntries(Object.entries(n.data.fields||{}).map(([key,value])=>[key,text(value)]));
+  if(n.type==="video")applyVideoMemory(n,request);
+  return request.memory_ids?.length||request.replay_memory_ref||
+    [request.prompt,...Object.values(request.fields||{})].some(value=>typeof value==="string"&&value.includes("@"))?request:null;
+}
+
+async function groupRunReviewAssets(board, entries) {
+  const reviewed = new Map();
+  for(let start=0;start<entries.length;start+=50){
+    const batch=entries.slice(start,start+50);
+    try{
+      const results=await api("/api/memory/review-generation",{board,entries:batch});
+      for(const result of results)reviewed.set(result.id,result);
+    }catch(error){
+      for(const entry of batch)reviewed.set(entry.id,{error:error.message||"无法核对参考资产"});
+    }
+  }
+  return reviewed;
+}
+
+function groupRunReviewedSteps(steps, reviews) {
+  if(!reviews?.size)return steps;
+  const byId=new Map(), checked=[];
+  for(const step of steps){
+    const review=reviews.get(step.id), upstream=step.deps.some(id=>byId.get(id)?.status==="skipped");
+    let result=step;
+    if(step.status==="waiting" && (review?.error||upstream)){
+      result={...step,status:"skipped",error:review?.error||"上游节点无法生成"};
+    }else if(review){
+      const assets=review.assets.map(asset=>{
+        const views=(asset.references||[]).map(ref=>CHARACTER_VIEWS[ref.view]?.[0]).filter(Boolean);
+        return {name:asset.name,label:["资产库",cmKind(asset),...views].join(" · "),
+          thumbnail:asset.ref&&cmMediaType(asset.ref)==="image"?asset.ref:null};
+      });
+      result={...step,references:[...step.references,...assets],assetReviewKey:review.key};
+    }
+    byId.set(step.id,result);checked.push(result);
+  }
+  return checked;
+}
+
 function groupRunAffected(group, changed) {
   const members=new Set(group.nodes), affected=new Set([...changed].filter(id=>members.has(id)));
   for(const id of affected){
@@ -313,19 +358,20 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     return {steps,canRefresh,canConnect,refreshTails:canRefresh&&refresh.checked,connectTails:canConnect&&connect.checked,timing,
       notice:warnings.slice(0,3).join("；")+(warnings.length>3?`，另有 ${warnings.length-3} 镜待核对`:"")};
   };
-  let reviewed;
-  const preview=()=>{
-    const previous=reviewed;
-    reviewed=collect();
-    const {steps,notice,timing}=reviewed;
+  let reviewed, assetReviews, rendered=false;
+  const renderPreview=()=>{
+    const {notice,timing}=reviewed;
+    const steps=groupRunReviewedSteps(reviewed.steps,assetReviews);
+    const pending=assetReviews===null;
     refresh.closest("label").hidden=!reviewed.canRefresh;
     connect.closest("label").hidden=!reviewed.canConnect;
     const ready=steps.filter(step=>step.status==="waiting");
     const outputs=ready.reduce((total,step)=>total+step.count,0);
     summary.textContent=ready.length?`将${retry?"重试":"运行"} ${ready.length} 个节点，计划生成 ${outputs} 项。`:"当前没有可运行的节点";
+    if(pending)summary.textContent+=" 正在核对参考资产。";
     const cost = $("[data-group-cost]",dialog);
-    cost.hidden=!ready.length;
-    if (ready.length) {
+    cost.hidden=pending||!ready.length;
+    if (!pending&&ready.length) {
       cost.textContent="正在估算费用…";
       const snapshot=reviewed;
       void canvasGenerationCosts(ready.map(step=>canvasCostRequest(node(step.id)))).then(amounts=>{
@@ -354,10 +400,27 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
         }
       }
     }
-    const expanded=new Set(previous?$$("details[open]",list).map(row=>row.dataset.step):
-      steps.length<=2?steps.map(step=>step.id):[]);
+    const priorRows=rendered?$$("details",list):[];
+    const expanded=new Set(priorRows.filter(row=>row.open).map(row=>row.dataset.step));
+    if(steps.length<=2)for(const step of steps){
+      if(!priorRows.some(row=>row.dataset.step===step.id))expanded.add(step.id);
+    }
     list.innerHTML=groupRunRows(steps,expanded);
-    submit.disabled=!ready.length;
+    rendered=true;
+    submit.disabled=pending||!ready.length;
+  };
+  const preview=()=>{
+    reviewed=collect();
+    const entries=reviewed.steps.filter(step=>step.status==="waiting").map(step=>groupRunAssetRequest(node(step.id))).filter(Boolean);
+    assetReviews=entries.length?null:new Map();
+    renderPreview();
+    if(!entries.length)return;
+    const snapshot=reviewed;
+    void groupRunReviewAssets(boardId,entries).then(results=>{
+      if(B!==board||!dialog.open||reviewed!==snapshot)return;
+      for(const entry of entries)if(!results.has(entry.id))results.set(entry.id,{error:"无法核对参考资产"});
+      assetReviews=results;renderPreview();
+    });
   };
   mode.onchange=refresh.onchange=connect.onchange=preview;
   adjustLength.onclick=()=>{
@@ -378,10 +441,12 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     if(groupRun?.active || retry&&groupRun!==retry || B!==board || !canvasCanEdit())return;
     const current=collect();
     if(JSON.stringify(current)!==JSON.stringify(reviewed)){preview();summary.textContent+=" 画布已更新，请再次确认。";return;}
-    if(!current.steps.some(step=>step.status==="waiting"))return;
+    if(assetReviews===null)return;
+    const steps=groupRunReviewedSteps(current.steps,assetReviews);
+    if(!steps.some(step=>step.status==="waiting"))return;
     closeCanvasGroupRunDialog();
     const id=crypto.randomUUID?.() || "group-"+Date.now()+"-"+Math.random().toString(36).slice(2);
-    void executeCanvasGroup({id,board,boardId,...origin,name:scope.name,steps:[...retained,...current.steps],
+    void executeCanvasGroup({id,board,boardId,...origin,name:scope.name,steps:[...retained,...steps],
       refreshTails:current.refreshTails,connectTails:current.connectTails,filmReturn:filmReturn || retry?.filmReturn,active:true,stop:false});
   };
   preview();
@@ -451,7 +516,7 @@ async function executeCanvasGroupStep(run,step,byId,current) {
       }
       if(run.stop||!current())throw new Error("已停止提交");
     }
-    await generate(n,{batchLayout:"tabs",groupRunId:run.id});
+    await generate(n,{batchLayout:"tabs",groupRunId:run.id,assetReviewKey:step.assetReviewKey});
     while(current() && node(n.id)===n && n.job)await sleep(250);
     const result=receipt.result;
     if(!current() && result){
