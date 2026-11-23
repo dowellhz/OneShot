@@ -268,7 +268,7 @@ function acNodeReferenceMarkup(n,selection,reviews){
  const preview=n.type==="image"&&version?.ref
   ? `<img src="${esc(ewRefUrl(version.ref))}" alt="" loading="lazy" draggable="false">`
   : ico(n.type);
- const label=index>=0?"版本 "+(index+1)+(pin||fixedRef?" · 已指定":""):ref?"版本已移除":TYPE_CN[n.type];
+ const label=AC.emptyMediaNode===n.id?"接收生成结果":index>=0?"版本 "+(index+1)+(pin||fixedRef?" · 已指定":""):ref?"版本已移除":TYPE_CN[n.type];
  const options=n.versions.map((entry,i)=>entry.ref
   ? `<option value="${i}" ${pin&&version===entry?"selected":""}>版本 ${i+1}${pin&&version===entry?" · 已指定":""}</option>`:"").join("");
  const choices=!fixedRef&&options&&(n.versions.length>1||pin&&!version)
@@ -307,6 +307,7 @@ function acRenderRefs(){
  $$("[data-remove]",box).forEach(b=>b.onclick=()=>{
   AC.refs=acRefs().map(n=>n.id).filter(id=>id!==b.dataset.remove);
   AC.referencePins.delete(b.dataset.remove);
+  if(AC.emptyMediaNode===b.dataset.remove)AC.emptyMediaNode=null;
   if(AC.selection?.node_id===b.dataset.remove)AC.selection=null;
   AC.reviews=AC.reviews.filter(r=>acReviewTarget(r)?.id!==b.dataset.remove);
   acRenderRefs();acRenderState();
@@ -357,7 +358,7 @@ async function acUseNodes(nodes){
  if(nodes.length>1&&refs.length>30)toast("创作助手每条消息最多引用 30 个节点，已选取前 30 个");
 }
 function acUseNode(n){return acUseNodes([n]);}
-async function acNewNodeSession(references){
+async function acNewNodeSession(references,{draft="",emptyMediaNode=null}={}){
  if(!canvasCanEdit() || AC.sending || AC.documentUpload || AC.loadingSessions || AC.newNodeSession)return;
  const board=boardId;
  if(!references.length)return;
@@ -376,7 +377,9 @@ async function acNewNodeSession(references){
   if(!session||session!==AC.session||board!==boardId)return;
   const remaining=available();
   AC.refs=remaining.map(({id})=>id);
+  AC.emptyMediaNode=AC.refs.includes(emptyMediaNode)?emptyMediaNode:null;
   for(const {id,ref} of remaining)if(ref)AC.referencePins.set(id,{ref,name:node(id).name});
+  if(remaining.length&&draft)$("#acInput").value=draft;
   if(remaining.length!==references.length)toast("部分引用已移除，请核对新对话的素材");
   acRenderState();
   if(AC.open)$("#acInput").focus();
@@ -1504,6 +1507,7 @@ async function acContinueTask(session,title,history){
 function acRememberDraft(){
  if(!AC.session)return;
  AC.drafts.set(AC.session,{text:$("#acInput").value,refs:AC.refs?.slice()??null,pins:[...AC.referencePins],
+  emptyMediaNode:AC.emptyMediaNode,
   selection:AC.selection,reviews:AC.reviews.slice(),placement:AC.placement,skill:AC.skill,documents:AC.documents.slice(),
   modelChoice:AC.modelSelection.choice,thinkingLevel:AC.modelSelection.level,executionScope:AC.executionScope});
 }
@@ -1511,6 +1515,7 @@ function acRememberDraft(){
 function acRestoreDraft(draft){
  $("#acInput").value=draft.text;
  AC.refs=draft.refs;
+ AC.emptyMediaNode=draft.emptyMediaNode||null;
  AC.referencePins=new Map(draft.pins);
  AC.selection=draft.selection;
  AC.reviews=draft.reviews;
@@ -1592,6 +1597,7 @@ function acResetSession(id){
  AC.approvals=[];acDecidedApprovals.clear();
  AC.questionnaires=[];
  acPickPlacement(false);AC.placement=null;
+ AC.emptyMediaNode=null;
  csClose();csChoose(null);cmClose();
  AC.epoch++;AC.session=id;AC.cursor=0;AC.events=[];AC.runs=[];AC.queue=[];AC.documents=[];AC.documentUpload=null;AC.inputs=[];AC.refs=null;AC.selection=null;AC.reviews=[];AC.calls.clear();AC.replaying=true;
  AC.referencePins.clear();
@@ -1613,6 +1619,7 @@ async function acLoadSession(id){
    const {text,selected,skill_id,selected_versions,placement,chat_model,thinking_level,execution_scope}=outbox.payload;
    if(!draft){
     $("#acInput").value=outbox.draft??text;AC.refs=selected;
+    AC.emptyMediaNode=outbox.payload.empty_media_node||null;
     AC.selection=outbox.selection||null;AC.reviews=outbox.reviews||(outbox.review?[outbox.review]:[]);
     AC.placement=placement||null;
     for(const {node_id,ref} of selected_versions||[])AC.referencePins.set(node_id,{ref,name:node(node_id)?.name||node_id});
@@ -1663,9 +1670,9 @@ async function acSessions(fresh=false){
 function acRenderEmpty(){const box=$("#acMessages");if(box.children.length)return;box.innerHTML=`<div class="ac-empty"><b>告诉我你想怎么创作</b><div>引用画布素材，我可以生成、编辑和整理结果。</div><button data-example="描述一下选中的图片">理解这张图片</button><button data-example="以选中图片为参考生成三个暖色版本，横向排列在原图右边">生成三个暖色版本</button><button data-example="把选中的节点横向排齐">整理选中的节点</button></div>`;$$("[data-example]",box).forEach(b=>b.onclick=()=>{$("#acInput").value=b.dataset.example;acRenderState();$("#acInput").focus();});}
 function acMessageKey(board,sid,payload){
  const {text,selected,selection_id,review_id,review_ids,skill_id,document_ids,selected_versions,
-  placement,generation_mode,chat_model,thinking_level,execution_scope,enqueue}=payload;
+  placement,generation_mode,chat_model,thinking_level,execution_scope,enqueue,empty_media_node}=payload;
  return JSON.stringify([board,sid,text,selected,selection_id,review_ids||(review_id?[review_id]:[]),skill_id,
-  document_ids||[],selected_versions||[],placement||null,generation_mode||"auto",chat_model||"",thinking_level||"off",execution_scope||"full",enqueue]);
+  document_ids||[],selected_versions||[],placement||null,generation_mode||"auto",chat_model||"",thinking_level||"off",execution_scope||"full",enqueue,empty_media_node]);
 }
 
 function acComposeMessage(choiceText){
@@ -1683,6 +1690,7 @@ function acComposeMessage(choiceText){
  const scope=choice?(AC.events.findLast(event=>event.kind==="user")?.data.execution_scope||"full"):AC.executionScope;
  const generation=scope==="full"?acGenerationMode:"auto";
  const payload={text,selected,enqueue:!choice};
+ if(!choice&&selected.includes(AC.emptyMediaNode))payload.empty_media_node=AC.emptyMediaNode;
  if(selection)payload.selection_id=selection.selection_id;
  if(reviewIds.length===1)payload.review_id=reviewIds[0];
  if(reviewIds.length>1)payload.review_ids=reviewIds;
@@ -1756,7 +1764,7 @@ async function acSubmitMessage(submission){
    if(payload.enqueue)input.value="";
    AC.referencePins.clear();
    AC.refs=null;AC.selection=null;AC.reviews=[];
-   if(payload.enqueue){AC.placement=null;if(AC.skill)csChoose(null);}
+   if(payload.enqueue){AC.placement=null;AC.emptyMediaNode=null;if(AC.skill)csChoose(null);}
   }
   await acPoll();acRenderRefs();
  }catch(error){

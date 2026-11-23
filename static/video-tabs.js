@@ -34,25 +34,45 @@ function vtMergeInfo(ids){
   if(pinned.length>1)return {error:"多个视频分别被成片或分镜引用，请保留为独立节点"};
   return {nodes,pinned:pinned[0]};
 }
+function hasVideoRecipeInputs(recipe) {
+  return !!recipe && (["images","audio_refs","video_refs"].some(key=>Array.isArray(recipe[key])) || !!recipe.previs_guide);
+}
+function videoRecipeEdges(n,r) {
+  const end=(vidFrames(r.duration||n.data.duration)-4)/24;
+  const edges=(r.images||[]).filter(im=>im.node_id).map((im,k)=>{
+      const time=Number(im.time)||0,role=im.role==="subject"?"subject":r.planned?(time<=.01?"first":time>=end-.05?"last":"keyframe"):(k===0?"first":"last");
+      const slot=promptSlot(im.prompt_slot);
+      return {from:im.node_id,to:n.id,role,...(r.planned&&role!=="subject"?{time}:{}),
+        ...(slot?{prompt_slot:slot}:{}),...((slot||im.pinned===true)&&im.ref?{ref:im.ref}:{})};
+  });
+  if (r.previs_guide) edges.push({from:r.previs_guide.node_id,to:n.id,relation:"previs",ref:r.previs_guide.ref});
+  for (const [inputs,relation] of [[r.audio_refs,"audio_ref"],[r.video_refs,"video_ref"]]) {
+    (inputs || []).forEach((input,i) => {
+      const {node_id:from,ref,start,end} = input;
+      const slot = promptSlot(input.prompt_slot);
+      edges.push({from,to:n.id,ref,relation,...(slot?{prompt_slot:slot}:{}),
+        ...(relation==="video_ref"?{start,end,...(i===0 && r.extension ? {extension:r.extension} : {}),
+          ...(i===0 && r.segment_edit ? {segment_edit:true} : {})}: {})});
+    });
+  }
+  return edges;
+}
+
 function vtSnapshot(n,i){
   const v=vtClone(n.versions[i]);
   if(!Array.isArray(v.input_edges)){
-    const r=v.video_recipe,images=r?.images?.filter(im=>im.node_id);
-    if(images?.length){const end=(vidFrames(r.duration||n.data.duration)-4)/24;v.input_edges=images.map((im,k)=>{
-      const time=Number(im.time)||0,role=im.role==="subject"?"subject":r.planned?(time<=.01?"first":time>=end-.05?"last":"keyframe"):(k===0?"first":"last");
-      const promptSlot=Number.isInteger(im.prompt_slot)&&im.prompt_slot>0;
-      return {from:im.node_id,to:n.id,role,...(r.planned&&role!=="subject"?{time}:{}),
-        ...(promptSlot?{prompt_slot:im.prompt_slot}:{}),...((promptSlot||im.pinned===true)&&im.ref?{ref:im.ref}:{})};
-    });}else v.input_edges=vtClone(B.edges.filter(e=>e.to===n.id));
+    v.input_edges=hasVideoRecipeInputs(v.video_recipe)?videoRecipeEdges(n,v.video_recipe):vtClone(B.edges.filter(e=>e.to===n.id));
   }
   if(!v.node_data){
     v.node_data=vtClone(n.data);const r=v.video_recipe;
-    if(r){for(const k of ["prompt","duration","quality","seed","turbo","provider","sound","music","fields","camera_plan","object_edit","draft","video_optics"])if(k in r)v.node_data[k]=vtClone(r[k]);
+    if(r){for(const k of ["prompt","duration","quality","seed","turbo","provider","selected_model","sound","music","fields","camera_plan","object_edit","draft","video_optics"])if(k in r)v.node_data[k]=vtClone(r[k]);
+      if(!r.selected_model)delete v.node_data.selected_model;
       if(!r.camera_plan)delete v.node_data.camera_plan;
       if(!r.object_edit)delete v.node_data.object_edit;
       if(!r.video_optics)delete v.node_data.video_optics;
       if(!r.draft)delete v.node_data.draft;
-      if(r.ar)v.node_data.aspect=r.ar+":1";v.node_data.mode=r.planned?"keyframes":"auto";v.node_data.pmode=r.fields?"fields":"free";}
+      if(r.ar)v.node_data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-r.ar)<.001) || "auto";
+      v.node_data.mode=r.planned?"keyframes":"auto";v.node_data.pmode=r.fields?"fields":"free";}
   }
   v.label=v.label||n.name;
   v.tab_nodes=[...new Set([...(v.tab_nodes||[]),n.id])];
@@ -179,11 +199,12 @@ function vtCopyVersion(n,index,at=null) {
   } else if(n.type==="audio") {
     Object.assign(data,v.audio_recipe||{}, {prompt:v.audio_recipe?.prompt??v.prompt??""});
   } else {
-    data.prompt=v.prompt??receipt?.prompt??"";
+    if (!v.node_data) data.prompt=v.prompt??receipt?.prompt??"";
     const settings=receipt?.settings||{};
     for(const key of ["model","provider","quality","seed"])if(settings[key]!=null)data[key]=settings[key];
     if(Number.isFinite(settings.ar))data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-settings.ar)<.001)||"auto";
-    if(Array.isArray(v.input_edges))inputs=v.input_edges.filter(edge=>node(edge.from)?.type==="image");
+    if(Array.isArray(v.input_edges))inputs=v.input_edges.filter(edge=>node(edge.from)?.type==="image" ||
+      v.node_data && node(edge.from)?.type==="text");
     else{
       const sources=new Set((receipt?.inputs||[]).filter(input=>{
         const source=node(input.node_id);
@@ -639,12 +660,17 @@ function vtOpenReferenceUpdate(source,index,group=null,preset=null){
 function vtTabMenu(n,index,x,y){
   closeMenus();let m=$("#videoTabMenu");if(!m){m=document.createElement("div");m.id="videoTabMenu";m.className="menu";document.body.append(m);}
   m.innerHTML=`<div class="mt">${TYPE_CN[n.type]}版本 ${index+1}</div><button data-version-copy>${ico("copy")}复制此版本为独立节点</button>`+
+    (hasGenerationDraft(n,n.versions[index])?`<button data-version-draft>${ico("edit")}用此版本改稿</button>`:"")+
     (canvasCanEdit()&&n.versions[index]?.ref?`<button data-version-reference>${ico("script")}引用此版本到创作助手</button>
       <button data-version-new-session>${ico("script")}用此版本发起新对话</button>`:"")+
     (vtCanCopyVersion(n,index)&&vtReferenceUpdates(n,n.versions[index]).length?`<button data-version-update>${ico("next")}更新下游引用…</button>`:"")+
     (n.type==="video"&&!n.data.film?`<button data-split>${ico("next")}拆出这个 Tab</button><button data-all>${ico("assets")}拆开所有 Tab</button>`:"");
   const version=n.versions[index];
   $$("button",m).forEach(b=>{
+    if(b.hasAttribute("data-version-draft")){
+      b.onclick=()=>{closeMenus(); if (loadGenerationDraft(n,version)) focusNodePrompt(n);};
+      return;
+    }
     if(b.hasAttribute("data-version-new-session")){
       b.onclick=boardAction(()=>{closeMenus();return acNewNodeSession([{id:n.id,ref:version.ref}]);});
       return;

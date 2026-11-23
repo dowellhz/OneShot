@@ -416,6 +416,49 @@ class MemoryIntegration(ChatFixture):
         again=st.prepare({'id':7,'role':'member'},{**p,'memory_ids':[a['id']]})
         self.assertEqual(len(again['images']),3);self.assertEqual(again['prompt'].count('创作参考资料'),1)
 
+    async def test_generation_image_bundle_preserves_order_and_one_subject(self):
+        a = await self.create(name="样品瓶", kind="prop")
+        image = io.BytesIO()
+        Image.new("RGB", (48, 64), "blue").save(image, "PNG")
+        form = FormData()
+        form.add_field("file", image.getvalue(), filename="side.png", content_type="image/png")
+        upload = await self.client.post("/api/upload", data=form)
+        self.assertEqual(upload.status, 200, await upload.text())
+        other = (await upload.json())["ref"]
+        refs = [other, a["ref"]]
+        edit = {"id":a["id"],"mtime":a["mtime"],"ref":other,"generation_images":refs}
+        for invalid in ([other,other],["input:h3studio/unowned.png"]):
+            attempt = await self.client.post("/api/memory", json={**edit,"generation_images":invalid})
+            self.assertEqual(attempt.status,400,await attempt.text())
+        saved = await self.client.post("/api/memory", json=edit)
+        self.assertEqual(saved.status,200,await saved.text())
+        data = await saved.json()
+        self.assertEqual(data["generation_images"],refs)
+        self.assertEqual(data["ref"],a["ref"])
+
+        frame = image_editor.save(server.COMFY_DIR, Image.new("RGB",(64,64),"white"))["ref"]
+        model_payload = {"kind":"video","board":"test","prompt":"从首帧看 @样品瓶","images":[
+            {"ref":frame,"role":"frame","time":0,"index":1}]}
+        st = self.app["creative_memory"]
+        user = {"id":7,"role":"member"}
+        prepared = st.prepare(user,model_payload)
+        self.assertEqual([entry["ref"] for entry in prepared["images"]],[frame,*refs])
+        self.assertEqual([entry["ref"] for entry in prepared["memory_used"][0]["references"]],refs)
+        _, meta = server.graph_video(prepared)
+        prompt = meta["full_prompt"]
+        self.assertIn("<Subject 1> is the object in <Picture 1>",prompt)
+        self.assertIn("<Picture 2> is an additional view of the same <Subject 1>",prompt)
+        self.assertNotIn("<Subject 2>",prompt)
+        self.assertIn("<Picture 3> is the first frame",prompt)
+
+        reset = await self.client.post("/api/memory",json={"id":a["id"],"mtime":data["mtime"],"generation_images":[]})
+        self.assertEqual(reset.status,200,await reset.text())
+        self.assertEqual([entry["ref"] for entry in st.prepare(user,model_payload)["images"]],[frame,a["ref"]])
+        with patch.object(st,"historical_references",return_value={a["id"]:[(None,ref) for ref in refs]}), \
+                patch.object(server,"require_media"):
+            replay = st.prepare(user,model_payload,replay_ref=frame)
+        self.assertEqual([entry["ref"] for entry in replay["images"]],[frame,*refs])
+
     async def test_document_context_and_project_exclusion(self):
         a=await self.create(name='世界观',kind='document',desc='城市禁止燃油车辆',ref=None)
         st=self.app['creative_memory'];p=st.prepare({'id':7,'role':'member'},{'kind':'image','board':'test','prompt':'@世界观 街道远景'})

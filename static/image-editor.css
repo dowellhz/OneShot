@@ -46,6 +46,9 @@
 #imageEditor textarea::placeholder { color:var(--faint); }
 #imageEditor .ie-row { display:flex; gap:6px; margin:10px 0; }
 #imageEditor .ie-row button { flex:1; padding:6px 4px; }
+#imageEditor #ieLayerBatch { margin:10px 0; padding:8px 10px 0; min-width:0; border:1px solid var(--line); border-radius:9px; }
+#imageEditor #ieLayerBatchList { display:grid; gap:6px; max-height:180px; overflow:auto; }
+#imageEditor #ieLayerBatchList label { display:flex; align-items:flex-start; gap:8px; overflow-wrap:anywhere; }
 #imageEditor .ie-note { color:var(--faint); font-size:var(--fs-small); line-height:var(--lh-body); margin:10px 0 14px; }
 #imageEditor #ieAI { border-top:1px solid var(--line); margin-top:18px; padding-top:16px; }
 #imageEditor button.ie-primary { width:100%; min-height:36px; margin-top:16px; color:var(--bg); background:var(--accent); border-color:var(--accent); font-weight:600; }
@@ -81,6 +84,8 @@
 #imageEditor #ieWipe { width:110px; }
 #imageEditor #ieBrushCursor { position:absolute; transform:translate(-50%,-50%); border:1px solid #fff; border-radius:50%; box-shadow:0 0 0 1px #000a; pointer-events:none; z-index:2; }
 #imageEditor .ie-canvas.pan { cursor:grab; }
+#imageEditor .ie-canvas:not(.pan)[data-layer-resize="nwse"] { cursor:nwse-resize; }
+#imageEditor .ie-canvas:not(.pan)[data-layer-resize="nesw"] { cursor:nesw-resize; }
 #imageEditor .ie-history-actions { display:flex; align-items:center; gap:6px; padding:6px 12px; flex-shrink:0; border-top:1px solid var(--line); background:var(--panel); }
 #imageEditor .ie-history-actions button { min-height:28px; padding:3px 8px; }
 #imageEditor #ieDraftState { color:var(--faint); font-size:var(--fs-caption); }

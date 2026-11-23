@@ -7,6 +7,7 @@ import zipfile
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
+from xml.etree.ElementTree import fromstring
 
 import aiohttp
 from aiohttp import web
@@ -138,10 +139,11 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
 
         @web.middleware
         async def user(req, handler):
-            req["user"] = {"id": int(req.headers.get("X-Test-Uid", "7")), "role": "admin"}
+            req["user"] = {"id": int(req.headers.get("X-Test-Uid", "7")),
+                           "role": req.headers.get("X-Test-Role", "admin")}
             return await handler(req)
 
-        app = web.Application(middlewares=[user])
+        app = web.Application(middlewares=[user, server.media_input_guard])
         self.http = aiohttp.ClientSession()
         app["creative_memory"] = server.creative_memory.Store(server)
         app["http"] = self.http
@@ -174,6 +176,84 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual((await r.json())["w"], 192)
 
+    async def test_openraster_download_keeps_editable_layers_and_matching_preview(self):
+        top = editor.save(self.root, Image.new("RGBA", (9, 6), (170, 20, 60, 180)))["ref"]
+        hidden = editor.save(self.root, Image.new("RGBA", (6, 6), (0, 255, 30, 255)))["ref"]
+        name = "镜头 & 背景"
+        payload = {"name":name,"ref":self.source,"layers":[
+            {"name":"底图","ref":self.source},
+            {"name":"预留 <绿色>","ref":hidden,"visible":False},
+            {"name":"前景","ref":top,"x":-2,"y":4,"w":16,"h":12,"opacity":.5},
+        ]}
+        with patch.object(server, "can_read_media", side_effect=lambda _user, ref: ref != hidden):
+            denied = await self.client.post("/api/image-edit/openraster",json=payload,headers={"X-Test-Role":"user"})
+        self.assertEqual(denied.status,403)
+        response = await self.client.post("/api/image-edit/openraster",json=payload)
+        self.assertEqual(response.status,200,await response.read() if response.status != 200 else "")
+        self.assertEqual(response.content_type,"image/openraster")
+        self.assertIn("filename*=UTF-8''",response.headers["Content-Disposition"])
+        flattened = editor.compose_layers(self.root,payload)
+        with zipfile.ZipFile(io.BytesIO(await response.read())) as archive:
+            self.assertEqual((archive.infolist()[0].filename,archive.infolist()[0].compress_type),
+                             ("mimetype",zipfile.ZIP_STORED))
+            self.assertEqual(archive.read("mimetype"),b"image/openraster")
+            document = fromstring(archive.read("stack.xml"))
+            self.assertEqual((document.get("name"),document.get("w"),document.get("h")),(name,"256","192"))
+            layers = document.findall("./stack/layer")
+            self.assertEqual([layer.get("name") for layer in layers],["前景","预留 <绿色>","底图"])
+            self.assertEqual([layers[0].get(key) for key in ("x","y","opacity")],["-2","4","0.5"])
+            self.assertEqual(layers[1].get("visibility"),"hidden")
+            with Image.open(archive.open(layers[0].get("src"))) as foreground:
+                self.assertEqual(foreground.size,(16,12))
+                expected = editor.load(self.root,top).resize((16,12),Image.Resampling.LANCZOS)
+                self.assertEqual(foreground.tobytes(),expected.tobytes())
+            with Image.open(archive.open("mergedimage.png")) as merged:
+                self.assertEqual(merged.tobytes(),editor.load(self.root,flattened["ref"]).tobytes())
+            with Image.open(archive.open("Thumbnails/thumbnail.png")) as thumbnail:
+                self.assertLessEqual(max(thumbnail.size),256)
+
+    async def test_openraster_upload_round_trips_the_layer_stack(self):
+        source = editor.save(self.root,Image.new("RGBA",(32,24),(30,110,190,140)))["ref"]
+        document = self.root / "layers.ora"
+        payload = {"ref":self.source,"layers":[
+            {"name":"背景","ref":self.source},
+            {"name":"遮挡","ref":self.mask,"visible":False},
+            {"name":"前景","ref":source,"x":-3,"y":4,"opacity":.4},
+        ]}
+        editor.export_openraster(self.root,payload,document)
+        form = aiohttp.FormData()
+        form.add_field("image",document.read_bytes(),filename="分层.ora",content_type="image/openraster")
+        response = await self.client.post("/api/upload",data=form,headers={"X-Test-Role":"user"})
+        self.assertEqual(response.status,200,await response.text())
+        result = await response.json()
+        self.assertEqual((result["w"],result["h"],result["type"]),(256,192,"image"))
+        layers = result["layer_stack"]["layers"]
+        self.assertEqual([layer["name"] for layer in layers],["背景","遮挡","前景"])
+        self.assertEqual([layers[2][key] for key in ("x","y","opacity")],[-3,4,.4])
+        self.assertFalse(layers[1]["visible"])
+        self.assertEqual(editor.load(self.root,layers[2]["ref"]).tobytes(),editor.load(self.root,source).tobytes())
+        self.assertEqual(editor.load(self.root,result["ref"]).tobytes(),
+                         editor.load(self.root,editor.compose_layers(self.root,payload)["ref"]).tobytes())
+        for ref in [result["ref"], *(layer["ref"] for layer in layers)]:
+            peek = await self.client.get("/media",params={"ref":ref},headers={"X-Test-Role":"user"})
+            self.assertEqual(peek.status,200)
+            await peek.read()
+
+    async def test_openraster_rejects_unsupported_layer_group_without_leaving_media(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data,"w") as archive:
+            archive.writestr("mimetype","image/openraster")
+            archive.writestr("stack.xml",'<image w="256" h="192"><stack><stack/>'
+                             '<layer name="底图" src="data/base.png"/></stack></image>')
+            archive.write(editor.ref_path(self.root,self.source),"data/base.png")
+        previous = set(self.root.rglob("*.png"))
+        form = aiohttp.FormData()
+        form.add_field("image",data.getvalue(),filename="group.ora",content_type="image/openraster")
+        response = await self.client.post("/api/upload",data=form)
+        self.assertEqual(response.status,400)
+        self.assertIn("独立图层",(await response.json())["error"])
+        self.assertEqual(set(self.root.rglob("*.png")),previous)
+
     async def test_decompose_stores_independent_layers_and_preserves_the_original(self):
         original = Image.new("RGBA",(64,48),(25,64,90,190))
         draw = ImageDraw.Draw(original)
@@ -203,6 +283,32 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
         moved = editor.compose_layers(self.root,{"ref":source,"layers":layers})
         self.assertEqual(editor.load(self.root,moved["ref"]).getpixel((9,9))[3],0)
         self.assertEqual(editor.load(self.root,source).tobytes(),original.tobytes())
+
+    async def test_fill_background_replaces_subject_holes_and_preserves_transparency(self):
+        original = Image.new("RGBA",(64,48))
+        draw = ImageDraw.Draw(original)
+        draw.rectangle((3,3,60,44),fill=(25,64,90,200))
+        draw.rectangle((16,12,26,28),fill=(210,30,20,255))
+        labels = Image.new("L", original.size)
+        ImageDraw.Draw(labels).rectangle((16,12,26,28),fill=1)
+        source = editor.save(self.root,original,kind="input")["ref"]
+        label = editor.save(self.root,labels)["ref"]
+        layers = editor.decompose(self.root,source,label)["layer_stack"]["layers"]
+        background = layers[0]
+        self.assertEqual(background["decomposition_bounds"],{"x":3,"y":3,"w":58,"h":42})
+        params = {"ref":source,"background":background["ref"],"x":background["x"],"y":background["y"]}
+
+        response = await self.client.post("/api/image-edit/fill-background",json=params)
+        self.assertEqual(response.status,200,await response.text())
+        filled = editor.load(self.root,(await response.json())["ref"])
+        self.assertEqual(filled.getpixel((0,0)),(0,0,0,0))
+        self.assertEqual(filled.getpixel((4,4)),original.getpixel((4,4)))
+        for value, expected in zip(filled.getpixel((20,20)),(25,64,90,200)):
+            self.assertAlmostEqual(value,expected,delta=4)
+        self.assertEqual(editor.load(self.root,source).tobytes(),original.tobytes())
+
+        response = await self.client.post("/api/image-edit/fill-background",json={**params,"x":-1})
+        self.assertEqual(response.status,400)
 
     async def test_upscale_rejects_invalid_scale_and_reports_missing_models(self):
         url = "/api/image-edit/upscale"

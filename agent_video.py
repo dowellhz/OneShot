@@ -1196,8 +1196,9 @@ async def execute(s, run, user, cid, name, args):
     label = original.get("name", "视频") + " · 重生成" if original else "助手视频"
     if name == "video_extend":
         label = (source.get("name") or "视频") + (" · 补拍片头" if args["direction"] == "before" else " · 续拍片尾")
+    target_id = original["id"] if original else s.empty_generation_target(run,user,"video") if name=="video_generate" else None
     return await s.submit_generation(run, user, cid, payload, args.get("name") or label[:80],
-                                     s.host.generate_request, target_id=original["id"] if original else None, target_data=target_data,
+                                     s.host.generate_request, target_id=target_id, target_data=target_data,
                                      **({"replay_ref":replay_ref} if replay_ref else {}))
 
 

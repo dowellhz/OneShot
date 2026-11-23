@@ -351,7 +351,8 @@ function referenceServices(n) {
   if (videoInputs(n)[0]?.edge.segment_edit) return CAPS_LIST.segment_edit || [];
   return (needsReferenceVideo(n) ? CAPS_LIST.previs : CAPS_LIST.audio_reference) || [];
 }
-function referenceDuration(n) { return referenceServices(n).find(s=>s.id===n.data.provider)?.model?.includes("2-5") ? 30 : 15; }
+function referenceService(n) { return referenceServices(n).find(service => service.id === n.data.provider); }
+function referenceDuration(n) { return canvasNodeModel(n,referenceService(n),true)?.id?.includes("2-5") ? 30 : 15; }
 function removeNodes(ids) {
   if (!canvasCanEdit()) return;
   const targets = [...new Set(ids)].map(node).filter(Boolean);
@@ -505,8 +506,21 @@ function render(n) {
     if (n.type === "video" && badge) body.insertAdjacentHTML("beforeend", `<span class="badge">${esc(badge)}</span>`);
   } else {
     const hint = n.data.previs ? "双击编辑白模场景<br>设置机位与走位，渲染预演视频" :
-      n.type === "image" ? (imgInputs(n).length ? `以图改图 · ${imgInputs(n).length} 张参考图<br>选中后写下修改要求，用 @图1 指代原图` : "选中后在下方输入提示词生成<br>或把图片拖到这里") : (() => { const p = plan(n); return p.imgs.length ? `${p.name} · ${p.imgs.length} 张图<br>点连线上的标签可设为人物设定 / 首帧 / 尾帧` : "选中后输入提示词生成<br>连入图片可做人物设定 / 首帧 / 尾帧 / 关键帧"; })();
+      n.type === "image" ? (imgInputs(n).length ? `以图改图 · ${imgInputs(n).length} 张参考图<br>选中后写下修改要求，用 @图1 指代原图` : "选中后在下方输入提示词生成<br>或把图片拖到这里") : (() => { const p = plan(n); return p.imgs.length ? `${p.name} · ${p.imgs.length} 张图<br>点连线上的标签可设为人物设定 / 首帧 / 尾帧` : "选中后输入提示词生成<br>或把视频拖到这里"; })();
     body.innerHTML = `<div class="ph">${ico(n.type)}<div class="t">${hint}</div></div>`;
+  }
+  if(!v&&canvasCanEdit()&&canvasMediaUploadTarget(n)&&!n.job){
+    const placeholder=$(".ph",body);
+    placeholder.insertAdjacentHTML("beforeend",`<div class="node-start-actions">
+      <button type="button" class="pill" data-node-start="agent">交给助手</button>
+      <button type="button" class="pill" data-node-start="prompt">填写提示词</button>
+    </div>`);
+  }
+  const promptAction = $("[data-node-prompt]",body);
+  if (v && canvasCanEdit() && canvasMediaUploadTarget(n)) {
+    if (!promptAction) body.insertAdjacentHTML("beforeend",'<button type="button" class="pill node-prompt-action" data-node-prompt>提示词</button>');
+  } else {
+    promptAction?.remove();
   }
   renderVTabs(n, el);
   $(".meta", el).textContent = meta;
@@ -606,10 +620,91 @@ function renderVTabs(n, el) {
 }
 function refresh(n) { if (!n) return; render(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges(); }
 
+function canEditNodePrompt(n) {
+  return !!n && canvasCanEdit() && canvasMediaUploadTarget(n) && !n.job && !prepping.has(n.id);
+}
+
+function focusNodePrompt(n) {
+  if (!canEditNodePrompt(n) || node(n.id)!==n) return;
+  selectOnly(n.id);
+  const field = usesFields(n) ? $('#pfields textarea[data-k="action"]') : $("#prompt");
+  field?.focus();
+}
+
+function hasGenerationDraft(n,v) {
+  return canEditNodePrompt(n) && !!v?.ref && !v.image_grid &&
+    (n.type==="audio" ? typeof v.audio_recipe?.prompt==="string" :
+      !!(v.node_data && Array.isArray(v.input_edges) && (v.generation_record || v.video_recipe)) ||
+      n.type==="video" && hasVideoRecipeInputs(v.video_recipe) ||
+      n.type==="image" && typeof v.generation_record?.prompt==="string" && Array.isArray(v.generation_record.inputs));
+}
+
+function generationDraft(n,v) {
+  if (!hasGenerationDraft(n,v) || node(n.id)!==n || !n.versions.includes(v)) throw new Error("此版本的生成草稿不可用");
+  if (n.type==="video" && (!v.node_data || !Array.isArray(v.input_edges))) v=vtSnapshot(n,n.versions.indexOf(v));
+  const receipt = v.generation_record;
+  const saved = n.type==="audio" ? v.audio_recipe : v.node_data;
+  const data = {...defaults(n.type),...structuredClone(saved || {})};
+  // Library identity belongs to the node, even when its generation settings change.
+  for (const key of ["asset","caption"]) if (Object.hasOwn(n.data,key)) data[key] = structuredClone(n.data[key]);
+  delete data.character_draft;
+  const inputs = Array.isArray(receipt?.inputs) ? receipt.inputs : [];
+  const legacyImage = n.type==="image" && (!v.node_data || !Array.isArray(v.input_edges));
+  let links = n.type==="audio" ? [] : v.input_edges;
+  if (legacyImage) {
+    const {model,provider,provider_model,quality,seed,count,ar} = receipt.settings || {};
+    data.prompt=receipt.prompt;
+    for (const [key,value] of Object.entries({model,provider,quality,seed,count})) if (value != null) data[key]=value;
+    if (provider && provider_model && provider!=="local_h3") data.selected_model=provider_model;
+    if (Number.isFinite(ar)) data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-ar)<.001) || "auto";
+    links=inputs.filter(input=>input.role!=="text").map(input=>({from:input.node_id,to:n.id,ref:input.ref}));
+  }
+  const recordedRefs = new Map((v.video_recipe?.images || []).concat(inputs)
+    .filter(input=>input.node_id && input.ref).map(input=>[input.node_id,input.ref]));
+  const savedText = new Map(inputs.filter(input=>input.role==="text").map(input=>[input.node_id,input.text]));
+  const edges = links.map(edge => {
+    const source = node(edge.from);
+    if (!source || vtReferenceAncestors(source).has(n.id)) throw new Error("历史引用已移除或会形成循环连线");
+    if (source.type==="text") {
+      if (savedText.has(source.id) && (source.data.text || "").slice(0,5000)!==savedText.get(source.id))
+        throw new Error("历史文本引用已修改，无法恢复原草稿");
+      return {...edge,to:n.id};
+    }
+    const ref = edge.ref || edge.source_ref || recordedRefs.get(source.id);
+    if (!ref || !source.versions.some(item=>item.ref===ref)) throw new Error("历史素材版本已移除");
+    return {...edge,to:n.id,...(edge.source_ref ? {} : {ref})};
+  });
+  for (const item of (n.type==="audio" && Array.isArray(data.references) ? data.references : [])) {
+    const source = node(item.node_id);
+    if (!source?.versions.some(version=>version.ref===item.ref) || vtReferenceAncestors(source).has(n.id))
+      throw new Error("历史音频参考版本已移除或会形成循环连线");
+  }
+  return {data,edges};
+}
+
+function loadGenerationDraft(n,v,report=toast) {
+  let draft;
+  try { draft=generationDraft(n,v); }
+  catch (error) { report(error.message);return false; }
+  checkpoint();
+  rememberVideoVersion(n);
+  n.data=draft.data;
+  n.cur=n.versions.indexOf(v);
+  B.edges=B.edges.filter(edge=>edge.to!==n.id).concat(draft.edges);
+  if (n.type==="audio") syncSeedAudioEdges();
+  $("#prompt")._node=null;
+  $("#pfields")._node=null;
+  render(n);
+  refreshDownstream(n);
+  drawEdges();
+  save();
+  return true;
+}
+
 function wire(n, el) {
   // drag the node (card or label); click selects
   const startDrag = e => {
-    if (e.button !== 0 || spaceDown || e.target.closest(".plus, [contenteditable=true], [data-open-playlist], .node-document a, .node-document button")) return;
+    if (e.button !== 0 || spaceDown || e.target.closest(".plus, [contenteditable=true], [data-open-playlist], [data-node-start], [data-node-prompt], .node-document a, .node-document button")) return;
     const vid = e.target.closest("video");
     if (!canvasCanEdit()) { selectOnly(n.id); return; }
     // typing in a text node, or the video's control bar: select only, leave the element alone
@@ -706,18 +801,40 @@ function wire(n, el) {
   });
   pr.addEventListener("click", e => { if (n.type === "video" && (!curV(n) || curV(n).source === "previs")) { e.stopPropagation(); openVideoExtension(n); } });
   pl.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); const r = pl.getBoundingClientRect(); openAddMenu(r.left - 200, r.top - 10, { to: n }); });
-  if (n.type === "image" || n.type === "audio") {
-    el.addEventListener("dragover", e => { e.preventDefault(); e.stopPropagation(); el.classList.add("ok-target"); });
-    el.addEventListener("dragleave", () => el.classList.remove("ok-target"));
+  if (canvasMediaUploadTarget(n)) {
+    el.addEventListener("click",e=>{
+      if (e.target.closest("[data-node-prompt]")) {
+        e.stopPropagation();
+        focusNodePrompt(n);
+        return;
+      }
+      const button=e.target.closest("[data-node-start]");
+      if(!button)return;
+      e.stopPropagation();
+      if(node(n.id)!==n||!canvasCanEdit()||curV(n)||n.job||prepping.has(n.id))return;
+      if(button.dataset.nodeStart==="agent"){
+        void acNewNodeSession([{id:n.id}],{draft:n.data.prompt||"",emptyMediaNode:n.id}).catch(error=>toast(error.message));
+      }else{
+        focusNodePrompt(n);
+      }
+    });
+    el.addEventListener("dragover", e => {
+      const types=Array.from(e.dataTransfer?.types||[]);
+      if(!canvasCanUploadInto(n)||!types.some(type=>type==="Files"||type==="application/x-h3-asset"))return;
+      e.preventDefault();e.stopPropagation();el.classList.add("ok-target");
+    });
+    el.addEventListener("dragleave", e => {if(!el.contains(e.relatedTarget))el.classList.remove("ok-target");});
     el.addEventListener("drop", e => {
       el.classList.remove("ok-target");
       if (!canvasCanEdit()) return;
-      const a = e.dataTransfer.getData("application/x-h3-asset");
-      if (a) { e.preventDefault();e.stopPropagation();const asset=JSON.parse(a); if (asset.type===n.type) addVersion(n, asset); return; }
-      const files=e.dataTransfer.files;
-      if (files.length===1 && canvasUploadKind(files[0])===n.type) {
-        e.preventDefault();e.stopPropagation();void uploadInto(n,files[0]);
-      }
+      const a=e.dataTransfer.getData("application/x-h3-asset"), files=e.dataTransfer.files;
+      const asset=a?JSON.parse(a):null;
+      const file=files.length===1&&canvasUploadKind(files[0])===n.type?files[0]:null;
+      if(asset?.type!==n.type&&!file)return;
+      e.preventDefault();e.stopPropagation();
+      if(!canvasCanUploadInto(n)){toast("当前节点暂时无法接收文件");return;}
+      if(file)void uploadInto(n,file);
+      else addVersion(n,asset);
     });
   }
 }
@@ -914,6 +1031,7 @@ function updateSel() {
 function placeOverlays() {
   hideNodeToolTip();
   ctPlaceSelectionTools();
+  nodeVoiceSync();
   const tools = $("#ntools"), pp = $("#pp");
   if (sel.size !== 1) { tools.classList.remove("on"); pp.classList.remove("on"); return; }
   const n = node([...sel][0]); if (!n) return;
@@ -1211,6 +1329,7 @@ function showPanel() {
   else if (guide) ta.placeholder = "描述正式画面的人物、环境和风格。已连接的白模负责参考运镜和走位。";
   else if (clips.length) ta.placeholder = "描述新画面。用 @视频1 指定要复用的动作、运镜或构图。";
   else if (sounds.length) ta.placeholder = "描述画面和声音，点击上方音频可引用它的节奏、语调或环境声。";
+  if (n.type === "image" || n.type === "video") ta.placeholder = "输入 @ 搜索并引用素材。\n" + ta.placeholder;
   if (ta._node !== n.id) { ta.value = n.data.prompt; ta._node = n.id; }
   const fm = n.type === "video" && n.data.pmode === "fields";
   $("#pmode").innerHTML = n.type === "video" ? `<button data-m="free" class="${fm ? "" : "on"}" title="一段话自由描述">自由描述</button><button data-m="fields" class="${fm ? "on" : ""}" title="按场景 / 人物 / 动作 / 对话分开填写，系统合成官方格式">分栏填写</button>` : "";
@@ -1220,13 +1339,13 @@ function showPanel() {
   if (!fm) autoGrow(ta);
   // ---- controls
   const d = n.data, ctl = $("#ctl");
-  const pill = (k, opts, label, extra = "") => `<span class="pill ${extra}">${label}<select data-k="${k}">${Object.entries(opts).map(([a, t]) => `<option value="${a}" ${String(a) === String(d[k]) ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
+  const pill = (k, opts, label, extra = "") => `<span class="pill ${extra}">${label}<select data-k="${k}"${k==="selected_model"?' aria-label="生成模型"':""}>${Object.entries(opts).map(([a, t]) => `<option value="${esc(a)}" ${String(a) === String(d[k]) ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
   const arIcon = a => { const r = AR[a] || 1.6; const w = r >= 1 ? 13 : Math.round(13 * r), h = r >= 1 ? Math.round(13 / r) : 13; return `<span class="ar" style="width:${w}px;height:${h}px"></span>`; };
   let h;
   if (n.type === "script") h = scriptCtl(n);
   else if (n.type === "image") {
     const rem = isRemote(n), hi = rem || d.model !== "h3video", ins = imgInputs(n).length || previsComposition(n)?.enabled, fa = d.aspect === "auto";
-    h = provPill(n, pill);
+    h = provPill(n, pill) + nodeModelPill(n,pill);
     if (!rem) {
       h += pill("model", { h3img: "H3-Image（推荐，支持以图改图）", h3video: "H3 视频模型 · 快速出图" }, `<span class="dot"></span>${hi ? "H3-Image" : "H3 快速"}${ico("down")}`, "model");
       if (hi) h += pill("expand", { false: "智能扩写：关", true: "智能扩写：开（按官方格式扩写，理解更准）" }, d.expand ? "扩写 开" : "扩写 关");
@@ -1239,16 +1358,17 @@ function showPanel() {
   } else {
     const rem = isRemote(n);
     if (reference) {
-      const services = referenceServices(n), selected = services.find(s => s.id === d.provider);
-      const opts = {"":"选择 Seedance 服务", ...Object.fromEntries(services.map(s => [s.id, esc(s.name + " · " + s.model)]))};
+      const services = referenceServices(n), selected = referenceService(n);
+      const opts = {"":"选择 Seedance 服务", ...Object.fromEntries(services.map(s => [s.id, esc(s.name)]))};
       h = services.length ? pill("provider", opts, `${esc(selected?.name || "选择 Seedance 服务")}${ico("down")}`, "model")
         : `<span class="pill" title="在控制台配置 Seedance 服务">待配置 Seedance ${guide || clips.length ? "参考视频" : "音频参考"}</span>`;
+      if (selected) h += nodeModelPill(n,pill,selected,true);
     } else {
-      h = provPill(n, pill);
+      h = provPill(n, pill) + nodeModelPill(n,pill);
       if (!rem) h += pill("turbo", { true: "MiniMax H3 · 极速", false: "MiniMax H3 · 高质量" }, `<span class="dot"></span>${d.turbo ? "H3 极速" : "H3 高质量"}${ico("down")}`, "model");
     }
     const fa = d.aspect === "auto";
-    const followSource=extension && /(?:seedance-2-5|^ep-)/.test(referenceServices(n).find(s=>s.id===d.provider)?.model || "");
+    const followSource=extension && /(?:seedance-2-5|^ep-)/.test(canvasNodeModel(n,referenceService(n),true)?.id || "");
     h += followSource || segment ? '<span class="pill">跟随原视频画幅</span>' :
       pill("aspect", { auto: extension ? "跟随原视频" : guide ? "跟随白模" : "跟随首图", "16:9": "16:9", "9:16": "9:16", "1:1": "1:1", "4:3": "4:3", "3:4": "3:4" }, `${arIcon(fa ? "16:9" : d.aspect)}${fa ? "自动" : d.aspect}`);
     const canDraft=videoDraftAvailable(n);
@@ -1273,17 +1393,21 @@ function showPanel() {
   if (n.type !== "script") h += `<button class="pill" id="moreBtn" title="更多设置">${ico("more")}</button>`;
   if (n.type === "video" && d.pmode === "fields") h += `<button class="pill" id="fillBtn" title="Qwen 看连入的首帧 / 人物图，填写风格、场景、人物、镜头（只填空着的栏）">看图填写</button>`;
   if (n.type === "video") {
-    h += `<button class="pill" id="pvBtn" title="查看系统合成后、实际发给模型的完整提示词">预览</button>`;
+    h += '<button class="pill" id="pvBtn" title="核对生成用的提示词和参考素材">预览</button>';
     if (!reference) h += `<button class="pill" id="rwBtn" title="用本地 Qwen3.5 把描述改写成 H3 官方英文结构化提示词（可看到连入的图片）">✨ 改写</button>`;
     if (d.prompt_src) h += `<button class="pill" id="rsBtn" title="还原改写前的原文">还原原文</button>`;
   }
   h += `<span class="grow"></span>${reference ? "" : `<span class="est">${estimate(n)}</span>`}`;
-  h += `<button id="send" class="${n.job ? "stop" : ""}" title="${n.job ? "取消" : "生成 (⌘↩)"}">${ico(n.job ? "stop" : "send")}</button>`;
+  const sendLabel = n.job ? "取消" : curV(n) && n.type!=="script" ? "重新生成" : "生成";
+  h += `<button id="send" class="${n.job ? "stop" : ""}" aria-label="${sendLabel}" title="${sendLabel}${n.job?"":" (⌘↩)"}">${ico(n.job ? "stop" : "send")}</button>`;
   ctl.innerHTML = h;
   $$("select", ctl).forEach(s => s.onchange = () => {
     checkpoint();
-    let val = s.value; if (["turbo","expand","draft"].includes(s.dataset.k)) val = val === "true"; else if (["count", "duration"].includes(s.dataset.k)) val = Number(val);
-    n.data[s.dataset.k] = val; save(); render(n); refreshDownstream(n); showPanel();
+    const key = s.dataset.k;
+    let val = s.value; if (["turbo","expand","draft"].includes(key)) val = val === "true"; else if (["count", "duration"].includes(key)) val = Number(val);
+    if (key === "provider") delete d.selected_model;
+    if (key === "selected_model" && val && !d.provider) d.provider = nodeProvider(n)?.id;
+    d[key] = val; save(); render(n); refreshDownstream(n); showPanel();
   });
   $("#send").onclick = () => n.job ? cancel(n) : generate(n);
   if ($("#moreBtn")) $("#moreBtn").onclick = e => { e.stopPropagation(); $("#more").classList.toggle("on"); };
@@ -1369,7 +1493,7 @@ function renderFields(n, on) {
   if (!on) { box._node = null; return; }
   if (box._node === n.id) return;          // keep focus / caret while typing
   box._node = n.id; const f = n.data.fields || (n.data.fields = {});
-  box.innerHTML = FIELDS.map(x => `<label class="f"><span>${x.t}${x.sub ? `<small>${x.sub}</small>` : ""}</span><textarea rows="1" data-k="${x.k}" placeholder="${esc(x.ph)}"></textarea></label>`).join("");
+  box.innerHTML = FIELDS.map(x => `<label class="f"><span>${x.t}${x.sub ? `<small>${x.sub}</small>` : ""}</span><textarea rows="1" data-k="${x.k}" placeholder="${esc(x.k === "action" ? "输入 @ 引用素材。"+x.ph : x.ph)}"></textarea></label>`).join("");
   $$("textarea", box).forEach(t => {
     t.value = f[t.dataset.k] || ""; fieldGrow(t);
     t.addEventListener("input", () => { f[t.dataset.k] = t.value; fieldGrow(t); save(); placeOverlays(); });
@@ -1392,16 +1516,73 @@ function setPMode(n, m) {
   n.data.pmode = m; save(); $("#pfields")._node = null; showPanel();
   if (m === "fields") setTimeout(() => $(`#pfields textarea[data-k="${f.action ? "action" : "scene"}"]`)?.focus(), 30);
 }
+let previewSequence = 0;
+function renderPreviewInputs(items, duration) {
+  const list = $("#pvInputs");
+  list.replaceChildren();
+  const labels = {
+    subject:"人物设定", image_ref:"参考图", first_frame:"首帧", last_frame:"尾帧",
+    previs:"白模参考", video_ref:"视频参考", audio_ref:"音频参考", unused_image:"当前服务未采用"
+  };
+  for (const item of items) {
+    const {role, ref, time, start, end} = item;
+    if (!ref) continue;
+    const label = labels[role] || (time > 0.01 ? time >= (vidFrames(duration)-4)/24-.05 ? "尾帧" : "关键帧" : "首帧");
+    const details = [];
+    const version = item.version ?? (node(item.node_id)?.versions.findIndex(v => v.ref === ref) ?? -1)+1;
+    if (version > 0) details.push("版本 "+version);
+    if (label === "关键帧") details.push(Number(time.toFixed(2))+" 秒");
+    if (Number.isFinite(start) && Number.isFinite(end)) details.push(start+"–"+end+" 秒");
+    const row = document.createElement("li");
+    if (role === "audio_ref" || role === "video_ref" || role === "previs") {
+      row.insertAdjacentHTML("afterbegin",ico(role === "audio_ref" ? "audio" : "video"));
+    } else {
+      const picture = document.createElement("img");
+      picture.src = "/media?ref="+encodeURIComponent(ref);
+      picture.loading = "lazy";
+      picture.alt = "";
+      row.append(picture);
+    }
+    const description = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = item.name || "素材";
+    const meta = document.createElement("small");
+    meta.textContent = [label,...details].join(" · ");
+    description.append(name, meta);
+    row.append(description);
+    list.append(row);
+  }
+  list.hidden = !list.childElementCount;
+}
 async function previewPrompt(n) {
   const req = videoReq(n, fullPrompt(n)); if (!req) return;
-  if (req.previs_guide || req.audio_refs || req.video_refs) req.board = boardId;
+  req.board = boardId;
+  applyVideoMemory(n, req);
+  const services = req.previs_guide || req.audio_refs || req.video_refs ? referenceServices(n) : CAPS_LIST.video;
+  if (services?.some(service => service.id === n.data.provider)) req.provider = n.data.provider;
+  if (n.data.selected_model) Object.assign(req,{provider:n.data.provider,selected_model:n.data.selected_model});
+  const board = B, sequence = ++previewSequence;
+  const current = () => sequence === previewSequence && B === board && node(n.id) === n && sel.has(n.id);
   try {
     const r = await api("/api/preview", req);
-    $("#pvt").textContent = r.prompt; $("#pvm").textContent = r.mode ? "· " + r.mode : ""; $("#pv").classList.add("on");
-  } catch (e) { toast("预览失败：" + e.message, 3500); }
+    if (!current()) return;
+    renderPreviewInputs(r.inputs || [], req.duration);
+    $("#pvt").textContent = r.prompt;
+    $("#pvm").textContent = r.mode || "";
+    $("#pv").classList.add("on");
+    $("#pvClose").focus();
+  } catch (e) { if (current()) toast("预览失败：" + e.message, 3500); }
 }
-$("#pvClose").onclick = () => $("#pv").classList.remove("on");
-$("#pv").addEventListener("click", e => { if (e.target.id === "pv") $("#pv").classList.remove("on"); });
+function closePromptPreview() {
+  previewSequence++;
+  $("#pv").classList.remove("on");
+  $("#pvBtn")?.focus();
+}
+$("#pvClose").onclick = closePromptPreview;
+$("#pv").addEventListener("click", e => { if (e.target.id === "pv") closePromptPreview(); });
+$("#pv").addEventListener("keydown", e => {
+  if (e.key === "Escape") { e.stopPropagation(); closePromptPreview(); }
+});
 $("#pvCopy").onclick = () => { navigator.clipboard?.writeText($("#pvt").textContent).then(() => toast("已复制", 1000), () => toast("复制失败")); };
 function insertTok(tok) {
   const ta = (usesFields(node($("#prompt")._node)) && lastField && document.contains(lastField)) ? lastField : $("#prompt"), s = ta.selectionStart ?? ta.value.length;
@@ -1676,6 +1857,7 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
       ${imageCompare || videoCompareAvailable ? `<button type="button" data-light-compare>${comparing ? "结束对比" : "对比版本"}</button>` : ""}
       ${type==="image" && previous && !comparing ? '<button type="button" data-light-peek title="按住反斜杠键或此按钮">按住看上一版</button>' : ""}
       ${hasDetails ? '<button type="button" data-light-details aria-controls="lightDetails" aria-expanded="false">版本信息</button>' : ""}
+      ${index>=0 && hasGenerationDraft(source,version) ? '<button type="button" data-light-generation-draft>用此版本改稿</button>' : ""}
       ${index >= 0 && version.ref && canvasCanEdit() ? '<button type="button" data-light-agent aria-controls="agentChat" aria-keyshortcuts="Meta+J Control+J /">和助手讨论此版本</button>' : ""}
       ${index >= 0 && vtCanCopyVersion(source,index) ? '<button type="button" data-light-copy>放入画布</button>' : ""}
       ${index >= 0 && version.ref ? `<button type="button" data-light-comment>${type === "image" ? "批注此版本" : "批注当前时间"}</button>` : ""}
@@ -1773,6 +1955,14 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
     const status = $(".light-details-status",overlay);
     try { await acCopyText(prompt || effective); status.textContent = "已复制提示词"; }
     catch { status.textContent = "复制失败，可选中文字后复制"; }
+  });
+  bind("generation-draft",() => {
+    const current=currentSource(index);
+    if (!current || !loadGenerationDraft(current,current.versions[index],message=>{
+      $(".light-status",overlay).textContent=message;
+    })) return;
+    closeLightbox();
+    focusNodePrompt(current);
   });
   bind("version",event => {
     const at = Number(event.target.value);

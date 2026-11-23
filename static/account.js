@@ -23,11 +23,34 @@ function nodeProvider(n) {
 const isRemote = n => { const p = nodeProvider(n); return !!p && !p.local; };
 function provPill(n, pill) {
   const cap = n.type === "image" ? "image" : "video", list = CAPS_LIST[cap] || [];
-  if (list.length < 2) return "";
+  if (list.length < 2 && !n.data.provider) return "";
   const def = list.find(x => x.default), cur = nodeProvider(n);
   const opts = { "": `默认：${def ? def.name : "本地"}` };
-  list.forEach(x => opts[x.id] = `${x.name}${x.model ? " · " + x.model : ""}${x.local ? "（本地，免费）" : ""}`);
+  list.forEach(x => opts[x.id] = esc(`${x.name}${x.local ? "（本地，免费）" : ""}`));
+  opts[""] = esc(opts[""]);
   return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "#b9b9c2" : "#d6d6dc"}"></span>${esc(cur ? cur.name : "服务")}${ico("down")}`, "model");
+}
+
+function canvasNodeModel(n, service, reference = false) {
+  if (n.data.selected_model) {
+    return service?.models?.find(model => model.id === n.data.selected_model);
+  }
+  if (!service) return null;
+  const id = reference || n.data.provider ? service.model : service.default_route_model || service.model;
+  return {id,draft:service.models?.find(model => model.id === id)?.draft ?? service.draft};
+}
+
+function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {
+  if (!service || service.local) return "";
+  const options = service.models || [];
+  const model = canvasNodeModel(n,service,reference);
+  const fallback = reference || n.data.provider ? service.model : service.default_route_model || service.model;
+  const title = model?.id || "重新选择模型";
+  if (!n.data.selected_model && options.length < 2) return model?.id ? `<span class="pill" title="${esc(title)}">${esc(title)}</span>` : "";
+  const choices = Object.fromEntries([["",esc(fallback ? "默认 · " + fallback : "默认模型")],
+    ...options.map(item => [item.id,esc(item.id)])]);
+  if (n.data.selected_model && !model) choices[n.data.selected_model] = esc(n.data.selected_model + "（不可用）");
+  return pill("selected_model", choices, esc(title)+ico("down"), "model");
 }
 
 function initAccount() {

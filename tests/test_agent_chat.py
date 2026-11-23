@@ -16,6 +16,7 @@ from PIL import Image
 
 import agent_chat as chat
 import db
+import fields
 import image_editor
 import server
 
@@ -27,6 +28,32 @@ def answer(text="已完成"):
 def call(name, args, mid="step1"):
     return {"role": "assistant", "content": "开始执行", "tool_calls": [
         {"id": mid, "type": "function", "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]}
+
+class VideoDialogueFields(unittest.TestCase):
+    def test_unique_short_speaker_name_keeps_reference_binding(self):
+        prompt, _, _ = fields.compose(
+            {"people":"乔纳·里德：旧夹克\n抱画女人：米色外套",
+             "dialogue":"抱画女人（试探）：你也是来看米拉的？\n乔纳（点头）：对。\n乔纳·里德：你买了哪一张？"},
+            subj={"乔纳·里德":1,"抱画女人":2})
+        self.assertIn("抱画女人 <Subject 2> (S1)",prompt)
+        self.assertEqual(prompt.count("乔纳·里德 <Subject 1> (S2)"),2)
+        self.assertIn("<d>[Chinese] 对。</d>",prompt)
+        ambiguous, _, _ = fields.compose(
+            {"people":"乔纳·里德：旧夹克\n乔纳·另一个：新夹克","dialogue":"乔纳：你好。"},
+            subj={"乔纳·里德":1,"乔纳·另一个":2})
+        self.assertIn("乔纳 (S1) says",ambiguous)
+
+    def test_rewrite_request_keeps_character_identity_and_spoken_words(self):
+        prompt = fields.for_rewriter({
+            "people":"乔纳·里德：旧夹克\n抱画女人：米色外套",
+            "action":"乔纳低声问：“你还好吗？”",
+            "dialogue":"抱画女人：Je vais bien.\n乔纳（点头）：好。\n“走吧。”",
+        },subj={"乔纳·里德":1,"抱画女人":2})
+        self.assertIn("乔纳 = 乔纳·里德 <Subject 1>",prompt)
+        self.assertIn("乔纳·里德 <Subject 1> (S1)低声问: <d>你还好吗？</d>",prompt)
+        self.assertIn("抱画女人 <Subject 2> (S2) says: <d>Je vais bien.</d>",prompt)
+        self.assertIn("乔纳·里德 <Subject 1> (S1) says: <d>走吧。</d>",prompt)
+        self.assertIn("add the correct language tag",prompt)
 
 
 class ChatFixture(unittest.IsolatedAsyncioTestCase):
@@ -79,6 +106,49 @@ class ChatFixture(unittest.IsolatedAsyncioTestCase):
         server.JOBS.clear()
         self.tmp.cleanup()
 
+    async def test_video_preview_keeps_media_bindings_during_translation(self):
+        images = [
+            {"name": "走廊首帧", "ref": self.source["ref"], "time": 0, "role": "frame", "index": 1},
+            {"name": "乔纳·里德", "ref": self.source["ref"], "role": "subject", "index": 2},
+            {"name": "抱画女人", "ref": self.source["ref"], "role": "subject", "index": 3},
+        ]
+        raw = {"kind": "video", "board": "test", "planned": True, "images": images,
+               "prompt": "从@图1开始，@图2与@图3交谈。"}
+        llm = SimpleNamespace(available=lambda: True, chat=AsyncMock(side_effect=[
+            json.dumps({"prompt": "Start at image one and show two people talking."}),
+            json.dumps({"prompt": "Start at @图1, then @图2 talks with @图3."}),
+        ]))
+        with patch.object(server.providers, "primary", return_value=None), patch.object(
+            server, "_XLATE_CACHE", {}
+        ), patch.object(server, "XLATE_FILE", self.root / "translate.json"), patch.dict(self.app, {"llm": llm}):
+            failed = await self.client.post("/api/preview", json=raw)
+            self.assertEqual(failed.status, 200, await failed.text())
+            fallback = await failed.json()
+            self.assertIn("未翻译", fallback["mode"])
+            self.assertIn("从<Picture 3>开始，<Picture 1>与<Picture 2>交谈。", fallback["prompt"])
+            response = await self.client.post("/api/preview", json=raw)
+        self.assertEqual(response.status, 200, await response.text())
+        result = await response.json()
+        self.assertEqual([item["role"] for item in result["inputs"]], ["frame", "subject", "subject"])
+        self.assertIn("Start at <Picture 3>, then <Picture 1> talks with <Picture 2>.", result["prompt"])
+        self.assertFalse(server.JOBS)
+
+    async def test_third_party_video_preview_uses_translated_reference_roles(self):
+        provider = {"id": "video", "name": "视频服务", "kind": "kling", "enabled": True}
+        raw = {"kind": "video", "provider": "video", "board": "test",
+               "images": [{"name": "走廊", "ref": self.source["ref"], "role": "frame"},
+                          {"name": "乔纳·里德", "ref": self.source["ref"], "role": "subject"}],
+               "fields": {"action": "从@图1开始，@图2向左看。"}, "prompt": ""}
+        with patch.object(server.providers, "get", return_value=provider), patch.object(
+            server.providers, "default_model", return_value="kling-3.0"
+        ):
+            response = await self.client.post("/api/preview", json=raw)
+        self.assertEqual(response.status, 200, await response.text())
+        result = await response.json()
+        self.assertIn("从首帧画面开始，第 1 张人物参考图向左看。", result["prompt"])
+        self.assertEqual([item["role"] for item in result["inputs"]], ["first_frame", "subject"])
+        self.assertFalse(server.JOBS)
+
     async def send(self, text="执行测试", key="request001", selected=None, placement=None):
         response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages", json={
             "text": text, "request_key": key, "selected": selected if selected is not None else ["n1"],
@@ -102,6 +172,44 @@ class ChatFixture(unittest.IsolatedAsyncioTestCase):
 
 
 class ChatIntegration(ChatFixture):
+    async def test_manual_node_can_select_configured_route_models(self):
+        provider = {"id":"ark-models","name":"测试方舟","kind":"ark","enabled":True,
+                    "config":{"models":{"image":"image-default","video":"doubao-seedance-2-0-fixture"},
+                              "motion_origin":"https://studio.example"},"secrets":{"api_key":"fixture"}}
+        image_model = "image-alternate"
+        reference_model = "doubao-seedance-2-5-fixture"
+        routes = {"image":[{"provider":provider,"model":image_model}],
+                  "video":[{"provider":provider,"model":reference_model}]}
+        draft = {"kind":"video","provider":provider["id"],"board":"test",
+                 "prompt":"按 @音1 的节奏。","audio_refs":[{"ref":"input:h3studio/sound.wav"}],
+                 "selected_model":reference_model}
+        send = AsyncMock(side_effect=lambda *_args, **_kwargs: web.json_response({"ids":[]}))
+        with patch.object(server.providers,"get",return_value=provider), patch.object(
+            server.providers,"all_providers",return_value=[provider]
+        ), patch.object(server.providers,"routes",side_effect=lambda cap:routes.get(cap,[])), patch.object(
+            server,"generate_remote",send
+        ), patch.object(server,"resolve_audio_refs",AsyncMock(return_value=[("source.wav",4)])):
+            capabilities = json.loads((await server.capabilities(None)).body)
+            self.assertEqual(capabilities["image"][0]["default_route_model"],image_model)
+            self.assertEqual([m["id"] for m in capabilities["image"][0]["models"]],["image-default",image_model])
+            self.assertEqual([m["id"] for m in capabilities["audio_reference"][0]["models"]],
+                             [reference_model,"doubao-seedance-2-0-fixture"])
+            self.assertEqual([m["id"] for m in capabilities["segment_edit"][0]["models"]],[reference_model])
+            image = {"kind":"image","prompt":"画一条走廊","provider":provider["id"],"selected_model":image_model}
+            response = await self.client.post("/api/generate",json=image)
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual(send.call_args.args[2]["model"],image_model)
+            response = await self.client.post("/api/preview",json=draft)
+            self.assertEqual(response.status,200,await response.text())
+            self.assertIn(reference_model,(await response.json())["mode"])
+            response = await self.client.post("/api/generate",json=draft)
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual(send.call_args.args[2]["model"],reference_model)
+            for request in (image,draft):
+                response = await self.client.post("/api/generate",json={**request,"selected_model":"unconfigured"})
+                self.assertEqual(response.status,400,await response.text())
+            self.assertEqual(send.await_count,2)
+
     async def test_creative_questions_pause_and_resume_exact_run(self):
         questions = [{"prompt":"选择画面比例","options":["16:9","9:16"]},{"prompt":"填写片名"}]
         self.svc.model.side_effect = [call("ask_creative_questions",{"questions":questions}),
@@ -1540,6 +1648,62 @@ class ChatIntegration(ChatFixture):
         invalid = await self.client.post(f"/api/chat/sessions/{self.sid}/messages", json={
             "text":"无效放置点","request_key":"invalid-point","placement":{"x":1000001,"y":0}})
         self.assertEqual(invalid.status, 400)
+
+    async def test_empty_image_node_receives_generated_candidates_in_place(self):
+        self.board["nodes"].append({"id":"empty","type":"image","name":"封面","x":800,"y":120,
+                                    "data":{},"versions":[],"cur":-1,"job":None})
+        server.write_board(server.board_path("test"),self.board)
+        media = image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,96),"blue"))
+        async def submit(req, payload):
+            ids = [f"e{i:012}" for i in range(payload["count"])]
+            for jid in ids:
+                server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},
+                                    "outputs":[{"ref":media["ref"],"meta":{"width":128,"height":96}}]}
+            return web.json_response({"ids":ids})
+        self.svc.model.side_effect = [call("image_generate",{"prompt":"电影感夜景","count":2}),answer()]
+        route = f"/api/chat/sessions/{self.sid}/messages"
+        payload = {"text":"生成两张封面","request_key":"target-image-1","selected":["empty"],"empty_media_node":"empty"}
+        with patch.object(server,"generate_request",submit):
+            response = await self.client.post(route,json=payload)
+            self.assertEqual(response.status,200,await response.text())
+            rid = (await response.json())["id"]
+            finished = await self.wait(rid)
+            self.assertEqual(finished["state"],"done",finished["error"])
+        loaded = self.load()["nodes"]
+        self.assertEqual([node["id"] for node in loaded],["n1","n2","empty"])
+        self.assertEqual([v["ref"] for v in loaded[-1]["versions"]],[media["ref"],media["ref"]])
+        self.assertEqual((await self.client.post(route,json={**payload,"request_key":"target-image-2"})).status,400)
+
+    async def test_empty_video_and_audio_nodes_receive_generation_in_place(self):
+        for kind in ("video","audio"):
+            self.board["nodes"].append({"id":kind,"type":kind,"name":kind,"x":800,"y":120,
+                                        "data":{},"versions":[],"cur":-1,"job":None})
+        server.write_board(server.board_path("test"),self.board)
+        video_ref, audio_ref = "output:h3studio/target.mp4", "output:h3studio/target.wav"
+        def job(jid, ref):
+            server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[{"ref":ref}]}
+            return [jid]
+        async def submit_video(req, payload):
+            return web.json_response({"ids":job("e000000000001",video_ref)})
+        async def submit_audio(req):
+            request = await req.json()
+            self.assertEqual(request["node"],"audio")
+            return web.json_response({"ids":job("e000000000002",audio_ref),
+                                      "recipe":{"mode":"tts","prompt":request["prompt"]}})
+        with patch.object(server,"generate_request",submit_video), patch.object(server,"generate_audio",submit_audio), \
+             patch.object(server,"media_info",return_value={"width":128,"height":96,"duration":2}):
+            for kind, ref in (("video",video_ref),("audio",audio_ref)):
+                with self.subTest(kind=kind):
+                    self.svc.model.side_effect = [call(kind+"_generate",{"prompt":"雨夜"}),answer()]
+                    route = f"/api/chat/sessions/{self.sid}/messages"
+                    response = await self.client.post(route,json={"text":"开始生成","request_key":"target-"+kind,
+                                                                 "selected":[kind],"empty_media_node":kind})
+                    self.assertEqual(response.status,200,await response.text())
+                    finished = await self.wait((await response.json())["id"])
+                    self.assertEqual(finished["state"],"done",finished["error"])
+                    nodes = {node["id"]:node for node in self.load()["nodes"]}
+                    self.assertEqual(set(nodes),{"n1","n2","video","audio"})
+                    self.assertEqual(nodes[kind]["versions"][0]["ref"],ref)
 
     async def test_generate_real_handler_shape_and_continue(self):
         made = image_editor.save(server.COMFY_DIR, Image.new("RGB", (128, 96), "blue"))

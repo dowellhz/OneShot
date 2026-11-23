@@ -141,10 +141,14 @@ function initImageEditor() {
   canvas.onpointerdown = e => iePointer(e, "down");
   canvas.onpointermove = e => iePointer(e, "move");
   canvas.onpointerup = e => iePointer(e, "up");
-  canvas.onpointercancel = () => { if (IMAGE_EDITOR) { IMAGE_EDITOR.drawing=null; IMAGE_EDITOR.movingLight=false; ieRebuildMask(); } };
+  canvas.onpointercancel = () => { if (IMAGE_EDITOR) { IMAGE_EDITOR.drawing=null; IMAGE_EDITOR.movingLight=false; ewCancelLayerDrag(IMAGE_EDITOR); ieRebuildMask(); } };
   host.addEventListener("keydown", e => {
     if (ewKey(e)) { e.stopPropagation(); return; }
-    if (e.key === "Escape") { e.preventDefault(); closeImageEditor(); }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (IMAGE_EDITOR?.layerDrag) ewCancelLayerDrag(IMAGE_EDITOR);
+      else closeImageEditor();
+    }
     e.stopPropagation();
   });
   host.addEventListener("paste", e=>e.stopPropagation());
@@ -179,6 +183,7 @@ async function openImageEditor(n) {
 function closeImageEditor(restoreSelection=true) {
   const E=IMAGE_EDITOR; if (!E) return;
   if (E.busy) return ieStatus("正在提交或保存，完成后即可返回画布");
+  ewCancelLayerDrag(E);
   ewScheduleDraft(true); ewFlushDraft(E);
   ieRememberWindow();
   if(typeof aeUnlockEditor==="function")aeUnlockEditor(E);
@@ -223,6 +228,9 @@ async function ieLoad(v, original=false) {
     if (IMAGE_EDITOR===E) {
       ieUpscaleControls(E);
       ewDecomposeControl(E);
+      ewLayerExportControls(E);
+      ewLayerHistoryControls(E);
+      ewBackgroundControls(E);
       if (typeof aeEditorControls==="function") aeEditorControls();
     }
   });
@@ -232,6 +240,7 @@ async function ieLoad(v, original=false) {
 function ieMode(mode, force=false) {
   const E=IMAGE_EDITOR; if (!E || (E.busy && !force)) return;
   if(E.agentSelection&&mode!=="region")return ieStatus("请先发送当前选区，或收起窗口后在聊天中停止本轮任务");
+  if (E.mode==="layers" && mode!==E.mode) ewCancelLayerDrag(E);
   E.mode=mode; E.drawing=null; E.movingLight=false;
   const modelLight=mode==="relight_ai", section=modelLight?"relight":mode;
   $$("[data-mode]",$("#imageEditor")).forEach(b=>b.classList.toggle("on",b.dataset.mode===section));
@@ -414,6 +423,9 @@ function ieSync() {
   if(E.image)updatePixelPreview(E);
   ieUpscaleControls(E);
   ewDecomposeControl(E);
+  ewLayerExportControls(E);
+  ewLayerHistoryControls(E);
+  ewBackgroundControls(E);
   $$("[data-camera-preset]").forEach(button=>button.disabled=busy || !canvasCanEdit());
   $$("[data-rotate], [data-flip]",$("#imageEditor")).forEach(b=>b.disabled=busy);
   $("#ieCancel").hidden=!E.n.job;

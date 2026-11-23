@@ -142,7 +142,8 @@ function cmDraw(){
   name.textContent=a.name;
   sub.textContent=a.assetFolder ? `文件夹 · ${cmScopeLabel(a)} · ${a.count} 项` : a.canvasNode
    ?'画布 · '+(TYPE_CN[a.type]||'节点')+(a.version?' · 版本 '+a.version:'')+(a.duplicate?' · '+a.id:'')
-   :cmKind(a)+' · '+cmScopeLabel(a)+(a.characterView?' · '+CHARACTER_VIEWS[a.characterView][0]:a.desc?' · '+a.desc.slice(0,55):'');
+   :cmKind(a)+' · '+cmScopeLabel(a)+(a.characterView?' · '+CHARACTER_VIEWS[a.characterView][0]:
+     a.generation_images?.length?' · '+a.generation_images.length+' 张生成参考图':a.desc?' · '+a.desc.slice(0,55):'');
   info.append(name,sub);b.append(info);box.append(b);
  });
  CM.target?.setAttribute('aria-activedescendant','cm-option-'+CM.index);
@@ -167,7 +168,7 @@ function cmCanvasMatches(ta,query,versionQuery,bid){
  return results;
 }
 async function cmSuggest(ta,force=false){
- const pos=ta.selectionStart,part=ta.value.slice(0,pos),match=part.match(/@([^@\s，。！？、；：,.!?;:()（）\[\]【】]{0,80})$/);if(!match){cmClose();return;}
+ const pos=ta.selectionStart,part=ta.value.slice(0,pos),match=part.match(/[@＠]([^@＠\s，。！？、；：,.!?;:()（）\[\]【】]{0,80})$/);if(!match){cmClose();return;}
  const start=pos-match[0].length;if(start&&/[A-Za-z0-9_.]/.test(part[start-1])){cmClose();return;}cmEnsure();CM.target=ta;CM.start=start;const query=match[1].toLocaleLowerCase(),bid=boardId;
  const versionSearch=query.match(/^(.+)[#＃](\d*)$/);
  const viewSearch=query.match(/^(.+)[#＃]([^#＃]*)$/);
@@ -237,6 +238,11 @@ async function cmEdit(a=null, kind='character', options={}) {
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
   let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
+  let generationImages=[...(data.generation_images||[])];
+  const generationBox=document.createElement("details");
+  generationBox.className="cm-generation-images";
+  generationBox.innerHTML='<summary>生成参考图</summary><p class="cm-help">选中的图片会随 @资产 一起发送。留空时采用默认参考图。</p><ol></ol>';
+  $(".cm-media",panel).after(generationBox);
  let documentData=options.preset?.document||data.document||null, documentDirty=!!options.preset?.document;
   const docBox=document.createElement("details");
   docBox.className="cm-document";docBox.hidden=true;
@@ -382,9 +388,53 @@ async function cmEdit(a=null, kind='character', options={}) {
   }
   const status=msg=>panel.querySelector('.cm-error').textContent=msg;
   function setBusy(value) {busy=value;panel.dataset.busy=String(value);panel.querySelector('[type=submit]').disabled=value;field('upload').disabled=value||readonly;panel.querySelector('[data-current]').disabled=value;}
+  function paintGenerationImages(media,focusRef) {
+    const allowed=media.filter(item=>cmMediaType(item.ref,item)==="image");
+    generationImages=generationImages.filter(ref=>allowed.some(item=>item.ref===ref));
+    generationBox.hidden=!allowed.length;
+    $("summary",generationBox).textContent="生成参考图"+(generationImages.length?" · "+generationImages.length+" 张":"");
+    const list=$("ol",generationBox);
+    list.replaceChildren();
+    const ordered=[...generationImages,...allowed.map(item=>item.ref).filter(ref=>!generationImages.includes(ref))];
+    for(const ref of ordered) {
+      const item=document.createElement("li"), caption=document.createElement("label");
+      const check=document.createElement("input"), index=generationImages.indexOf(ref);
+      check.type="checkbox";check.checked=index>=0;check.disabled=readonly;
+      check.dataset.generationImage=ref;
+      const label=index>=0?"参考图 "+(index+1):"加入生成参考";
+      const picture=document.createElement("img");
+      picture.src="/media?ref="+encodeURIComponent(ref);picture.alt="";
+      caption.append(check,picture,label);
+      check.setAttribute("aria-label",label+" · 图片 "+(allowed.findIndex(entry=>entry.ref===ref)+1));
+      check.onchange=()=>{
+        if(busy||check.checked&&generationImages.length>=9){
+          check.checked=index>=0;
+          if(!busy)status("一次最多添加 9 张生成参考图");
+          return;
+        }
+        if(check.checked) generationImages.push(ref); else generationImages.splice(index,1);
+        paintGenerationImages(media,ref);
+      };
+      item.append(caption);
+      if(index>=0&&!readonly) for(const [offset,title] of [[-1,"上移"],[1,"下移"]]){
+        const next=index+offset;
+        const button=action(title,()=>{
+          if(busy) return;
+          [generationImages[index],generationImages[next]]=[generationImages[next],generationImages[index]];
+          paintGenerationImages(media,ref);
+        });
+        button.disabled=next<0||next>=generationImages.length;
+        button.setAttribute("aria-label",title+"参考图 "+(index+1));
+        item.append(button);
+      }
+      list.append(item);
+      if(ref===focusRef) check.focus();
+    }
+  }
   function paint() {
     const grid=panel.querySelector('.cm-media');grid.replaceChildren();
     const media=[...(data.media||[]),...(pending&&!data.media?.some(m=>m.ref===pending.ref)?[pending]:[])];
+    paintGenerationImages(media);
     const hero=panel.querySelector('.cm-hero'), lead=selectedRef||media[0]?.ref;
     hero.hidden=!host||!lead;hero.replaceChildren();
     if(host&&lead){
@@ -450,6 +500,7 @@ async function cmEdit(a=null, kind='character', options={}) {
       const team=target.startsWith('team:')?target.slice(5):'';
       const p={id:data.id,mtime:data.mtime,name:field('name').value,kind:field('kind').value,board:project||team?'':target,project,team,desc:field('desc').value,constraints:field('constraints').value,aliases:field('aliases').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),tags:field('tags').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),shared:!target&&field('shared').checked,default_ref:selectedRef};
       if(documentDirty)p.document=documentData;
+      p.generation_images=generationImages;
       if(pending)Object.assign(p,{ref:pending.ref,source_board:pending.source_board||'',node_id:pending.node_id});
       if(p.kind === "character") {
         p.character_card = readCard();
@@ -457,11 +508,15 @@ async function cmEdit(a=null, kind='character', options={}) {
           await flushSave();
           if (boardId !== initialBoard) return;
           Object.assign(p, {ref:approval.version.ref, source_board:initialBoard, node_id:approval.nodeId, character_view:approval.slot});
+          if(pending && pending.ref!==p.ref && !data.media.some(item=>item.ref===pending.ref))
+            p.generation_images=p.generation_images.filter(ref=>ref!==pending.ref);
         }
       }
       data=await api('/api/memory',p);if(!approval||pending?.ref===p.ref)pending=null;
       documentDirty=false;documentData=data.document||null;paintDocument();
       if (approval?.draftKey && readCharacterDraft(approval.draftKey)?.ref === p.ref) writeCharacterDraft(approval.draftKey, null);
+      generationImages=[...new Set([...(data.generation_images||[]),
+        ...(pending && generationImages.includes(pending.ref) ? [pending.ref] : [])])];
       selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
       panel.querySelector('header strong').textContent='编辑资产';panel.querySelector('[data-delete]').hidden=false;
       if(typeof alChanged==='function')alChanged(data);if(KIND_CN[afilter])await cmRenderLibrary(afilter);

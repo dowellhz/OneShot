@@ -405,6 +405,17 @@ class Store:
             a["default_ref"] = chosen
         elif not a["default_ref"] and new_ref and Path(new_ref).suffix.lower() in IMAGE_EXT:
             a["default_ref"] = new_ref
+        if "generation_images" in p:
+            selected = p["generation_images"]
+            available = {m["ref"] for m in a["media"] if Path(m["ref"]).suffix.lower() in IMAGE_EXT}
+            if (not isinstance(selected, list) or len(selected) > 9 or
+                    any(not isinstance(ref, str) or ref not in available for ref in selected) or
+                    len(set(selected)) != len(selected)):
+                fail("生成参考须为此资产内最多 9 张不同的图片")
+            if selected:
+                a["generation_images"] = selected
+            else:
+                a.pop("generation_images", None)
         if a["kind"] == "character":
             if "character_card" in p:
                 card = p["character_card"]
@@ -435,7 +446,7 @@ class Store:
         aid = "m"+uuid.uuid5(uuid.NAMESPACE_URL,dumps(["oneshot:asset-copy",user["id"],mid,key])).hex
         refs = [item["ref"] for item in source.get("media",[])]
         self.h.require_media(user,refs)
-        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","document") if k in source}
+        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","generation_images","document") if k in source}
         copied["aliases"] = []
         copied["media"] = [{k:item[k] for k in ("ref","source","type","role","w","h","seconds") if k in item}
                            for item in source.get("media",[])]
@@ -613,17 +624,22 @@ class Store:
                 if any(ref not in available for _,ref in refs):
                     fail(f"「{a['name']}」的原参考图已从资产库移除")
                 self.h.require_media(user, [ref for _,ref in refs])
+            elif slots:
+                refs = [(slot, approved[slot]) for slot in slots]
             else:
-                refs = [(slot, approved[slot]) for slot in slots] if slots else [(None, a.get("ref"))]
+                refs = [(None, ref) for ref in a.get("generation_images") or [a.get("ref")]]
+            grouped = len(refs) > 1 and all(slot is None for slot, _ in refs)
             summary = self.summary(a)
-            if slots or a["id"] in historical:
+            if slots or a["id"] in historical or a.get("generation_images"):
                 summary["ref"] = refs[0][1]
                 summary["references"] = [{"view":slot, "ref":ref} for slot,ref in refs]
             used.append(summary)
-            for slot, ref in refs:
+            for ordinal, (slot, ref) in enumerate(refs, 1):
                 if not ref:
                     continue
                 label = f"{a['name']} · {CHARACTER_VIEW_LABELS[slot]}" if slot else a["name"]
+                if grouped and ordinal>1:
+                    label += f" · 参考图 {ordinal}"
                 try:
                     available = self.h.tools.ref_path(self.h.COMFY_DIR, ref).is_file()
                 except (ValueError, OSError):
@@ -639,10 +655,13 @@ class Store:
                           "w": media.get("w", a.get("w") if not slot else None),
                           "h": media.get("h", a.get("h") if not slot else None), "asset": a["id"],
                           "memory_id": a["id"], "memory_kind": a["kind"], "role": "subject", "time": 0,
-                          **({"memory_view":slot} if slot else {})}
+                          **({"memory_view":slot} if slot else {}),
+                          **({"memory_bundle":True} if grouped else {})}
                     images.append(im)
-                mark = "@图" + str(images.index(im) + 1) if p.get("kind") == "image" else label
+                mark = "@图" + str(images.index(im) + 1) if p.get("kind") == "image" or grouped else label
                 notes.append(f"{label} 的参考图：{mark}。" + ("采用该参考的画面风格、色调和光线。" if a["kind"] == "style" else "保持其已设定的外观、配色和特征。"))
+            if grouped:
+                notes.append(f"以上 {len(refs)} 张图均为同一个「{a['name']}」的参考，请用它们共同确定外观。")
             notes.append(f"{a['name']}：{a.get('desc', '')}" + (f"；约束：{a['constraints']}" if a.get("constraints") else ""))
             if a.get("document"):
                 excerpt = document_import.passage(a["document"],content)

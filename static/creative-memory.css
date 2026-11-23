@@ -45,3 +45,9 @@
 #cmFolderPicker label span { flex:1; overflow-wrap:anywhere; }
 #cmFolderPicker label img { width:32px; height:32px; border-radius:5px; object-fit:cover; }
 .cm-editor .cm-hero audio,.cm-editor .cm-media-item audio{width:100%;display:block}
+.cm-generation-images{border:1px solid var(--line2);border-radius:8px;padding:8px}
+.cm-generation-images[hidden]{display:none}
+.cm-generation-images summary{cursor:pointer}
+.cm-generation-images ol{margin:0;padding:0;display:grid;gap:5px;list-style:none}
+.cm-generation-images li,.cm-generation-images li label{display:flex;align-items:center;gap:6px}
+.cm-generation-images img{width:34px;height:30px;object-fit:cover;border-radius:4px}

@@ -2,7 +2,8 @@
 
 function videoDraftAvailable(n) {
   if (n.type!=="video" || n.data.previs || n.data.film) return false;
-  if (hasMediaReferences(n)) return !!referenceServices(n).find(service=>service.id===n.data.provider)?.draft;
+  if (hasMediaReferences(n)) return !!canvasNodeModel(n,referenceService(n),true)?.draft;
+  if (n.data.selected_model) return !!canvasNodeModel(n,nodeProvider(n))?.draft;
   return n.data.provider ? !!CAPS_LIST.video?.find(service=>service.id===n.data.provider)?.draft : CAPS_LIST.default_video_draft===true;
 }
 

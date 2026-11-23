@@ -6,8 +6,11 @@ implemented independently using Pillow and OneShot's existing image providers.
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from urllib.parse import quote
+from xml.etree.ElementTree import Element, SubElement, fromstring, tostring
+from zipfile import ZipFile
 
 from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
 
@@ -113,35 +116,138 @@ def transform(root: Path, p: dict) -> dict:
     return save(root,im)
 
 
-def compose_layers(root: Path, p: dict) -> dict:
-    """Flatten ordered RGBA layers, keeping transparency and per-layer opacity."""
-    base = load(root, p.get("ref", ""))
-    layers = p.get("layers")
+def layer_images(root, layers, include_hidden=False):
     if not isinstance(layers, list) or not 1 <= len(layers) <= 16:
         raise ValueError("图层数量须为 1–16")
-    canvas = Image.new("RGBA", base.size)
     total = 0
     for item in layers:
         if not isinstance(item, dict):
             raise ValueError("图层格式不正确")
-        if not item.get("visible", True):
+        visible = bool(item.get("visible", True))
+        if not visible and not include_hidden:
             continue
         im = load(root, item.get("ref", ""))
-        total += im.width * im.height
-        if total > MAX_PIXELS * 4:
-            raise ValueError("图层总像素过多，请先合并部分图层")
         opacity = number(item.get("opacity"), 0, 1, "图层不透明度", 1)
         x = int(number(item.get("x"), -MAX_SIDE, MAX_SIDE, "图层 X", 0))
         y = int(number(item.get("y"), -MAX_SIDE, MAX_SIDE, "图层 Y", 0))
         w = int(number(item.get("w"), 1, MAX_SIDE, "图层宽度", im.width))
         h = int(number(item.get("h"), 1, MAX_SIDE, "图层高度", im.height))
         check_size(w, h)
+        decoded = im.width * im.height
+        total += max(decoded, w * h) if include_hidden else decoded
+        if total > MAX_PIXELS * 4:
+            raise ValueError("图层总像素过多，请先合并部分图层")
         if im.size != (w, h):
             im = im.resize((w, h), Image.Resampling.LANCZOS)
-        if opacity < 1:
-            im.putalpha(im.getchannel("A").point(lambda a: round(a * opacity)))
-        canvas.alpha_composite(im, (x, y))
+        yield item, im, (x, y), opacity, visible
+
+
+def composite_layer(canvas, image, offset, opacity):
+    if opacity < 1:
+        image.putalpha(image.getchannel("A").point(lambda a: round(a * opacity)))
+    canvas.alpha_composite(image, offset)
+
+
+def compose_layers(root: Path, p: dict) -> dict:
+    """Flatten ordered RGBA layers, keeping transparency and per-layer opacity."""
+    canvas = Image.new("RGBA", load(root, p.get("ref", "")).size)
+    for _, image, offset, opacity, _ in layer_images(root, p.get("layers")):
+        composite_layer(canvas, image, offset, opacity)
     return save(root, canvas, "layers")
+
+
+def ora_name(value, default):
+    unsafe_xml = r"[\x00-\x1f\ud800-\udfff\ufffe\uffff]"
+    return (re.sub(unsafe_xml, "", value).strip()[:160] or default) if isinstance(value, str) else default
+
+
+def export_openraster(root: Path, p: dict, destination: Path):
+    width, height = load(root, p.get("ref", "")).size
+    merged = Image.new("RGBA", (width, height))
+    document = Element("image", version="0.0.5", name=ora_name(p.get("name"), "OneShot"),
+                       w=str(width), h=str(height))
+    stack = SubElement(document, "stack")
+    layers = []
+    with ZipFile(destination, "w") as archive:
+        archive.writestr("mimetype", "image/openraster")
+        for index, (item, image, offset, opacity, visible) in enumerate(
+                layer_images(root, p.get("layers"), include_hidden=True), 1):
+            src = f"data/layer{index}.png"
+            with archive.open(src, "w") as entry:
+                image.save(entry, "PNG")
+            layers.append(Element("layer", {"name": ora_name(item.get("name"), f"图层 {index}"), "src": src,
+                "x": str(offset[0]), "y": str(offset[1]), "opacity": str(opacity),
+                "visibility": "visible" if visible else "hidden", "composite-op": "svg:src-over"}))
+            if visible:
+                composite_layer(merged, image, offset, opacity)
+        stack.extend(reversed(layers))
+        archive.writestr("stack.xml", tostring(document, encoding="utf-8", xml_declaration=True))
+        with archive.open("mergedimage.png", "w") as entry:
+            merged.save(entry, "PNG")
+        merged.thumbnail((256, 256), Image.Resampling.LANCZOS)
+        with archive.open("Thumbnails/thumbnail.png", "w") as entry:
+            merged.save(entry, "PNG")
+
+
+def import_openraster(root: Path, source) -> dict:
+    saved = []
+    try:
+        with ZipFile(source) as archive:
+            members = archive.infolist()
+            if len(members) > 128 or len({item.filename for item in members}) != len(members):
+                raise ValueError("OpenRaster 文件条目过多或重复")
+            if archive.getinfo("mimetype").file_size != 16 or archive.read("mimetype") != b"image/openraster":
+                raise ValueError("文件不是有效的 OpenRaster 文档")
+            if archive.getinfo("stack.xml").file_size > 128 * 1024:
+                raise ValueError("OpenRaster 图层说明过大")
+            xml = archive.read("stack.xml").decode("utf-8-sig")
+            if re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", xml, re.IGNORECASE):
+                raise ValueError("OpenRaster 图层说明包含不支持的声明")
+            document = fromstring(xml)
+            stacks = document.findall("stack")
+            if document.tag != "image" or len(stacks) != 1 or not 1 <= len(stacks[0]) <= 16:
+                raise ValueError("OpenRaster 文件须有 1–16 个图层")
+            width, height = int(document.get("w", "0")), int(document.get("h", "0"))
+            check_size(width, height)
+            merged = Image.new("RGBA", (width, height))
+            layers = []
+            total_pixels = total_bytes = 0
+            for index, element in enumerate(reversed(stacks[0]), 1):
+                if element.tag != "layer" or element.get("composite-op", "svg:src-over") != "svg:src-over":
+                    raise ValueError("目前支持普通混合模式的独立图层，请先合并图层组或特殊混合图层")
+                x, y = int(element.get("x", "0")), int(element.get("y", "0"))
+                if max(abs(x), abs(y)) > MAX_SIDE:
+                    raise ValueError("图层位置超出编辑范围")
+                opacity = number(element.get("opacity"), 0, 1, "图层不透明度", 1)
+                visibility = element.get("visibility", "visible")
+                if visibility not in ("hidden", "visible"):
+                    raise ValueError("图层可见性无效")
+                member = archive.getinfo(element.get("src", ""))
+                total_bytes += member.file_size
+                if total_bytes > 128 * 1024 * 1024:
+                    raise ValueError("OpenRaster 图层文件过大")
+                with archive.open(member) as entry, Image.open(entry, formats=("PNG",)) as png:
+                    check_size(*png.size)
+                    if getattr(png, "is_animated", False):
+                        raise ValueError("OpenRaster 图层须为静态 PNG")
+                    total_pixels += png.width * png.height
+                    if total_pixels > MAX_PIXELS * 4:
+                        raise ValueError("图层总像素过多，请先合并部分图层")
+                    image = png.convert("RGBA")
+                media = save(root, image, "ora_layer", kind="input")
+                saved.append(media["ref"])
+                visible = visibility == "visible"
+                layers.append({"id":f"ora-{index}","name":ora_name(element.get("name"), f"图层 {index}"),
+                               "ref":media["ref"],"x":x,"y":y,"w":media["w"],"h":media["h"],
+                               "opacity":opacity,"visible":visible})
+                if visible:
+                    composite_layer(merged, image, (x, y), opacity)
+        result = save(root, merged, "ora_preview", kind="input")
+    except Exception:
+        for ref in saved:
+            ref_path(root, ref).unlink(missing_ok=True)
+        raise
+    return {**result, "type":"image", "layer_stack":{"base_ref":result["ref"],"layers":layers}}
 
 
 def cut_selection(root: Path, p: dict) -> dict:
@@ -175,10 +281,47 @@ def decompose(root: Path, source_ref: str, label_ref: str) -> dict:
         layer = source.crop(box)
         layer.putalpha(layer_alpha.crop(box))
         media = save(root,layer,"object_layer")
-        layers.append({"id":f"object-{index}","name":f"物体 {index}" if index else "背景",
-                       "ref":media["ref"],"x":box[0],"y":box[1],"w":media["w"],"h":media["h"],
-                       "opacity":1,"visible":True})
+        layer = {"id":f"object-{index}","name":f"物体 {index}" if index else "背景",
+                 "ref":media["ref"],"x":box[0],"y":box[1],"w":media["w"],"h":media["h"],
+                 "opacity":1,"visible":True}
+        if index == 0:
+            layer["decomposition_bounds"] = {key:layer[key] for key in ("x","y","w","h")}
+        layers.append(layer)
     return {**save(root,source,"decomposed"),"layer_stack":{"base_ref":source_ref,"layers":layers}}
+
+
+def fill_background(root: Path, source_ref: str, background_ref: str, x: int, y: int) -> dict:
+    """Fill removed subjects while retaining the source's transparent areas."""
+    import cv2
+    import numpy as np
+
+    source = load(root, source_ref)
+    background = load(root, background_ref)
+    if (type(x) is not int or type(y) is not int or x < 0 or y < 0
+            or x + background.width > source.width or y + background.height > source.height):
+        raise ValueError("背景与分层原图尺寸不匹配")
+    canvas = Image.new("RGBA", source.size)
+    canvas.paste(background, (x, y))
+    alpha = canvas.getchannel("A")
+    if not alpha.getbbox():
+        raise ValueError("没有可用于补全的背景像素")
+    missing = ImageChops.multiply(source.getchannel("A").point(lambda a: 255 if a else 0),
+                                  alpha.point(lambda a: 0 if a else 255))
+    if not missing.getbbox():
+        raise ValueError("背景没有需要补全的区域")
+
+    preview = canvas.copy()
+    preview.thumbnail((768, 768))
+    preview_holes = missing.resize(preview.size, Image.Resampling.BOX).point(lambda a: 255 if a else 0)
+    mask = np.asarray(ImageChops.lighter(preview_holes, preview.getchannel("A").point(lambda a: 0 if a else 255)))
+    if np.all(mask):
+        raise ValueError("可用于补全的背景区域过小")
+    pixels = np.asarray(preview)
+    color = cv2.inpaint(np.ascontiguousarray(pixels[:, :, :3]), mask, 3, cv2.INPAINT_TELEA)
+    opacity = cv2.inpaint(np.ascontiguousarray(pixels[:, :, 3]), mask, 3, cv2.INPAINT_TELEA)
+    filled = Image.fromarray(np.dstack((color, opacity))).resize(source.size, Image.Resampling.BICUBIC)
+    canvas.paste(filled, (0, 0), missing)
+    return save(root, canvas, "background_fill")
 
 
 def prepare(root: Path, p: dict) -> dict:

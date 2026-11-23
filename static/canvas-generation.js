@@ -50,6 +50,7 @@ function showPrep(n, on) {
 function captureGenerationRecord(request, textInputs) {
   const settings = Object.fromEntries(["model","provider_model","provider","quality","ar","duration","seed","count","extension"]
     .filter(key => request[key] != null).map(key => [key,request[key]]));
+  if (request.selected_model) settings.provider_model = request.selected_model;
   const images = (request.images || []).map(({node_id,ref,role,time,name,memory_id,memory_view}) => {
     const n = node_id ? node(node_id) : null;
     const index = n ? (curV(n)?.ref === ref ? n.cur : n.versions.findIndex(v=>v.ref===ref)) : -1;
@@ -134,14 +135,13 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     }
     req.provider = d.provider;
   } else if (n.data.provider && (CAPS_LIST[n.type === "image" ? "image" : "video"] || []).some(x => x.id === n.data.provider)) req.provider = n.data.provider;
+  if (d.selected_model) Object.assign(req,{provider:d.provider,selected_model:d.selected_model});
   const slow = n.type === "video";
   const textInputs = grid ? [] : inputs(n, "text").map(m => ({node_id:m.id,name:m.name,role:"text",text:(m.data.text || "").slice(0,5000)}));
   const generationRecord = captureGenerationRecord(req, textInputs);
   const history=grid ? {image_grid:true,input_edges:[{...gridReference.edge,ref:gridReference.version.ref}]} :
-    slow||imageInputs(n).some(({edge})=>promptSlot(edge.prompt_slot))
-    ? {input_edges:structuredClone(B.edges.filter(e=>e.to===n.id)),node_data:structuredClone(n.data),
-       ...(slow?{video_recipe:structuredClone(req)}:{})}
-    : null;
+    {input_edges:structuredClone(B.edges.filter(e=>e.to===n.id)),node_data:structuredClone(n.data),
+     ...(slow?{video_recipe:structuredClone(req)}:{})};
   const layout=previsComposition(n)?"tabs":batchLayout;
   const batch=req.count>1 && layout!=="tabs" && !req.draft && !req.segment_edit && !req.extension
     ? {layout,data:structuredClone(grid?{...d,prompt}:d),edges:structuredClone(B.edges.filter(e=>e.to===n.id))}
@@ -401,25 +401,32 @@ function canvasUploadKind(file) {
   if (CM_DOCUMENT_EXT.test(file.name)) return "text";
   if (/\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(file.name)) return "audio";
   if (/\.(mp4|mov|webm|m4v|mkv)$/i.test(file.name)) return "video";
-  if (/\.(png|jpe?g|webp)$/i.test(file.name)) return "image";
+  if (/\.(png|jpe?g|webp|ora)$/i.test(file.name)) return "image";
   if (file.type.startsWith("audio/") && CANVAS_CLIPBOARD_EXT[file.type]) return "audio";
   if (file.type.startsWith("video/")) return "video";
   return file.type.startsWith("image/") ? "image" : "";
 }
 const imgSize = url => new Promise(r => { const i = new Image(); i.onload = () => r([i.naturalWidth, i.naturalHeight]); i.onerror = () => r([0, 0]); i.src = url; });
-function addVersion(n, v) {
-  checkpoint(); n.versions.push(v); n.cur = n.versions.length - 1; save(); render(n); refreshDownstream(n); drawEdges(); if (sel.has(n.id)) showPanel();
+function addVersion(n, v, before) {
+  checkpoint(before); n.versions.push(v); n.cur = n.versions.length - 1; save(); render(n); refreshDownstream(n); drawEdges(); if (sel.has(n.id)) showPanel();
 }
+const canvasMediaUploadTarget=n=>["image","video","audio"].includes(n.type)&&!n.data.film&&!n.data.previs;
+const canvasCanUploadInto=n=>canvasCanEdit()&&canvasMediaUploadTarget(n)&&!n.job&&!prepping.has(n.id);
 async function uploadInto(n, file) {
+  if(!canvasCanUploadInto(n))return toast("当前节点暂时无法接收文件");
   showErr(n, "");
-  const board=B;
+  const board=B,epoch=boardOpenEpoch;
+  const current=()=>B===board&&boardOpenEpoch===epoch&&node(n.id)===n;
+  prepping.add(n.id);
   try {
     const {name,data,version}=await readCanvasFile(file,n.type);
-    if (B!==board || node(n.id)!==n) return;
+    if (!current()||!canvasCanEdit()||n.job) return;
+    const before=snap();
     if (name && n.name.startsWith(TYPE_CN[n.type]+" ")) n.name=name;
     if (!n.data.caption && data.caption) n.data.caption=data.caption;
-    addVersion(n,version);loadAssets();
-  } catch (e) { if (B===board && node(n.id)===n) showErr(n, "上传失败：" + e.message); }
+    addVersion(n,version,before);loadAssets();
+  } catch (e) { if(current())showErr(n, "上传失败：" + e.message); }
+  finally{prepping.delete(n.id);}
 }
 async function readCanvasFile(file, kind) {
   const body=new FormData(), stem=file.name.replace(/\.[^.]+$/,"");
@@ -433,10 +440,11 @@ async function readCanvasFile(file, kind) {
   const filename=/\.[^.]+$/.test(file.name) || !extension?file.name:`${stem||"paste"}.${extension}`;
   body.append(kind==="audio"?"file":"image",file,filename||"paste.png");
   const result=await (await fetchOk(kind==="audio"?"/api/upload_audio":"/api/upload",{method:"POST",body})).json();
-  const [w,h]=kind==="image"?await imgSize(result.url):[result.w,result.h];
+  const [w,h]=kind==="image"&&!result.layer_stack?await imgSize(result.url):[result.w,result.h];
   const caption=stem.replace(/[-_ ]?\d+$/,"").replace(/^(image|paste|IMG|DSC|Screenshot).*$/i,"");
   return {name:stem.slice(0,kind==="audio"?40:24),data:kind==="image"?{caption}:{},
-    version:{ref:result.ref,url:result.url,w,h,seconds:result.seconds,source:"upload",prompt:""}};
+    version:{ref:result.ref,url:result.url,w,h,seconds:result.seconds,source:"upload",prompt:"",
+      ...(result.layer_stack?{layer_stack:result.layer_stack,mode:"导入可编辑图层"}:{})}};
 }
 async function importCanvasFiles(files, at, target=null) {
   if (!canvasCanEdit() || !files.length) return;
@@ -482,7 +490,7 @@ addEventListener("paste", e => {
   e.preventDefault();
   const kind=files.length===1&&canvasUploadKind(files[0]);
   const selected=sel.size===1?node([...sel][0]):null;
-  if(kind!=="text" && selected?.type===kind && !curV(selected) && !selected.job && !prepping.has(selected.id)){
+  if(selected?.type===kind && !curV(selected) && canvasCanUploadInto(selected)){
     void uploadInto(selected,files[0]);return;
   }
   void importCanvasFiles(files,toW(innerWidth/2-150,innerHeight/2-180));

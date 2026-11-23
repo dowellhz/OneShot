@@ -194,17 +194,22 @@ function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, tr
   const selectedShots = script.data.shots.slice(start, end + 1);
   const keys = selectedShots.map((shot, i) => shot.id || `index:${start+i}`);
   spec.story_tracking = true;
-  spec.clips.forEach((clip,i) => {
+  const shots = spec.clips.map((clip,i) => {
     const shot=selectedShots[i], range=shot.previs_range;
     clip.trans=transition;
     clip.story_shot=keys[i];
-    if (!Array.isArray(range) || range.length!==2 || !range.every(Number.isSafeInteger) || range[0]<0 || range[1]<=range[0]) return;
-    clip.story_frames=Number.isFinite(shot.duration) && shot.duration>0
-      ? Math.max(1,Math.round(shot.duration*FILM_FPS)) : range[1]-range[0];
-    clip.trans="cut";
-    alignStoryClipLength(clip,curV(media[i]).seconds);
+    const whitebox=Array.isArray(range) && range.length===2 && range.every(Number.isSafeInteger) && range[0]>=0 && range[1]>range[0];
+    const frames=Number.isFinite(shot.duration) && shot.duration>0 ? Math.max(1,Math.round(shot.duration*FILM_FPS)) :
+      whitebox ? range[1]-range[0] : null;
+    if (whitebox) clip.trans="cut";
+    if (Number.isSafeInteger(frames)) {
+      clip.story_frames=frames;
+      const seconds=curV(media[i]).seconds;
+      if (Number.isFinite(seconds) && seconds>0) alignStoryClipLength(clip,seconds);
+      else clip.story_pending_length=true;
+    }
+    return {id:keys[i],node:clip.node,ref:clip.ref,number:start+i+1,frames};
   });
-  const shots = spec.clips.map((clip,i) => ({id:keys[i],node:clip.node,ref:clip.ref,number:start+i+1}));
   const scope = [script.id,keys];
   const key = filmDraftPrefix()+"story:"+JSON.stringify([...scope,shots.map(shot=>[shot.node,shot.ref])]);
   showFilm(spec,null,key,null,{scope,shots,base:storyDraftSignature(spec)});
@@ -212,7 +217,24 @@ function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, tr
 }
 
 function storyDraftSignature(spec) {
-  return JSON.stringify(spec, (key,value) => ["src_len","story_tracking","story_shot","story_frames"].includes(key) ? undefined : value);
+  return JSON.stringify(spec, (key,value) => ["src_len","story_tracking","story_shot","story_frames","story_pending_length"].includes(key) ? undefined : value);
+}
+
+function refreshStoryClipPlans(spec, story) {
+  if (!spec.story_tracking || !story) return;
+  const plans=new Map(story.shots.map(shot=>[shot.id,shot])), occurrences=new Map();
+  for (const clip of spec.clips) {
+    if (clip.story_shot) occurrences.set(clip.story_shot,(occurrences.get(clip.story_shot) || 0)+1);
+  }
+  for (const clip of spec.clips) {
+    const plan=plans.get(clip.story_shot);
+    if (!plan || clip.node!==plan.node || clip.story_split || occurrences.get(clip.story_shot)!==1) continue;
+    if (Number.isSafeInteger(plan.frames)) clip.story_frames=plan.frames;
+    else {
+      delete clip.story_frames;
+      delete clip.story_pending_length;
+    }
+  }
 }
 
 function earlierStoryDrafts(F) {
@@ -264,6 +286,7 @@ function reuseStoryDraft(F, draft) {
   spec.story_tracking = true;
   if (F.spec.story_script) spec.story_script = F.story.scope[0];
   else delete spec.story_script;
+  refreshStoryClipPlans(spec,F.story);
   return {spec,shots};
 }
 
@@ -360,6 +383,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
   if (playlistBase && (saved?.playlistBase !== playlistBase || !canvasCanEdit())) saved = null;
   if (saved?.spec?.clips?.length || playlistBase && Array.isArray(saved?.spec?.clips)) {
     spec = spec.story_script ? {...saved.spec,story_script:spec.story_script} : saved.spec;
+    refreshStoryClipPlans(spec,story);
   }
   const sel = Math.max(0, Math.min(spec.clips.length - 1, saved?.sel || 0));
   FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, story, attempt:saved?.attempt,
@@ -751,7 +775,15 @@ function selectClip(i, offset = 0, autoplay = false) {
   vid.playbackRate = filmSpeed(c);
   const go = () => {
     if (FILM !== F || F.spec.clips[F.sel] !== c) return;
-    c.src_len = vid.duration || c.src_len;
+    if (Number.isFinite(vid.duration) && vid.duration>0) {
+      c.src_len=vid.duration;
+      if (c.story_pending_length) {
+        delete c.story_pending_length;
+        if (!c.in && c.out==null && !c.tight && c.story_frames) alignStoryClipLength(c,vid.duration);
+        refreshTimelineLabels();
+        saveFilmDraft(F);
+      }
+    }
     sizeFilmTitleLayer();
     vid.currentTime = Math.min(c.out ?? filmMediaLength(c), (c.in || 0) + offset * filmSpeed(c));
     F.pendingOffset = null;
@@ -845,6 +877,9 @@ function splitFilmClip(F, clip, position) {
     subs:cues.filter(cue => (cue.start + cue.end) / 2 < elapsed).map(cue => cue.text)};
   delete left.story_frames;
   delete right.story_frames;
+  delete left.story_pending_length;
+  delete right.story_pending_length;
+  if (clip.story_shot) left.story_split=right.story_split=true;
   if (clip.captions) {
     left.captions = clip.captions.filter(cue => cue.start < split);
     right.captions = clip.captions.filter(cue => cue.end > split);
@@ -914,7 +949,8 @@ function renderClipBox() {
   const source = node(c.node);
   const planLength=Number.isSafeInteger(c.story_frames) && c.story_frames>0 && !isStill ? c.story_frames/FILM_FPS : 0;
   const sourcePlayLength=(baseOut-(c.in||0))/filmSpeed(c);
-  const shortPlan=planLength && sourcePlayLength+1e-6<planLength;
+  const pendingPlan=planLength && c.story_pending_length;
+  const shortPlan=planLength && !pendingPlan && sourcePlayLength+1e-6<planLength;
   const slowdown=shortPlan && !F.spec.remake_audio && storySlowdownPlan(c,baseOut);
   const beyondSlowdown=shortPlan && (baseOut-(c.in||0))*2+1e-6<planLength;
   const alternative = canvasCanEdit() && c.node!==F.target?.id && source?.versions.some(v=>v.ref && v.ref!==c.ref);
@@ -935,8 +971,8 @@ function renderClipBox() {
     ${isStill ? `<label class="still-duration">停留时长 <input type="number" min="0.5" max="60" step="0.1" value="${c.duration}"> 秒</label>` : `
     <div class="trim"><span>入点 <b>${(c.in || 0).toFixed(1)}s</b></span><input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${c.in || 0}" data-t="in">
       <input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${out}" data-t="out"><span>出点 <b>${out.toFixed(1)}s</b></span><span class="dim">保留 ${(out - (c.in || 0)).toFixed(1)}s / 原长 ${(baseOut - baseIn).toFixed(1)}s</span></div>`}
-    ${planLength ? `<div class="row"><span class="dim">分镜计划 ${planLength.toFixed(2)} 秒 · 当前片段 ${displayClipSeconds(c)} 秒${shortPlan?" · 素材时长不足":""}${beyondSlowdown?"（0.5 倍速仍不足）":""}</span>
-      ${canvasCanEdit()?'<button class="pill" type="button" data-a="story-length">按分镜时长</button>':""}
+    ${planLength ? `<div class="row"><span class="dim">分镜计划 ${planLength.toFixed(2)} 秒 · 当前片段 ${displayClipSeconds(c)} 秒${pendingPlan?" · 待核实素材时长":""}${shortPlan?` · 素材时长不足，缺 ${(planLength-sourcePlayLength).toFixed(2)} 秒`:""}${beyondSlowdown?"（0.5 倍速仍不足）":""}</span>
+      ${canvasCanEdit()&&!pendingPlan?'<button class="pill" type="button" data-a="story-length">按分镜时长</button>':""}
       ${slowdown&&canvasCanEdit()?'<button class="pill" type="button" data-story-slowdown>预览减速补齐</button>':""}</div>` : ""}
     <div class="row2">${captions}
       ${isStill ? "" : `<label class="vol">${volumeLabel}<input type="range" min="0" max="1.5" step="0.05" value="${c.volume}"><span>${Math.round(c.volume * 100)}%</span></label><label class="clip-speed">速度（倍）<input type="number" min="0.5" max="2" step="any" value="${filmSpeed(c)}" data-clip-speed></label>`}</div>`;

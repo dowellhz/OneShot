@@ -7,6 +7,7 @@ Builds ComfyUI API graphs for H3 text-to-image, text/first/last-frame-to-video (
 import asyncio, copy, io, json, math, os, random, re, secrets, tempfile, time, uuid, hashlib, zipfile
 from pathlib import Path
 from contextlib import ExitStack
+from xml.etree.ElementTree import ParseError
 
 import aiohttp
 from urllib.parse import quote, unquote
@@ -253,12 +254,18 @@ def planned_prompt(prompt: str, subj, frames, end: float) -> str:
     """Ref2VA's structured prompt for character references (<Picture 1..S>) and timed frames (<Picture S+1..>)."""
     S = len(subj)
     lines, keep, steps = [], [], ""
-    for k, im in enumerate(subj):
+    bundles = {}
+    for k, im in enumerate(subj, 1):
+        asset = im.get("memory_id") if im.get("memory_bundle") else None
+        number = bundles.setdefault(asset, k) if isinstance(asset, str) and asset else k
+        if number != k:
+            lines.append(f"<Picture {k}> is an additional view of the same <Subject {number}>.")
+            continue
         cap = clean(im.get("caption"))
         subject = {"scene": "environment", "prop": "object", "style": "visual style"}.get(im.get("memory_kind"), "character")
-        lines.append(f"<Subject {k+1}> is the {subject} in <Picture {k+1}>" + (f", {cap}." if cap else "."))
+        lines.append(f"<Subject {k}> is the {subject} in <Picture {k}>" + (f", {cap}." if cap else "."))
         features = "visual style, colors and lighting" if subject == "visual style" else "layout, materials, colors and visual details" if subject != "character" else "face, body shape, colors and outfit"
-        keep.append(f"<Subject {k+1}>: fully_preserved - the {features} of <Subject {k+1}> stay identical to <Picture {k+1}> throughout.")
+        keep.append(f"<Subject {k}>: fully_preserved - the {features} of <Subject {k}> stay identical to <Picture {k}> throughout.")
     for j, im in enumerate(frames):
         pn, t, cap = S + j + 1, float(im["time"]), clean(im.get("caption")) or "the scene"
         kind = "first frame" if t <= 0.01 else ("last frame" if t >= end - 0.05 else "keyframe")
@@ -399,7 +406,8 @@ def _graph_video(p: dict):
     if ref:   # @图k -> <Picture k>, the reference pipeline's names
         prompt = re.sub(r"@图(\d+)", lambda m: f"<Picture {m.group(1)}>", prompt)
     else:
-        prompt = re.sub(r"@图(\d+)", lambda m: "首帧画面" if m.group(1) == "1" else ("尾帧画面" if int(m.group(1)) == n else f"图{m.group(1)}"), prompt)
+        prompt = re.sub(r"@图(\d+)", lambda m: "the first frame" if m.group(1) == "1" else (
+            "the last frame" if int(m.group(1)) == n else m.group(0)), prompt)
     if turbo:
         lora, steps = (M["lora_ref"], 4) if ref else ((M["lora768"], 4) if hd else (M["lora8"], 8))
     else:
@@ -2313,8 +2321,10 @@ async def assets(req):
 async def upload(req):
     reader = await req.multipart()
     part = await reader.next()
-    raw = await part.read(decode=False)
     ext = os.path.splitext(part.filename or "x.png")[1].lower() or ".png"
+    if ext == ".ora":
+        return await upload_openraster(req, part)
+    raw = await part.read(decode=False)
     name = f"u_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
     if ext in tools.VIDEO_EXT:
         dst = COMFY_DIR / "input" / "h3studio" / name
@@ -2346,6 +2356,23 @@ async def upload(req):
     ref = f"input:h3studio/{name}"
     db.run("INSERT OR IGNORE INTO memory_uploads VALUES(?,?,?)", ref, req["user"]["id"], time.time())
     return web.json_response({"ref": ref, "url": "/media?ref=" + quote(ref, safe="")})
+
+
+async def upload_openraster(req, part):
+    try:
+        with tempfile.TemporaryFile() as source:
+            limit = 64 * 1024 * 1024
+            while chunk := await part.read_chunk(64 * 1024):
+                if source.tell() + len(chunk) > limit:
+                    raise bad("OpenRaster 文件不能超过 64 MB")
+                source.write(chunk)
+            result = await asyncio.to_thread(image_editor.import_openraster, COMFY_DIR, source)
+    except ValueError as error:
+        raise bad(str(error)) from None
+    except (zipfile.BadZipFile, ParseError, OSError, KeyError, RuntimeError, DecompressionBombError):
+        raise bad("读不了这个 OpenRaster 文件，请检查图层文件是否完整") from None
+    grant_media(req["user"], result["ref"], *(layer["ref"] for layer in result["layer_stack"]["layers"]))
+    return web.json_response(result)
 
 
 @routes.get("/media")
@@ -2694,7 +2721,8 @@ def apply_fields(p: dict, for_llm: bool = False) -> dict:
 
 _CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 _DBLOCK = re.compile(r"<d>.*?</d>", re.S)
-_MARKS = re.compile(r"<(?:Picture|Subject|Video|Audio) \d+>|\(S\d+(?:,S\d+)*\)|<d>.*?</d>", re.S)
+_IMAGE_MENTION = re.compile(r"@图(\d+)")
+_MARKS = re.compile(r"<(?:Picture|Subject|Video|Audio) \d+>|\(S\d+(?:,S\d+)*\)|<d>.*?</d>|@图\d+", re.S)
 XLATE_FILE = DATA / "xlate_cache.json"
 try:
     _XLATE_CACHE: dict = json.loads(XLATE_FILE.read_text())
@@ -2704,13 +2732,13 @@ XLATE_SYSTEM = """You translate the parts of a video-generation prompt from Chin
 Input: a JSON object. Output: ONLY a JSON object with exactly the same keys and the same list lengths, every value translated.
 Rules:
 - Translate faithfully; do not add, drop or reorder actions, objects, counts, positions or constraints.
-- Copy these verbatim, unchanged: every <d>...</d> block including its content and [Language] tag, every <Picture N>, <Subject N>, <Video N>, <Audio N>, and every speaker ID such as (S1).
+- Copy these verbatim, unchanged: every <d>...</d> block including its content and [Language] tag, every @图N image mention, every <Picture N>, <Subject N>, <Video N>, <Audio N>, and every speaker ID such as (S1).
 - Text that appears in double quotation marks as visible on-screen text stays as it is.
 - Write descriptions, not speech. Use plain prose; no markdown, no explanations."""
 
 
 def _needs_english(t: str) -> bool:
-    return bool(t) and bool(_CJK.search(_DBLOCK.sub("", t)))
+    return bool(t) and bool(_CJK.search(_IMAGE_MENTION.sub("", _DBLOCK.sub("", t))))
 
 
 async def to_english(app, p: dict) -> dict:
@@ -2732,6 +2760,8 @@ async def to_english(app, p: dict) -> dict:
     if not src:
         return p
     key = json.dumps(src, ensure_ascii=False, sort_keys=True)
+    if any(_IMAGE_MENTION.search(value) for entry in src.values() for value in (entry if isinstance(entry, list) else [entry])):
+        key = "image-mentions:" + key
     out = _XLATE_CACHE.get(key)
     if out is None:
         llm = app["llm"]
@@ -2780,21 +2810,40 @@ async def to_english(app, p: dict) -> dict:
 
 @routes.post("/api/preview")
 async def preview(req):
-    """The exact prompt the model would get for this request (no generation)."""
+    """Preview the prepared video prompt and its configured media without submitting a job."""
     raw = await req.json()
-    retake = resolve_camera_plan(raw)
-    object_plan = resolve_object_edit(raw)
-    if raw.get("previs_guide") is not None or raw.get("audio_refs") or raw.get("video_refs"):
-        payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"], raw))
-        return web.json_response({"prompt": reference_prompt(payload), "mode": "镜头重拍" if retake else
-                                  object_edit.ACTIONS[object_plan["action"]] if object_plan else "全模态参考"})
-    p = apply_fields(apply_video_optics(raw))
+    payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"], raw))
+    inputs = workflow_review.capture_generation(payload)["inputs"]
+    if payload.get("previs_guide") is not None or payload.get("audio_refs") or payload.get("video_refs"):
+        retake = resolve_camera_plan(payload)
+        object_plan = resolve_object_edit(payload)
+        mode = ("镜头重拍" if retake else
+                object_edit.ACTIONS[object_plan["action"]] if object_plan else "全模态参考")
+        if payload.get("selected_model") is not None:
+            route = requested_reference_route(payload)
+            mode += f" · {route['model']}"
+        for item in inputs:
+            if item.get("role") in ("subject", "frame"):
+                item["role"] = "image_ref"
+        return web.json_response({"prompt": reference_prompt(payload), "mode": mode, "inputs": inputs})
+    route = requested_generation_route(payload, "video")
+    if route and route["provider"]["kind"] != "local_h3":
+        prompt, roles = remote_video_prompt(payload, route["provider"], route["model"])
+        if not prompt:
+            raise bad("提示词不能为空")
+        mode = f"{route['provider']['name']} · {route['model']}"
+        for item, role in zip(inputs, roles):
+            item["role"] = role
+        return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs})
+    p = apply_fields(payload)
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
     p = await to_english(req.app, p)
     _, meta = graph_video(p)
+    if meta.get("mode") == "fl2v" and len(inputs) > 1:
+        inputs[-1]["role"] = "last_frame"
     mode = meta.get("mode_name", "") + (" · 未翻译成英文：" + p["_xlate_err"] if p.get("_xlate_err") else "")
-    return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode})
+    return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode, "inputs": inputs})
 
 
 @routes.post("/api/generate")
@@ -2833,6 +2882,40 @@ async def image_layers(req):
         raise bad(str(e))
     grant_media(req["user"], result.get("ref"))
     return web.json_response(result)
+
+
+@routes.post("/api/image-edit/openraster")
+async def image_openraster(req):
+    p = await req.json()
+    if not isinstance(p, dict):
+        raise bad("图层导出参数须为对象")
+    directory = DATA / "exports"
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / (uuid.uuid4().hex + ".ora")
+
+    def build():
+        try:
+            image_editor.export_openraster(COMFY_DIR, p, destination)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+        cutoff = time.time() - 86400
+        for old in directory.glob("*.ora"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
+
+    try:
+        await asyncio.to_thread(build)
+    except (ValueError, OSError, TypeError) as error:
+        raise bad(str(error)) from None
+    name = image_editor.ora_name(p.get("name"), "OneShot")
+    filename = quote(re.sub(r'[\\/:*?"<>|]', "_", name) + ".ora", safe="")
+    headers = {"Content-Disposition": f"attachment; filename=\"OneShot.ora\"; filename*=UTF-8''{filename}",
+               "Content-Type": "image/openraster", "Cache-Control": "no-store"}
+    return web.FileResponse(destination, headers=headers)
 
 
 def image_draft_path(req, ref):
@@ -2938,6 +3021,21 @@ async def image_decompose_route(req):
     grant_media(req["user"],result["ref"])
     for layer in result["layer_stack"]["layers"]:
         grant_media(req["user"],layer["ref"])
+    return web.json_response(result)
+
+
+@routes.post("/api/image-edit/fill-background")
+async def image_fill_background_route(req):
+    p = await req.json()
+    if not isinstance(p, dict) or not all(isinstance(p.get(key), str) for key in ("ref", "background")):
+        raise bad("请选择要补全的分层背景")
+    require_media(req["user"],[p["ref"],p["background"]])
+    try:
+        result = await asyncio.to_thread(image_editor.fill_background, COMFY_DIR, p["ref"], p["background"],
+                                         p.get("x"), p.get("y"))
+    except (ImportError, ValueError, OSError) as error:
+        raise bad(str(error)) from None
+    grant_media(req["user"], result["ref"])
     return web.json_response(result)
 
 
@@ -3099,6 +3197,21 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
     return web.json_response(result)
 
 
+def requested_generation_route(raw, cap):
+    provider_id = raw.get("provider")
+    choice = providers.get(provider_id) if isinstance(provider_id, str) and provider_id else None
+    selected = raw.get("selected_model")
+    if selected is not None:
+        if (not isinstance(selected, str) or not choice or not choice["enabled"] or
+                choice["kind"].startswith("local_") or cap not in providers.caps_of(choice) or
+                selected not in configured_models(choice, cap, providers.routes(cap))):
+            raise bad("所选模型已不可用，请重新选择模型")
+        return {"provider":choice, "model":selected}
+    if choice and choice["enabled"] and cap in providers.caps_of(choice):
+        return {"provider": choice, "model": raw.get("provider_model") or providers.default_model(choice, cap)}
+    return providers.primary(cap)
+
+
 async def _generate_request(req, raw, *, fixed_route=None):
     raw = apply_video_optics(raw)
     u = req["user"]
@@ -3118,15 +3231,9 @@ async def _generate_request(req, raw, *, fixed_route=None):
     if raw.get("previs_guide") is not None or raw.get("audio_refs") or raw.get("video_refs"):
         if raw.get("kind") != "video":
             raise bad("音视频参考仅用于视频生成")
-        has_motion = raw.get("previs_guide") is not None or bool(raw.get("video_refs"))
-        routes = {r["provider"]["id"]: r for r in reference_routes(require_motion=has_motion, segment_edit=bool(edit))}
-        route = routes.get(raw.get("provider")) if isinstance(raw.get("provider"), str) else None
+        route = requested_reference_route(raw)
         if fixed_route and (not route or route["provider"]["id"] != fixed_route["provider"] or route["model"] != fixed_route["model"]):
             raise bad("原参考视频服务或模型已变更，请重新配置后再重试")
-        if not route:
-            if edit:
-                raise bad("请选择已配置参考视频公网地址的 Seedance 2.5 服务")
-            raise bad("请选择支持全模态参考的 Seedance 2.x 服务" + ("，并配置参考视频公网地址" if has_motion else ""))
         motion = await resolve_previs_guide(u, raw) if raw.get("previs_guide") is not None else None
         clips = await resolve_video_refs(u, raw, route["model"], motion) if raw.get("video_refs") else []
         audio = await resolve_audio_refs(u, raw, route["model"]) if raw.get("audio_refs") else []
@@ -3141,10 +3248,7 @@ async def _generate_request(req, raw, *, fixed_route=None):
                 raise bad("原生成服务已不可用，请重新配置后再重试")
             route = {"provider":choice,"model":fixed_route["model"]}
     else:
-        choice = providers.get(raw["provider"]) if raw.get("provider") else None
-        if choice and not (choice["enabled"] and cap in providers.caps_of(choice)):
-            choice = None
-        route = {"provider":choice,"model":raw.get("provider_model") or providers.default_model(choice,cap)} if choice else providers.primary(cap)
+        route = requested_generation_route(raw, cap)
     if isinstance(req, agent_chat.InternalRequest):
         req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]} if route else {"provider":None,"model":None}
     if route and route["provider"]["kind"] != "local_h3":
@@ -5058,20 +5162,63 @@ def plain_prompt(p: dict) -> str:
     return "。".join(parts)
 
 
-def reference_routes(*, require_motion=False, segment_edit=False):
+def remote_video_prompt(raw, provider, model):
+    images = raw.get("images") or []
+    frames = [i for i, image in enumerate(images) if image.get("role") != "subject"]
+    subjects = [i for i, image in enumerate(images) if image.get("role") == "subject"]
+    kling = provider["kind"] == "kling"
+    roles = ["unused_image"] * len(images)
+    labels = {}
+    if frames:
+        roles[frames[0]], labels[frames[0]] = "first_frame", "首帧画面"
+        if len(frames) > 1 and not (kling and (subjects or "flash" in model)):
+            roles[frames[-1]], labels[frames[-1]] = "last_frame", "尾帧画面"
+    if kling or not frames:
+        for number, i in enumerate(subjects[:7 if kling else 9], 1):
+            roles[i], labels[i] = "subject", f"第 {number} 张人物参考图"
+
+    def replace(match):
+        i = int(match[1]) - 1
+        if i not in labels:
+            raise bad(f"当前视频服务无法采用 {match[0]}，请调整参考素材或切换视频服务")
+        return labels[i]
+
+    return _IMAGE_MENTION.sub(replace, plain_prompt(raw)), roles
+
+
+def configured_models(provider, cap, routes):
+    models = [providers.default_model(provider, cap)]
+    models.extend(route["model"] for route in routes if route["provider"]["id"] == provider["id"])
+    return list(dict.fromkeys(model for model in models if model))
+
+
+def reference_routes(*, require_motion=False, segment_edit=False, all_models=False):
     check = motion_reference.supports if require_motion or segment_edit else motion_reference.supports_audio
     def supports(provider, model):
         return check(provider,model) and (not segment_edit or "seedance-2-5" in model)
-    configured = {}
-    for route in providers.routes("video"):
-        # Prefer the first compatible route for a service with several configured models.
-        if supports(route["provider"], route["model"]):
-            configured.setdefault(route["provider"]["id"], route)
-    for provider in providers.all_providers():
-        model = providers.default_model(provider, "video")
+    choices = {}
+    routes = providers.routes("video")
+    defaults = [{"provider":p,"model":providers.default_model(p, "video")} for p in providers.all_providers()]
+    for route in [*routes, *defaults]:
+        provider, model = route["provider"], route["model"]
         if supports(provider, model):
-            configured.setdefault(provider["id"], {"provider":provider, "model":model})
-    return list(configured.values())
+            key = (provider["id"], model) if all_models else provider["id"]
+            choices.setdefault(key, route)
+    return list(choices.values())
+
+
+def requested_reference_route(raw):
+    has_motion = raw.get("previs_guide") is not None or bool(raw.get("video_refs"))
+    edit = bool(raw.get("segment_edit"))
+    selected = raw.get("selected_model")
+    for route in reference_routes(require_motion=has_motion, segment_edit=edit, all_models=selected is not None):
+        if route["provider"]["id"] == raw.get("provider") and (selected is None or route["model"] == selected):
+            return route
+    if selected is not None:
+        raise bad("所选模型不支持当前参考素材或已不可用，请重新选择模型")
+    if edit:
+        raise bad("请选择已配置参考视频公网地址的 Seedance 2.5 服务")
+    raise bad("请选择支持全模态参考的 Seedance 2.x 服务" + ("，并配置参考视频公网地址" if has_motion else ""))
 
 
 def previs_routes():
@@ -5304,7 +5451,12 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
     from_previs = motion and motion.get("source") == "previs"
     object_plan = raw.get("object_edit")
     full_reference = from_previs or audio_refs or video_refs
-    prompt = reference_prompt(raw) if full_reference else plain_prompt(raw)
+    if full_reference:
+        prompt = reference_prompt(raw)
+    elif cap == "video":
+        prompt, _ = remote_video_prompt(raw, p, model)
+    else:
+        prompt = plain_prompt(raw)
     if not prompt:
         raise bad("提示词不能为空")
     imgs = []
@@ -5583,30 +5735,47 @@ console_routes = web.RouteTableDef()
 async def capabilities(req):
     """What each node can pick: providers that offer a capability (default first)."""
     out = {}
+    enabled = [provider for provider in providers.all_providers() if provider["enabled"]]
     for cap in providers.CAPS:
         rts = providers.routes(cap)
         default = rts[0]["provider"]["id"] if rts else None
         lst = []
-        for pr in providers.all_providers():
-            if pr["enabled"] and cap in providers.caps_of(pr):
+        for pr in enabled:
+            if cap in providers.caps_of(pr):
                 model = providers.default_model(pr,cap)
-                lst.append({"id": pr["id"], "name": pr["name"], "kind": pr["kind"], "local": pr["kind"].startswith("local_"),
+                local = pr["kind"].startswith("local_")
+                lst.append({"id": pr["id"], "name": pr["name"], "kind": pr["kind"], "local": local,
                             "model": model,"default":pr["id"] == default,
+                            **({"default_route_model":rts[0]["model"]} if pr["id"] == default else {}),
+                            **({"models":[canvas_model_choice(pr, cap, choice) for choice in configured_models(pr, cap, rts)]}
+                               if cap in ("image", "video") and not local else {}),
                             **({"draft":remote.supports_video_draft(pr,model)} if cap=="video" else {})})
         lst.sort(key=lambda x: (not x["default"], not x["local"]))
         out[cap] = lst
         if cap=="video":
             out["default_video_draft"] = bool(rts and remote.supports_video_draft(rts[0]["provider"],rts[0]["model"]))
-    out["previs"] = [{"id":r["provider"]["id"], "name":r["provider"]["name"], "model":r["model"],"draft":remote.supports_video_draft(r["provider"],r["model"])}
-                     for r in previs_routes()]
-    out["audio_reference"] = [{"id":r["provider"]["id"], "name":r["provider"]["name"], "model":r["model"],"draft":remote.supports_video_draft(r["provider"],r["model"])}
-                              for r in reference_routes()]
-    out["segment_edit"] = [{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"draft":remote.supports_video_draft(r["provider"],r["model"])}
-                           for r in reference_routes(segment_edit=True)]
+    out["previs"] = canvas_reference_choices(require_motion=True)
+    out["audio_reference"] = canvas_reference_choices()
+    out["segment_edit"] = canvas_reference_choices(segment_edit=True)
     out["audio_generation"] = {cap:audio_service_options(cap) for cap in AUDIO_GENERATION_MODES}
     out["audio_output"] = film.AUDIO_OUTPUT_RATES
     out["audio_effects"] = True
     return web.json_response(out)
+
+
+def canvas_model_choice(provider, cap, model):
+    return {"id":model, **({"draft":remote.supports_video_draft(provider, model)} if cap == "video" else {})}
+
+
+def canvas_reference_choices(**constraints):
+    services = {}
+    for route in reference_routes(**constraints, all_models=True):
+        provider, model = route["provider"], route["model"]
+        option = canvas_model_choice(provider, "video", model)
+        service = services.setdefault(provider["id"], {"id":provider["id"], "name":provider["name"],
+                                                       "model":model, "draft":option["draft"], "models":[]})
+        service["models"].append(option)
+    return list(services.values())
 
 
 @console_routes.get("/api/admin/providers")

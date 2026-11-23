@@ -13,6 +13,8 @@ const acVoiceKeys = {KeyR:"R",Space:"空格",off:"关闭"};
 const acVoiceKeyValid = code => Object.hasOwn(acVoiceKeys,code) || /^(?:Key[A-Z]|Digit[0-9])$/.test(code);
 const acVoiceKeyLabel = code => acVoiceKeys[code] || code.replace(/^(?:Key|Digit)/,"");
 const acVoiceStopCommands = new Set(["停止","停止任务","停止当前任务","取消当前任务","stop","stop the current task"]);
+const voiceRecordingFormat = () => navigator.mediaDevices?.getUserMedia &&
+ window.MediaRecorder && acVoiceFormats.find(([type]) => MediaRecorder.isTypeSupported(type));
 let acVoiceKey = localStorage.getItem("h3.chat.voiceKey") || "KeyR";
 if (!acVoiceKeyValid(acVoiceKey)) acVoiceKey = "KeyR";
 
@@ -43,16 +45,20 @@ function acVoicePoints() {
 
 function acVoiceRender(message = "") {
  const active = acVoiceActive;
+ const assistant = active?.target ? null : active;
  const record = $("#acVoiceRecord"), upload = $("#acVoiceUpload"), cancel = $("#acVoiceCancel");
- record.textContent = active?.phase === "recording" ? "停止录音" : "录音";
- record.setAttribute("aria-pressed", String(active?.phase === "recording"));
- record.disabled = !!active && active.phase !== "recording";
+ record.textContent = assistant?.phase === "recording" ? "停止录音" : "录音";
+ record.setAttribute("aria-pressed", String(assistant?.phase === "recording"));
+ record.disabled = !!active && assistant?.phase !== "recording";
  upload.disabled = !!active;
  $("#acVoiceKey").disabled = !!active;
- cancel.hidden = !active;
+ cancel.hidden = !assistant;
  const status = $("#acVoiceStatus");
- status.textContent = message;
- status.hidden = !message;
+ if (!active?.target) {
+  status.textContent = message;
+  status.hidden = !message;
+ }
+ nodeVoiceRender(active?.target ? message : undefined);
  acVoicePoints();
  acRenderPlacement();
 }
@@ -70,7 +76,8 @@ function acVoiceEnd(active, message = "") {
  active.controller?.abort();
  if (active.recorder?.state === "recording") active.recorder.stop();
  acVoiceRelease(active);
- acVoiceRender(message);
+ acVoiceRender(active.target ? "" : message);
+ if (active.target) nodeVoiceRender(message);
 }
 
 function acVoiceCancel() {
@@ -88,6 +95,7 @@ async function acVoiceRefresh() {
   acVoiceAvailable = available === true;
   $("#acVoice").hidden = !available;
   if (!available) acVoiceCancel();
+  nodeVoiceRender();
  } catch {
   // Keep the last known availability until the next open.
  }
@@ -113,12 +121,17 @@ async function acVoiceSubmit(active, blob, filename) {
   const response = await fetch("/api/transcription", {method:"POST", body:form, signal:active.controller.signal});
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "转写失败，请重试");
-  if (acVoiceActive !== active || !AC.open || active.session !== AC.session ||
-      active.board !== boardId || active.epoch !== AC.epoch) return;
+  if (acVoiceActive !== active) return;
+  if (active.target ? !nodeVoiceCurrent(active) :
+      !AC.open || active.session !== AC.session || active.board !== boardId || active.epoch !== AC.epoch) return;
   if (typeof result.text !== "string") throw new Error("转写服务返回异常，请重试");
   const transcript = result.text.trim();
   if (!transcript) {
    message = "没有识别到语音";
+   return;
+  }
+  if (active.target) {
+   message = nodeVoiceInsert(active.target, transcript);
    return;
   }
   const command = transcript.toLocaleLowerCase().replace(/[.!?。！？]+$/u,"").trim();
@@ -171,9 +184,12 @@ function acVoiceStop(active) {
 }
 
 async function acVoiceRecord({hold = null} = {}) {
- if (acVoiceActive?.phase === "recording") return hold ? undefined : acVoiceStop(acVoiceActive);
- const format = window.MediaRecorder && acVoiceFormats.find(([type]) => MediaRecorder.isTypeSupported(type));
- if (!format || !navigator.mediaDevices?.getUserMedia) {
+ if (acVoiceActive?.phase === "recording") {
+  if (!hold && !acVoiceActive.target) acVoiceStop(acVoiceActive);
+  return;
+ }
+ const format = voiceRecordingFormat();
+ if (!format) {
   acVoiceRender("当前页面无法录音，可用音频文件转写");
   return;
  }
@@ -188,11 +204,16 @@ async function acVoiceRecord({hold = null} = {}) {
    acReviewVersion(n);
   return [n.id,explicit || curV(n)?.ref || null];
  }));
+ await voiceRecord(active, format);
+}
+
+async function voiceRecord(active, format) {
  acVoiceRender("等待麦克风权限…");
  try {
   active.stream = await navigator.mediaDevices.getUserMedia({audio:true});
   if (acVoiceActive !== active) return acVoiceRelease(active);
-  if (hold && acVoiceHold !== hold) return acVoiceEnd(active,"请再次按住说话");
+  if (active.target && !nodeVoiceCurrent(active)) return acVoiceEnd(active);
+  if (active.hold && acVoiceHold !== active.hold) return acVoiceEnd(active,"请再次按住说话");
   const [mimeType, extension] = format;
   const recorder = active.recorder = new MediaRecorder(active.stream, {mimeType, audioBitsPerSecond:64000});
   const chunks = [];
@@ -211,11 +232,80 @@ async function acVoiceRecord({hold = null} = {}) {
   recorder.start(1000);
   active.phase = "recording";
   active.timer = setTimeout(() => acVoiceStop(active), 60000);
-  acVoiceReferenceStatus();
+  if (active.target) acVoiceRender("正在录音…");
+  else acVoiceReferenceStatus();
  } catch (error) {
-  acVoiceEnd(active, error.name === "NotAllowedError"
-   ? "麦克风权限未开启，可用音频文件转写" : "无法使用麦克风，可用音频文件转写");
+  const reason = error.name === "NotAllowedError" ? "麦克风权限未开启" : "无法使用麦克风";
+  acVoiceEnd(active, active.target ? reason : reason + "，可用音频文件转写");
  }
+}
+
+function nodeVoiceTarget(n) {
+ if (!n || !["image","video","audio"].includes(n.type) || n.data.film || n.data.previs) return null;
+ if (usesFields(n)) {
+  const fields = $("#pfields");
+  if (fields._node !== n.id) return null;
+  return fields.contains(lastField) ? lastField : $("textarea[data-k=action]",fields);
+ }
+ const prompt = $("#prompt");
+ return prompt._node === n.id ? prompt : null;
+}
+
+function nodeVoiceCurrent(active) {
+ const {board, source, target} = active;
+ return B === board && node(source.id) === source && sel.size === 1 && sel.has(source.id) && canvasCanEdit() &&
+   !source.job && !prepping.has(source.id) && target.isConnected &&
+   (target === $("#prompt") ? !usesFields(source) && target._node === source.id :
+    usesFields(source) && $("#pfields")._node === source.id);
+}
+
+function nodeVoiceRender(message) {
+ const box = $("#ppVoice"), button = $("#ppVoiceRecord"), status = $("#ppVoiceStatus");
+ const source = B && sel.size === 1 ? node([...sel][0]) : null;
+ if (box._source !== source) {
+  box._source = source;
+  status.textContent = "";
+ }
+ const active = acVoiceActive;
+ const recording = active?.target && active.phase === "recording";
+ box.hidden = !acVoiceAvailable || !canvasCanEdit() || !nodeVoiceTarget(source);
+ button.textContent = recording ? "停止录音" : "语音输入";
+ button.setAttribute("aria-pressed", String(!!recording));
+ button.disabled = !!source?.job || !!source && prepping.has(source.id) || !!active && !recording;
+ $("#ppVoiceCancel").hidden = !active?.target;
+ if (message !== undefined) status.textContent = message;
+}
+
+function nodeVoiceSync() {
+ const active = acVoiceActive;
+ if (active?.target && !nodeVoiceCurrent(active)) acVoiceEnd(active);
+ else nodeVoiceRender();
+}
+
+function nodeVoiceInsert(target, transcript) {
+ const separator = target.value && !/\s$/.test(target.value) ? "\n" : "";
+ const room = target.maxLength < 0 ? transcript.length : target.maxLength - target.value.length - separator.length;
+ const addition = transcript.slice(0,Math.max(0,room)).replace(/[\uD800-\uDBFF]$/,"");
+ if (!addition) return "提示词已达到长度上限";
+ checkpoint();
+ target.value += separator + addition;
+ target.focus();
+ target.setSelectionRange(target.value.length,target.value.length);
+ target.dispatchEvent(new Event("input",{bubbles:true}));
+ target._before = snap();
+ return addition === transcript ? "已填入提示词" : "已填入可容纳的文字";
+}
+
+function nodeVoiceStart(hold = null) {
+ if (acVoiceActive || $("#ppVoiceRecord").disabled || $("#ppVoice").hidden) return;
+ const source = $("#ppVoice")._source, target = nodeVoiceTarget(source);
+ if (!target) return;
+ const format = voiceRecordingFormat();
+ if (!format) return nodeVoiceRender("当前页面无法使用麦克风");
+ const active = {phase:"permission",board:B,source,target,hold};
+ if (!nodeVoiceCurrent(active)) return;
+ acVoiceActive = active;
+ void voiceRecord(active,format);
 }
 
 function acVoiceApplyReferences(active) {
@@ -310,8 +400,18 @@ function acVoiceHotkey(event) {
   else acVoiceRender("请选择一个字母、数字或空格键");
   return;
  }
- if (event.key === "Escape" && (acVoiceActive?.refs || acVoiceHold)) {
+ if (event.key === "Escape" && (acVoiceActive?.refs || acVoiceActive?.target || acVoiceHold)) {
   event.preventDefault(); event.stopPropagation(); acVoiceHold = null; acVoiceCancel(); return;
+ }
+ if (event.code === "Space" && event.target === $("#ppVoiceRecord") && !event.isComposing &&
+     !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!event.repeat && !acVoiceActive && !acVoiceHold && voiceRecordingFormat()) {
+   const hold = acVoiceHold = {key:event.code};
+   nodeVoiceStart(hold);
+  }
+  return;
  }
  if (!acVoiceAvailable || event.code !== acVoiceKey || !B || !canvasCanEdit() ||
      event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.isComposing ||
@@ -354,6 +454,11 @@ function acVoiceInit() {
  $("#acVoiceRecord").onclick = () => acVoiceRecord();
  $("#acVoiceUpload").onclick = () => picker.click();
  $("#acVoiceCancel").onclick = acVoiceCancel;
+ $("#ppVoiceRecord").onclick = () => {
+  if (acVoiceActive?.target && acVoiceActive.phase === "recording") acVoiceStop(acVoiceActive);
+  else nodeVoiceStart();
+ };
+ $("#ppVoiceCancel").onclick = acVoiceCancel;
  const shortcut = $("#acVoiceKey");
  acVoiceKeyOptions();
  shortcut.onchange = () => {
@@ -368,7 +473,7 @@ function acVoiceInit() {
   acVoiceHold = null;
   if (acVoiceChoosingKey) acVoiceCancel();
   const active = acVoiceActive;
-  if (active?.phase === "recording" || active?.phase === "permission" && active.hold) acVoiceEnd(active,"录音已取消");
+  if (active?.phase === "recording" || active?.phase === "permission" && (active.hold || active.target)) acVoiceEnd(active,"录音已取消");
  });
  vp.addEventListener("pointerdown",acVoicePoint,true);
  for (const type of ["click","dblclick"]) vp.addEventListener(type,event => {

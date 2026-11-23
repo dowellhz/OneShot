@@ -1542,7 +1542,8 @@ class AgentService:
             if name=="image_generate_set":
                 return await self.submit_image_set(run,user,cid,args,images)
             return await self.submit_generation(run,user,cid,self.image_request(args,images),
-                                                args.get("name") or "助手生成",h.generate_request)
+                                                args.get("name") or "助手生成",h.generate_request,
+                                                target_id=self.empty_generation_target(run,user,"image"))
         if name == "image_previs_frame":
             return await self.generate_previs_frame(run,user,cid,args)
         n, v = self.source(run, user, args["node_id"])
@@ -1849,6 +1850,17 @@ class AgentService:
             raise ToolError("本轮生成数量已达上限，请下一轮继续")
         return counter, limit
 
+    def empty_generation_target(self, run, user, kind):
+        bound = run["data"].get("empty_target")
+        if not bound or bound["kind"] != kind:
+            return None
+        nid = bound["id"]
+        target = next((node for node in self.board(user,run["board_id"])["nodes"] if node["id"] == nid),None)
+        if not target or target["type"] != kind or target.get("versions") or target.get("job") or any(
+                target.get("data",{}).get(key) for key in ("previs","film","playlist")):
+            raise ToolError("指定的空白节点已变化，请重新选择生成目标")
+        return nid
+
     async def begin_generation(self, run, cid, kind, count, plan, *, target_id=None, edit_prompt=False, edit_count=False,
                                force_confirmation=False):
         self.validate_external_task(run)
@@ -1870,6 +1882,8 @@ class AgentService:
             if self.stopped(run):
                 raise ToolError("用户已停止本轮任务")
             self.validate_external_task(run)
+            if target_id and run["data"].get("empty_target",{}).get("id")==target_id:
+                self.empty_generation_target(run,{"id":run["user_id"]},kind)
             self.reserve_node_write(run,cid,target_id)
             run["data"][counter] = run["data"].get(counter,0) + overrides.get("count",count)
             self.update(run)
@@ -1878,7 +1892,7 @@ class AgentService:
         return overrides
 
     async def submit_audio(self, run, user, cid, args):
-        nid=args.get("node_id")
+        nid=self.empty_generation_target(run,user,"audio") or args.get("node_id")
         board=self.board(user,run["board_id"])
         target=next((n for n in board["nodes"] if n["id"]==nid and n["type"]=="audio"),None) if nid else None
         if nid and (not target or target.get("job")):
@@ -2697,6 +2711,7 @@ async def send_message(req):
                                                "execution_scope":prop("string",enum=EXECUTION_SCOPES),
                                                "chat_model":prop("string",maxLength=24),
                                                "thinking_level":prop("string",enum=THINKING_LEVELS),
+                                               "empty_media_node":NODE,
                                                "shot_review":SHOT_REVIEW_REQUEST,
                                                "review_revision_call":prop("string",minLength=1,maxLength=40),
                                                "document_ids":prop("array",items=NODE,maxItems=MAX_DOCUMENTS_PER_MESSAGE),
@@ -2724,6 +2739,12 @@ async def send_message(req):
         if any(n not in known for n in p.get("selected", [])):
             raise ToolError("引用节点已不存在，请重新选择")
         data = {"selected": p.get("selected", []), "bindings": {n["id"]: v["ref"] for n in b.get("nodes", []) if (v := service(req).current(n))}, "generated": 0}
+        if nid := p.get("empty_media_node"):
+            target = known.get(nid)
+            if nid not in data["selected"] or not target or target["type"] not in ("image","video","audio"):
+                raise ToolError("请引用要接收结果的空白素材节点")
+            data["empty_target"] = {"id":nid,"kind":target["type"]}
+            service(req).empty_generation_target({"data":data,"board_id":s["board_id"]},req["user"],target["type"])
         data["generation_mode"] = p.get("generation_mode","auto")
         data["execution_scope"] = p.get("execution_scope","full")
         if shot_review := p.get("shot_review"):
@@ -2805,6 +2826,8 @@ async def send_message(req):
             if len(reviews) == 1:
                 event["review"] = {key:reviews[0][key] for key in ("id","body","replies")}
         content = p["text"] + "\n本轮引用节点：" + dumps(data["selected"])
+        if target := data.get("empty_target"):
+            content += "\n用户指定将同类生成结果保存到这个空白节点。请使用普通单项生成工具，多个候选可在同一调用中生成：" + dumps(target)
         if "placement" in p:
             content += "\n用户点选了新结果的放置位置，画布坐标：" + dumps(p["placement"])
         if reviews:

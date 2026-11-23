@@ -822,6 +822,23 @@ async function run(){
  evaluate('delete B.team;alBoardChanged()');
  delete w.__assetTeams;
  w.__memories=w.__memories.filter(a=>a.id!=='team-style');
+ w.__memories.push({id:"bundle-qa",name:"样品瓶",kind:"prop",owner:1,ref:"input:h3studio/bottle-front.png",
+  media:[{ref:"input:h3studio/bottle-front.png",type:"image"},{ref:"input:h3studio/bottle-side.png",type:"image"},
+   {ref:"input:h3studio/bottle-spin.mp4",type:"video"}]});
+ await evaluate('cmEdit(window.__memories.find(a=>a.id==="bundle-qa"),"prop")');
+ evaluate('$(".cm-generation-images").open=true');
+ assert.equal(evaluate('$$("[data-generation-image]").length'),2,'only image references enter the image bundle');
+ evaluate(`const bundleCheck=ref=>$$("[data-generation-image]").find(box=>box.dataset.generationImage.endsWith(ref));
+  bundleCheck("bottle-front.png").click();bundleCheck("bottle-side.png").click();
+  $(".cm-generation-images button[aria-label='上移参考图 2']").click();
+  $("#memoryEditor button[type=submit]").click();`);
+ await ready('$("#memoryEditor .cm-error").textContent.startsWith("已保存")','the image reference bundle is saved');
+ equal(w.__lastMemoryPost.generation_images,["input:h3studio/bottle-side.png","input:h3studio/bottle-front.png"]);
+ assert.equal(w.__lastMemoryPost.default_ref,"input:h3studio/bottle-front.png");
+ evaluate('$("#memoryEditor [data-close]").click()');
+ w.__memories=w.__memories.filter(a=>a.id!=="bundle-qa");
+ evaluate('cmInvalidate()');
+ console.log('Asset image bundle passed: explicit selection, order, and a separate default image.');
  await evaluate('cmEdit(window.__memories.find(a=>a.id==="char"),"character")');
  equal(evaluate('$$(".cm-character-view button").some(b=>b.textContent==="用现有图片定稿")'),true,'existing image has direct approval action');
  equal(evaluate('$$(".cm-character-hint").filter(el=>el.textContent==="主图定稿后可生成").length'),4,'locked angles explain the prerequisite');
@@ -1433,6 +1450,22 @@ async function run(){
  vp.dispatchEvent(uploadDrop);`);
  await ready('B.nodes.some(n=>n.name==="dropped" && n.type==="video" && curV(n)?.ref.endsWith(".m4v"))',
   'dropping a generic binary M4V uploads it as a video');
+ evaluate(`const targetDropSnapshot=snap(), targetDropNode=addNode("video",1600,540,{}), targetDropId=targetDropNode.id;
+ const targetDropName=targetDropNode.name, targetDropCount=B.nodes.length;
+ const dropIntoVideo=fileName=>{
+  const e=new MouseEvent("drop",{bubbles:true,cancelable:true});
+  Object.defineProperty(e,"dataTransfer",{value:{getData:()=>"",files:[new File(["video"],fileName)]}});
+  $(".card",els.get(targetDropId)).dispatchEvent(e);
+ };
+ dropIntoVideo("第一版.MKV");dropIntoVideo("并发重复.MKV");`);
+ await ready('node(targetDropId).versions.length===1&&curV(node(targetDropId)).ref.endsWith(".mkv")','video is imported into the exact target');
+ equal(evaluate('[B.nodes.length===targetDropCount,node(targetDropId).name,node(targetDropId).versions.length]'),[true,'第一版',1]);
+ evaluate('dropIntoVideo("第二版.m4v")');
+ await ready('node(targetDropId).versions.length===2','an existing media node receives another version');
+ evaluate('undo();undo()');
+ equal(evaluate('[node(targetDropId).name===targetDropName,node(targetDropId).versions.length]'),[true,0]);
+ evaluate('restore(targetDropSnapshot)');
+ console.log('Targeted video import passed: exact node, duplicate in-flight protection, version append and undo.');
  const countBeforePaste=evaluate('B.nodes.length');
  evaluate(`const makePaste=()=>{const event=new Event("paste",{bubbles:true,cancelable:true});
   Object.defineProperty(event,"clipboardData",{value:{files:[
@@ -4353,7 +4386,7 @@ async function run(){
  w.fetch=async(url,options={})=>{
   if(String(url)!=="/api/generate")return promptFetch(url,options);
   wiredPrompts.push(JSON.parse(options.body));
-  const id="prompt-wired-job",ref='output:h3studio/prompt-wired.png';
+  const id="prompt-wired-job-"+wiredPrompts.length,ref="output:h3studio/prompt-wired-"+wiredPrompts.length+".png";
   jobs.set(id,{state:"done",outputs:[{ref,url:"/media?ref="+encodeURIComponent(ref),meta:{width:640,height:360}}]});
   return {ok:true,text:async()=>JSON.stringify({ids:[id]})};
  };
@@ -4375,14 +4408,79 @@ async function run(){
  await evaluate('generate(node(wiredImage.id))');
  await ready('node(wiredImage.id).versions.length===1','the pinned image request creates a version',350);
  equal([wiredPrompts[0].prompt,wiredPrompts[0].images[1].ref],["对照@图2","output:h3studio/prompt-old.png"],'submission uses the selected older image and correct position');
+ evaluate(`const beforeRegeneration=curV(node(wiredImage.id)).ref;
+   const legacyImageNode=node(legacyReference.id);
+   legacyImageNode.versions.push(copyAsset("legacy-new.png",{w:512,h:512}));
+   switchVersion(legacyImageNode,1);
+   selectOnly(legacyImageNode.id);
+   $("[data-node-prompt]",els.get(wiredImage.id)).click();
+   enterMention($("#prompt"),"未提交的草稿");
+   lightbox(curV(node(wiredImage.id)),node(wiredImage.id));
+   $("[data-light-generation-draft]").click();`);
+ equal(evaluate('[$("#light").open,$("#prompt").value,document.activeElement.id,imageInputs(node(wiredImage.id)).map(input=>input.edge.ref)]'),
+ [false,"对照@图{1} ","prompt",["output:h3studio/legacy-ref.png","output:h3studio/prompt-old.png"]],
+ 'continuing a result restores editable tokens and both historical source versions');
+ evaluate('undo()');
+ assert.equal(evaluate('node(wiredImage.id).data.prompt'),"未提交的草稿",'undo restores the unsent draft');
+ evaluate('vtTabMenu(node(wiredImage.id),0,100,100);$("[data-version-draft]").click();');
+ assert.equal(evaluate('$("#send").getAttribute("aria-label")'),"重新生成");
+ await evaluate('generate(node(wiredImage.id))');
+ await ready('node(wiredImage.id).versions.length===2','regeneration appends a version to the original node',350);
+ equal(evaluate('[node(wiredImage.id).versions[0].ref,curV(node(wiredImage.id)).ref]'),
+ [evaluate('beforeRegeneration'),"output:h3studio/prompt-wired-2.png"],'the generated result and the source version stay on the node');
+ equal(wiredPrompts[1].images.map(input=>input.ref),["output:h3studio/legacy-ref.png","output:h3studio/prompt-old.png"]);
+ evaluate(`const removedHistoryImage=node(legacyReference.id).versions.shift();
+   node(legacyReference.id).cur=0;
+   const beforeMissingHistory=snap();
+   lightbox(node(wiredImage.id).versions[0],node(wiredImage.id));
+   $("[data-light-generation-draft]").click();`);
+ assert.match(evaluate('$(".light-status").textContent'),/历史素材版本已移除/);
+ assert.equal(evaluate('snap()===beforeMissingHistory'),true,'a missing input leaves the active draft and graph untouched');
+ evaluate('closeLightbox();node(legacyReference.id).versions.unshift(removedHistoryImage);node(legacyReference.id).cur=1;');
+ evaluate(`const recipeDraftAudio=addNode("audio",650,930,{prompt:"当前文案"},{versions:[
+   copyAsset("historical-voice.wav",{seconds:5,audio_recipe:{mode:"tts",prompt:"此前的文案",speed:.9}}),
+   copyAsset("latest-voice.wav",{seconds:4})],cur:1});
+   render(recipeDraftAudio);render(recipeDraftAudio);lightbox(recipeDraftAudio.versions[0],recipeDraftAudio);
+   $("[data-light-generation-draft]").click();
+   const inheritedVideo=addNode("video",850,930,{prompt:"更新后"},{versions:[
+     copyAsset("historical-video.mp4",{seconds:5,video_recipe:{
+       kind:"video",duration:5,ar:4/3,planned:true,prompt:"参考 @音1",provider:"legacy-route",
+       images:[{node_id:promptReference.id,ref:node(promptReference.id).versions[0].ref,role:"subject"}],
+       audio_refs:[{node_id:recipeDraftAudio.id,ref:recipeDraftAudio.versions[0].ref}]}}),
+     copyAsset("latest-video.mp4",{seconds:5})],cur:1});
+   lightbox(inheritedVideo.versions[0],inheritedVideo);
+   $("[data-light-generation-draft]").click();`);
+ equal(evaluate(`[recipeDraftAudio.cur,recipeDraftAudio.data.prompt,recipeDraftAudio.data.speed,
+   $$("[data-node-prompt]",els.get(recipeDraftAudio.id)).length,
+   inheritedVideo.cur,inheritedVideo.data.prompt,inheritedVideo.data.aspect,
+   imageInputs(inheritedVideo)[0].edge.ref,audioInputs(inheritedVideo)[0].edge.ref]`),
+ [0,"此前的文案",.9,1,0,"参考 @音1","4:3","output:h3studio/prompt-old.png","output:h3studio/historical-voice.wav"],
+ 'old audio and video recipe shapes restore their own selected version and saved inputs');
+ console.log('Historical generation drafts passed: prompt shortcut, pinned image references, undo, same-node regeneration and missing inputs.');
  evaluate(`const wiredVideo=addNode("video",1100,550,{pmode:"fields",fields:{action:""}});selectOnly(wiredVideo.id);
-   enterMention($("#pfields [data-k=action]"),"沿用@画布专用");`);
+   enterMention($("#pfields [data-k=action]"),"沿用＠画布专用");`);
  await ready('!CM.popup.hidden && CM.matches.some(m=>m.id===promptReference.id)','structured video field supports name completion');
  evaluate('$("[data-canvas-node]",CM.popup).click();switchVersion(node(promptReference.id),0);selectOnly(wiredVideo.id)');
  equal(evaluate(`[wiredVideo.data.fields.action,videoReq(wiredVideo,"").fields.action,videoReq(wiredVideo,"").images[0].ref]`),
  ["沿用@图{1} ","沿用@图1 ","output:h3studio/prompt-new.png"],'video field resolves the pinned reference without following the source tab');
  evaluate('$("[data-image-update]").click();');
  equal(evaluate('videoReq(wiredVideo,"").images[0].ref'),"output:h3studio/prompt-old.png",'an explicit action adopts the current source version');
+ const beforePreviewFetch=w.fetch;
+ let recordedPreview;
+ w.fetch=async (path,options)=>{
+  if(path!=="/api/preview")return beforePreviewFetch(path,options);
+  recordedPreview=JSON.parse(options.body);
+  return {ok:true,text:async()=>JSON.stringify({prompt:"Follow <Picture 1>.",mode:"人物设定",
+   inputs:[{...recordedPreview.images[0],name:"乔纳 <参考图>",role:"subject"}]})};
+ };
+ evaluate('$("#pvBtn").click()');
+ await ready('$("#pv").classList.contains("on")','the preview opens for the selected video');
+ assert.equal(recordedPreview.fields.action,"沿用@图1 ");
+ assert.equal(recordedPreview.images[0].ref,"output:h3studio/prompt-old.png");
+ equal(evaluate('[$("#pvt").textContent,$("#pvInputs strong").textContent,$("#pvInputs small").textContent]'),
+ ["Follow <Picture 1>.","乔纳 <参考图>","人物设定 · 版本 1"],'the preview shows the resolved prompt and the pinned source');
+ evaluate('$("#pvClose").click()');
+ w.fetch=beforePreviewFetch;
  evaluate(`const promptReferenceLine=()=>$$('#edges .hit').find(hit=>hit.getAttribute("aria-label")?.includes(
    promptReference.name+" · 固定版本 1 → "+wiredVideo.name));
   const edgeKey=key=>promptReferenceLine().dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true}));
@@ -4407,9 +4505,39 @@ async function run(){
  evaluate('restore(wirePromptBase)');
  w.fetch=promptFetch;
  console.log('Generation mention DOM passed: image and structured video, pinned edges, undo, version adoption and missing reference validation.');
+ evaluate(`const modelPickerBase=snap(),previousImageServices=CAPS_LIST.image;
+  CAPS_LIST.image=[{id:"model-qa",name:"图像服务",model:"model-standard",default:true,default_route_model:"model-fast",
+    models:[{id:"model-standard"},{id:"model-fast"}]}];
+  const modelImage=addNode("image",900,600,{prompt:"走廊"});
+  selectOnly(modelImage.id);`);
+ const beforeModelFetch=w.fetch;
+ let selectedModelRequest;
+ w.fetch=async (path,options)=>{
+  if(path!=="/api/generate")return beforeModelFetch(path,options);
+  selectedModelRequest=JSON.parse(options.body);
+  const ref="output:h3studio/chosen-model.png";
+  jobs.set("chosen-model",{state:"done",outputs:[{ref,url:"/media?ref="+encodeURIComponent(ref)}]});
+  return {ok:true,text:async()=>JSON.stringify({ids:["chosen-model"]})};
+ };
+ assert.match(evaluate('$("[data-k=selected_model]").parentElement.textContent'),/model-fast/);
+ evaluate(`const selectCanvasModel=id=>{
+   const option=$("[data-k=selected_model]");option.value=id;option.dispatchEvent(new Event("change"));
+  };
+  selectCanvasModel("model-standard");`);
+ await evaluate('generate(modelImage)');
+ equal([selectedModelRequest.provider,selectedModelRequest.selected_model],["model-qa","model-standard"]);
+ await ready('modelImage.versions.length===1','chosen image model returns a new version');
+ assert.equal(evaluate('curV(modelImage).generation_record.settings.provider_model'),"model-standard");
+ evaluate('$("[data-k=provider]").value="";$("[data-k=provider]").dispatchEvent(new Event("change"))');
+ assert.equal(evaluate('modelImage.data.selected_model'),undefined,'switching back to the default service clears the model override');
+ w.fetch=beforeModelFetch;
+ evaluate('CAPS_LIST.image=previousImageServices;restore(modelPickerBase)');
+ console.log('Canvas model picker passed: a single service exposes alternate models and records the selected model.');
+
  evaluate(`const avPromptBase=snap(),capsBeforeAV={audio:CAPS_LIST.audio_reference,video:CAPS_LIST.previs};
   CAPS_LIST.audio_reference=[{id:"audio-qa",name:"仅声音参考",model:"seedance-2"}];
-  CAPS_LIST.previs=[{id:"multimodal-qa",name:"视频参考服务",model:"seedance-2-5"}];
+  CAPS_LIST.previs=[{id:"multimodal-qa",name:"视频参考服务",model:"seedance-2-5",
+    models:[{id:"seedance-2-5",draft:true},{id:"seedance-2",draft:false}]}];
   window.__capabilities={...CAPS_LIST};
   const avTarget=addNode("video",1200,650,{prompt:""}, {name:"成片"});
   const avVideo=addNode("video",600,650,{}, {name:"画布运镜实拍",versions:[
@@ -4432,6 +4560,9 @@ async function run(){
  equal(evaluate('[avRequest.prompt,avTarget.data.provider,avRequest.video_refs[0].ref,avRequest.video_refs[0].start,avRequest.video_refs[0].end,avRequest.audio_refs[0].ref]'),
  ["按@音1 与@视频1","multimodal-qa","output:h3studio/move-old.mp4",2,7,"output:h3studio/bell-old.wav"],
  'combined references keep the chosen versions, clip range and compatible service');
+ evaluate('selectCanvasModel("seedance-2")');
+ equal(evaluate('[referenceDuration(avTarget),videoDraftAvailable(avTarget)]'),[15,false],
+  'reference model drives duration and draft availability');
  evaluate(`const avGuide=addNode("video",100,850,{}, {name:"白模动作",versions:[copyAsset("guide.mp4",{source:"previs",seconds:4,w:640,h:480})],cur:0});
   B.edges.push({from:avGuide.id,to:avTarget.id,relation:"previs",ref:curV(avGuide).ref});drawEdges();`);
  equal(evaluate('videoReq(avTarget,fullPrompt(avTarget)).prompt'),"按@音1 与@视频2",'video reference numbering accounts for a whitebox guide');
@@ -5229,11 +5360,13 @@ async function run(){
   [0,0,55,300]);
  console.log('Canvas drag alignment passed: settings, zoom-scaled guides, modifier bypass, undo, pointer cancellation, grid and folded group offsets.');
  const voicePointFetch=w.fetch;
- let failPlacementSend=false, voiceCommand=null;
+ let failPlacementSend=false, voiceCommand=null, deferNodeTranscript=false, finishNodeTranscript;
  const voiceStops=[];
  w.fetch=async(url,options={})=>{
   if(options.method==="POST" && String(url)==="/api/transcription" && voiceCommand!==null)
-   return {ok:true,json:async()=>({text:voiceCommand})};
+   return {ok:true,json:()=>deferNodeTranscript
+    ? new Promise(resolve=>{w.__nodeTranscriptPending=true;finishNodeTranscript=()=>resolve({text:voiceCommand});})
+    : Promise.resolve({text:voiceCommand})};
   if(options.method==="POST" && /^\/api\/chat\/runs\/voice-scope-[^/]+\/stop$/.test(String(url))){
    voiceStops.push(String(url));
    return {ok:true,json:async()=>({ok:true})};
@@ -5340,6 +5473,40 @@ async function run(){
  await evaluate('acSend()');
  equal([w.__chatPayload.placement,w.__chatPayload.request_key],[restoredTarget,placementRequestKey]);
  assert.equal(evaluate('$("#acPlacementMarker").hidden'),true);
+ const beforeNodeVoice=evaluate('snap()');
+ voiceCommand="人物从门内走出";
+ evaluate(`const dictatedVideo=addNode("video",700,130000,{pmode:"fields",fields:{action:"保留站位"}});
+   selectOnly(dictatedVideo.id);
+   $("#ppVoiceRecord").focus();
+   window.__chatPayload=null;
+   voiceKey("keydown"," ","Space",$("#ppVoiceRecord"));`);
+ await ready('acVoiceActive?.phase==="recording" && acVoiceActive.target.dataset.k==="action"','focused node voice uses the video action field');
+ equal(evaluate('[spaceDown,acVoicePointing(),$("#acVoiceRecord").disabled]'),[false,null,true]);
+ evaluate('voiceKey("keyup"," ","Space",$("#ppVoiceRecord"))');
+ await ready('$("#ppVoiceStatus").textContent==="已填入提示词"','letting go transcribes the node recording');
+ equal(evaluate('[dictatedVideo.data.fields.action,window.__chatPayload,!!dictatedVideo.job]'),
+ ["保留站位\n人物从门内走出",null,false],'dictation stays in the node draft and does not start generation');
+ evaluate('undo();');
+ assert.equal(evaluate('node(dictatedVideo.id).data.fields.action'),"保留站位",'dictation can be undone with the canvas history');
+
+ voiceCommand="停止";
+ evaluate('selectOnly(voicedAudio.id);$("#ppVoiceRecord").click()');
+ await ready('acVoiceActive?.phase==="recording"','clicking the audio node voice action starts recording');
+ evaluate('$("#ppVoiceRecord").click()');
+ await ready('node(voicedAudio.id).data.prompt==="停止"','node dictation keeps a spoken word as draft text');
+ assert.equal(voiceStops.length,1);
+
+ voiceCommand="已取消的文字";deferNodeTranscript=true;
+ evaluate('selectOnly(voicedImage.id);$("#ppVoiceRecord").click()');
+ await ready('acVoiceActive?.phase==="recording"','image node exposes the same recorder');
+ evaluate('$("#ppVoiceRecord").click()');
+ await ready('acVoiceActive?.phase==="transcribing" && window.__nodeTranscriptPending','recording begins transcription');
+ evaluate('selectOnly(voicedAudio.id)');
+ assert.equal(evaluate('acVoiceActive'),null,'switching nodes cancels the pending dictation');
+ finishNodeTranscript();delete w.__nodeTranscriptPending;deferNodeTranscript=false;voiceCommand=null;
+ equal(evaluate('[node(voicedImage.id).data.prompt,node(voicedAudio.id).data.prompt]'),["","停止"]);
+ evaluate(`restore(${JSON.stringify(beforeNodeVoice)})`);
+ console.log('Node dictation passed: video fields, keyboard recording, audio draft, undo and stale-response isolation.');
  delete w.MediaRecorder;
  delete w.navigator.mediaDevices;
  w.fetch=voicePointFetch;
@@ -5637,7 +5804,7 @@ async function run(){
   }
   if(request.pathname==='/api/chat/sessions'){
    if(options.method==='POST'){
-    const session={id:'parallel-ui-'+['c','d','e'][parallelCreates++],title:'新对话',run_state:null,queued_count:0};
+    const session={id:'parallel-ui-'+['c','d','e','f'][parallelCreates++],title:'新对话',run_state:null,queued_count:0};
     parallelSessions.unshift(session);
     return {ok:true,json:async()=>({id:session.id})};
    }
@@ -5651,7 +5818,7 @@ async function run(){
    return {ok:true,json:async()=>({session:{id:'parallel-ui-old',title:'旧对话'},sessions:structuredClone(parallelSessions),runs:[],
     events:request.searchParams.get('after')==='0'?[{id:490,kind:'user',run_id:'history-older',data:{text:'整理第一版'}}]:[]})};
   }
-  const match=request.pathname.match(/^\/api\/chat\/sessions\/(parallel-ui-(?:[abcde]|ready))$/);
+  const match=request.pathname.match(/^\/api\/chat\/sessions\/(parallel-ui-(?:[abcdef]|ready))$/);
   if(match){
    const session=parallelSessions.find(s=>s.id===match[1]);
    const id=session.id.slice(-1);
@@ -5946,6 +6113,19 @@ async function run(){
  assert.equal(scopedMessages[2].generation_mode,undefined);
  assert(scopedMessages[2].selected_versions.some(item=>item.ref==='output:h3studio/stem-video-old.mp4'));
  console.log('Brainstorm assistant passed: comparison cards, scoped discussion and planning, pinned references and draft preservation.');
+ evaluate(`const blankStarts=["image","video","audio"].map(type=>addNode(type,2400,1000,{prompt:"夜景草稿"}));
+  const startButton=(n,action)=>$('[data-node-start="'+action+'"]',els.get(n.id));
+  startButton(blankStarts[0],"prompt").click()`);
+ equal(evaluate('[blankStarts.map(n=>!!startButton(n,"agent")),document.activeElement.id,sel.has(blankStarts[0].id)]'),
+  [[true,true,true],'prompt',true]);
+ evaluate('startButton(blankStarts[0],"agent").click()');
+ await ready('AC.session==="parallel-ui-f"&&AC.refs?.[0]===blankStarts[0].id','empty node assistant opens with the selected target');
+ equal(evaluate('[$("#acInput").value,document.activeElement.id,AC.referencePins.size]'),['夜景草稿','acInput',0]);
+ equal(evaluate('[acComposeMessage().payload.empty_media_node,$("#acRefs").textContent.includes("接收生成结果")]'),
+  [evaluate('blankStarts[0].id'),true]);
+ assert.equal(scopedMessages.length,3,'opening the assistant does not submit the draft');
+ evaluate('removeNodes(blankStarts.map(n=>n.id))');
+ console.log('Empty media node starts passed: prompt focus, separate assistant conversation and preserved node draft.');
  w.fetch=parallelFetch;
  console.log('Parallel assistant passed: live switcher, late-poll isolation, session drafts, new chat during approval and scoped stop.');
 
@@ -6054,5 +6234,236 @@ async function run(){
  evaluate('document.activeElement.click()');
  equal(evaluate('[nsGroup.collapsed,CT_GROUPS.get(nsGroup.id).classList.contains("ns-located")]'),[true,true],
    'group search locates the folded group without expanding it');
+ evaluate(`const exportLayerNode=addNode("image",320,120,{}, {name:"分层测试",versions:[
+  {...copyAsset("layer-composite.png"),layer_stack:{base_ref:"output:h3studio/layer-composite.png",layers:[
+   {id:"base",name:"主体",ref:"output:h3studio/layer-smoke.png",x:8,y:12,w:200,h:160,opacity:.5,visible:true}]}},
+  copyAsset("layer-other-version.png")],cur:0});`);
+ await evaluate('openImageEditor(exportLayerNode)');
+ await ready('!!IMAGE_EDITOR?.image && !IMAGE_EDITOR.loading && !IMAGE_EDITOR.restoring','layered source is open');
+ evaluate(`ieMode("layers");
+  $('#ieLayerList [data-layer="base"] button').click();
+  const exportLayerAccess=B.access, exportLayerStack=JSON.stringify(IMAGE_EDITOR.layers),
+   exportLayerSource=curV(node(exportLayerNode.id)).ref, exportLayerRef="output:h3studio/layer-smoke.png";
+  B.access="reviewer";ieSync();`);
+ assert(w.document.getElementById('ieExportLayer').disabled,'reviewers cannot create a layer node');
+ evaluate('B.access=exportLayerAccess;ieSync();$("#ieExportLayer").click()');
+ await ready('!!IMAGE_EDITOR?.layerExportIds?.length && !IMAGE_EDITOR.busy','selected layer is available on the canvas');
+ equal(evaluate(`[curV(node(IMAGE_EDITOR.layerExportIds[0])).ref,curV(node(exportLayerNode.id)).ref,
+  JSON.stringify(IMAGE_EDITOR.layers)===exportLayerStack]`),
+ [evaluate('exportLayerRef'),evaluate('exportLayerSource'),true],'layer export reuses its own media and preserves the source stack');
+ evaluate('const exportedLayerId=IMAGE_EDITOR.layerExportIds[0];$("#ieLocateLayer").click()');
+ assert(evaluate('!IMAGE_EDITOR && sel.has(exportedLayerId)'),'locating the export selects its canvas node');
+ evaluate('undo()');
+ assert(evaluate('!node(exportedLayerId) && curV(node(exportLayerNode.id)).ref===exportLayerSource'),'one undo removes only the layer node');
+ console.log('Layer reuse passed: permissions, independent media reference, source stack, locate and undo.');
+
+ evaluate(`const batchLayerNode=addNode("image",480,160,{}, {name:"物件拆分",versions:[{
+  ...copyAsset("batch-layer-composite.png", {w:512,h:384}),layer_stack:{layers:[
+   {id:"object-0",name:"背景",ref:"output:h3studio/batch-layer-background.png",x:0,y:0,w:512,h:384,opacity:1,visible:true},
+   {id:"object-1",name:"灯",ref:"output:h3studio/batch-layer-light.png",x:24,y:40,w:200,h:300,opacity:1,visible:true},
+   {id:"object-2",name:"花瓶",ref:"output:h3studio/batch-layer-vase.png",x:210,y:220,w:60,h:120,opacity:.6,visible:false},
+   {id:"object-3",name:"桌子",ref:"output:h3studio/batch-layer-table.png",x:0,y:160,w:430,h:160,opacity:1,visible:true}
+  ]}}],cur:0});`);
+ await evaluate('openImageEditor(batchLayerNode)');
+ evaluate('ieMode("layers")');
+ const layerDownloadFetch=w.fetch, layerDownloadURL=w.URL.createObjectURL, layerRevokeURL=w.URL.revokeObjectURL;
+ const layerAnchorClick=w.HTMLAnchorElement.prototype.click;
+ let layerDownloadRequest, layerDownloadName;
+ w.URL.createObjectURL=()=> 'blob:layer-download';
+ w.URL.revokeObjectURL=()=>{};
+ w.HTMLAnchorElement.prototype.click=function(){layerDownloadName=this.download;};
+ w.fetch=async(url,options)=>{
+  if(String(url)!=='/api/image-edit/openraster')return layerDownloadFetch(url,options);
+  layerDownloadRequest=JSON.parse(options.body);
+  return {ok:true,headers:new Headers({"Content-Disposition":"attachment; filename*=UTF-8''"+encodeURIComponent("物件拆分.ora")}),
+   blob:async()=>new w.Blob(['openraster'],{type:'image/openraster'})};
+ };
+ await evaluate('$("#ieDownloadLayers").onclick()');
+ assert.equal(layerDownloadName,'物件拆分.ora');
+ assert.equal(layerDownloadRequest.layers.length,4,'the editable file includes hidden layers and the background');
+ assert.equal(layerDownloadRequest.layers[2].visible,false);
+ assert.equal(layerDownloadRequest.layers[2].opacity,.6);
+ w.fetch=layerDownloadFetch;
+ w.URL.createObjectURL=layerDownloadURL;
+ w.URL.revokeObjectURL=layerRevokeURL || (()=>{});
+ w.HTMLAnchorElement.prototype.click=layerAnchorClick;
+ evaluate('$("#ieOpenLayerBatch").click()');
+ equal(evaluate('$$("#ieLayerBatchList input:checked").map(input=>input.value)'),['object-3','object-1'],
+  'background and hidden layers require an explicit choice');
+ evaluate(`const batchLayerPick=id=>$$("#ieLayerBatchList input").find(input=>input.value===id);
+  batchLayerPick("object-3").click();batchLayerPick("object-2").click();
+  const batchSourceStack=ewLayerState(IMAGE_EDITOR);
+  $("#ieConfirmLayerBatch").click();`);
+ await ready('!IMAGE_EDITOR?.busy && IMAGE_EDITOR?.layerExportIds?.length===2','selected layers are exported as a batch');
+ equal(evaluate(`IMAGE_EDITOR.layerExportIds.map(id=>[node(id).name,curV(node(id)).ref])`),[
+  ['物件拆分 · 花瓶','output:h3studio/batch-layer-vase.png'],['物件拆分 · 灯','output:h3studio/batch-layer-light.png']]);
+ assert(evaluate('ewLayerState(IMAGE_EDITOR)===batchSourceStack'),'batch export preserves the editable stack');
+ assert(evaluate(`const batchExportIds=[...IMAGE_EDITOR.layerExportIds];
+  const [firstLayerExport,secondLayerExport]=batchExportIds.map(node);
+  firstLayerExport.x+size(firstLayerExport).w<secondLayerExport.x`),'batch cards have room between them');
+ evaluate('$("#ieLocateLayer").click()');
+ assert(evaluate('!IMAGE_EDITOR && batchExportIds.every(id=>sel.has(id))'),'locate selects all exported nodes');
+ evaluate('undo()');
+ assert(evaluate('batchExportIds.every(id=>!node(id)) && !!node(batchLayerNode.id)'),'one undo removes the whole batch');
+
+ const backgroundFetch=w.fetch;
+ let backgroundRequest;
+ w.fetch=async(url,options)=>{
+  if(String(url)!=='/api/image-edit/fill-background')return backgroundFetch(url,options);
+  backgroundRequest=JSON.parse(options.body);
+  return {ok:true,text:async()=>JSON.stringify({...evaluate('copyAsset("filled-background.png")'),w:512,h:384})};
+ };
+ evaluate(`const layeredBackground=addNode("image",360,160,{}, {versions:[{
+  ...copyAsset("split-result.png"),edit:{mode:"layers"},
+  layer_stack:{base_ref:"output:h3studio/layered-source.png",layers:[
+   {id:"object-0",name:"背景",ref:"output:h3studio/split-background.png",x:36,y:32,w:496,h:368,opacity:1,visible:true,
+    decomposition_bounds:{x:8,y:12,w:496,h:368}},
+   {id:"object-1",name:"物体 1",ref:"output:h3studio/layer-smoke.png",x:40,y:50,w:100,h:90,opacity:1,visible:true}
+  ]}}],cur:0});`);
+ await evaluate('openImageEditor(layeredBackground)');
+ evaluate(`ieMode("layers");IMAGE_EDITOR.layers[1].x=110;$("#ieFillBackground").click();`);
+ await ready('!IMAGE_EDITOR?.busy && IMAGE_EDITOR?.layers[0]?.name==="补全背景"','background is replaced in the current draft');
+ equal(backgroundRequest,{ref:'output:h3studio/layered-source.png',background:'output:h3studio/split-background.png',x:8,y:12});
+ equal(evaluate('[...IMAGE_EDITOR.layers.map(({ref,x,y})=>[ref,x,y]),layeredBackground.versions.length]'),[
+  ['output:h3studio/filled-background.png',28,20],['output:h3studio/layer-smoke.png',110,50],1]);
+ assert(w.document.getElementById('ieFillBackground').hidden,'the completed background cannot be filled again');
+ evaluate(`const layerKey=(key,shiftKey=false)=>$("#ieLayerOpacity").dispatchEvent(new KeyboardEvent("keydown",
+  {key,ctrlKey:true,shiftKey,bubbles:true,cancelable:true}));
+  layerKey("z");`);
+ assert(evaluate('!$("#ieFillBackground").hidden && IMAGE_EDITOR.layers[1].x===110'),
+  'undo restores the original background without moving the subject');
+ evaluate('layerKey("z",true)');
+ assert(evaluate('$("#ieFillBackground").hidden && IMAGE_EDITOR.layers[0].name==="补全背景"'),'redo restores the filled layer');
+ evaluate(`const layerCanvas=$(".ie-canvas"), layerPointer=(type,dx)=>{
+  const view=IMAGE_EDITOR.view, rect=layerCanvas.getBoundingClientRect();
+  layerCanvas.dispatchEvent(new MouseEvent(type,{button:0,bubbles:true,cancelable:true,
+   clientX:rect.left+view.tx+(120+dx)*view.scale,clientY:rect.top+view.ty+100*view.scale}));
+ };
+ layerPointer("pointerdown",0);layerPointer("pointermove",15);layerPointer("pointercancel",15);
+ const layerHistoryBeforeMove=IMAGE_EDITOR.layerUndo.length;`);
+ equal(evaluate('IMAGE_EDITOR.layers[1].x'),110,'cancelled movement restores the original position');
+ evaluate('layerPointer("pointerdown",0);layerPointer("pointermove",8);layerPointer("pointerup",16)');
+ equal(evaluate('[IMAGE_EDITOR.layers[1].x,IMAGE_EDITOR.layerUndo.length-layerHistoryBeforeMove]'),[126,1],
+  'a complete drag records one step');
+ evaluate('$("#ieUndoLayer").click()');
+ equal(evaluate('IMAGE_EDITOR.layers[1].x'),110,'one undo reverts the complete drag');
+ evaluate(`const layerOpacity=$('#ieLayerOpacity');
+  for(const value of [85,65,40]){layerOpacity.value=value;layerOpacity.dispatchEvent(new Event("input",{bubbles:true}));}
+  layerOpacity.dispatchEvent(new Event("change",{bubbles:true}));`);
+ equal(evaluate('[IMAGE_EDITOR.layers[1].opacity,$("#ieRedoLayer").disabled]'),[.4,true],
+  'committing opacity creates a new history branch');
+ evaluate('layerKey("z");$("#ieLayerDelete").click()');
+ equal(evaluate('IMAGE_EDITOR.layers.length'),1,'the selected layer is deleted');
+ evaluate('$("#ieUndoLayer").click()');
+ equal(evaluate('[IMAGE_EDITOR.layers[1].opacity,IMAGE_EDITOR.activeLayer]'),[1,'object-1'],
+  'one undo restores deletion and another restores the entire opacity adjustment');
+ await evaluate('ewCommitLayers()');
+ await ready('!IMAGE_EDITOR?.loading && !IMAGE_EDITOR?.restoring','filled layers are committed');
+ equal(evaluate('curV(layeredBackground).layer_stack.layers[0].ref'),'output:h3studio/filled-background.png');
+ assert(w.document.getElementById('ieUndoLayer').disabled,'the new version begins a separate edit history');
+ w.fetch=backgroundFetch;
+ console.log('Layer background fill passed: original geometry, retained movement, draft and version save.');
+
+ evaluate('closeImageEditor()');
+ const oraUploadFetch=w.fetch;
+ let oraUploadedFile;
+ w.fetch=async(url,options)=>{
+  if(String(url)!=='/api/upload')return oraUploadFetch(url,options);
+  oraUploadedFile=options.body.get('image').name;
+  return {ok:true,json:async()=>({ref:'input:h3studio/ora-preview.png',url:'/media?ref=input:h3studio/ora-preview.png',
+   w:600,h:450,layer_stack:{layers:[{id:'ora-1',name:'导入前景',ref:'input:h3studio/ora-layer.png',
+    x:-3,y:16,w:100,h:120,opacity:.55,visible:false}]}})};
+ };
+ const oraFile=new w.File(['openraster'],'编辑稿.ora',{type:'application/octet-stream'});
+ await evaluate('importCanvasFiles')([oraFile],{x:850,y:350});
+ assert.equal(oraUploadedFile,'编辑稿.ora','the normal canvas import accepts .ora files');
+ evaluate('const oraNode=B.nodes.at(-1)');
+ equal(evaluate('[oraNode.type,oraNode.name,curV(oraNode).w,curV(oraNode).h]'),['image','编辑稿',600,450]);
+ await evaluate('openImageEditor(oraNode)');
+ evaluate('ieMode("layers")');
+ equal(evaluate('IMAGE_EDITOR.layers.map(({name,x,y,opacity,visible})=>[name,x,y,opacity,visible])'),
+  [['导入前景',-3,16,.55,false]],'the image editor restores independent imported layers');
+ w.fetch=oraUploadFetch;
+ console.log('OpenRaster import passed: normal canvas entry, document size and editable layer restoration.');
+
+ evaluate(`const pickLayerNode=addNode("image",460,360,{}, {versions:[{
+  ...copyAsset("pick-composite.png"),layer_stack:{layers:[
+   {id:"lower",name:"底图",ref:"output:h3studio/pick-lower.png",x:0,y:0,w:240,h:220,opacity:1,visible:true},
+   {id:"upper",name:"主体",ref:"output:h3studio/pick-upper.png",x:40,y:50,w:100,h:100,opacity:.7,visible:true},
+   {id:"hidden",name:"隐藏图层",ref:"output:h3studio/pick-hidden.png",x:40,y:50,w:100,h:100,opacity:1,visible:false}
+  ]}}],cur:0});`);
+ await evaluate('openImageEditor(pickLayerNode)');
+ evaluate(`ieMode("layers");
+  const pickSamples=[], hitProbe=document.createElement("canvas");
+  const hitContext=hitProbe.getContext("2d");
+  hitContext.drawImage=(image,x,y)=>pickSamples.push([decodeURIComponent(image.src),x,y]);
+  hitContext.getImageData=()=>{
+   const [src,x]=pickSamples.at(-1);
+   return {data:[0,0,0,src.includes("pick-upper") && x<100 ? 0 : 255]};
+  };
+  IMAGE_EDITOR.layerHitCanvas=hitProbe;
+  const directPick=(type,x,y,altKey=false,shiftKey=false)=>{
+   const view=IMAGE_EDITOR.view, rect=layerCanvas.getBoundingClientRect();
+   layerCanvas.dispatchEvent(new MouseEvent(type,{button:0,altKey,shiftKey,bubbles:true,cancelable:true,
+    clientX:rect.left+view.tx+x*view.scale,clientY:rect.top+view.ty+y*view.scale}));
+  };
+  directPick("pointerdown",50,65);directPick("pointerup",50,65);`);
+ equal(evaluate('[IMAGE_EDITOR.activeLayer,IMAGE_EDITOR.layerUndo.length]'),['lower',0],
+  'clicking through a transparent pixel selects the layer below without an undo entry');
+ assert(evaluate('pickSamples[0][1]>=50 && pickSamples[0][1]<=51 && pickSamples.every(([src])=>!src.includes("pick-hidden"))'),
+  'picking uses the scaled source pixel and skips hidden layers');
+ evaluate('directPick("pointerdown",70,65);directPick("pointerup",70,65)');
+ equal(evaluate('IMAGE_EDITOR.activeLayer'),'upper','opaque overlapping pixels select the highest visible layer');
+ evaluate(`$('#ieLayerList [data-layer="lower"] button').click();
+  directPick("pointerdown",70,65,true);directPick("pointerup",90,65,true);
+  directPick("pointerdown",450,350);directPick("pointerup",470,350);`);
+ equal(evaluate('[IMAGE_EDITOR.activeLayer,IMAGE_EDITOR.layers.map(l=>l.x),IMAGE_EDITOR.layerUndo.length]'),
+  ['lower',[20,40,40],1],'Alt drag moves the explicit layer and empty space moves nothing');
+ console.log('Layer picking passed: topmost visible pixel, transparent click-through, transforms and explicit drag.');
+
+ evaluate(`$('#ieLayerList [data-layer="upper"] button').click();
+  directPick("pointermove",40,50);
+  const resizeDepth=IMAGE_EDITOR.layerUndo.length;
+  const layerBox=()=>{const {x,y,w,h}=IMAGE_EDITOR.layers.find(layer=>layer.id==="upper");return [x,y,w,h];};`);
+ equal(evaluate('layerCanvas.dataset.layerResize'),'nwse','hovering the corner shows a resize cursor');
+ evaluate('directPick("pointerdown",40,50);directPick("pointermove",30,35);directPick("pointerup",20,20)');
+ equal(evaluate('[layerBox(),$("#ieLayerWidth").value,$("#ieLayerHeight").value,IMAGE_EDITOR.layerUndo.length-resizeDepth]'),
+  [[20,20,120,130],'120','130',1],'free resize keeps the opposite corner fixed and updates the panel in one step');
+ evaluate('$("#ieUndoLayer").click()');
+ equal(evaluate('layerBox()'),[40,50,100,100],'undo restores coordinates and dimensions');
+ evaluate('directPick("pointerdown",140,150,false,true);directPick("pointerup",170,160,false,true)');
+ equal(evaluate('layerBox()'),[40,50,120,120],'Shift keeps the original layer aspect ratio');
+ evaluate(`directPick("pointerdown",160,170);directPick("pointermove",180,200);
+  layerCanvas.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}));`);
+ equal(evaluate('[layerBox(),!IMAGE_EDITOR.layerDrag]'),[[40,50,120,120],true],
+  'Escape cancels resizing in place');
+ console.log('Layer resize passed: corner hit testing, fixed anchor, Shift ratio, panel sync, undo and cancel.');
+
+ evaluate(`closeImageEditor();
+  const timingVideos=[6,2.25,null].map((seconds,index)=>addNode("video",1000+index*520,830,{duration:5},{
+   versions:[{ref:"output:h3studio/timing-shot-"+index+".mp4",w:640,h:360,...(seconds?{seconds}:{})}],cur:0
+  }));
+  const timingScript=addNode("script",450,800,{shots:[3.5,4.5,3].map((duration,index)=>({
+   id:"timing-shot-"+index,duration,action:["移动"],dialogue:[],shot_size:"中景",camera:"固定"
+  })),made:timingVideos.map((video,index)=>({shot_id:"timing-shot-"+index,vid:video.id}))});
+  openStoryFilm(timingScript,0,2,"fade");`);
+ equal(evaluate('FILM.spec.clips.map(c=>[c.story_frames,c.out,c.trans,!!c.story_pending_length])'),
+  [[84,3.5,'fade',false],[108,2.25,'fade',false],[72,null,'fade',true]],
+  'regular storyboards use actual generated footage against planned length while keeping the chosen transitions');
+ evaluate('selectClip(1);$("#fmV").onloadedmetadata?.()');
+ assert.match(evaluate('$("#fmClip").textContent'),/素材时长不足，缺 2\.25 秒/);
+ evaluate(`selectClip(2);
+  const timingPlayer=$("#fmV");
+  Object.defineProperty(timingPlayer,"duration",{value:5.2,configurable:true});
+  timingPlayer.onloadedmetadata?.();
+  delete timingPlayer.duration;`);
+ equal(evaluate('[FILM.spec.clips[2].out,!!FILM.spec.clips[2].story_pending_length]'),[3,false],
+  'previously unknown duration is measured from this clip before trimming');
+ evaluate(`delete FILM.spec.clips[0].story_frames;
+  Object.assign(FILM.spec.clips[0],{in:.75,out:2.5,speed:1.25});
+  closeFilm();openStoryFilm(timingScript);`);
+ equal(evaluate('[FILM.spec.clips[0].story_frames,FILM.spec.clips[0].in,FILM.spec.clips[0].out,FILM.spec.clips[0].speed]'),
+  [84,.75,2.5,1.25],'old drafts recover the planned length without replacing manual edits');
+ console.log('Story film timing passed: normal shot durations, measured sources, real shortage and saved manual cuts.');
 }
 run().catch(err=>{console.error(err);process.exitCode=1;}).finally(()=>w.close());
