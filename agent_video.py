@@ -16,16 +16,18 @@ import video_remake
 import previs
 import camera_plan
 import image_camera
+import motion_reference
 import object_edit
 import workflow_review
 import broll
 import creative_memory
+import db
 from render import CUTAWAY_LIMIT, FPS, GIF_FPS, GIF_SIZES, TITLE_LIMIT, TITLE_POSITIONS, TITLE_STYLES
 
-NAMES = {"video_generate", "video_regenerate", "video_extend", "video_edit_segment", "video_object_settings", "video_capture_frame", "video_remake_status", "video_remake_analyze", "video_remake_plan",
+NAMES = {"video_models", "video_generate", "video_regenerate", "video_extend", "video_edit_segment", "video_object_settings", "video_capture_frame", "video_remake_status", "video_remake_analyze", "video_remake_plan",
          "video_draft_status", "video_draft_finalize", "video_titles_get", "video_titles_edit",
          "video_cutaways_get", "video_cutaways_edit", "video_broll_generate", "video_export_gif",
-         "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate",
+         "video_remake_split_long", "video_remake_map", "video_remake_locate", "video_remake_preview", "video_remake_generate",
          "video_remake_review", "video_remake_export", "video_previs_get", "video_previs_save", "video_previs_render",
          "video_previs_camera_motion", "video_previs_object_motion", "video_previs_storyboard_plan"}
 
@@ -39,7 +41,7 @@ def node_data(recipe):
             "mode": "keyframes" if recipe.get("planned") else "auto", "turbo": recipe.get("turbo", True), "seed": recipe.get("seed", -1),
             "sound": recipe.get("sound", ""), "music": recipe.get("music", ""), "pmode": "fields" if recipe.get("fields") else "free",
             "fields": copy.deepcopy(recipe.get("fields", {})), "count": 1, "provider": recipe.get("provider", ""),
-            **{key:copy.deepcopy(recipe[key]) for key in ("camera_plan","object_edit","draft","video_optics") if recipe.get(key)}}
+            **{key:copy.deepcopy(recipe[key]) for key in ("selected_model","camera_plan","object_edit","draft","video_optics") if recipe.get(key)}}
 
 
 def connect_inputs(board, nid, recipe):
@@ -68,7 +70,8 @@ def connect_inputs(board, nid, recipe):
     for sound in recipe.get("audio_refs", []):
         if any(n["id"] == sound.get("node_id") and n.get("type") == "audio" and
                any(v.get("ref") == sound["ref"] for v in n.get("versions", [])) for n in board["nodes"]):
-            board["edges"].append({"from":sound["node_id"], "to":nid, "relation":"audio_ref", "ref":sound["ref"],**reference_slot(sound)})
+            board["edges"].append({"from":sound["node_id"],"to":nid,"relation":"audio_ref","ref":sound["ref"],
+                                   **reference_slot(sound),**{key:sound[key] for key in ("start","end") if key in sound}})
     for index, clip in enumerate(recipe.get("video_refs", [])):
         if any(n["id"] == clip.get("node_id") and n.get("type") == "video" and
                any(v.get("ref") == clip["ref"] for v in n.get("versions", [])) for n in board["nodes"]):
@@ -108,7 +111,7 @@ def queued_node(s, run, user, cid, pending):
                     b["edges"] = [e for e in b.get("edges", []) if not (e.get("to") == nid and
                                   (e.get("from") in image_ids or e.get("relation") in ("previs","audio_ref","video_ref")))]
                     n["data"].update(copy.deepcopy(pending.get("target_data") or node_data(recipe)))
-                    for prop in ("camera_plan","object_edit","draft","video_optics"):
+                    for prop in ("selected_model","camera_plan","object_edit","draft","video_optics"):
                         if not recipe.get(prop):
                             n["data"].pop(prop, None)
                     connect_inputs(b, nid, recipe)
@@ -192,16 +195,17 @@ def register(tool, prop, node, prompt):
     },additionalProperties=False)
     options = {"prompt": prompt, "duration": prop("number", minimum=2, maximum=30),
                "quality": prop("string", enum=["hd","std","480p","4k"],description="选择当前模型支持的分辨率。480p 与 4k 为显式档位。"),
+               "selected_model": prop("string", minLength=1,maxLength=200,description="用 video_models 查到的具体模型 ID。新生成时须同时传该模型的 provider。"),
                "draft": prop("boolean"),
                "video_optics":optics,
                "memory_views":creative_memory.view_selection_schema(prop),
                "seed": prop("integer", minimum=-1, maximum=2**48), "provider": prop("string", maxLength=100), "name": node}
     guide = prop("object", properties={"node_id":node, "version":prop("integer", minimum=1, maximum=5000)},
                  required=["node_id"], additionalProperties=False)
-    sounds = prop("array", items=guide, maxItems=10)
     clips = prop("array", items=prop("object", properties={**guide["properties"],
                  "start":prop("number", minimum=0), "end":prop("number", minimum=0)},
                  required=["node_id"], additionalProperties=False), maxItems=10)
+    sounds = clips
     camera_view=prop("object",properties={"angle":prop("string",enum=list(camera_plan.ANGLES)),
                      "scale":prop("string",enum=list(camera_plan.SCALES))},required=["angle","scale"],additionalProperties=False)
     camera=prop("object",properties={"mode":prop("string",enum=list(camera_plan.MODES)),
@@ -210,6 +214,9 @@ def register(tool, prop, node, prompt):
     object_plan=prop("object",properties={"action":prop("string",enum=list(object_edit.ACTIONS)), "at":prop("number",minimum=0),
                      "box":prop("array",items=prop("number",minimum=0,maximum=1),minItems=4,maxItems=4),
                      "replacement":replacement},additionalProperties=False)
+    tool("video_models", "读取当前可选视频模型、服务 ID、支持的时长、分辨率和参考能力。选模式可筛选音视频参考、续拍或片段编辑。", {
+        "mode":prop("string",enum=["generation","audio_reference","video_reference","extension","segment_edit"]),
+    }, [])
     tool("video_generate", "生成真正的视频（MP4）。frames 支持首尾帧、关键帧和人物设定；提供已渲染的 previs 时，图片作为外观参考，白模控制运镜和走位。", {
         **options, "frames": prop("array", items=frame, maxItems=30), "previs":guide, "audio_refs":sounds, "video_refs":clips}, ["prompt"])
     tool("video_extend", "生成接在现有视频之前或之后的新镜头。method 默认 auto，有支持的连续参考服务时使用原片连续画面，否则在本地 H3 以接点帧接拍。method=frame 指定本地接拍，method=motion 指定连续画面参考。node_id 指原视频，version 省略时使用本轮所选版本；before 补拍片头，after 续拍片尾。", {
@@ -311,6 +318,9 @@ def register(tool, prop, node, prompt):
     tool("video_remake_analyze", "分析重制原片的镜头和人物。已有分析时读取结果；用户要求重试时设retry=true，补充缺失分析并保留剪辑点和审核决定。", {
         "node_id": node, "retry": prop("boolean"),
     }, ["node_id"])
+    tool("video_remake_split_long", "按当前视频服务的时长上限均匀拆分指定长镜头。先用video_remake_status获取镜头编号和最新cut_revision。拆分会更新后续镜头编号。", {
+        "node_id": node, "shot": shot_number, "cut_revision": prop("integer", minimum=0),
+    }, ["node_id", "shot", "cut_revision"])
     tool("video_remake_plan", "列出换角执行计划的镜头、角色参考和待确认选区，等待用户勾选提交。", {
         "node_id": node, "asset_id": node, "person": prop("string", minLength=1, maxLength=60),
         "look": prop("string", maxLength=240), "shots": prop("array", items=shot_number, minItems=1, maxItems=4),
@@ -499,6 +509,24 @@ def video_edit_snapshot(s, run, board, node, version=None):
     return current, recipe, data, incoming
 
 
+def historical_video_model(user, board_id, version, recipe):
+    if recipe.get("provider") and (recipe.get("selected_model") or recipe["provider"]=="local_h3"):
+        return {key:recipe[key] for key in ("provider","selected_model") if recipe.get(key)}
+    recorded = (version.get("generation_record") or {}).get("settings",{})
+    provider, model = recorded.get("provider"),recorded.get("provider_model")
+    if not provider or not model:
+        task = db.one("""SELECT provider_id,model FROM tasks,
+                        json_each(CASE WHEN json_valid(tasks.outputs) THEN tasks.outputs END)
+                        WHERE user_id=? AND board_id=? AND capability='video' AND state='done'
+                        AND provider_id IS NOT NULL AND json_each.value=? ORDER BY created DESC LIMIT 1""",
+                      user["id"],board_id,version.get("ref"))
+        if task:
+            provider,model = task["provider_id"],task["model"]
+    if provider=="local_h3":
+        return {"provider":provider}
+    return {"provider":provider,"selected_model":model} if provider and model else {}
+
+
 def read_draft_status(s, run, user, nid):
     _, node = video_node(s,run,user,nid,allow_film=True)
     now = time.time()
@@ -533,9 +561,8 @@ async def finalize_draft(s, run, user, cid, args):
     prompt = source.get("prompt") or recipe.get("prompt") or ""
     branch = args.get("placement") == "branch"
     target_id = None if branch else target["id"]
-    draft_final = {"source_ref":source["ref"],"resolution":resolution}
+    draft_final = {"source_node":target["id"],"source_ref":source["ref"],"resolution":resolution}
     if branch:
-        draft_final["source_node"] = target["id"]
         inputs = [{"from":target["id"],"to":result_id(cid),"relation":"draft_final","ref":source["ref"]}]
         data = {**node_data(recipe),**data,"prompt":prompt}
     name = target["name"][:28]+" · "+resolution.upper()+" 定稿" if branch else target["name"]+" · 定稿"
@@ -948,6 +975,14 @@ def plan_payload(s, run, user, frames, duration, data, prompt, *, sounds=(), cli
 
 
 async def execute(s, run, user, cid, name, args):
+    if name == "video_models":
+        mode = args.get("mode","generation")
+        if mode == "generation":
+            choices = s.host.canvas_provider_choices("video")
+        else:
+            choices = s.host.canvas_reference_choices(require_motion=mode!="audio_reference",
+                                                       segment_edit=mode=="segment_edit",extension=mode=="extension")
+        return {"mode":mode,"providers":choices,"text":"已读取配置的视频模型。" if choices else "当前没有支持该模式的视频模型。"}
     if name == "video_broll_generate":
         return await generate_broll(s,run,user,cid,args)
     if name == "video_draft_status":
@@ -992,7 +1027,7 @@ async def execute(s, run, user, cid, name, args):
         return {**result,"text":"走位关键帧已保存，可打开白模查看路线。"}
     if name == "video_previs_render":
         return await render_previs(s, run, user, cid, args["node_id"],args.get("span"))
-    if run["data"].get("remake_plan_pending") and name in ("video_remake_map", "video_remake_locate",
+    if run["data"].get("remake_plan_pending") and name in ("video_remake_split_long", "video_remake_map", "video_remake_locate",
             "video_remake_preview", "video_remake_generate", "video_remake_review", "video_remake_export"):
         raise ValueError("本轮有待确认的换角计划，请先使用计划卡选择镜头")
     if name == "video_remake_status":
@@ -1001,6 +1036,8 @@ async def execute(s, run, user, cid, name, args):
         return remake_status(s.host, nid, key, video_remake.load(key), review_shot=args.get("shot"))
     if name == "video_remake_analyze":
         return await analyze_remake(s, run, user, args["node_id"], retry=args.get("retry", False))
+    if name == "video_remake_split_long":
+        return await split_long_remake_shot(s, run, user, args)
     if name == "video_remake_plan":
         return plan_remake(s, run, user, args, cid)
     if name == "video_remake_map":
@@ -1025,7 +1062,9 @@ async def execute(s, run, user, cid, name, args):
         source, _ = reference_version(s,run,user,first,kind="clip")
         if not prompt.strip():
             raise ValueError("请提供续拍的动作要求")
-        if method == "frame" or (method == "auto" and not args.get("provider") and
+        if method == "frame" and args.get("selected_model"):
+            raise ValueError("指定云端模型时请选择连续画面续拍")
+        if method == "frame" or (method == "auto" and not args.get("provider") and not args.get("selected_model") and
                 not s.host.reference_routes(require_motion=True,extension=True)):
             frames, provider = await local_extension_inputs(s,run,user,cid,args,source,frames)
             args = {**args,"provider":provider,"duration":s.host.engine_video_frames(args.get("duration",5))/24}
@@ -1041,6 +1080,10 @@ async def execute(s, run, user, cid, name, args):
         if original.get("job"):
             raise ValueError("原视频仍有任务，请等待完成或取消后再重新生成")
         prior, recipe, data, incoming = video_edit_snapshot(s,run,b,original,args.get("version"))
+        historical_model = historical_video_model(user,run["board_id"],prior,recipe) if prior else {}
+        if historical_model:
+            data.pop("selected_model",None)
+            data.update(historical_model)
         if args.get("reuse_asset_references"):
             if "memory_views" in args:
                 raise ValueError("请分别提交复用旧图和重新选择角色视角的请求")
@@ -1068,7 +1111,9 @@ async def execute(s, run, user, cid, name, args):
             frames = [{"node_id": im["node_id"], "role": "subject" if im.get("role") == "subject" else "keyframe" if recipe.get("planned") else "auto",
                        **image_reference(im),
                        **({"time": im["time"]} if "time" in im else {})} for im in recipe.get("images", []) if im.get("node_id")]
-            data.update({k: recipe[k] for k in ("duration", "quality", "turbo", "seed", "sound", "music", "provider") if k in recipe})
+            data.update({k: recipe[k] for k in ("duration", "quality", "turbo", "seed", "sound", "music") if k in recipe})
+            if recipe.get("provider") and not historical_model:
+                data["provider"] = recipe["provider"]
             prompt = args.get("prompt") or prompt or recipe.get("prompt", "")
             if recipe.get("ar") and not guide_edge and not args.get("previs"):
                 data["aspect"] = str(recipe["ar"]) + ":1"
@@ -1091,8 +1136,10 @@ async def execute(s, run, user, cid, name, args):
     guide = sample = None
     if args.get("previs") or guide_edge:
         guide, sample = reference_version(s, run, user, args.get("previs"), guide_edge if not args.get("previs") else None)
-    sounds = ([reference_version(s, run, user, selection=entry, kind="audio")[0] for entry in args["audio_refs"]]
-              if "audio_refs" in args else [reference_version(s, run, user, edge=e, kind="audio")[0] for e in sound_edges])
+    sounds = []
+    for entry in args.get("audio_refs",sound_edges):
+        source, _ = reference_version(s,run,user,**({"selection":entry} if "audio_refs" in args else {"edge":entry}),kind="audio")
+        sounds.append({**source,**{key:entry[key] for key in ("start","end") if key in entry}})
     if "audio_refs" in args:
         sound_slots = {edge["from"]:reference_slot(edge) for edge in sound_edges}
         for sound in sounds:
@@ -1119,37 +1166,50 @@ async def execute(s, run, user, cid, name, args):
         duration=min(duration,30)
     if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 2:
         raise ValueError("视频时长至少为 2 秒")
-    data.update({k: args[k] for k in ("quality", "seed", "provider") if k in args})
+    if "provider" in args and args["provider"]!=data.get("provider"):
+        data.pop("selected_model",None)
+    data.update({k:args[k] for k in ("quality","seed","provider","selected_model") if k in args})
+    selected_model = data.get("selected_model")
+    if selected_model and not data.get("provider"):
+        raise ValueError("请选择该模型所属的视频服务")
     guide_aspect = {}
+    exceeds_plain_route = None
     if guide or sounds or clips:
         if guide and not (extension or segment) and duration > previs.MAX_SECONDS:
             raise ValueError("白模参考成片最长 14 秒")
-        routes = s.host.reference_routes(require_motion=bool(guide or clips),segment_edit=segment,extension=bool(extension))
-        provider = args.get("provider") or data.get("provider")
-        chosen = next((r for r in routes if r["provider"]["id"] == provider), None)
-        if not chosen and "provider" not in args and routes:
-            chosen = routes[0]
-        if not chosen:
+        provider = data.get("provider")
+        routes = s.host.reference_routes(require_motion=bool(guide or clips),segment_edit=segment,
+                                         extension=bool(extension),all_models=True)
+        chosen = next((r for r in routes if r["provider"]["id"]==provider and
+                       (not selected_model or r["model"]==selected_model)),None)
+        if not chosen and selected_model:
+            raise ValueError("所选模型不支持当前参考素材或已不可用，请重新选择模型")
+        candidates = [chosen] if chosen else (routes if "provider" not in args else [])
+        if not candidates:
             if segment:
                 raise ValueError("请选择已配置参考视频公网地址的 Seedance 2.5 服务")
             raise ValueError("请选择已配置公网地址的视频参考服务" if guide or clips else "请选择支持音频参考的视频服务")
-        data["provider"] = chosen["provider"]["id"]
-        durations = s.host.remote.video_durations(chosen["provider"]["kind"],chosen["model"])
-        maximum = 14 if guide and not (extension or segment) else durations[-1]
+        if not chosen:
+            data.pop("provider",None)
+        durations = [s.host.remote.video_durations(route["provider"]["kind"],route["model"],provider=route["provider"])
+                     for route in candidates]
+        maximum = 14 if guide and not (extension or segment) else max(values[-1] for values in durations)
         if duration > maximum:
             if "duration" in args or "duration" in data:
                 raise ValueError(f"此模式成片最长 {maximum} 秒")
             duration = maximum
         if sample and data.get("aspect", "auto") == "auto" and sample.get("w") and sample.get("h"):
             guide_aspect["aspect"] = f"{sample['w']}:{sample['h']}"
-        duration = max(durations[0],round(duration))
+        if chosen:
+            duration = max(durations[0][0],round(duration))
         frames = [{**f, "role":"subject"} for f in frames]
     else:
         route = s.host.requested_generation_route(data,"video")
-        maximum = (s.host.remote.video_durations(route["provider"]["kind"],route["model"])[-1]
+        maximum = (s.host.remote.video_durations(route["provider"]["kind"],route["model"],provider=route["provider"])[-1]
                    if route and route["provider"]["kind"] != "local_h3" else 15)
-        if len(frames) > 12 or duration > maximum:
-            raise ValueError(f"此模式最多接受 12 张画布图片，成片最长 {maximum} 秒")
+        image_limit = (motion_reference.ark_image_reference_limit(route["provider"],route["model"]) if route else None) or 12
+        if len(frames) > image_limit or duration > maximum:
+            exceeds_plain_route = (image_limit,maximum)
     special = bool(extension or segment)
     payload = plan_payload(s, run, user, frames, duration, {**data, **guide_aspect}, prompt,
                            sounds=sounds,clips=clips,guide=bool(guide),special=special)
@@ -1210,6 +1270,11 @@ async def execute(s, run, user, cid, name, args):
         raise ValueError("原视频没有可用提示词，请提供视频动作要求")
     if data.get("provider"):
         payload["provider"] = data["provider"]
+    if selected_model:
+        payload["selected_model"] = selected_model
+    if exceeds_plain_route:
+        image_limit,maximum = exceeds_plain_route
+        check_asset_video_limits(s,run,user,payload,replay_ref,image_limit,maximum)
     target_data = None
     if original:
         target_data = {**data, "duration": duration}
@@ -1225,6 +1290,22 @@ async def execute(s, run, user, cid, name, args):
     return await s.submit_generation(run, user, cid, payload, args.get("name") or label[:80],
                                      s.host.generate_request, target_id=target_id, target_data=target_data,
                                      **({"replay_ref":replay_ref} if replay_ref else {}))
+
+
+def check_asset_video_limits(s, run, user, payload, replay_ref, image_limit, maximum):
+    """A mixed asset can use a different route than a plain video with the same prompt."""
+    mentions = [payload.get("prompt"),*(payload.get("fields") or {}).values()]
+    ids = list(dict.fromkeys([*payload.get("memory_ids",[]),*run["data"].get("memory_ids",[])]))
+    views = creative_memory.requested_views(payload.get("memory_views",[]))
+    views.update(creative_memory.requested_views(run["data"].get("memory_views",[])))
+    if replay_ref or ids or views or any(isinstance(part,str) and "@" in part for part in mentions):
+        raw = {**payload,"board":run["board_id"],"memory_ids":ids,"memory_views":creative_memory.view_selections(views)}
+        prepared = s.app["creative_memory"].prepare(user,raw,replay_ref=replay_ref,
+            owner_only=bool(run["data"].get("external_tool")))
+        if s.host.has_asset_media(prepared):
+            # The reference preflight and submission check the selected route against the complete media set.
+            return
+    raise ValueError(f"此模式最多接受 {image_limit} 张画布图片，成片最长 {maximum} 秒")
 
 
 def remake_source(s, run, user, nid):
@@ -1243,6 +1324,26 @@ async def apply_remake_action(s, user, nid, key, payload):
         return await s.host.remake(req)
 
     return await s.response(invoke, user, payload, query={"source": key[3]})
+
+
+async def split_long_remake_shot(s, run, user, args):
+    nid = args["node_id"]
+    key = remake_source(s, run, user, nid)
+    previous = video_remake.load(key)
+    session = await apply_remake_action(s, user, nid, key, {
+        "action": "split_long_shot", "shot": args["shot"] - 1, "cut_revision": args["cut_revision"],
+    })
+    result = remake_status(s.host, nid, key, session)
+    first = session["selected_shot"]
+    count = len(session["shots"]) - len(previous["shots"]) + 1
+    children = result["shots"][first:first + count]
+    result["remake"].update(shot_number=children[0]["number"], shot_start=children[0]["start"])
+    result["split_shots"] = [{field: shot[field] for field in ("number", "start", "end")} for shot in children]
+    result["can_undo_cut"] = session["can_undo_cut"]
+    result["text"] = (f"原第 {args['shot']} 镜已拆成 {count} 个镜头，"
+                      f"新编号为第 {children[0]['number']} 至 {children[-1]['number']} 镜。"
+                      + result["text"])
+    return result
 
 
 async def analyze_remake(s, run, user, nid, *, retry=False):

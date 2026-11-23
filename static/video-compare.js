@@ -3,6 +3,7 @@
 const videoCompare = $("#videoCompare");
 const comparePlayers = $$("video", videoCompare);
 const compareVersions = $$("[data-compare-version]", videoCompare);
+const compareLabels = $$("[data-compare-label]", videoCompare);
 const compareDetails = $$("[data-compare-meta]", videoCompare);
 const compareTime = $("[data-compare-time]", videoCompare);
 const comparePlay = $("[data-compare-play]", videoCompare);
@@ -37,7 +38,7 @@ function compareReadiness() {
   compareTime.max = String(compareLength);
   compareDisplay(Math.min(comparePlayers[0].currentTime, compareLength));
   if (failed) compareStop();
-  compareStatus.textContent = failed ? "有一侧视频加载失败，可以选择其他版本。" : !compareLength ? "正在加载视频…"
+  compareStatus.textContent = failed ? "有一侧视频加载失败。" : !compareLength ? "正在加载视频…"
     : Math.abs(durations[0] - durations[1]) > .05 ? "播放到较短版本的末尾。" : "";
 }
 
@@ -53,8 +54,58 @@ function openVideoCompare(n, previewIndex = n.cur) {
   const current = choices.find(item => item.index === n.cur) || choices.at(-1);
   const other = choices.find(item => item.index === previewIndex && item !== current) ||
     choices.filter(item => item.index < current.index).at(-1) || choices.find(item => item !== current);
-  let selected = [String(other.index), String(current.index)];
+  const pool = choices.map(({version,index}) => ({
+    version,key:String(index),label:`版本 ${index + 1}${index === n.cur ? " · 当前" : ""}${version.label ? " · " + version.label : ""}`
+  }));
+  showVideoComparison([pool,pool],[String(other.index),String(current.index)],`对比视频版本 · ${n.name}`);
+}
 
+function draftComparisonSource(n, version) {
+  const origin = version.draft_final;
+  if (!origin?.source_ref) {
+    const index = n.versions.indexOf(version);
+    return version.draft_expires && version.url && index >= 0 ? {node:n,index} : null;
+  }
+  const binding = [...(version.input_edges || []), ...B.edges.filter(edge=>edge.to===n.id)]
+    .find(edge=>edge.relation==="draft_final" && edge.ref===origin.source_ref);
+  for (const id of [binding?.from,origin.source_node,n.id,...(version.tab_nodes || [])].filter(Boolean)) {
+    const source = vtResolve(id,origin.source_ref), draft = source?.node.versions[source.index];
+    if (source?.node.type==="video" && draft?.draft_expires && draft.url) return source;
+  }
+  return null;
+}
+
+function draftVideoComparison(n, version) {
+  if (n?.type!=="video" || !version) return null;
+  const source = draftComparisonSource(n,version);
+  if (!source) return null;
+  const ref = source.node.versions[source.index].ref;
+  const finals=[];
+  for (const item of B.nodes) {
+    if (item.type!=="video") continue;
+    item.versions.forEach((result,index)=>{
+      if (!result.url || result.draft_final?.source_ref!==ref) return;
+      const bound = draftComparisonSource(item,result);
+      if (bound?.node===source.node && bound.index===source.index) finals.push({node:item,index});
+    });
+  }
+  if (!finals.length) return null;
+  return {source,finals};
+}
+
+function openDraftComparison(n, version = curV(n)) {
+  const pair = draftVideoComparison(n,version);
+  if (!pair || videoCompare.open) return;
+  const option = item => ({
+    version:item.node.versions[item.index],key:`${item.node.id}:${item.index}`,
+    label:`${item.node.name} · 版本 ${item.index+1}`
+  });
+  const sample=option(pair.source), finals=pair.finals.map(option);
+  const selected=finals.find(item=>item.version===version) || finals.at(-1);
+  showVideoComparison([[sample],finals],[sample.key,selected.key],"对比样片与定稿",["样片","定稿"]);
+}
+
+function showVideoComparison(pools, selected, title, labels = ["左侧版本","右侧版本"]) {
   function loadChoices() {
     compareStop();
     compareLength = 0;
@@ -64,8 +115,8 @@ function openVideoCompare(n, previewIndex = n.cur) {
     compareStatus.textContent = "正在加载视频…";
     compareVersions.forEach((select, side) => {
       select.value = selected[side];
-      const {version} = choices.find(item => String(item.index) === selected[side]);
-      const resolution = version.draft_final?.resolution?.toUpperCase() || (version.draft_expires ? "480p 样片" : "");
+      const {version} = pools[side].find(item => item.key === selected[side]);
+      const resolution = version.draft_final?.resolution ? `${version.draft_final.resolution.toUpperCase()} 定稿` : (version.draft_expires ? "480p 样片" : "");
       compareDetails[side].textContent = [resolution, version.w && version.h ? `${version.w}×${version.h}` : "",
         Number.isFinite(version.seconds) ? `${version.seconds.toFixed(2)} 秒` : ""].filter(Boolean).join(" · ");
       comparePlayers[side].src = version.url;
@@ -74,15 +125,16 @@ function openVideoCompare(n, previewIndex = n.cur) {
 
   $$("#world video").forEach(player => { if (!player.paused) player.pause(); });
   compareVersions.forEach((select, side) => {
-    select.replaceChildren(...choices.map(({version,index}) => new Option(
-      `版本 ${index + 1}${index === n.cur ? " · 当前" : ""}${version.label ? " · " + version.label : ""}`, String(index))));
+    compareLabels[side].textContent = labels[side];
+    select.replaceChildren(...pools[side].map(item => new Option(item.label,item.key)));
+    select.disabled = pools[side].length < 2;
     select.onchange = () => {
       if (select.value === selected[1 - side]) selected[1 - side] = selected[side];
       selected[side] = select.value;
       loadChoices();
     };
   });
-  $("#videoCompareTitle").textContent = `对比视频版本 · ${n.name}`;
+  $("#videoCompareTitle").textContent = title;
   compareAudio.value = "right";
   compareUpdateAudio();
   if (videoCompare.showModal) videoCompare.showModal(); else videoCompare.setAttribute("open", "");

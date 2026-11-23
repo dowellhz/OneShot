@@ -15,6 +15,58 @@ from test_agent_chat import ChatFixture, answer, call
 
 
 class ReferenceVideo(ChatFixture):
+    async def test_ark_endpoint_uses_its_configured_model_for_limits_and_keeps_the_endpoint_on_submit(self):
+        endpoint, flash, unmarked = "ep-project-main","ep-project-fast","ep-project-original"
+        config = {"motion_origin":"https://studio.example","models":{"video":endpoint},
+                  "video_endpoint_models":f"{endpoint} seedance-2.5\n{flash} seedance-2.5-flash",
+                  "generation_rates":f"video {endpoint} 4k 0.25"}
+        provider = server.providers.save(None,"ark","方舟接入点",config,{"api_key":"fixture"},True)
+        server.providers.set_route("video",[{"provider_id":provider,"model":model} for model in (endpoint,unmarked)])
+        with self.assertRaisesRegex(server.providers.ProviderError,"接入点 ID 重复"):
+            server.providers.save(provider,"ark","错误配置",
+                {"video_endpoint_models":f"{endpoint} seedance-2.5\n{endpoint} seedance-2.0"},{},True)
+        self.assertEqual(server.providers.get(provider)["config"]["video_endpoint_models"],
+                         {endpoint:"seedance-2.5",flash:"seedance-2.5-flash"})
+        options = json.loads((await server.capabilities(None)).body)
+        configured = next(item for item in options["video"] if item["id"] == provider)
+        rows = {option["id"]:option for option in configured["models"]}
+        self.assertEqual((rows[endpoint]["durations"][-1],rows[endpoint]["qualities"]["4k"],rows[endpoint]["draft"]),(30,"4k",True))
+        self.assertEqual(rows[flash]["reference_limits"],{"images":10,"videos":5,"audio":5,"seconds":30})
+        self.assertFalse(rows[flash]["draft"])
+        self.assertNotIn("4k",rows[flash]["qualities"])
+        self.assertEqual(rows[unmarked]["reference_limits"]["seconds"],15)
+        self.assertEqual([model["id"] for service in options["segment_edit"] if service["id"]==provider
+                          for model in service["models"]],[endpoint,flash])
+
+        path,ref = server.film._new(server.COMFY_DIR,"input","endpoint-sound",".wav")
+        with wave.open(str(path),"wb") as recording:
+            recording.setparams((1,2,8000,0,"NONE",""))
+            recording.writeframes(b"\x00\x08"*(18*8000))
+        server.grant_media({"id":7},ref)
+        self.board["nodes"].append({"id":"endpoint-audio","type":"audio","name":"声音","x":0,"y":0,"data":{},
+                                    "versions":[{"ref":ref}],"cur":0})
+        server.write_board(server.board_path("test"),self.board)
+        request = {"kind":"video","board":"test","provider":provider,"selected_model":endpoint,"prompt":"跟随声音",
+                   "duration":22,"quality":"4k","audio_refs":[{"node_id":"endpoint-audio","ref":ref}]}
+        preview = await self.client.post("/api/preview",json=request)
+        self.assertEqual(preview.status,200,await preview.text())
+        self.assertIn("22 秒 · 4k",(await preview.json())["mode"])
+        costs = await self.client.post("/api/generation-cost",json={"requests":[{**request,"count":2}]})
+        self.assertEqual((await costs.json())["amounts"],[11])
+        with patch.object(server,"start_remote") as submit:
+            response = await self.client.post("/api/generate",json=request)
+            self.assertEqual(response.status,200,await response.text())
+        self.assertEqual((await response.json())["video_model"],{"provider":provider,"selected_model":endpoint})
+        _,_,service,model,_,request_data = submit.call_args.args
+        self.assertEqual(model,endpoint)
+        submitted = await server.remote.ark_video_body(model,request_data,provider=service)
+        self.assertEqual((submitted["model"],submitted["resolution"],submitted["duration"]),(endpoint,"4k",22))
+        self.assertEqual(submitted["content"][-1]["role"],"reference_audio")
+        extension = await server.remote.ark_video_body(model,{**request_data,"audio_refs":[],"extension":"after",
+            "video_urls":["https://studio.example/clip.mp4"]},provider=service)
+        self.assertEqual((extension["model"],extension["omni_reference_task_type"],extension["ratio"]),
+                         (endpoint,"extend","adaptive"))
+
     async def test_cloud_h3_sends_mixed_references_and_revokes_leases(self):
         provider = server.providers.save(None,"minimax","云端 H3 测试",{"motion_origin":"https://studio.example"},
                                          {"api_key":"fixture"},True)
@@ -25,7 +77,7 @@ class ReferenceVideo(ChatFixture):
         audio, sound = server.film._new(server.COMFY_DIR,"input","h3-sound",".wav")
         with wave.open(str(audio),"wb") as recording:
             recording.setparams((1,2,8000,0,"NONE",""))
-            recording.writeframes(b"\x00\x08" * 16000)
+            recording.writeframes(b"\x00\x00" * (16*8000) + b"\x00\x08" * 16000)
         self.board["nodes"].extend([
             {"id":"n3","type":"video","name":"参考动作","versions":[{"ref":ref}],"cur":0,"data":{}},
             {"id":"n4","type":"audio","name":"参考声音","versions":[{"ref":sound}],"cur":0,"data":{}},
@@ -33,7 +85,7 @@ class ReferenceVideo(ChatFixture):
         server.write_board(server.board_path("test"),self.board)
         request = {"kind":"video","board":"test","provider":provider,"selected_model":model,"duration":4,
                    "prompt":"参考 @视频1 和 @音频1","quality":"std","images":[{"ref":self.source["ref"]}],
-                   "video_refs":[{"node_id":"n3","ref":ref}],"audio_refs":[{"node_id":"n4","ref":sound}]}
+                   "video_refs":[{"node_id":"n3","ref":ref}],"audio_refs":[{"node_id":"n4","ref":sound,"start":16,"end":18}]}
         leases = []
 
         async def upstream(_http,method,url,_name,**kwargs):
@@ -51,6 +103,7 @@ class ReferenceVideo(ChatFixture):
                 if mime == "audio/wav":
                     with wave.open(io.BytesIO(await response.read()),"rb") as recording:
                         self.assertEqual(recording.getnframes(),2*recording.getframerate())
+                        self.assertTrue(any(recording.readframes(recording.getnframes())))
                 leases.append(lease)
             return {"task_id":"h3-mixed"}
 
@@ -72,6 +125,7 @@ class ReferenceVideo(ChatFixture):
         self.assertEqual((output["durations"][0],output["durations"][-1],output["qualities"]),
                          (4,15,{"std":"768P","hd":"2K"}))
         self.assertTrue(output["accepts_audio"] and output["accepts_video"])
+        self.assertEqual(output["reference_limits"],{"images":9,"videos":3,"audio":3,"seconds":15,"total":12})
         self.assertNotIn(provider,[item["id"] for item in options["video_extension"]])
 
     async def test_video_optics_reaches_generation_prompt_and_leaves_request_reusable(self):

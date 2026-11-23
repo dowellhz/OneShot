@@ -45,10 +45,11 @@ function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {
   const options = service.models || [];
   const model = canvasNodeModel(n,service,reference);
   const fallback = reference || n.data.provider ? service.model : service.default_route_model || service.model;
-  const title = model?.id || "重新选择模型";
+  const name = item => item.endpoint_model ? item.id+" · "+item.endpoint_model : item.id;
+  const title = model?.id ? name(model) : "重新选择模型";
   if (!n.data.selected_model && options.length < 2) return model?.id ? `<span class="pill" title="${esc(title)}">${esc(title)}</span>` : "";
   const choices = Object.fromEntries([["",esc(fallback ? "默认 · " + fallback : "默认模型")],
-    ...options.map(item => [item.id,esc(item.id)])]);
+    ...options.map(item => [item.id,esc(name(item))])]);
   if (n.data.selected_model && !model) choices[n.data.selected_model] = esc(n.data.selected_model + "（不可用）");
   return pill("selected_model", choices, esc(title)+ico("down"), "model");
 }

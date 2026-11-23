@@ -14,7 +14,7 @@ const AC_EXECUTION_SCOPES={full:"正常执行",analysis:"仅分析",plan:"仅拟
 AC.executionScope="full";
 let acGenerationMode=localStorage.getItem("h3.chat.generationMode") || "auto";
 if(!Object.hasOwn(AC_GENERATION_MODES,acGenerationMode))acGenerationMode="auto";
-const AC_LABELS={audio_separate:"人声分离",video_remake_plan:"确认换角计划",video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_map:"保存角色映射",video_remake_preview:"提交换角预览",video_remake_generate:"提交重制镜头视频",video_remake_export:"合成并保留原声",video_remake_review:"保存镜头审核决定",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",image_upscale:"智能放大",image_decompose:"自动分层",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
+const AC_LABELS={video_models:"读取视频模型",audio_separate:"人声分离",video_remake_plan:"确认换角计划",video_remake_status:"读取视频重制进度",video_remake_analyze:"分析重制原片",video_remake_split_long:"按时长拆分镜头",video_remake_map:"保存角色映射",video_remake_preview:"提交换角预览",video_remake_generate:"提交重制镜头视频",video_remake_export:"合成并保留原声",video_remake_review:"保存镜头审核决定",video_remake_locate:"定位原片人物",canvas_context:"读取画布",canvas_create_text:"创建文本",canvas_update:"更新节点",canvas_arrange:"整理排列",canvas_focus:"定位节点",media_describe:"理解图片",image_generate:"生成图片",image_edit:"编辑图片",image_cutout:"去除背景",image_segment:"识别选区",image_transform:"调整图片",image_upscale:"智能放大",image_decompose:"自动分层",memory_search:"检索创作记忆",memory_get:"读取创作记忆",memory_use:"采用记忆素材",memory_save:"保存创作记忆"};
 const AC_STATES={thinking:"正在理解与规划…",running:"正在执行…",stopping:"正在停止，保留已完成结果…",stopped:"本轮已停止",done:"本轮已结束",error:"本轮执行中断"};
 const AC_PHASES={queued:"排队",loading:"加载模型",encoding:"处理提示词与图片",sampling:"生成",decoding:"解码",compositing:"合成",watermark:"写入 AI 水印",done:"完成",error:"失败"};
 AC_LABELS.creative_skill_load="加载创作技能";
@@ -533,10 +533,15 @@ function acResultCards(result){
   const {node_id, source_ref, shot_number, shot_start, frame, preview_job, video_job} = result.remake;
   const locate = Number.isFinite(shot_start) && Number.isInteger(shot_number);
   const label = locate ? result.location ? `确认镜头 ${shot_number} 的人物位置` : `打开重制镜头 ${shot_number}` : "打开视频重制";
-  const open = (text, job) => {
-   const target = locate ? ` data-remake-start="${shot_start}" data-remake-frame="${esc(frame || "")}" data-remake-preview-job="${esc(preview_job || "")}" data-remake-video-job="${esc(job || "")}"` : "";
+  const open = (text, job, start = shot_start) => {
+   const target = locate ? ` data-remake-start="${esc(start)}" data-remake-frame="${esc(frame || "")}" data-remake-preview-job="${esc(preview_job || "")}" data-remake-video-job="${esc(job || "")}"` : "";
    return `<button type="button" data-remake-node="${esc(node_id)}" data-remake-ref="${esc(source_ref)}"${target}>${esc(text)}</button>`;
   };
+  if (result.split_shots?.length) {
+   const seconds = value => Number(value.toFixed(2));
+   return `<div class="ac-results">${result.split_shots.map(shot =>
+    open(`镜头 ${shot.number} · ${seconds(shot.start)}–${seconds(shot.end)} 秒`, null, shot.start)).join("")}</div>`;
+  }
   let review = "";
   if (locate && result.review_board && Number.isInteger(result.cut_revision) && Array.isArray(result.review_versions)) {
    const decision = (text, job, pressed, issue) =>
@@ -892,7 +897,7 @@ function acAppendEvent(e,replay=false){
   if(e.run_id)el.dataset.taskRun=e.run_id;
   const result=d.result, output=$(".ac-output",el);
   if(result.creative_directions?.length||result.previs_node||result.previs_storyboard_plan||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_create||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
-     result.preview?.completed?.length||result.video?.completed||result.gif||d.name==="video_remake_export"&&result.export_ref||
+     result.split_shots?.length||result.preview?.completed?.length||result.video?.completed||result.gif||d.name==="video_remake_export"&&result.export_ref||
      ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length||result.memories?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
   const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||(result.storyboard_create&&!node(result.storyboard_create.id))||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.previs_storyboard_plan||result.template_fill_plan?"等待确认":"完成";

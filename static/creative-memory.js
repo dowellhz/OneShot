@@ -248,6 +248,10 @@ async function cmEdit(a=null, kind='character', options={}) {
   let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
   let generationMedia=[...(data.generation_media || data.generation_images || [])];
+  const mediaRanges={
+    video:new Map(Object.entries(data.generation_video_ranges || {})),
+    audio:new Map(Object.entries(data.generation_audio_ranges || {}))
+  };
   const generationBox=document.createElement("details");
   generationBox.className="cm-generation-images";
   generationBox.innerHTML='<summary>生成参考素材</summary><p class="cm-help">@资产 会采用选中的素材和资产正文。图片生成采用图片和文字。视频和音频参考需要支持全模态的视频服务。留空采用默认参考图。</p><ol></ol>';
@@ -421,7 +425,7 @@ async function cmEdit(a=null, kind='character', options={}) {
       caption.append(label+" · "+detail);
       check.setAttribute("aria-label",label+" · "+detail+" · 素材 "+(allowed.indexOf(entry)+1));
       check.onchange=()=>{
-        const max=type==="image"?9:10;
+        const max=type==="image"?30:10;
         if(busy||check.checked&&generationMedia.filter(ref=>cmMediaType(ref,allowed.find(item=>item.ref===ref))===type).length>=max){
           check.checked=index>=0;
           if(!busy)status(`每组最多选择 ${max} 项${TYPE_CN[type]}参考`);
@@ -441,6 +445,21 @@ async function cmEdit(a=null, kind='character', options={}) {
         button.disabled=next<0||next>=generationMedia.length;
         button.setAttribute("aria-label",title+"参考 "+(index+1));
         item.append(button);
+      }
+      const ranges=mediaRanges[type];
+      if(index>=0&&ranges&&(!readonly||ranges.has(ref))){
+        const range=document.createElement("div");
+        range.className="cm-reference-range";
+        const values=ranges.get(ref)||["",""];
+        for(const [bound,title] of ["入点（秒）","出点（秒）"].entries()){
+          const field=document.createElement("label"), input=document.createElement("input");
+          input.type="number";input.min="0";input.step="any";input.disabled=readonly;
+          input.value=values[bound];input.placeholder=bound===0?"0":String(entry.seconds??"原片结尾");
+          input.setAttribute("aria-label",`参考 ${index+1} 的${title}`);
+          input.oninput=()=>{values[bound]=input.value;ranges.set(ref,values);};
+          field.append(title,input);range.append(field);
+        }
+        item.append(range);
       }
       list.append(item);
       if(ref===focusRef) check.focus();
@@ -527,6 +546,17 @@ async function cmEdit(a=null, kind='character', options={}) {
           if(pending && pending.ref!==p.ref && !data.media.some(item=>item.ref===pending.ref))
             p.generation_media=p.generation_media.filter(ref=>ref!==pending.ref);
         }
+      }
+      for(const [type,ranges] of Object.entries(mediaRanges)){
+        const saved={};
+        for(const ref of p.generation_media){
+          const values=ranges.get(ref);
+          if(!values||values.every(value=>value===""))continue;
+          if(values.some(value=>value==="")||Number(values[1])-Number(values[0])<2-1e-8)
+            throw new Error(`请填写参考${TYPE_CN[type]}的入点和出点，片段至少 2 秒`);
+          saved[ref]=values.map(Number);
+        }
+        p[`generation_${type}_ranges`]=saved;
       }
       data=await api('/api/memory',p);if(!approval||pending?.ref===p.ref)pending=null;
       documentDirty=false;documentData=data.document||null;paintDocument();

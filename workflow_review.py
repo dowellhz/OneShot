@@ -250,7 +250,7 @@ class BoardReview:
             if role == "frame" and (receipt.get("mode") == "fl2v" or receipt.get("mode") == "fl2va"):
                 role = "first" if i == frame_order[0] else "last"
                 time = 0 if role == "first" else None
-            clip_range = {"end":number(entry.get("end"))} if role == "video_ref" else {}
+            clip_range = {"end":number(entry.get("end"))} if role in ("video_ref","audio_ref") else {}
             add(entry.get("node_id"), entry.get("ref"), role, "生成记录", entry.get("start", time), entry.get("name"),
                 entry.get("version"), entry.get("text"), **clip_range)
         edit_source = obj(v.get("edit")).get("source") or v.get("agent_source")
@@ -318,7 +318,7 @@ class BoardReview:
                 if relation == "seed_audio_ref" and self.nodes.get(source, {}).get("type") == "image":
                     relation = "subject"
                 ref = edge.get("ref") or edge.get("source_ref")
-                clip_range = {"end":number(edge.get("end"))} if relation == "video_ref" else {}
+                clip_range = {"end":number(edge.get("end"))} if relation in ("video_ref","audio_ref") else {}
                 add(source, ref, text(relation or edge.get("role")) or
                     ("text" if self.nodes.get(source, {}).get("type") == "text" else "reference"), evidence,
                     edge.get("start", edge.get("time")), **clip_range)

@@ -20,6 +20,32 @@ MIN_SECONDS = 2
 _leases = {}
 H3_CLOUD_MODELS = {"MiniMax-H3","MiniMax-H3-Highspeed","MiniMax-H3-Lite","MiniMax-H3-Max",
                    "MiniMax-H3-Max-Turbo","MiniMax-H3-MG","MiniMax-H3-NC"}
+ARK_ENDPOINT_ID = re.compile(r"ep-[a-zA-Z0-9-]{1,100}")
+ARK_VIDEO_MODELS = {
+    "seedance-2.0": "doubao-seedance-2-0",
+    "seedance-2.0-fast": "doubao-seedance-2-0-fast",
+    "seedance-2.0-mini": "doubao-seedance-2-0-mini",
+    "seedance-2.5": "doubao-seedance-2-5",
+    "seedance-2.5-flash": "doubao-seedance-2-5-flash",
+}
+
+
+def video_model_for_limits(provider, model):
+    if provider and provider.get("kind") == "ark" and isinstance(model,str) and ARK_ENDPOINT_ID.fullmatch(model):
+        profile = (provider.get("config") or {}).get("video_endpoint_models",{}).get(model)
+        return ARK_VIDEO_MODELS.get(profile,model)
+    return model
+
+
+def ark_multimodal_model(model):
+    return isinstance(model,str) and bool(ARK_ENDPOINT_ID.fullmatch(model) or
+        re.fullmatch(r"doubao-seedance-2-[05](?:-[a-z0-9]+)*",model))
+
+
+def ark_image_reference_limit(provider, model):
+    if provider["kind"] == "ark" and ark_multimodal_model(model):
+        return image_limit(video_model_for_limits(provider,model))
+    return None
 
 
 class PublicAccessLogger(AccessLogger):
@@ -56,8 +82,7 @@ def supports_audio(provider, model):
         return bool(provider.get("enabled") and provider.get("secrets", {}).get("api_key") and
                     isinstance(model,str) and model in H3_CLOUD_MODELS and has_public_origin(provider))
     return bool(provider.get("kind") == "ark" and provider.get("enabled")
-                and provider.get("secrets", {}).get("api_key") and isinstance(model, str)
-                and re.fullmatch(r"(?:doubao-seedance-2-[05](?:-[a-z0-9]+)*|ep-[a-zA-Z0-9-]+)", model))
+                and provider.get("secrets", {}).get("api_key") and ark_multimodal_model(model))
 
 
 def supports(provider, model):

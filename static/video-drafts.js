@@ -2,7 +2,7 @@
 
 function videoDraftAvailable(n) {
   if (n.type!=="video" || n.data.previs || n.data.film) return false;
-  if (hasMediaReferences(n)) return !!canvasNodeModel(n,referenceService(n),true)?.draft;
+  if (hasMediaReferences(n)) return !!videoOutputModel(n)?.draft;
   if (n.data.selected_model) return !!canvasNodeModel(n,nodeProvider(n))?.draft;
   return n.data.provider ? !!CAPS_LIST.video?.find(service=>service.id===n.data.provider)?.draft : CAPS_LIST.default_video_draft===true;
 }
@@ -18,11 +18,11 @@ function draftFinalEdge(n) {
   if (n.type==="video" && !n.versions.length) return B.edges.find(edge=>edge.to===n.id && edge.relation==="draft_final");
 }
 
-function openVideoDraftFinal(n) {
+function openVideoDraftFinal(n, selectedVersion = null) {
   const dialog=$("#videoDraftFinal"), form=$("form",dialog);
   if (!canvasCanEdit() || n.job || prepping.has(n.id) || dialog.open) return;
   const edge=draftFinalEdge(n), source=edge?node(edge.from):n;
-  const version=edge?source?.versions.find(v=>v.ref===edge.ref):curV(source);
+  const version=edge?source?.versions.find(v=>v.ref===edge.ref):selectedVersion || curV(source);
   if (!version?.draft_expires) {
     if (edge) toast("定稿对应的样片版本已移除");
     return;
@@ -43,7 +43,7 @@ function openVideoDraftFinal(n) {
     if (send.disabled || n.job || node(n.id)!==n) return;
     const current=()=>{
       if (boardId!==board || node(n.id)!==n || node(source.id)!==source || n.job) return false;
-      if (!edge) return curV(source)?.ref===version.ref;
+      if (!edge) return selectedVersion ? source.versions.some(v=>v.ref===version.ref) : curV(source)?.ref===version.ref;
       const binding=draftFinalEdge(n);
       return binding?.from===source.id && binding.ref===version.ref && source.versions.some(v=>v.ref===version.ref);
     };
@@ -73,7 +73,7 @@ function openVideoDraftFinal(n) {
       copy.quality=recipe.quality=resolution==="4k"?"4k":"hd";
       const job={ids:result.ids,t0:Date.now(),st:{},prompt:version.prompt||"",memory_used:vtClone(version.memory_used || []),
         history:{input_edges:vtClone(version.input_edges || B.edges.filter(edge=>edge.to===source.id)),node_data:copy,video_recipe:recipe,
-          draft_final:{source_ref:version.ref,resolution}},
+          draft_final:{source_node:source.id,source_ref:version.ref,resolution}},
         generation_record:{...vtClone(version.generation_record || {}),settings:{
           ...version.generation_record?.settings,resolution}}
       };
@@ -82,7 +82,6 @@ function openVideoDraftFinal(n) {
         delete n.draft_finalize_attempt;
         const binding={from:source.id,to:attempt.nodeId,relation:"draft_final",ref:version.ref};
         job.history.input_edges=[binding];
-        job.history.draft_final.source_node=source.id;
         copy.prompt=job.prompt;
         target=edge?n:node(attempt.nodeId);
         if (!target) {

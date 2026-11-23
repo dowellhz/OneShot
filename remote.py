@@ -27,6 +27,7 @@ from urllib.parse import quote
 
 import aiohttp
 
+from motion_reference import image_limit, video_model_for_limits
 from providers import ProviderError, json_req, download, data_url, default_model
 
 
@@ -380,7 +381,8 @@ def video_receipt(p, task_id, draft_created=None):
     return {"task_id":task_id, "endpoint":video_endpoint(p), "draft_created":draft_created}
 
 
-def video_durations(kind, model):
+def video_durations(kind, model, *, provider=None):
+    model = video_model_for_limits(provider,model)
     if kind == "kling":
         if model.startswith("kling-2.6"):
             return [5,10]
@@ -391,12 +393,13 @@ def video_durations(kind, model):
     return list(range(4,31 if "2-5" in model else 16))
 
 
-def video_duration(kind, model, duration):
+def video_duration(kind, model, duration, *, provider=None):
     seconds = round(duration or 5)
-    return min(video_durations(kind,model),key=lambda value:abs(value-seconds))
+    return min(video_durations(kind,model,provider=provider),key=lambda value:abs(value-seconds))
 
 
-def video_resolutions(kind, model):
+def video_resolutions(kind, model, *, provider=None):
+    model = video_model_for_limits(provider,model)
     if kind == "minimax":
         return {"std":"768P","hd":"2K"} if model in ("MiniMax-H3","MiniMax-H3-MG") else {"std":"480P","hd":"768P"}
     if kind == "kling":
@@ -418,8 +421,8 @@ def video_resolutions(kind, model):
     return {"std":"480P","hd":"768P"}
 
 
-def video_resolution(kind, model, quality):
-    options = video_resolutions(kind,model)
+def video_resolution(kind, model, quality, *, provider=None):
+    options = video_resolutions(kind,model,provider=provider)
     return options.get(quality,options["std"]) if isinstance(quality,str) else options["std"]
 
 
@@ -527,11 +530,11 @@ async def mm_result(http, comfy_dir, p, receipt):
     return await _save_video(http, comfy_dir, p["name"], await _poll(check, p["name"]))
 
 
-def reference_audio_wav(path, seconds):
+def reference_audio_wav(path, seconds, start=0):
     import numpy as np
     from render import SR, read_audio
 
-    samples = read_audio(path, t1=seconds)
+    samples = read_audio(path,t0=start,t1=start+seconds)
     pcm = (np.clip(samples, -1, 1).T * 32767).astype("<i2")
     with io.BytesIO() as sink:
         with wave.open(sink, "wb") as audio:
@@ -540,19 +543,20 @@ def reference_audio_wav(path, seconds):
         return sink.getvalue()
 
 
-def ark_audio_url(path, seconds):
-    return "data:audio/wav;base64," + base64.b64encode(reference_audio_wav(path,seconds)).decode("ascii")
+def ark_audio_url(path, seconds, start=0):
+    return "data:audio/wav;base64," + base64.b64encode(reference_audio_wav(path,seconds,start)).decode("ascii")
 
 
 def supports_video_draft(provider, model):
-    name = (model or "").lower()
+    name = (video_model_for_limits(provider,model) or "").lower()
     return provider["kind"] == "ark" and "seedance-2-5" in name and not any(x in name for x in ("flash","fast","mini"))
 
 
-async def ark_video_body(model, req):
+async def ark_video_body(model, req, *, provider=None):
     if draft_task := req.get("draft_task"):
         return {"model":model, "content":[{"type":"draft_task","draft_task":{"id":draft_task}}],
                 "resolution":req["resolution"], "watermark":False}
+    profile_model = video_model_for_limits(provider,model)
     content = [{"type": "text", "text": req["prompt"]}]
     motion_url = req.get("motion_url")
     video_urls = ([motion_url] if motion_url else []) + list(req.get("video_urls") or [])
@@ -564,21 +568,25 @@ async def ark_video_body(model, req):
         content.extend({"type": "image_url", "image_url": {"url": data_url(path, 2048, min_side=300)}, "role": "reference_image"}
                        for path in req["refs"])
         content.extend({"type":"video_url", "video_url":{"url":url}, "role":"reference_video"} for url in video_urls)
-        for path, seconds in audio_refs:
-            sound = await asyncio.to_thread(ark_audio_url, path, seconds)
+        for path,start,seconds in audio_refs:
+            sound = await asyncio.to_thread(ark_audio_url,path,seconds,start)
             content.append({"type":"audio_url", "audio_url":{"url":sound}, "role":"reference_audio"})
     elif req.get("first"):
         content.append({"type": "image_url", "image_url": {"url": data_url(req["first"], 2048)}, "role": "first_frame"})
         if req.get("last"):
             content.append({"type": "image_url", "image_url": {"url": data_url(req["last"], 2048)}, "role": "last_frame"})
     elif req.get("refs"):
-        content += [{"type": "image_url", "image_url": {"url": data_url(x, 2048)}, "role": "reference_image"} for x in req["refs"][:9]]
-    body = {"model": model, "content": content, "resolution": video_resolution("ark",model,req.get("quality")),
+        limit = image_limit(profile_model)
+        if len(req["refs"]) > limit:
+            raise ProviderError(f"此模型最多支持 {limit} 张参考图")
+        content += [{"type":"image_url","image_url":{"url":data_url(path,2048,min_side=300)},"role":"reference_image"}
+                    for path in req["refs"]]
+    body = {"model": model, "content": content, "resolution": video_resolution("ark",model,req.get("quality"),provider=provider),
             "ratio": "adaptive" if req.get("first") else _ratio(req.get("ar") or 16 / 9),
-            "duration": video_duration("ark", model, req.get("duration")), "watermark": False}
-    if video_urls or audio_refs or "seedance-2" in model:
+            "duration": video_duration("ark", model, req.get("duration"),provider=provider), "watermark": False}
+    if video_urls or audio_refs or "seedance-2" in profile_model:
         body["generate_audio"] = bool(req.get("audio", True))
-    if extension and "seedance-2-5" in model:
+    if extension and "seedance-2-5" in profile_model:
         body.update(ratio="adaptive",omni_reference_task_type="extend")
     elif extension and model.startswith("ep-"):
         body["ratio"] = "adaptive"
@@ -591,7 +599,7 @@ async def ark_video_body(model, req):
 
 async def ark_video(http, comfy_dir, p, model, req, on_submitted=None):
     """Seedance (Volcengine Ark content generation tasks)."""
-    body = await ark_video_body(model, req)
+    body = await ark_video_body(model,req,provider=p)
     created = time.time()
     try:
         j = await json_req(http, "POST", ark_base(p) + "/contents/generations/tasks", p["name"],

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
 import re
 import time
 import uuid
@@ -13,6 +14,7 @@ from urllib.parse import quote
 from aiohttp import web
 import db
 import document_import
+import motion_reference
 from rewriter import strip_fences
 
 KINDS = {"character", "scene", "prop", "style", "document"}
@@ -439,11 +441,11 @@ class Store:
         if "generation_media" in p:
             selected = p["generation_media"]
             available = {m["ref"]:m for m in a["media"]}
-            if (not isinstance(selected, list) or len(selected) > 29 or
+            if (not isinstance(selected, list) or len(selected) > 50 or
                     any(not isinstance(ref, str) or ref not in available for ref in selected) or
                     len(set(selected)) != len(selected)):
                 fail("请选择此资产内不同的生成参考素材")
-            for kind, maximum in (("image",9),("video",10),("audio",10)):
+            for kind, maximum in (("image",30),("video",10),("audio",10)):
                 if sum(generation_media_type(ref,available[ref]) == kind for ref in selected) > maximum:
                     fail(f"每组最多选择 {maximum} 项同类型参考素材")
             a.pop("generation_images", None)
@@ -462,6 +464,29 @@ class Store:
                 a["generation_images"] = selected
             else:
                 a.pop("generation_images", None)
+        selected = set(a.get("generation_media", []))
+        for kind,label in (("video","视频"),("audio","音频")):
+            key = f"generation_{kind}_ranges"
+            media_lengths = {media["ref"]:media.get("seconds") for media in a["media"]
+                             if media["ref"] in selected and generation_media_type(media["ref"],media)==kind}
+            if key in p:
+                ranges = p[key]
+                if not isinstance(ranges,dict) or ranges.keys()-media_lengths.keys():
+                    fail(f"只能为已选中的参考{label}设置片段")
+                for ref,span in ranges.items():
+                    if (not isinstance(span,list) or len(span)!=2 or
+                            any(type(value) not in (int,float) or not 0<=value<math.inf for value in span)):
+                        fail(f"参考{label}入点和出点须为有效秒数")
+                    start,end = span
+                    duration = media_lengths[ref]
+                    if end-start < 2-1e-8 or (duration is not None and end>duration+.025):
+                        fail(f"参考{label}片段须在原素材内，且至少 2 秒")
+            else:
+                ranges = {ref:span for ref,span in a.get(key,{}).items() if ref in media_lengths}
+            if ranges:
+                a[key] = ranges
+            else:
+                a.pop(key,None)
         if a["kind"] == "character":
             if "character_card" in p:
                 card = p["character_card"]
@@ -492,7 +517,7 @@ class Store:
         aid = "m"+uuid.uuid5(uuid.NAMESPACE_URL,dumps(["oneshot:asset-copy",user["id"],mid,key])).hex
         refs = [item["ref"] for item in source.get("media",[])]
         self.h.require_media(user,refs)
-        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","generation_images","generation_media","document") if k in source}
+        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","generation_images","generation_media","generation_video_ranges","generation_audio_ranges","document") if k in source}
         copied["aliases"] = []
         copied["media"] = [{k:item[k] for k in ("ref","source","type","role","w","h","seconds") if k in item}
                            for item in source.get("media",[])]
@@ -615,7 +640,7 @@ class Store:
             fail("此版本没有使用资产参考或资料")
         return assets
 
-    def prepare(self, user, raw, *, owner_only=False, replay_ref=None):
+    def prepare(self, user, raw, *, owner_only=False, replay_ref=None, video_reference_check=False):
         p = copy.deepcopy(raw)
         p["prompt"] = p.get("prompt", "").split("\n\n创作参考资料（仅作内容依据）：", 1)[0]
         content = p.get("prompt", "") + "\n" + "\n".join(str(v) for v in (p.get("fields") or {}).values())
@@ -675,6 +700,11 @@ class Store:
             not views.get(a["id"]) and any(entry["ref"] in (
                 {ref for _,ref in historical[a["id"]]} if a["id"] in historical else a.get("generation_media",[]))
                 and generation_media_type(entry["ref"],entry) != "image" for entry in a["media"]) for a in chosen))
+        image_limit = 30 if has_motion or video_generation and video_reference_check else 9
+        if video_generation and not has_motion and not video_reference_check:
+            route = self.h.requested_generation_route(p,"video")
+            if route:
+                image_limit = motion_reference.ark_image_reference_limit(route["provider"],route["model"]) or image_limit
         for a in chosen:
             mid = a["id"]
             context = contexts[mid]
@@ -697,6 +727,11 @@ class Store:
                 refs = [(slot, approved[slot]) for slot in slots]
             else:
                 refs = [(None, ref) for ref in a.get("generation_media") or a.get("generation_images") or [a.get("ref")]]
+            if mid in recorded:
+                ranges = {entry["ref"]: [entry["start"], entry["end"]]
+                          for entry in recorded[mid].get("references", []) if "start" in entry and "end" in entry}
+            else:
+                ranges = {**a.get("generation_video_ranges",{}),**a.get("generation_audio_ranges",{})}
             media_by_ref = {entry["ref"]:entry for entry in a["media"]}
             kinds = {ref:generation_media_type(ref,media_by_ref.get(ref)) for _,ref in refs if ref}
             omitted = [ref for ref,kind in kinds.items() if kind != "image" and not video_generation]
@@ -714,8 +749,11 @@ class Store:
                 summary.pop("document_excerpt",None)
             if slots or a["id"] in historical or a.get("generation_images") or a.get("generation_media"):
                 summary["ref"] = next((ref for _,ref in refs if kinds.get(ref) == "image"),"")
-                summary["references"] = [{"view":slot, "ref":ref,**({"type":kinds[ref]} if a.get("generation_media") or
-                                           kinds[ref] != "image" else {})} for slot,ref in refs if ref]
+                summary["references"] = [
+                    {"view":slot,"ref":ref,
+                     **({"type":kinds[ref]} if a.get("generation_media") or kinds[ref] != "image" else {}),
+                     **({"start":ranges[ref][0],"end":ranges[ref][1]} if kinds[ref] != "image" and ref in ranges else {})}
+                    for slot,ref in refs if ref]
             if omitted:
                 summary["omitted_media_count"] = len(omitted)
             used.append(summary)
@@ -733,13 +771,14 @@ class Store:
                     fail(f"「{label}」的参考素材已丢失，请重新指定")
                 if media_kind != "image":
                     key, token = ("video_refs","视频") if media_kind == "video" else ("audio_refs","音频")
+                    span = dict(zip(("start","end"), ranges[ref])) if ref in ranges else {}
                     entries = p.setdefault(key, [])
                     if not isinstance(entries,list) or any(not isinstance(entry,dict) for entry in entries):
                         fail(f"参考{token}格式不正确")
                     index = next((i for i,entry in enumerate(entries) if entry.get("ref") == ref and
-                                  ("start" not in entry and "end" not in entry or media_kind == "audio")),None)
+                                  (entry.get("start"),entry.get("end")) == (span.get("start"),span.get("end"))),None)
                     if index is None:
-                        entries.append({"ref":ref,"memory_id":a["id"],"name":label})
+                        entries.append({"ref":ref,"memory_id":a["id"],"name":label,**span})
                         index = len(entries)-1
                     number = index+1+int(media_kind == "video" and bool(p.get("previs_guide")))
                     notes.append(f"{label} 的参考{token}：@{token}{number}。")
@@ -749,8 +788,8 @@ class Store:
                     label += f" · 参考图 {picture_number}"
                 im = next((im for im in images if im.get("ref") == ref), None)
                 if im is None:
-                    if len(images) >= (30 if has_motion else 9):
-                        fail("参考图片过多，请减少画布输入或资产引用")
+                    if len(images) >= image_limit:
+                        fail(f"参考图片最多 {image_limit} 张，请减少画布输入或资产引用")
                     media = media_by_ref.get(ref,{})
                     im = {"ref": ref, "name": label, "caption": context["desc"],
                           "w": media.get("w", a.get("w") if not slot else None),

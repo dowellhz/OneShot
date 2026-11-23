@@ -49,5 +49,7 @@
 .cm-generation-images[hidden]{display:none}
 .cm-generation-images summary{cursor:pointer}
 .cm-generation-images ol{margin:0;padding:0;display:grid;gap:5px;list-style:none}
-.cm-generation-images li,.cm-generation-images li label{display:flex;align-items:center;gap:6px}
+.cm-generation-images li,.cm-generation-images li>label{display:flex;align-items:center;gap:6px}
+.cm-generation-images li{flex-wrap:wrap}
+.cm-reference-range{display:flex;flex-basis:100%;gap:8px;padding-left:24px}
 .cm-generation-images img{width:34px;height:30px;object-fit:cover;border-radius:4px}

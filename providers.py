@@ -20,7 +20,7 @@ from pathlib import Path
 import aiohttp
 
 import db
-from motion_reference import public_origin
+from motion_reference import ARK_ENDPOINT_ID, ARK_VIDEO_MODELS, public_origin
 
 CAPS = {
     "text": "文本（剧本、改写、扩写）",
@@ -226,6 +226,23 @@ def generation_rates(value, caps):
     return rates
 
 
+def ark_endpoint_models(value):
+    if not isinstance(value,str) or len(value)>8000:
+        raise ProviderError("视频接入点设置须为最多 8000 字符的文本")
+    models = {}
+    for number,line in enumerate(value.splitlines(),1):
+        parts = line.split()
+        if not parts:
+            continue
+        if len(parts)!=2 or not ARK_ENDPOINT_ID.fullmatch(parts[0]) or parts[1] not in ARK_VIDEO_MODELS:
+            raise ProviderError(f"第 {number} 行须填写接入点 ID 和对应的 Seedance 型号")
+        endpoint,profile = parts
+        if endpoint in models:
+            raise ProviderError(f"第 {number} 行接入点 ID 重复")
+        models[endpoint] = profile
+    return models
+
+
 def save(pid: str | None, kind: str, name: str, config: dict, secrets: dict, enabled: bool) -> str:
     if kind not in CATALOG or CATALOG[kind]["group"] == "local":
         raise ProviderError("不能添加这种服务")
@@ -248,6 +265,11 @@ def save(pid: str | None, kind: str, name: str, config: dict, secrets: dict, ena
     if kind == "elevenlabs":
         conf["voices"] = ",".join(f"{voice['id']}={voice['name']}" for voice in elevenlabs_voices(conf.get("voices", "")))
     old = get(pid) if pid else None
+    if kind == "ark":
+        if "video_endpoint_models" in config:
+            conf["video_endpoint_models"] = ark_endpoint_models(config["video_endpoint_models"])
+        elif old and "video_endpoint_models" in old["config"]:
+            conf["video_endpoint_models"] = old["config"]["video_endpoint_models"]
     if "generation_rates" in config:
         conf["generation_rates"] = generation_rates(config["generation_rates"], cat["caps"])
     elif old and "generation_rates" in old["config"]:

@@ -63,9 +63,11 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.source = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "red"), "asset", "input")
 
     async def test_remake_uses_the_next_long_enough_duration_and_splits_at_model_limit(self):
+        db.run("INSERT INTO users(id,username,pw_hash) VALUES(7,'owner','test')")
         source = self.make_clip("model-limited",12,(100,90,80),300)
+        alternate = "input:h3studio/alternate.mp4"
         server.board_path("test").write_text(json.dumps({"owner":7,"nodes":[
-            {"id":"n3","type":"video","versions":[{"ref":source}]}]}))
+            {"id":"n3","type":"video","cur":1,"versions":[{"ref":source},{"ref":alternate}]}]}))
         key = (7,"test","n3",source)
         first = {"w":64,"h":64,"ref":self.source["ref"],"at":0,"approved":"approved-frame","previews":[
             {"job":"approved-frame","state":"done","ref":self.source["ref"],"asset":{"name":"测试人物"}}]}
@@ -83,9 +85,24 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             submit.assert_not_awaited()
             await video_remake.generate_shot(Request(source,self.user),server,key,{**shot,"end":6.5},{})
             self.assertEqual(submit.await_args.args[1]["duration"],10)
+        assistant = server.agent_chat.AgentService({}, server)
+        run = {"board_id":"test","data":{"bindings":{"n3":source}}}
+        status = await assistant.execute(run, self.user, "status", "video_remake_status", {"node_id":"n3"})
+        self.assertTrue(status["shots"][0]["requires_split"])
+        args = {"node_id":"n3","shot":1,"cut_revision":status["cut_revision"]}
+        with self.assertRaisesRegex(server.agent_chat.ToolError, "剪辑点已更新"):
+            await assistant.execute(run, self.user, "stale", "video_remake_split_long", {**args,"cut_revision":1})
+        self.assertEqual(len(video_remake.load(key)["shots"]),1)
         with patch.object(server,"llm_call",side_effect=self.no_vision):
-            split = json.loads((await server.remake(Request(source,self.user,{"action":"split_long_shot","shot":0}))).body)
-        self.assertEqual([(item["start"],item["end"]) for item in split["shots"]],[(0,6),(6,12)])
+            split = await assistant.execute(run, self.user, "split", "video_remake_split_long", args)
+        self.assertEqual(split["cut_revision"],1)
+        self.assertEqual(split["split_shots"],[
+            {"number":1,"start":0,"end":6},{"number":2,"start":6,"end":12}])
+        self.assertFalse(any(item["requires_split"] for item in split["shots"]))
+        self.assertEqual(split["remake"],{"node_id":"n3","source_ref":source,"shot_number":1,"shot_start":0})
+        self.assertTrue(split["can_undo_cut"])
+        self.assertEqual([(item["start"],item["end"]) for item in video_remake.load(key)["shots"]],[(0,6),(6,12)])
+        self.assertIsNone(video_remake.load((*key[:3],alternate)))
 
     async def test_shot_depth_guide_keeps_exact_cut_and_can_reopen(self):
         source = self.make_clip("depth-cuts", seconds=3, color=lambda i: (43, 43, 43) if i < 25 else (160, 160, 160),

@@ -16,9 +16,10 @@ function vtSignature(n){
   for(const e of B.edges.filter(e=>e.to===n.id&&node(e.from)?.type==="text"))entries.push([e.from,"text",null]);
   for(const e of B.edges.filter(e=>e.to===n.id&&e.relation==="remake"))entries.push([e.from,"remake",e.source_ref]);
   for(const e of B.edges.filter(e=>e.to===n.id&&e.relation==="trim"))entries.push([e.from,"trim",e.source_ref,e.start,e.end]);
+  for(const e of B.edges.filter(e=>e.to===n.id&&e.relation==="draft_final"))entries.push([e.from,"draft_final",e.ref]);
   const guide=previsInput(n);
   if(guide)entries.push([guide.edge.from,"previs",guide.edge.ref]);
-  for(const {edge} of audioInputs(n))entries.push([edge.from,"audio_ref",edge.ref]);
+  for(const {edge} of audioInputs(n))entries.push([edge.from,"audio_ref",edge.ref,edge.start??0,edge.end??null]);
   videoInputs(n).forEach(({edge},i)=>entries.push([edge.from,"video_ref",edge.ref,i,edge.start??0,edge.end??null,edge.extension??null,!!edge.segment_edit]));
   return JSON.stringify(entries.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b))));
 }
@@ -28,7 +29,7 @@ function vtMergeInfo(ids){
   if(nodes.some(nodeLocked))return {error:"请先解锁视频节点再合并 Tab"};
   if(nodes.some(n=>n.job||prepping.has(n.id)))return {error:"请等待这些视频的任务完成后再合并"};
   if(nodes.some(n=>!!n.data.previs!==!!nodes[0].data.previs))return {error:"白模预演和正式视频需要保留为独立节点"};
-  if(nodes.some(n=>B.edges.some(e=>e.from===n.id&&!["remake","previs","video_ref","trim","capture"].includes(e.relation))))return {error:"视频还有下游连线，先移除该连线再合并"};
+  if(nodes.some(n=>B.edges.some(e=>e.from===n.id&&!["remake","previs","video_ref","trim","capture","draft_final"].includes(e.relation))))return {error:"视频还有下游连线，先移除该连线再合并"};
   if(nodes.some(n=>vtSignature(n)!==vtSignature(nodes[0])))return {error:"输入或参考版本不同，不能合并为同一组 Tab"};
   const pinned=nodes.filter(n=>vtReferences(n.id));
   if(pinned.length>1)return {error:"多个视频分别被成片或分镜引用，请保留为独立节点"};
@@ -51,8 +52,8 @@ function videoRecipeEdges(n,r) {
       const {node_id:from,ref,start,end} = input;
       const slot = promptSlot(input.prompt_slot);
       edges.push({from,to:n.id,ref,relation,...(slot?{prompt_slot:slot}:{}),
-        ...(relation==="video_ref"?{start,end,...(i===0 && r.extension ? {extension:r.extension} : {}),
-          ...(i===0 && r.segment_edit ? {segment_edit:true} : {})}: {})});
+        start,end,...(relation==="video_ref"&&i===0&&r.extension?{extension:r.extension}:{}),
+        ...(relation==="video_ref"&&i===0&&r.segment_edit?{segment_edit:true}:{})});
     });
   }
   return edges;
@@ -60,6 +61,8 @@ function videoRecipeEdges(n,r) {
 
 function vtSnapshot(n,i){
   const v=vtClone(n.versions[i]);
+  if(v.draft_final?.source_ref&&!v.draft_final.source_node&&n.versions.some(source=>source.ref===v.draft_final.source_ref))
+    v.draft_final.source_node=n.id;
   if(!Array.isArray(v.input_edges)){
     v.input_edges=hasVideoRecipeInputs(v.video_recipe)?videoRecipeEdges(n,v.video_recipe):vtClone(B.edges.filter(e=>e.to===n.id));
   }
@@ -106,7 +109,7 @@ function vtMoveReferences(oldId,newId){
 function vtMoveVideoSource(oldId,newId,ref){
   const move=edges=>{
     for(const e of edges||[]){
-      const pinned=["remake","trim","capture"].includes(e.relation)?e.source_ref:["previs","video_ref"].includes(e.relation)?e.ref:null;
+      const pinned=["remake","trim","capture"].includes(e.relation)?e.source_ref:["previs","video_ref","draft_final"].includes(e.relation)?e.ref:null;
       if(pinned&&e.from===oldId&&pinned===ref)e.from=newId;
     }
   };
@@ -115,8 +118,11 @@ function vtMoveVideoSource(oldId,newId,ref){
     if(clip.node===oldId&&clip.ref===ref)clip.node=newId;
   for(const n of B.nodes)for(const item of n.data?.film?.cutaways||[])
     if(item.node===oldId&&item.ref===ref)item.node=newId;
+  for(const n of B.nodes)for(const history of [...n.versions,n.job?.history].filter(Boolean)){
+    move(history.input_edges);
+    if(history.draft_final?.source_node===oldId&&history.draft_final.source_ref===ref)history.draft_final.source_node=newId;
+  }
   for(const n of B.nodes)for(const v of n.versions){
-    move(v.input_edges);
     if(Array.isArray(v.segment_review)){
       for(const choice of v.segment_review)if(choice?.node_id===oldId&&choice.ref===ref)choice.node_id=newId;
     }

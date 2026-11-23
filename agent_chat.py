@@ -361,7 +361,7 @@ TOOL_MAP = {t["function"]["name"]: t["function"] for t in TOOLS}
 ANALYSIS_TOOLS = frozenset({"canvas_context","canvas_workflow_review","web_search","ask_creative_questions","creative_directions",
     "workflow_template_search","workflow_template_inputs","storyboard_context","storyboard_visual_review","media_describe",
     "audio_services","creative_skill_load","image_layers_get","image_history","memory_search","memory_get",
-    "video_object_settings","video_draft_status","video_titles_get","video_cutaways_get","video_previs_get",
+    "video_models","video_object_settings","video_draft_status","video_titles_get","video_cutaways_get","video_previs_get",
     "video_remake_status","video_playlist_read"})
 PLAN_TOOLS = ANALYSIS_TOOLS | {"canvas_reference_plan","canvas_group_run_plan","storyboard_create_plan","storyboard_next_shot_plan",
     "storyboard_revision_plan","storyboard_range_run_plan","workflow_template_plan","video_remake_plan","video_previs_storyboard_plan"}
@@ -391,6 +391,7 @@ SYSTEM = """你是 OneShot 创作助手。默认用中文帮助用户操作当�
 用户要求自动拆分物体为可编辑图层时，用image_decompose；读取或修改已有图层时用对应的图层工具。
 image_select manual会等待真实用户输入，工具返回后才能继续编辑；不能绕过选区等待改做整图。图层先用image_layers_get读取ID再操作。减弱生成效果优先调生成区域图层不透明度；沿用参数重新生成用image_reuse，它复用编辑前原图，不能在结果上重复叠加。支持Markdown回复，复杂结果可用列表或表格。
 生成新视频用video_generate；重生成现有视频用video_regenerate。沿用图片时省略frames；只替换个别关键帧或人物图用replacements；重新指定整组参考图片用frames，两者不可同传。image_generate只会生成静态图片，不能用于视频，也不能把图片结果叫视频或归咎服务配置。以返回的media_type和文件类型为准。media_describe支持视频抽帧分析。
+用户指定具体视频模型或询问有哪些模型时，先用video_models读取实际可用选项。生成时传入返回的provider ID及selected_model；本地 H3 只传 provider。重生成默认沿用历史版本的模型，用户要求切换时采用新选择。
 续拍或补拍用video_extend。用户指定本地时传method=frame，由本地H3使用原片接点帧和可选图片参考。自动模式可从连续画面切换为接点帧；不要把接点帧说成原片运动参考。每条用户指令最多提交一段视频，已有成片时请说明下一段可作为新消息入队。
 用户要制作机位、构图或走位白模时用video_previs_save。修改现有白模先用video_previs_get，保留未要求修改的轨道，再保存到同一节点。需要可播放预演时调用video_previs_render。只有用户要求生成正式视频，才在video_generate或video_regenerate中用previs指定已渲染的白模版本；它是动作参考，角色图和场景图提供外观。
 用户明确要给已有白模加推进、拉远、横移、环绕或跟拍时，先用video_previs_get核对时长、目标物体及场景版本，再用video_previs_camera_motion写入指定区间。只在用户需要视频预览时渲染。
@@ -401,7 +402,7 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 用户要求用某段音频参考声音或节奏时，在video_generate或video_regenerate的audio_refs中传入画布音频节点和所选版本。音频参考由模型重新生成声音，用户明确要求保留原音频时，应在剪辑台采用该音频。
 用户要求配音、音乐或音效时，调用audio_generate。用户指定音色时先用audio_services查实际音色编号。用户要求用音频或图片参考生成声音时，选择seed_audio并传入reference_ids。重新生成在原音频节点增加版本。生成后的音频可在剪辑台加入时间线或作为视频声音参考。
 用户要求分离人声或把原声中的人声与伴奏拆成独立音轨时，调用 audio_separate。指定的时间为原素材秒数，未指定区间时用完整素材。只获取台词时使用已有转写流程。
-用户明确要求先生成原生样片时，在相应视频生成工具传 draft=true。要求把已有样片做成定稿时，先用video_draft_status确认版本和有效期，再用video_draft_finalize；默认1080p，用户指定4K时用4k。定稿在原节点追加版本。用户只是查询样片或分辨率时只读取状态，不提交生成。
+用户明确要求先生成原生样片时，在相应视频生成工具传 draft=true。要求把已有样片做成定稿时，先用video_draft_status确认版本和有效期，再用video_draft_finalize；默认1080p，用户指定4K时用4k。默认在原节点追加版本，用户要求相连的新节点或把样片和定稿并排保留时用placement=branch。用户只是查询样片或分辨率时只读取状态。
 用户要求给已有视频加片头文字、地名条等画面标题时，用video_titles_edit，在原节点追加剪辑版。查询、调整或删除已有标题时，先用video_titles_get读取同一版本的标题编号与时长。修改时只传用户要更新的字段，保留其他标题和轨道。标题时间按成片秒数；新增时默认从开头显示2.5秒，左下角地名条可用lower_left和label。用户只问标题内容或要求草拟标题时不提交渲染。
 用户要求制作动态标题、逐张字幕卡、条形图或图片推拉等 B-roll 动态画面时，用video_broll_generate，将用户明确引用的图片或视频版本制作成相连的新视频。只有用户明确选择历史版本才传 version，否则沿用本轮引用。图表只采用用户提供的数值；缺少数值先询问。只有用户要求生成才调用，草稿请求用文字回复。确认卡展示来源版本、时间、内容和图表数据，用户确认后才会渲染。
 用户要求在指定时段插入已有素材作补画面或空镜并保留主片声音时，用video_cutaways_edit，优先使用明确引用的图片、视频节点和版本，或明确指定的素材库资产。start与duration使用成片秒数，in是补画面素材中的入点。无明确素材时先找已有资产或向用户确认，不猜测素材节点。查询或修改已有补画面先用video_cutaways_get读取编号。同一请求需要标题和补画面时，把标题修改一并放在video_cutaways_edit的title_changes里，只提交一次渲染。
@@ -414,8 +415,10 @@ image_select manual会等待真实用户输入，工具返回后才能继续编�
 用户要继续调整已有的视频物体编辑时，先用video_object_settings读所选节点和版本，再用video_regenerate更新用户指定的object_edit字段。只换参考图时传replacement的画布图片节点或资产ID，沿用已有框和标注帧。新建框选物体编辑，只有用户给出明确选区和标注帧时才使用video_edit_segment的object_edit；否则请用户在画布框选，不能虚构坐标。明确要求整段按文字描述修改时可用普通片段编辑。
 用户要求截取视频首帧、末帧或指定秒数的画面时调用video_capture_frame。用户只说当前帧且没有指定原片秒数时，请先确认秒数，或请用户在画布、剪辑台的播放头直接截帧。只有用户明确要求接着生成时才继续调用生成工具。
 用户要 GIF 时，已有宫格序列帧就用image_export_gif，已有视频就用video_export_gif，交付实际工具返回的下载卡。用户想做表情或像素动图时可先用image_generate生成一张规格明确的宫格，默认 4×4 方形，固定主体位置、大小、背景及机位，动作按行推进，无文字、编号或额外边框，结尾接回起始姿势。需要自然连续影像时先生成短视频再导出。来源是宫格且行列不明确时，先核对图片或询问。可按用户要求用往返循环。
+用户指定参考音频中的一段时，在audio_refs传入所引用节点和原素材的start、end秒数。沿用历史视频版本时保留原音频范围，除非用户要求修改。
 询问已上传原片的角色替换进度、待审核镜头或成片可否导出时，用video_remake_status读取原片版本；其中的时间是原片时间，镜头从1编号。
 用户明确要为角色替换拆镜或分析原片时调用video_remake_analyze，分析结果会保存到对应视频版本。用户要求重试或补充缺失镜头分析时设置retry=true。根据missing_analysis_shots说明仍缺少分析的镜头。模型识别的人物与镜头是供用户核对的建议。
+用户明确要求按时长拆分重制镜头时，先用video_remake_status核对requires_split，再用video_remake_split_long和最新cut_revision。每次拆分后用返回的新镜头编号和审核状态继续用户已授权的操作。
 用户提出跨镜头换角或要先看执行方案时，先分析原片，再用video_remake_plan生成可勾选的确认卡。等用户在卡片上确认，同一轮不要另行提交生成。明确要求直接生成一个已审核镜头时，继续使用对应工具。
 用户要求保存角色替换映射时调用video_remake_map，使用素材库的真实角色ID与最新cut_revision。镜头范围按用户指定；用户授权你按分析选择时可依据suggested_people，遇到人物或范围不明确时给出选择。保存映射只完成替换准备，不能说已经生成或替换完成。
 用户要求定位已映射的人物时调用video_remake_locate，使用当前映射和最新cut_revision。其结果是首帧候选点，须在工作区核对；人物晚入画时可在工作区查找入画帧。
@@ -1019,6 +1022,12 @@ class AgentService:
                     existing = next((n for n in nodes if n["id"] == nid), None)
                     queued = any(op["id"] == "queued_" + cid for op in b.get("agent_ops", []))
                     if existing:
+                        if kind == "video" and (draft := v.get("draft_final")):
+                            binding = next((edge for edge in b.get("edges", []) if edge.get("to") == nid
+                                            and edge.get("relation") == "draft_final" and edge.get("ref") == draft["source_ref"]), None)
+                            if binding:
+                                v = {**v,"draft_final":{**draft,"source_node":binding["from"]},
+                                     "input_edges":[copy.deepcopy(binding)]}
                         if not any(old.get("ref") == v["ref"] for old in existing.get("versions", [])):
                             existing.setdefault("versions", []).append(v)
                             existing["cur"] = len(existing["versions"]) - 1
@@ -1655,6 +1664,8 @@ class AgentService:
         signature = hashlib.sha256(json.dumps([kind,count,plan],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         exposed = {key:plan[key] for key in ("label","prompt","provider","model","aspect","ar","quality","resolution","duration","mode","voice","placement")
                    if isinstance(plan.get(key),(str,int,float)) and not isinstance(plan.get(key),bool)}
+        if kind=="video" and isinstance(plan.get("selected_model"),str):
+            exposed["model"] = plan["selected_model"]
         if "prompt" in exposed:
             exposed["prompt"] = str(exposed["prompt"])[:8000]
         if "camera_view" in plan:
@@ -1676,9 +1687,10 @@ class AgentService:
             draft.pop("reference_review",None)
             draft.pop("reference_error",None)
             try:
-                draft["reference_review"] = await reference_review(draft.get("overrides",{}))
+                draft["reference_review"], draft["unit_cost"] = await reference_review(draft.get("overrides",{}))
             except ToolError as error:
                 draft["reference_error"] = str(error)
+                draft["unit_cost"] = None
 
         if needs_review:
             changes = (previous_plan or {}).get("overrides",{})
@@ -2072,6 +2084,10 @@ class AgentService:
             payload.update(result["memory_context"])
         if result.get("reference_context"):
             payload.update(result["reference_context"])
+        if result.get("video_model"):
+            payload.update(result["video_model"])
+            if target_data is not None:
+                target_data = {**target_data,**result["video_model"]}
         pending = {"ids": result["ids"], "name": name, "prompt": payload["prompt"], "kind": kind, "memory_used": result.get("memory_used", [])}
         if prepared := request.get("generation_snapshot"):
             refs.update(self.host.media_references(prepared.get("memory_used",[])))
@@ -3045,6 +3061,7 @@ async def decide_generation(req):
             if plan.get("reference_checked"):
                 plan["reference_pending"] = True
                 plan.pop("reference_error",None)
+                plan["unit_cost"] = None
             revision = ident("approval")
             db.run("UPDATE chat_approvals SET id=?,plan=? WHERE id=?",revision,dumps(plan),aid)
             return web.json_response({"ok":True,"approval_id":revision})

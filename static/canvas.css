@@ -320,6 +320,14 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #pv .hd > div { flex: 1; min-width: 0; }
 #pv .hd button { flex: none; }
 #pv .hd small { color: var(--faint); font-weight: 400; }
+#pv .hd { flex-wrap: wrap; }
+#pvModels { max-height: 34vh; overflow: auto; }
+#pvModelStatus { color: var(--dim); margin: 0 0 6px; font-size: var(--fs-caption); }
+#pvModelList { list-style: none; display: grid; gap: 6px; padding: 0; margin: 0; }
+#pvModelList li { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+#pvModelList li > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#pvModelList strong, #pvModelList small { display: block; font-size: var(--fs-caption); }
+#pvModelList small { color: var(--dim); margin-top: 3px; }
 #pvInputs { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(175px,100%),1fr)); gap: 6px; flex: 0 0 auto; max-height: 26vh; overflow: auto; list-style: none; margin: 0; padding: 0; }
 #pvInputs[hidden] { display: none; }
 #pvInputs li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px; border: 1px solid var(--line); border-radius: 8px; }
@@ -328,6 +336,7 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #pvInputs strong,#pvInputs small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-caption); }
 #pvInputs small { color: var(--dim); }
 #pv pre { flex: 1; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; background: #111113; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: var(--fs-small)/1.65 var(--font-mono); color: #d8d8de; }
+#pv pre[hidden] { display: none; }
 #pp .ref { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; background: #222226; border: 1px solid var(--line); border-radius: 9px; font-size: var(--fs-small); color: #cfcfd5; cursor: pointer; }
 #pp .ref:hover { border-color: #555; }
 #pp .ref img { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; background: #000; }

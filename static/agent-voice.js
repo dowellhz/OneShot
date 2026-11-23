@@ -7,8 +7,7 @@ const acVoiceFormats = [
 ];
 const acVoiceLimit = 8 * 1024 * 1024;
 const voiceFileTypes = ".wav,.webm,.ogg,.m4a,.mp4,.mp3,.flac";
-const voicePreviewInterval = 9000;
-const voicePreviewMaxRequests = 6;
+const voicePreviewInterval = 5000;
 let acVoiceActive = null;
 let acVoiceAvailable = false, acVoiceHold = null;
 let voicePreviewEnabled = localStorage.getItem("h3.voice.livePreview") === "true";
@@ -79,15 +78,20 @@ function renderVoicePreview() {
    setting.disabled = !!active;
   }
   if (output) {
-   const text = active && !!active.target === isNode ? active.previewText : "";
+   const text = active && !!active.target === isNode ? active.previewText || active.previewError : "";
    output.textContent = text || "";
    output.hidden = !text;
+   if (text) output.scrollTop = output.scrollHeight;
   }
  }
 }
 
 function acVoiceRelease(active) {
  clearTimeout(active.timer);
+ clearTimeout(active.previewTimer);
+ const preview = active.previewRecorder;
+ active.previewRecorder = null;
+ if (preview?.state === "recording") preview.stop();
  active.previewController?.abort();
  active.stream?.getTracks().forEach(track => track.stop());
  active.stream = null;
@@ -141,23 +145,65 @@ async function voiceTranscription(blob, filename, signal, preview = false) {
  return result.text.trim();
 }
 
-async function requestVoicePreview(active, chunks, mimeType, filename) {
- if (!active.livePreview || active.phase !== "recording" || active.previewController ||
-     active.previewRequests >= voicePreviewMaxRequests || performance.now() < active.nextPreviewAt) return;
+async function requestVoicePreview(active, blob, filename) {
+ if (acVoiceActive !== active || active.phase !== "recording" || !blob.size || blob.size > acVoiceLimit) return;
  const controller = active.previewController = new AbortController();
- active.previewRequests++;
- active.nextPreviewAt = performance.now() + voicePreviewInterval;
+ const timeout = setTimeout(() => controller.abort(), 12000);
  try {
-  const text = await voiceTranscription(new Blob(chunks,{type:mimeType}),filename,controller.signal,true);
+  const text = await voiceTranscription(blob,filename,controller.signal,true);
   if (acVoiceActive === active && active.phase === "recording" && !controller.signal.aborted && text) {
-   active.previewText = text;
+   active.previewText = [active.previewText,text].filter(Boolean).join("\n");
    renderVoicePreview();
   }
  } catch {
-  // A growing recording can be unreadable until the recorder finishes.
+  if (acVoiceActive === active && active.phase === "recording") {
+   active.previewError = "实时预览暂不可用，停止后可转写完整录音";
+   renderVoicePreview();
+  }
  } finally {
+  clearTimeout(timeout);
   active.previewController = null;
  }
+}
+
+function recordVoicePreview(active, options, filename) {
+ let recorder;
+ let chunks = [];
+ function unavailable() {
+  clearTimeout(active.previewTimer);
+  active.previewRecorder = null;
+  active.previewError = "实时预览暂不可用，停止后可转写完整录音";
+  renderVoicePreview();
+ }
+ function start() {
+  chunks = [];
+  try {
+   recorder.start();
+   active.previewTimer = setTimeout(() => {
+    if (recorder.state === "recording") recorder.stop();
+   }, voicePreviewInterval);
+  } catch {
+   unavailable();
+  }
+ }
+ try {
+  recorder = new MediaRecorder(active.stream, options);
+ } catch {
+  unavailable();
+  return;
+ }
+ active.previewRecorder = recorder;
+ let pending = Promise.resolve();
+ recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+ recorder.onerror = unavailable;
+ recorder.onstop = () => {
+  if (acVoiceActive !== active || active.phase !== "recording" || active.previewRecorder !== recorder) return;
+  clearTimeout(active.previewTimer);
+  const blob = new Blob(chunks,{type:options.mimeType});
+  start();
+  pending = pending.then(() => requestVoicePreview(active,blob,filename));
+ };
+ start();
 }
 
 async function acVoiceSubmit(active, blob, filename) {
@@ -263,10 +309,8 @@ async function voiceRecord(active, format) {
   if (active.hold && acVoiceHold !== active.hold) return acVoiceEnd(active,"请再次按住说话");
   const [mimeType, extension] = format;
   const filename = "voice" + extension;
-  const recorder = active.recorder = new MediaRecorder(active.stream, {mimeType, audioBitsPerSecond:64000});
-  active.livePreview = voicePreviewEnabled;
-  active.previewRequests = 0;
-  active.nextPreviewAt = performance.now() + 4000;
+  const options = {mimeType, audioBitsPerSecond:64000};
+  const recorder = active.recorder = new MediaRecorder(active.stream, options);
   const chunks = [];
   let size = 0;
   recorder.ondataavailable = event => {
@@ -274,7 +318,6 @@ async function voiceRecord(active, format) {
    size += event.data.size;
    if (size > acVoiceLimit) return acVoiceEnd(active, "音频文件不能超过 8 MB");
    chunks.push(event.data);
-   if (active.livePreview) void requestVoicePreview(active,chunks,mimeType,filename);
   };
   recorder.onerror = () => acVoiceEnd(active, "录音中断，请重试");
   recorder.onstop = () => {
@@ -286,6 +329,7 @@ async function voiceRecord(active, format) {
   recorder.start(1000);
   active.phase = "recording";
   active.timer = setTimeout(() => acVoiceStop(active), 60000);
+  if (voicePreviewEnabled) recordVoicePreview(active, options, filename);
   if (active.target) acVoiceRender("正在录音…");
   else acVoiceReferenceStatus();
  } catch (error) {

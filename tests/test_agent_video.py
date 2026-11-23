@@ -4,6 +4,7 @@ import base64
 import copy
 import io
 import json
+import wave
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -19,6 +20,169 @@ from test_agent_chat import ChatFixture, answer, call
 
 
 class VideoIntegration(ChatFixture):
+    async def test_auto_reference_route_checks_canvas_audio_and_asset_audio_together(self):
+        user = {"id":7,"role":"member"}
+        short,long = "ep-mixed-short","ep-mixed-long"
+        provider = server.providers.save(None,"ark","混合素材模型",{"models":{"video":short},
+            "video_endpoint_models":f"{short} seedance-2.0\n{long} seedance-2.5"},{"api_key":"fixture"},True)
+        server.providers.set_route("video",[{"provider_id":provider,"model":short}])
+        clips = []
+        for name,seconds in (("canvas-audio",11),("asset-audio",7)):
+            path,ref = server.film._new(server.COMFY_DIR,"input",name,".wav")
+            with wave.open(str(path),"wb") as recording:
+                recording.setparams((1,2,8000,0,"NONE",""))
+                recording.writeframes(b"\x08\x00"*(seconds*8000))
+            server.grant_media(user,ref)
+            clips.append((path,ref,seconds))
+        board = self.load()
+        board["nodes"].append({"id":"canvas-sound","type":"audio","name":"现场声","data":{},"cur":0,
+                               "versions":[{"ref":clips[0][1],"seconds":11}]})
+        server.write_board(server.board_path("test"),board)
+        self.app["creative_memory"].put(user,{"board":"test","name":"环境声","kind":"scene","ref":clips[1][1],
+                                               "generation_media":[clips[1][1]]})
+        args = {"duration":8,"prompt":"根据画布声音和 @环境声 制作镜头",
+                "audio_refs":[{"node_id":"canvas-sound"}],"frames":[{"node_id":"n1","role":"subject"}]}
+        result = self.make_video(72)
+
+        async def generate(_http,_root,service,model,_cap,request,**_):
+            self.assertEqual((service["id"],model,request["duration"]),(provider,long,8))
+            self.assertEqual(request["audio_refs"],[(path,0,seconds) for path,_,seconds in clips])
+            return {"files":[{**result,"kind":"video","path":server.tools.ref_path(server.COMFY_DIR,result["ref"])}]}
+
+        self.svc.model.side_effect = [call("video_generate",args),answer()]
+        endpoint = f"/api/chat/sessions/{self.sid}/messages"
+        with patch.object(server.remote,"run",side_effect=generate) as submit:
+            response = await self.client.post(endpoint,json={"text":"混合两段音频生成",
+                "request_key":"auto-mixed-audio","generation_mode":"manual"})
+            rid = (await response.json())["id"]
+            approval = await self.pending_generation(rid)
+            review = approval["plan"]["reference_review"]
+            self.assertEqual(review["model"],long)
+            self.assertEqual([(entry["ref"],entry["end"]) for entry in review["inputs"] if entry["role"]=="audio_ref"],
+                             [(ref,seconds) for _,ref,seconds in clips])
+            submit.assert_not_called()
+            approved = await self.client.post(f"/api/chat/runs/{rid}/approvals/{approval['id']}",json={"decision":"approve"})
+            self.assertEqual(approved.status,200,await approved.text())
+            await self.wait(rid)
+            submit.assert_awaited_once()
+            self.svc.model.side_effect = [
+                call("video_generate",{**args,"provider":provider,"selected_model":short}),answer(),
+            ]
+            attempt = await self.send("指定短模型生成",key="explicit-mixed-audio")
+            await self.wait(attempt)
+            error = db.one("SELECT result FROM chat_calls WHERE run_id=?",attempt)["result"]
+            self.assertIn("参考音频总时长不能超过 15 秒",error)
+            submit.assert_awaited_once()
+
+    async def test_asset_only_audio_uses_compatible_model_beyond_the_plain_route_limit(self):
+        user = {"id":7,"role":"member"}
+        plain = server.providers.save(None,"kling","短视频模型",{}, {},True)
+        model = "ep-asset-long"
+        reference = server.providers.save(None,"ark","长视频参考模型",{"models":{"video":model},
+            "video_endpoint_models":f"{model} seedance-2.5","generation_rates":f"video {model} 4k 0.25"},
+            {"api_key":"fixture"},True)
+        server.providers.set_route("video",[{"provider_id":plain,"model":"kling-2.6"},{"provider_id":reference,"model":model}])
+        audio,ref = server.film._new(server.COMFY_DIR,"input","assistant-asset-audio",".wav")
+        with wave.open(str(audio),"wb") as recording:
+            recording.setparams((1,2,8000,0,"NONE",""))
+            recording.writeframes(b"\x08\x00"*(5*8000))
+        server.grant_media(user,ref)
+        self.app["creative_memory"].put(user,{"board":"test","name":"环境声","kind":"scene","ref":ref,
+            "generation_media":[ref],"generation_audio_ranges":{ref:[1,4]}})
+        result = self.make_video()
+
+        async def generate(_http,_root,provider,selected,_cap,request,**_):
+            self.assertEqual((provider["id"],selected,request["duration"],request["quality"]),(reference,model,20,"4k"))
+            self.assertEqual(request["audio_refs"],[(audio,1,3)])
+            return {"files":[{**result,"kind":"video","path":server.tools.ref_path(server.COMFY_DIR,result["ref"])}]}
+
+        self.svc.model.side_effect = [
+            call("video_generate",{"duration":20,"quality":"4k","prompt":"按 @环境声 生成入场镜头"}),answer(),
+        ]
+        endpoint = f"/api/chat/sessions/{self.sid}/messages"
+        with patch.object(server.remote,"run",side_effect=generate) as submit:
+            response = await self.client.post(endpoint,json={"text":"用声音素材生成20秒镜头",
+                "request_key":"asset-only-long-video","generation_mode":"manual"})
+            rid = (await response.json())["id"]
+            approval = await self.pending_generation(rid)
+            self.assertEqual(approval["plan"]["reference_review"]["model"],model)
+            self.assertEqual((approval["plan"]["reference_review"]["duration"],approval["plan"]["unit_cost"]),(20,5))
+            submit.assert_not_called()
+            path = f"/api/chat/runs/{rid}/approvals/"
+            adjusted = await self.client.post(path+approval["id"],json={"decision":"adjust","parameters":{"prompt":"普通空镜"}})
+            revised = (await adjusted.json())["approval_id"]
+            for _ in range(100):
+                plan = (await self.pending_generation(rid))["plan"]
+                if plan.get("reference_error"):
+                    break
+                await asyncio.sleep(.02)
+            self.assertIn("最长 10 秒",plan.get("reference_error",""))
+            self.assertEqual((await self.client.post(path+revised,json={"decision":"approve"})).status,409)
+            adjusted = await self.client.post(path+revised,json={"decision":"adjust","parameters":{"prompt":"采用 @环境声"}})
+            revised = (await adjusted.json())["approval_id"]
+            for _ in range(100):
+                plan = (await self.pending_generation(rid))["plan"]
+                if plan.get("reference_review"):
+                    break
+                await asyncio.sleep(.02)
+            self.assertEqual((await self.client.post(path+revised,json={"decision":"approve"})).status,200)
+            await self.wait(rid)
+            submit.assert_awaited_once()
+        video = next(n for n in self.load()["nodes"] if n["type"]=="video")
+        self.assertEqual(video["versions"][0]["video_recipe"]["selected_model"],model)
+        self.assertEqual((video["versions"][0]["video_recipe"]["audio_refs"][0]["start"],
+                          video["versions"][0]["video_recipe"]["audio_refs"][0]["end"]),(1,4))
+
+    async def test_video_models_and_historical_regeneration_keep_the_selected_route(self):
+        endpoint,flash = "ep-assistant-main","ep-assistant-fast"
+        provider = server.providers.save(None,"ark","方舟模型",{"models":{"video":flash},
+            "video_endpoint_models":f"{endpoint} seedance-2.5\n{flash} seedance-2.5-flash"},{"api_key":"fixture"},True)
+        server.providers.set_route("video",[{"provider_id":provider,"model":flash}])
+        outputs = [self.make_video(blue) for blue in (42,84,126)]
+        used = []
+
+        async def generate(_http,_root,service,model,_cap,request,**_):
+            used.append((service["id"],model,request["quality"],request["duration"]))
+            output = outputs[len(used)-1]
+            return {"files":[{**output,"kind":"video","path":server.tools.ref_path(server.COMFY_DIR,output["ref"])}]}
+
+        self.svc.model.side_effect = [
+            call("video_models",{"mode":"audio_reference"},"list"),
+            call("video_generate",{"provider":provider,"selected_model":endpoint,"duration":20,"quality":"4k","prompt":"开场"},"make"),
+            answer(),
+        ]
+        with patch.object(server.remote,"run",side_effect=generate):
+            run = await self.send("查看模型，用方舟的 2.5 接入点生成视频",key="choose-video-model")
+            await self.wait(run)
+            calls = [json.loads(row["result"]) for row in db.q("SELECT result FROM chat_calls WHERE run_id=? ORDER BY rowid",run)]
+            choices = calls[0]["providers"][0]["models"]
+            self.assertEqual({model["id"] for model in choices},{endpoint,flash})
+            self.assertTrue(next(model for model in choices if model["id"]==endpoint)["draft"])
+            nid = calls[1]["nodes"][0]["id"]
+            board = self.load()
+            node = next(node for node in board["nodes"] if node["id"]==nid)
+            self.assertEqual(node["versions"][0]["video_recipe"]["selected_model"],endpoint)
+            self.assertEqual(node["versions"][0]["node_data"]["selected_model"],endpoint)
+            first = node["versions"][0]
+            for key in ("video_recipe","node_data"):
+                first[key].pop("provider",None)
+                first[key].pop("selected_model",None)
+            first["generation_record"]["settings"].pop("provider",None)
+            node["data"]["selected_model"] = flash
+            server.write_board(server.board_path("test"),board)
+            self.svc.model.side_effect = [
+                call("video_regenerate",{"node_id":nid,"version":1,"prompt":"保留模型，调整动作"}),answer(),
+            ]
+            await self.wait(await self.send("沿用第一版模型重生成",key="historical-video-model"))
+            self.svc.model.side_effect = [
+                call("video_regenerate",{"node_id":nid,"version":1,"provider":provider,"selected_model":flash,
+                    "quality":"std","prompt":"改用快速模型"}),answer(),
+            ]
+            await self.wait(await self.send("改用快速模型",key="override-video-model"))
+        self.assertEqual(used,[(provider,endpoint,"4k",20),(provider,endpoint,"4k",20),(provider,flash,"std",20)])
+        node = next(node for node in self.load()["nodes"] if node["id"]==nid)
+        self.assertEqual([item["video_recipe"].get("selected_model") for item in node["versions"]],[None,endpoint,flash])
+
     def make_video(self, blue=80):
         import av
         path, ref = server.tools._new(server.COMFY_DIR, "output", "test-video", ".mp4")

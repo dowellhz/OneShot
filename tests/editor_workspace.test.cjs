@@ -582,6 +582,16 @@ async function run(){
   result:{remake:{node_id:"videoTest",source_ref:"input:h3studio/source.mp4"},export_ref:"output:h3studio/film.mp4"}}});`);
  equal(evaluate('$("[data-call=remake-export-call] a[download]").download'),'film.mp4','the completed export offers a download in the same turn');
  equal(evaluate('$("[data-call=remake-export-call]").open'),true,'the completed export shows its download without expanding the card');
+ evaluate(`acAppendEvent({kind:"tool_start",data:{call_id:"remake-split",name:"video_remake_split_long"}});
+ acAppendEvent({kind:"tool_end",data:{call_id:"remake-split",name:"video_remake_split_long",
+  result:{remake:{node_id:"videoTest",source_ref:"input:h3studio/source.mp4",shot_number:1,shot_start:0},
+   split_shots:[{number:1,start:0,end:6},{number:2,start:6,end:12}]}}});`);
+ equal(evaluate('$("[data-call=remake-split]").open'),true,'split results show the new ranges without expanding the card');
+ equal(evaluate('$$("[data-call=remake-split] [data-remake-start]").map(b=>[b.textContent,b.dataset.remakeStart,b.dataset.remakeRef])'),[
+  ['镜头 1 · 0–6 秒','0','input:h3studio/source.mp4'],
+  ['镜头 2 · 6–12 秒','6','input:h3studio/source.mp4'],
+ ]);
+ evaluate('$("[data-call=remake-split]").remove()');
  evaluate('node("agentResult").versions[node("agentResult").cur].layer_stack={base_ref:curV(node("n1")).ref,layers:[{id:"base",name:"底图",ref:curV(node("n1")).ref,x:0,y:0,w:512,h:384,opacity:1,visible:true},{id:"generated",name:"生成区域",ref:curV(node("agentResult")).ref,x:0,y:0,w:512,h:384,opacity:.5,visible:true}]}');
  await evaluate('aeOpenLayers("agentResult")');equal(evaluate('IMAGE_EDITOR.layers.map(l=>l.id)'),['base','generated'],'chat layers open with stable IDs');
  await evaluate('aeCompare("agentResult",curV(node("n1")).ref)');equal(evaluate('IMAGE_EDITOR.compareMode'),'wipe','chat before/after compare');
@@ -832,18 +842,21 @@ async function run(){
  w.__memories=w.__memories.filter(a=>a.id!=='team-style');
  w.__memories.push({id:"bundle-qa",name:"样品瓶",kind:"prop",owner:1,ref:"input:h3studio/bottle-front.png",
   media:[{ref:"input:h3studio/bottle-front.png",type:"image"},{ref:"input:h3studio/bottle-side.png",type:"image"},
-   {ref:"input:h3studio/bottle-spin.mp4",type:"video",seconds:3},{ref:"input:h3studio/bottle-sound.wav",type:"audio",seconds:3}]});
+   {ref:"input:h3studio/bottle-spin.mp4",type:"video",seconds:8},{ref:"input:h3studio/bottle-sound.wav",type:"audio",seconds:3}]});
  await evaluate('cmEdit(window.__memories.find(a=>a.id==="bundle-qa"),"prop")');
  evaluate('$(".cm-generation-images").open=true');
  assert.equal(evaluate('$$("[data-generation-media]").length'),4,'all supported media can join the same bundle');
- assert.match(evaluate('$(".cm-generation-images").textContent'),/视频 · 3.0 秒/);
+ assert.match(evaluate('$(".cm-generation-images").textContent'),/视频 · 8.0 秒/);
  evaluate(`const bundleCheck=ref=>$$("[data-generation-media]").find(box=>box.dataset.generationMedia.endsWith(ref));
   bundleCheck("bottle-front.png").click();bundleCheck("bottle-side.png").click();
   bundleCheck("bottle-spin.mp4").click();bundleCheck("bottle-sound.wav").click();
+  $$(".cm-reference-range input").forEach((field,i)=>{field.value=[1,5,.5,2.5][i];field.dispatchEvent(new Event("input"));});
   $(".cm-generation-images button[aria-label='上移参考 2']").click();
   $("#memoryEditor button[type=submit]").click();`);
  await ready('$("#memoryEditor .cm-error").textContent.startsWith("已保存")','the image reference bundle is saved');
  equal(w.__lastMemoryPost.generation_media,["input:h3studio/bottle-side.png","input:h3studio/bottle-front.png","input:h3studio/bottle-spin.mp4","input:h3studio/bottle-sound.wav"]);
+ equal(w.__lastMemoryPost.generation_video_ranges,{"input:h3studio/bottle-spin.mp4":[1,5]});
+ equal(w.__lastMemoryPost.generation_audio_ranges,{"input:h3studio/bottle-sound.wav":[.5,2.5]});
  assert.equal(w.__lastMemoryPost.default_ref,"input:h3studio/bottle-front.png");
  evaluate('$("#memoryEditor [data-close]").click()');
  w.__memories=w.__memories.filter(a=>a.id!=="bundle-qa");
@@ -2456,6 +2469,11 @@ async function run(){
  equal(evaluate('videoReq(audioVideo,"").audio_refs[0].version'),1,'editing the source audio keeps the existing reference');
  evaluate('$("[data-audio-update]").click()');
  equal(evaluate('videoReq(audioVideo,"").audio_refs[0].version'),2,'the reference switches only on explicit adoption');
+ evaluate(`selectOnly(audioVideo.id);
+   for(const [point,value] of [["start",.5],["end",2.5]]){
+    const input=$('[data-audio-point="'+point+'"]');input.value=value;input.dispatchEvent(new Event("change"));
+   }`);
+ equal(evaluate('videoReq(audioVideo,"").audio_refs.map(({start,end})=>[start,end])'),[[.5,2.5]]);
  evaluate(`openFilm([node("n1")]);const picked=$("#fmCanvasAudio");picked.value=soundNode.id;picked.dispatchEvent(new Event("change"));`);
  equal(evaluate('FILM.spec.audio_clips.map(({name,ref,node,start,out})=>[name,ref,node===soundNode.id,start,out])'),
    [['旁白','input:h3studio/other.wav',true,0,3]],'the actual audio can be placed on the editing timeline');
@@ -2476,6 +2494,23 @@ async function run(){
  evaluate('$("[data-video-update]").click()');
  equal(evaluate('videoReq(audioVideo,"").video_refs.map(({ref,start,end,version})=>[ref,start,end,version])'),
    [['input:h3studio/reference2.mp4',0,8,2]],'adopting a new version resets the trim');
+ const ordinaryReferenceFetch=w.fetch;
+ let automaticReference;
+ w.fetch=async(url,options)=>{
+  if(String(url)!=="/api/generate")return ordinaryReferenceFetch(url,options);
+  automaticReference=JSON.parse(options.body);
+  return {ok:false,text:async()=>JSON.stringify({error:"测试拦截"})};
+ };
+ evaluate(`CAPS_LIST.previs[0].models=[{id:"long-reference",durations:[5,15,20,30],qualities:{std:"720p",hd:"1080p","4k":"4k"}}];
+   const autoService=$("#ctl [data-k=provider]");
+   autoService.value="";autoService.dispatchEvent(new Event("change"));
+   const autoDuration=$("#ctl [data-k=duration]");autoDuration.value="20";autoDuration.dispatchEvent(new Event("change"));`);
+ await evaluate('generate(audioVideo)');
+ assert(!Object.hasOwn(automaticReference,"provider"),'the canvas leaves automatic routes unpinned before the server checks every input');
+ assert.equal(automaticReference.duration,20);
+ assert.equal(automaticReference.audio_refs[0].start,.5);
+ w.fetch=ordinaryReferenceFetch;
+ evaluate(`audioVideo.data.provider="fixture-ark";audioVideo.data.duration=5;delete CAPS_LIST.previs[0].models;showPanel();`);
  console.log('Video reference DOM passed: attach to existing video, trim, frame ratio, version pin and explicit adoption.');
  evaluate(`openVideoExtension(clipSource);const extForm=$("#videoExtension form");
    extForm.elements.direction.value="before";extForm.elements.direction.dispatchEvent(new Event("change"));
@@ -2872,7 +2907,10 @@ async function run(){
                     models:[{id:"MiniMax-H3",durations:[4,5,15],qualities:{std:"768P",hd:"2K"}},
                             {id:"MiniMax-H3-Max",durations:[5,15],qualities:{std:"480P",hd:"768P"}}]},
                    {id:"flash-fixture",kind:"kling",name:"可灵 Flash",model:"kling-4.0-flash",
-                    models:[{id:"kling-4.0-flash",durations:[3,20],qualities:{std:"720p"}}]}];
+                    models:[{id:"kling-4.0-flash",durations:[3,20],qualities:{std:"720p"}}]},
+                   {id:"ark-endpoint",kind:"ark",name:"方舟接入点",model:"ep-example",
+                    models:[{id:"ep-example",endpoint_model:"doubao-seedance-2-5",durations:[5,15,30],
+                             qualities:{std:"720p",hd:"1080p","4k":"4k"}}]}];
   const optionsVideo=addNode("video",420,90,{prompt:"测试可用选项",duration:4,quality:"hd"});
   selectOnly(optionsVideo.id);`);
  equal(evaluate(`[$("#ctl select[data-k=duration]").value, $("#ctl select[data-k=quality]").selectedOptions[0].textContent,
@@ -2880,13 +2918,28 @@ async function run(){
  evaluate(`optionsVideo.data.provider="flash-fixture";optionsVideo.data.duration=23;showPanel();`);
  equal(evaluate(`[$("#ctl select[data-k=duration]").value,!!$("#ctl select[data-k=quality]"),
   videoReq(optionsVideo,"测试").duration,videoReq(optionsVideo,"测试").quality]`),['20',false,20,'std']);
+ evaluate(`Object.assign(optionsVideo.data,{provider:"ark-endpoint",selected_model:"ep-example",duration:30,quality:"4k"});showPanel();`);
+ equal(evaluate(`[$("#ctl select[data-k=selected_model]").selectedOptions[0].textContent,
+  $("#ctl select[data-k=quality]").value,videoReq(optionsVideo,"测试").duration]`),
+  ['ep-example · doubao-seedance-2-5','4k',30]);
  evaluate('CAPS_LIST.video=previousVideoServices;restore(beforeModelOptions)');
  console.log('Video model settings passed: configured default model, provider-specific durations and single-resolution submission.');
- const checkedPreviewFetch=w.fetch, checkedSubmissions=[];
+ const checkedPreviewFetch=w.fetch, checkedSubmissions=[], modelChecks=[];
+ let rejectPreview=false;
  w.fetch=async(url,options)=>{
   const path=String(url);
+  if(path==="/api/preview" && rejectPreview)return {ok:false,text:async()=>JSON.stringify({error:"参考视频超过 15 秒"})};
   if(path==="/api/preview")return {ok:true,text:async()=>JSON.stringify({
     reference_preview:"a".repeat(64),prompt:"采用资产里的图片和音频",mode:"全模态参考",inputs:[]})};
+  if(path==="/api/video/reference-models"){
+   modelChecks.push(JSON.parse(options.body));
+   return {ok:true,text:async()=>JSON.stringify({counts:{images:1,videos:1,audio:1},models:[
+    {provider:"方舟",provider_id:"ark-model",model:"seedance-short",duration:10,quality:"hd",resolution:"1080p",
+     limits:{images:9,videos:3,audio:3,seconds:15},error:"参考视频超过 15 秒"},
+    {provider:"方舟",provider_id:"ark-model",model:"seedance-long",duration:10,quality:"hd",resolution:"1080p",
+     limits:{images:30,videos:10,audio:10,seconds:30},video_seconds:16,audio_seconds:3,draft:false},
+   ]})};
+  }
   if(path!=="/api/generate")return checkedPreviewFetch(url,options);
   const req=JSON.parse(options.body), jobId="checked-reference-"+checkedSubmissions.length;
   checkedSubmissions.push(req);
@@ -2904,6 +2957,21 @@ async function run(){
  await evaluate("generate(checkedVideo)");
  await ready("!checkedVideo.job","edited request finished",350);
  assert.equal(Object.hasOwn(checkedSubmissions[1],"reference_preview"),false);
+ rejectPreview=true;
+ await evaluate("previewPrompt(checkedVideo)");
+ assert.match(evaluate('$("#pvm").textContent'),/预览失败.*超过 15 秒/);
+ evaluate('$("#pvModelCheck").click()');
+ await ready('$("#pvModelStatus").textContent==="1 / 2 个模型可用"','failed previews still offer model compatibility checks');
+ assert.equal(modelChecks[0].prompt,"按 @样品素材 动作");
+ equal(evaluate('[$$("#pvModelList button").length,$$("#pvModelList li")[0].textContent.includes("超过 15 秒"),$("#pvModelList").textContent.includes("16/30 秒")]'),
+  [1,true,true],'model reports show limits and only valid choices can be applied');
+ rejectPreview=false;
+ evaluate('$("#pvModelList button").click()');
+ await ready('$("#pvm").textContent==="全模态参考"','selected model is set and previewed again');
+ equal(evaluate('[checkedVideo.data.provider,checkedVideo.data.selected_model,checkedVideo.data.duration,checkedVideo.data.quality]'),
+  ['ark-model','seedance-long',10,'hd']);
+ assert.equal(checkedSubmissions.length,2,'checking or applying a model does not submit');
+ evaluate('closePromptPreview()');
  evaluate("restore(beforeCheckedPreview)");
  w.fetch=checkedPreviewFetch;
  console.log('Mixed reference preview passed: submitting reviewed assets is pinned until the node inputs change.');
@@ -2968,6 +3036,10 @@ async function run(){
  evaluate(`$("[data-compare-close]").click();nodeAction(nativeDraftNode,"full");$("[data-light-compare]").click()`);
  equal(evaluate('[videoCompare.open, !!$("#light.on")]'),[true,false],'fullscreen offers the same comparison');
  evaluate('$("[data-compare-close]").click()');
+ evaluate('lightbox(nativeDraftNode.versions[0],nativeDraftNode);$("[data-light-draft-final]").click()');
+ equal(evaluate('[$("#videoDraftFinal").open,$("[data-draft-name]").textContent.endsWith("版本 1"),nativeDraftNode.cur]'),
+  [true,true,1],'finalizing from a historical preview pins that sample without changing the active tab');
+ evaluate('closeVideoDraftFinal()');
  evaluate('switchVersion(nativeDraftNode,0);');
  equal(evaluate('[nativeDraftNode.data.draft,!!$("#ntools [data-a=draft-final]")]'),[true,true],
    'switching back restores the original sample controls');
@@ -2997,6 +3069,22 @@ async function run(){
    return [JSON.stringify(nativeDraftNode)===sourceBeforeBranch,branch.x>nativeDraftNode.x+size(nativeDraftNode).w,
      sel.has(branch.id),edge.relation,edge.ref,videoInputs(branch).length,curV(branch).draft_final.source_node===nativeDraftNode.id];})()`),
    [true,true,true,"draft_final","output:h3studio/native-draft.mp4",0,true]);
+ evaluate(`switchVersion(nativeDraftNode,1,{recordUndo:false});
+   selectOnly(failedDraftBranch.id);$("#ntools [data-a=compare-draft]").click()`);
+ equal(evaluate(`[videoCompare.open,$("#videoCompareTitle").textContent,...compareVersions.map(s=>s.disabled),
+   ...compareVideos.map(v=>decodeURIComponent(v.src).split("ref=").at(-1)),nativeDraftNode.cur]`),
+  [true,"对比样片与定稿",true,false,"output:h3studio/native-draft.mp4","output:h3studio/native-branch.mp4",1],
+  'the branch opens a synchronized view with its exact sample and the explicitly selected final');
+ evaluate('$("[data-compare-close]").click();lightbox(nativeDraftNode.versions[0],nativeDraftNode);$("[data-light-compare-draft]").click()');
+ equal(evaluate('compareVersions[1].options.length'),2,'a historical sample preview can choose among both final results');
+ evaluate(`$("[data-compare-close]").click();vtSplit(nativeDraftNode.id,0);
+   const movedSample=B.nodes.find(n=>n.id!==nativeDraftNode.id&&curV(n)?.draft_expires);
+   const sourceAfterSplit=()=>draftVideoComparison(node(failedDraftBranch.id),curV(node(failedDraftBranch.id))).source.node.id;`);
+ equal(evaluate(`[sourceAfterSplit(),B.edges.find(e=>e.to===failedDraftBranch.id&&e.relation==="draft_final").from,
+    curV(node(failedDraftBranch.id)).draft_final.source_node]`),
+   [evaluate('movedSample.id'),evaluate('movedSample.id'),evaluate('movedSample.id')],
+   'moving the sample tab updates comparison, the canvas link and the saved final provenance');
+ evaluate('undo()');
  evaluate(`const draftBranchNode=B.nodes.find(n=>curV(n)?.ref==="output:h3studio/native-branch.mp4");
    duplicate([nativeDraftNode.id,draftBranchNode.id]);`);
  equal(evaluate(`(()=>{const [sample,final]=[...sel].map(node);return [
@@ -3264,12 +3352,14 @@ async function run(){
  console.log('Right-click layout DOM passed: menu entry, selected/all media, collision-free grid, fixed text, preserved content/jobs, undo and redo.');
  console.log('Relation/video tabs DOM passed: relationship columns, frame order, graph validation, drag merge, tab split, recipes, film/chat references and undo.');
  const generationFetch=w.fetch;
- const submittedBatches=[];
+ const submittedBatches=[], quotedGeneration=[];
  let persistedLayout;
  w.fetch=async(url,options)=>{
   if(String(url)==="/api/generation-cost"){
    const {requests}=JSON.parse(options.body);
-   return {ok:true,text:async()=>JSON.stringify({amounts:requests.map(r=>r.kind==="image" ? .125*r.count : null)})};
+   quotedGeneration.push(requests);
+   return {ok:true,text:async()=>JSON.stringify({amounts:requests.map(r=>
+    r.kind==="image" ? .125*r.count : r.board==="btest"&&r.prompt?.includes("@报价素材") ? 1.25*r.count : null)})};
   }
   if(String(url)!=="/api/generate"){
    if(String(url)==="/api/board/btest"&&options?.method==="PUT")persistedLayout=JSON.parse(options.body).batch_layout;
@@ -3326,6 +3416,17 @@ async function run(){
  assert(evaluate('B.nodes.length===batchNodeTotal && batchVideo.versions.length===2'));
  evaluate('restore(beforeBatchLayout);delete B.batch_layout;save()');
  console.log('Batch layout DOM passed: setting persistence, submission snapshot, legacy tabs, folded results and undo, spread video and one-result fallback.');
+ evaluate(`const quoteBase=snap();
+  const quoteVideo=addNode("video",1500,100,{prompt:"空镜头",count:2},{name:"报价视频"});
+  const quoteImage=addNode("image",2100,700,{prompt:"海报",count:1},{name:"报价图片"});
+  const quoteGroup=ctNewGroup("参考报价",[quoteVideo.id,quoteImage.id]);drawEdges();
+  selectOnly(quoteVideo.id);
+  $("#prompt").value="使用 @报价素材";$("#prompt").dispatchEvent(new Event("input"));`);
+ await ready('$("[data-generation-cost]")?.textContent.includes("¥2.50")','editing an asset mention refreshes the node quote');
+ evaluate('$("[data-group-run]",CT_GROUPS.get(quoteGroup.id)).click()');
+ await ready('$("#groupRunConfirm [data-group-cost]").textContent.includes("¥2.625")','group quote includes the asset video and image');
+ assert(quotedGeneration.some(batch=>batch.length===2&&batch.some(request=>request.prompt==="使用 @报价素材"&&request.count===2)));
+ evaluate('$("#groupRunConfirm footer [data-close]").click();restore(quoteBase)');
  evaluate(`const groupRunBase=snap();setBatchLayout("fold");
   const workflowImage=addNode("image",1500,100,{prompt:"起始构图",count:2},{name:"分镜首帧"});
   const workflowVideo=addNode("video",2100,100,{prompt:"镜头慢慢推进",count:1},{name:"分镜视频"});
@@ -5382,9 +5483,16 @@ async function run(){
  evaluate('closeLightbox();B.access=lightPreviousAccess;lightbox(previewAudio.versions[0],previewAudio);$("[data-light-edit]").click()');
  equal(evaluate('[$("#audioTranscript").open,$("#audioTranscript audio").src.endsWith("preview-track.wav"),previewAudio.cur]'),[true,true,1]);
  evaluate(`closeAudioTranscript();const previewVideo=addNode("video",1000,100500,{fields:{dialogue:"角色：新版台词"}},{name:"预览视频",versions:[
-   copyAsset("preview-video-first.mp4",{seconds:8,w:720,h:1280,prompt:"旧版视频提示词",node_data:{fields:{dialogue:"角色：旧版台词"}}}),
+   copyAsset("preview-video-first.mp4",{seconds:8,w:720,h:1280,prompt:"旧版视频提示词",node_data:{fields:{dialogue:"角色：旧版台词"}},
+    memory_used:[{name:"动作设定",references:[{ref:"input:h3studio/source-motion.mp4",type:"video",start:1,end:5},
+     {ref:"input:h3studio/source-sound.wav",type:"audio"}]}]}),
    copyAsset("preview-video-current.mp4",{seconds:5,w:720,h:1280})],cur:1});
-   lightbox(previewVideo.versions[0],previewVideo);$("[data-light-edit]").click()`);
+   lightbox(previewVideo.versions[0],previewVideo);$("[data-light-details]").click()`);
+ equal(evaluate('$$("aside#lightDetails li a").map(a=>[a.textContent,a.getAttribute("href")])'),[
+  ['参考视频 1–5 秒','/media?ref=input%3Ah3studio%2Fsource-motion.mp4#t=1,5'],
+  ['参考音频','/media?ref=input%3Ah3studio%2Fsource-sound.wav'],
+ ]);
+ evaluate('$("[data-light-edit]").click()');
  equal(evaluate('[FILM.target.ref,FILM.spec.clips[0].ref,FILM.spec.clips[0].media_seconds,FILM.spec.clips[0].subs,previewVideo.cur]'),
   ['output:h3studio/preview-video-first.mp4','output:h3studio/preview-video-first.mp4',8,['旧版台词'],1]);
  const previewRenderFetch=w.fetch;
@@ -5512,10 +5620,12 @@ async function run(){
  console.log('Canvas drag alignment passed: settings, zoom-scaled guides, modifier bypass, undo, pointer cancellation, grid and folded group offsets.');
  const voicePointFetch=w.fetch;
  let failPlacementSend=false, voiceCommand=null, deferNodeTranscript=false, finishNodeTranscript, voiceSignal;
+ const voiceRequests=[];
  const voiceStops=[];
  w.fetch=async(url,options={})=>{
   if(options.method==="POST" && String(url).split("?")[0]==="/api/transcription" && voiceCommand!==null) {
    voiceSignal=options.signal;
+   voiceRequests.push({url:String(url),size:options.body.get("file").size});
    return {ok:true,json:()=>deferNodeTranscript
     ? new Promise(resolve=>{w.__nodeTranscriptPending=true;finishNodeTranscript=()=>resolve({text:voiceCommand});})
     : Promise.resolve({text:voiceCommand})};
@@ -5545,9 +5655,9 @@ async function run(){
    }});
    window.MediaRecorder=class {
     static isTypeSupported(){return true;}
-    start(){this.state="recording";}
+    start(timeslice){this.state="recording";this.timeslice=timeslice;}
     stop(){this.state="inactive";queueMicrotask(()=>{
-     this.ondataavailable({data:new Blob(["voice"],{type:"audio/webm"})});this.onstop();
+     this.ondataavailable({data:new Blob([this.timeslice?"full recording":"segment"],{type:"audio/webm"})});this.onstop();
     });}
    };
    const voiceKey=(type,key="r",code="KeyR",target=document.body)=>target.dispatchEvent(new KeyboardEvent(type,{key,code,bubbles:true,cancelable:true}));
@@ -5660,10 +5770,7 @@ async function run(){
  equal(evaluate('[node(voicedImage.id).data.prompt,node(voicedAudio.id).data.prompt]'),["","停止"]);
 
  voiceCommand="预览第一句";
- evaluate(`const voicePreviewChunk=()=>{
-   acVoiceActive.nextPreviewAt=0;
-   acVoiceActive.recorder.ondataavailable({data:new Blob(["voice"],{type:"audio/webm"})});
-  };
+ evaluate(`const voicePreviewChunk=()=>acVoiceActive.previewRecorder.stop();
   selectOnly(voicedImage.id);
   $("#ppVoiceLive").click();
   $("#ppVoiceRecord").click();`);
@@ -5671,12 +5778,17 @@ async function run(){
  evaluate('voicePreviewChunk()');
  await ready('$("#ppVoicePreview").textContent==="预览第一句"','node partial transcript appears before stop');
  equal(evaluate('[$("#ppVoicePreview").hidden,$("#prompt").value,$("#acVoiceLive").checked]'),[false,"",true]);
- voiceCommand="更正后的预览";
+ voiceCommand="预览第二句";
  evaluate('voicePreviewChunk()');
- await ready('$("#ppVoicePreview").textContent==="更正后的预览"','a new partial replaces the previous prefix');
+ await ready('$("#ppVoicePreview").textContent==="预览第一句\\n预览第二句"','a new segment follows the earlier transcript');
  voiceCommand="完整转写";
  evaluate('$("#ppVoiceRecord").click()');
  await ready('node(voicedImage.id).data.prompt==="完整转写"','only the final transcript enters the prompt');
+ assert.deepEqual(voiceRequests.slice(-3),[
+  {url:"/api/transcription?preview=1",size:"segment".length},
+  {url:"/api/transcription?preview=1",size:"segment".length},
+  {url:"/api/transcription",size:"full recording".length},
+ ],'each preview sends a separate audio file and the final draft uses the continuous recording');
  assert.equal(evaluate('$("#ppVoicePreview").hidden'),true);
 
  voiceCommand="取消后的迟到预览";deferNodeTranscript=true;

@@ -1047,7 +1047,7 @@ def motion_providers(host):
 def remake_durations(host, route):
     if not route or route["provider"]["kind"] == "local_h3":
         return ()
-    return host.remote.video_durations(route["provider"]["kind"],route["model"])
+    return host.remote.video_durations(route["provider"]["kind"],route["model"],provider=route["provider"])
 
 
 def default_remake_durations(host):

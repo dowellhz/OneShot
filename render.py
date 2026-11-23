@@ -171,25 +171,32 @@ def read_audio(path: Path, t0: float = 0.0, t1: float | None = None):
     import av
     import numpy as np
     parts = []
+    start = max(0,int(round(t0 * SR)))
     end = None if t1 is None else int(round(t1 * SR))
     decoded = 0
+
+    def retain(frame):
+        nonlocal decoded
+        left = max(0,start-decoded)
+        right = frame.samples if end is None else min(frame.samples,end-decoded)
+        if left < right:
+            parts.append(frame.to_ndarray()[:,left:right])
+        decoded += frame.samples
+
     with av.open(str(path)) as c:
         if c.streams.audio:
             rs = av.AudioResampler(format="fltp", layout="stereo", rate=SR)
             for f in c.decode(audio=0):
                 for g in rs.resample(f):
-                    parts.append(g.to_ndarray())
-                    decoded += g.samples
+                    retain(g)
                 if end is not None and decoded >= end:
                     break
             else:
                 for g in rs.resample(None):
-                    parts.append(g.to_ndarray())
+                    retain(g)
     pcm = np.concatenate(parts, axis=1).astype(np.float32) if parts else np.zeros((2, 0), np.float32)
-    a = int(round(t0 * SR))
-    pcm = pcm[:, a:end]
-    if end is not None and pcm.shape[1] < end - a:
-        pcm = np.concatenate([pcm, np.zeros((2, end - a - pcm.shape[1]), np.float32)], axis=1)
+    if end is not None and pcm.shape[1] < end - start:
+        pcm = np.concatenate([pcm,np.zeros((2,end-start-pcm.shape[1]),np.float32)],axis=1)
     return pcm
 
 

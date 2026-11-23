@@ -38,13 +38,24 @@ function canvasCostRequest(n) {
     provider:(CAPS_LIST[n.type] || []).find(service=>service.id===data.provider)?.id,
     selected_model:data.selected_model};
   if (data.selected_model) request.provider = data.provider;
-  if (n.type === "video") Object.assign(request,{
-    duration:canvasVideoDuration(n),quality:canvasVideoQuality(n),draft:data.draft && videoDraftAvailable(n),
-    has_asset:!!data.replay_memory_ref || inheritedVideoAssets(n).length>0 ||
-      /@/.test([fullPrompt(n),...Object.values(data.fields || {})].join("\n")
-        .replace(/@(?:图|视频|音频|音)(?:\{\d{1,16}\}|\d+)/g,"")),
-    previs_guide:!!previsInput(n),audio_refs:!!audioInputs(n).length,video_refs:!!videoInputs(n).length
-  });
+  if (n.type === "video") {
+    const prompt=fullPrompt(n);
+    Object.assign(request,{
+      duration:canvasVideoDuration(n),quality:canvasVideoQuality(n),draft:data.draft && videoDraftAvailable(n),
+      has_asset:!!data.replay_memory_ref || inheritedVideoAssets(n).length>0 ||
+        /@/.test([prompt,...Object.values(data.fields || {})].join("\n")
+          .replace(/@(?:图|视频|音频|音)(?:\{\d{1,16}\}|\d+)/g,"")),
+      previs_guide:!!previsInput(n),audio_refs:!!audioInputs(n).length,video_refs:!!videoInputs(n).length
+    });
+    if (request.has_asset || request.previs_guide || request.audio_refs || request.video_refs) {
+      const video=videoReq(n,prompt,{silent:true});
+      if (video) {
+        applyVideoMemory(n,video);
+        return {...video,board:boardId,provider:request.provider,selected_model:request.selected_model};
+      }
+      return {...request,has_asset:true};
+    }
+  }
   return request;
 }
 
@@ -67,16 +78,17 @@ function displayGenerationCost(amount) {
   return "预计费用 ¥" + amount.toLocaleString("zh-CN",{minimumFractionDigits:2,maximumFractionDigits:4});
 }
 
-let canvasCostTimer;
+let canvasCostTimer, canvasCostRevision=0;
 function renderCanvasCost(n, output) {
   clearTimeout(canvasCostTimer);
+  const revision=++canvasCostRevision;
   if (!output) return;
-  const request = canvasCostRequest(n);
+  output.textContent="正在估算费用…";
   canvasCostTimer = setTimeout(async ()=>{
     if (!output.isConnected || !sel.has(n.id)) return;
-    const [amount] = await canvasGenerationCosts([request]);
-    if (output.isConnected && sel.has(n.id)) output.textContent = displayGenerationCost(amount);
-  },150);
+    const [amount] = await canvasGenerationCosts([canvasCostRequest(n)]);
+    if (revision===canvasCostRevision && output.isConnected && sel.has(n.id)) output.textContent = displayGenerationCost(amount);
+  },250);
 }
 function canvasPromptBindings(images,sounds=[],clips=[],guide=null,special=false) {
   const bindings=new Map();
@@ -90,13 +102,16 @@ function canvasPromptBindings(images,sounds=[],clips=[],guide=null,special=false
   }
   return bindings;
 }
-function resolveCanvasPrompt(n,text,bindings) {
+function resolveCanvasPrompt(n,text,bindings,{silent=false}={}) {
   let missing=false;
   const resolved=text.replace(/@(图|视频|音)\{\d+\}/g,(token,kind)=>{
     if(!bindings.has(token))missing=kind;
     return bindings.get(token)||token;
   });
-  if(missing){showErr(n,`提示词中的 ${{图:"图片",视频:"视频",音:"音频"}[missing]}引用已断开，请重新选择或删除该引用`);return null;}
+  if(missing){
+    if(!silent)showErr(n,`提示词中的 ${{图:"图片",视频:"视频",音:"音频"}[missing]}引用已断开，请重新选择或删除该引用`);
+    return null;
+  }
   return resolved;
 }
 function showPrep(n, on) {
@@ -190,11 +205,12 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   req.board = boardId;
   if (d.replay_memory_ref) req.replay_memory_ref=d.replay_memory_ref;
   if (req.previs_guide || req.audio_refs || req.video_refs) {
-    if (!referenceServices(n).some(x => x.id === d.provider)) {
+    const services=referenceServices(n);
+    if (!services.length || d.provider && !services.some(x=>x.id===d.provider)) {
       showErr(n, needsReferenceVideo(n) ? "请选择已配置公网地址的视频参考服务" : "请选择支持音频参考的视频服务");
       return;
     }
-    req.provider = d.provider;
+    if (d.provider) req.provider=d.provider;
   } else if (n.data.provider && (CAPS_LIST[n.type === "image" ? "image" : "video"] || []).some(x => x.id === n.data.provider)) req.provider = n.data.provider;
   if (d.selected_model) Object.assign(req,{provider:d.provider,selected_model:d.selected_model});
   const slow = n.type === "video";
@@ -220,6 +236,10 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     const r = await api("/api/generate",checked?{...req,reference_preview:preview.key}:req);
     if (B!==sourceBoard || node(n.id)!==n) return;
     if(history?.video_recipe && r.memory_context)Object.assign(history.video_recipe,r.memory_context);
+    if(history?.video_recipe && r.video_model) {
+      Object.assign(history.video_recipe,r.video_model);
+      Object.assign(history.node_data,r.video_model);
+    }
     if(history?.video_recipe && r.reference_context) {
       Object.assign(history.video_recipe,r.reference_context);
       const clips=r.reference_context.video_refs || [];
@@ -232,8 +252,8 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
         if (clip) Object.assign(entry,{start:clip.start,end:clip.end});
       }
     }
-    if (r.memory_context) {
-      Object.assign(generationRecord,captureGenerationRecord({...req,...r.memory_context,...r.reference_context},textInputs));
+    if (r.memory_context || r.reference_context || r.video_model) {
+      Object.assign(generationRecord,captureGenerationRecord({...req,...r.memory_context,...r.reference_context,...r.video_model},textInputs));
     }
     n.job = { ids: r.ids, prompt, t0: Date.now(), st: {}, memory_used:r.memory_used||[], generation_record:generationRecord,
       ...(groupRunId ? {group_run_id:groupRunId} : {}),
@@ -262,19 +282,20 @@ function applyVideoMemory(n, request) {
   const inherited = selection.filter(entry=>ids.has(entry?.memory_id)&&!explicitlySelected.has(entry.memory_id));
   if (inherited.length) request.memory_views = inherited;
 }
-function videoReq(n, prompt) {
+function videoReq(n, prompt, {silent=false}={}) {
   const d = n.data;
   const guide = previsInput(n);
   const sounds = audioInputs(n);
   const clips = videoInputs(n);
-  if (guide && !guide.version) { showErr(n, "白模参考版本已移除，请改用当前版本或删除连线"); return null; }
-  if (sounds.some(s=>!s.version)) { showErr(n, "音频参考版本已移除，请重新连接"); return null; }
-  if (clips.some(s=>!s.version)) { showErr(n, "视频参考版本已移除，请重新选择"); return null; }
+  const missingReference = message => { if(!silent)showErr(n,message); return null; };
+  if (guide && !guide.version) return missingReference("白模参考版本已移除，请改用当前版本或删除连线");
+  if (sounds.some(s=>!s.version)) return missingReference("音频参考版本已移除，请重新连接");
+  if (clips.some(s=>!s.version)) return missingReference("视频参考版本已移除，请重新选择");
   let req;
   {
     const p = plan(n), imgs = [];
     for (const [i,{edge,source:m,version:v}] of p.inputs.entries()) {
-      if(!v?.ref){showErr(n,edge.ref?`「${m.name}」引用的版本已移除`:`「${m.name}」还没有图片`);return null;}
+      if(!v?.ref)return missingReference(edge.ref?`「${m.name}」引用的版本已移除`:`「${m.name}」还没有图片`);
       imgs.push({ node_id: m.id, ref: v.ref, name: m.name, caption: m.data.caption || (v.source === "gen" ? v.prompt : "") || "", index: i + 1, asset: m.data.asset?.id,
                   role: p.roles[i] === "subject" ? "subject" : "frame", time: p.times[i] ?? 0, w: v.w, h: v.h,
                   ...(edge.prompt_slot?{prompt_slot:edge.prompt_slot}:{}) });
@@ -286,7 +307,7 @@ function videoReq(n, prompt) {
     let ar = AR[d.aspect]; if (d.aspect === "auto") ar = visual?.w && visual.h ? visual.w / visual.h : 16 / 9;
     const tokenOrder=guide||sounds.length||clips.length||p.useRef?p.inputs:p.ordered.map(i=>p.inputs[i]);
     const bindings=canvasPromptBindings(tokenOrder,sounds,clips,guide,extension||clips[0]?.edge.segment_edit);
-    const resolved=resolveCanvasPrompt(n,prompt,bindings);
+    const resolved=resolveCanvasPrompt(n,prompt,bindings,{silent});
     if(resolved===null)return null;
     const common = { kind: "video", prompt:resolved, ar, duration:canvasVideoDuration(n), quality:canvasVideoQuality(n), turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: canvasGenerationCount(n) };
     if(d.video_optics&&Object.keys(d.video_optics).length)common.video_optics=structuredClone(d.video_optics);
@@ -294,7 +315,7 @@ function videoReq(n, prompt) {
     if(usesFields(n)){
       common.fields={};
       for(const [k,value] of Object.entries(d.fields||{})){
-        const field=typeof value==="string"?resolveCanvasPrompt(n,value,bindings):value;
+        const field=typeof value==="string"?resolveCanvasPrompt(n,value,bindings,{silent}):value;
         if(field===null)return null;
         common.fields[k]=field;
       }
@@ -304,6 +325,7 @@ function videoReq(n, prompt) {
       req = {...common, duration:Math.min(max,Math.max(4,common.duration)), images:imgs, planned:true, mode:guide?"previs":"reference"};
       if (guide) req.previs_guide={node_id:guide.source.id, ref:guide.edge.ref, name:guide.source.name, version:guide.index+1};
       if (sounds.length) req.audio_refs=sounds.map(({source,edge,index})=>({node_id:source.id,ref:edge.ref,name:source.name,version:index+1,
+        start:edge.start,end:edge.end,
         ...(promptSlot(edge.prompt_slot)?{prompt_slot:edge.prompt_slot}:{})}));
       if (clips.length) req.video_refs=clips.map(({source,edge,index,version})=>{
         return {node_id:source.id,ref:edge.ref,name:source.name,version:index+1,...videoReferenceRange(edge,version,referenceDuration(n)),

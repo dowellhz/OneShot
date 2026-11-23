@@ -173,6 +173,16 @@ class ChatFixture(unittest.IsolatedAsyncioTestCase):
     def load(self):
         return json.loads(server.board_path("test").read_text())
 
+    async def pending_generation(self, rid):
+        for _ in range(120):
+            data = await (await self.client.get(f"/api/chat/sessions/{self.sid}")).json()
+            pending = next((a for a in data["approvals"] if a["run_id"] == rid),None)
+            if pending:
+                return pending
+            await asyncio.sleep(.01)
+        states = db.q("SELECT name,state,result FROM chat_calls WHERE run_id=?",rid)
+        self.fail(f"generation did not pause for approval: {db.one('SELECT state,error FROM chat_runs WHERE id=?',rid)}, {states}")
+
 
 class ChatIntegration(ChatFixture):
     async def test_manual_node_can_select_configured_route_models(self):
@@ -191,7 +201,7 @@ class ChatIntegration(ChatFixture):
             server.providers,"all_providers",return_value=[provider]
         ), patch.object(server.providers,"routes",side_effect=lambda cap:routes.get(cap,[])), patch.object(
             server,"generate_remote",send
-        ), patch.object(server,"resolve_audio_refs",AsyncMock(return_value=[("source.wav",4)])):
+        ), patch.object(server,"resolve_audio_refs",AsyncMock(return_value=[("source.wav",0,4)])):
             capabilities = json.loads((await server.capabilities(None)).body)
             self.assertEqual(capabilities["image"][0]["default_route_model"],image_model)
             self.assertEqual([m["id"] for m in capabilities["image"][0]["models"]],["image-default",image_model])
@@ -554,16 +564,6 @@ class ChatIntegration(ChatFixture):
         settings = await (await self.client.get("/api/chat/profile?board=test")).json()
         self.assertEqual(settings["project"]["text"],"使用横屏构图")
 
-    async def pending_generation(self, rid):
-        for _ in range(120):
-            data = await (await self.client.get(f"/api/chat/sessions/{self.sid}")).json()
-            pending = next((a for a in data["approvals"] if a["run_id"] == rid),None)
-            if pending:
-                return pending
-            await asyncio.sleep(.01)
-        states = db.q("SELECT name,state,result FROM chat_calls WHERE run_id=?",rid)
-        self.fail(f"generation did not pause for approval: {db.one('SELECT state,error FROM chat_runs WHERE id=?',rid)}, {states}")
-
     async def test_generation_cost_uses_the_selected_route_model_and_duration(self):
         video = providers.save(None,"kling","Video fixture",{"generation_rates":"video kling-2.6 hd 0.25"}, {}, True)
         providers.set_route("video",[{"provider_id":video,"model":"kling-2.6"}])
@@ -660,8 +660,10 @@ class ChatIntegration(ChatFixture):
             recording.writeframes(b"\x00\x08"*16000)
         server.grant_media(user,sound)
         store.put(user,{"id":asset["id"],"ref":sound,"generation_media":[self.source["ref"],sound]})
-        provider = providers.save(None,"ark","方舟测试",{},{"api_key":"test"},True)
-        providers.set_route("video",[{"provider_id":provider,"model":"doubao-seedance-2-5-fixture"}])
+        model = "doubao-seedance-2-5-fixture"
+        default_provider = providers.save(None,"kling","普通镜头",{"generation_rates":"video kling-2.6 hd 0.1"}, {}, True)
+        provider = providers.save(None,"ark","方舟测试",{"generation_rates":f"video {model} hd 0.25"},{"api_key":"test"},True)
+        providers.set_route("video",[{"provider_id":default_provider,"model":"kling-2.6"},{"provider_id":provider,"model":model}])
         endpoint = f"/api/chat/sessions/{self.sid}/messages"
         pending = asyncio.Event()
         refresh = asyncio.Event()
@@ -680,10 +682,12 @@ class ChatIntegration(ChatFixture):
             approval = await self.pending_generation(rid)
             url = f"/api/chat/runs/{rid}/approvals/"
             self.assertIsNone(approval["plan"]["reference_review"])
+            self.assertEqual(approval["plan"]["unit_cost"],.5)
             adjusted = await self.client.post(url+approval["id"],json={"decision":"adjust","parameters":{"prompt":"改为 @站台参考"}})
             self.assertEqual(adjusted.status,200,await adjusted.text())
             revised = (await adjusted.json())["approval_id"]
             await asyncio.wait_for(pending.wait(),2)
+            self.assertIsNone((await self.pending_generation(rid))["plan"]["unit_cost"])
             blocked = await self.client.post(url+revised,json={"decision":"approve"})
             self.assertEqual(blocked.status,409)
             refresh.set()
@@ -693,6 +697,7 @@ class ChatIntegration(ChatFixture):
                     break
                 await asyncio.sleep(.02)
             shown = approval["plan"]["reference_review"]
+            self.assertEqual(approval["plan"]["unit_cost"],1.25)
             self.assertNotIn("key",shown)
             self.assertEqual((shown["provider"],shown["model"],shown["duration"]),("方舟测试","doubao-seedance-2-5-fixture",5))
             self.assertEqual([(entry["role"],entry.get("end")) for entry in shown["inputs"]],[("subject",None),("audio_ref",2)])
@@ -718,7 +723,7 @@ class ChatIntegration(ChatFixture):
             self.assertEqual(response.status,200,await response.text())
             await self.wait(rid,timeout=5)
             submit.assert_called_once()
-            self.assertEqual(submit.call_args.args[-1]["audio_refs"],[(audio,2)])
+            self.assertEqual(submit.call_args.args[-1]["audio_refs"],[(audio,0,2)])
 
     async def test_image_set_recovers_known_jobs_without_issuing_the_unconfirmed_submission_again(self):
         plan = {"name":"插图","items":[{"name":"首页","prompt":"简洁封面","aspect":"16:9"},
@@ -918,7 +923,7 @@ class ChatIntegration(ChatFixture):
         self.assertEqual([(item["ref"],item["prompt_slot"],item["start"],item["end"]) for item in payload["video_refs"]],
                          [(clip,6,1,5)])
         self.assertEqual([(item["ref"],item["prompt_slot"]) for item in payload["audio_refs"]],[(sound,2)])
-        self.assertEqual(payload["provider"],"seedance-qa")
+        self.assertNotIn("provider",payload,"unselected reference service stays automatic until preflight")
 
     async def test_regenerate_video_keeps_prompt_image_version_pinned(self):
         board = self.load()

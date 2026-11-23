@@ -327,7 +327,7 @@ function bindPromptMedia(source,target,ref,recordUndo=true) {
   rememberVideoVersion(target);
   target.data[sequence]=Math.max(promptSlot(target.data[sequence]),slot);
   if(prior){
-    if(source.type==="video"&&prior.ref!==ref){delete prior.start;delete prior.end;}
+    if(source.type!=="image"&&prior.ref!==ref){delete prior.start;delete prior.end;}
     Object.assign(prior,{ref,prompt_slot:slot});refresh(target);save();
   }
   else link(source,target,true,{ref,prompt_slot:slot});
@@ -355,6 +355,17 @@ function referenceServices(n) {
 }
 function referenceService(n) { return referenceServices(n).find(service => service.id === n.data.provider); }
 function videoOutputModel(n) {
+  if (hasMediaReferences(n) && !n.data.provider) {
+    const models=referenceServices(n).flatMap(service=>service.models||[]);
+    if (models.length) {
+      const durations=[...new Set(models.flatMap(model=>model.durations||[]))].sort((a,b)=>a-b);
+      const labels={std:"标准",hd:"高清","480p":"480P","4k":"4K"};
+      const qualities=Object.fromEntries(Object.entries(labels).filter(([quality])=>
+        models.some(model=>Object.hasOwn(model.qualities||{},quality))));
+      return {durations:durations.length?durations:undefined,
+        qualities:Object.keys(qualities).length?qualities:undefined,draft:models.some(model=>model.draft)};
+    }
+  }
   return hasMediaReferences(n)?canvasNodeModel(n,referenceService(n),true):canvasNodeModel(n,nodeProvider(n));
 }
 function referenceDuration(n) {
@@ -1211,6 +1222,7 @@ function showPanel() {
     else if (n.type === "video" && !n.data.film) b.push(tool("cont", "next", "续拍") + tool("film", "scissors", "剪辑视频", "剪辑视频 · 导出为原节点的新版本") + tool("analyze", "script", "拉片", "拉片 · 拆分镜头并分析"));
     if (n.type === "video" && canvasCanEdit()) b.push(tool("capture", "image", "视频截帧", "截取首帧、当前帧或末帧") + tool("trim-video", "scissors", "裁剪视频", "裁剪视频 · 保留区间、手动分割或智能切镜头"));
     if (n.type==="video" && v.draft_expires && canvasCanEdit()) b.push(tool("draft-final","hd","生成定稿"));
+    if (draftVideoComparison(n,v)) b.push(tool("compare-draft","fit","对比样片与定稿"));
     if (n.type === "video" && n.versions.filter(v=>v.url).length > 1) b.push(tool("compare-video", "stack", "对比视频版本"));
     if (canvasCanEdit() && v.ref && ["image","video"].includes(n.type)) b.push(tool("broll","motion","B-roll 动态画面"));
     b.push(tool("full", "full", "全屏查看"));
@@ -1280,7 +1292,11 @@ function showPanel() {
     const end = (vidFrames(n.data.duration) - 4) / 24;
     sounds.forEach(({edge,source,version,index},i)=>{
       const change = curV(source) && curV(source) !== version;
-      items.push(`<span class="ref" data-tok="${promptMediaToken("audio",edge.prompt_slot,i+1)}" title="${esc(source?.name || "音频参考")}"><span class="tx">${ico("audio")}</span>${esc(source?.name || "音频参考")}<span class="role">${version ? `音频 ${i+1} · 版本 ${index+1}` : "版本已移除"}</span>${change ? `<button type="button" data-audio-update="${i}">改用当前版本</button>` : ""}</span>`);
+      const settings=version ? ["start","end"].map((point,j)=>`<label>${j?"出":"入"} <input class="tsec" type="number"
+        min="0" step=".01" value="${Number.isFinite(edge[point])?edge[point]:""}"
+        placeholder="${j?esc(version.seconds||"结尾"):"0"}"
+        data-audio-index="${i}" data-audio-point="${point}" aria-label="音频 ${i+1} ${j?"出点":"入点"}（秒）"></label>`).join("") : "";
+      items.push(`<span class="ref" data-tok="${promptMediaToken("audio",edge.prompt_slot,i+1)}" title="${esc(source?.name || "音频参考")}"><span class="tx">${ico("audio")}</span>${esc(source?.name || "音频参考")}<span class="role">${version ? `音频 ${i+1} · 版本 ${index+1}` : "版本已移除"}</span>${settings}${change ? `<button type="button" data-audio-update="${i}">改用当前版本</button>` : ""}</span>`);
     });
     p.inputs.forEach((input, i) => { const r = p.roles[i];
       // keyframes get a seconds box: where in the video this picture should be reached
@@ -1328,7 +1344,8 @@ function showPanel() {
     if (!canvasCanEdit() || n.job || prepping.has(n.id)) return;
     const input=audioInputs(n)[Number(button.dataset.audioUpdate)], picked=curV(input?.source);
     if (!picked || picked.ref===input.edge.ref) return;
-    checkpoint(); rememberVideoVersion(n); input.edge.ref=picked.ref; save(); refresh(n);
+    checkpoint(); rememberVideoVersion(n); input.edge.ref=picked.ref;
+    delete input.edge.start; delete input.edge.end; save(); refresh(n);
   });
   $$("[data-video-update]",refs).forEach(button=>button.onclick=()=>{
     if (!canvasCanEdit() || n.job || prepping.has(n.id)) return;
@@ -1343,16 +1360,18 @@ function showPanel() {
     }
     save(); refresh(n);
   });
-  $$("[data-clip-point]",refs).forEach(input=>input.onchange=()=>{
+  $$("[data-clip-point],[data-audio-point]",refs).forEach(input=>input.onchange=()=>{
     if (!canvasCanEdit() || n.job || prepping.has(n.id)) {showPanel();return;}
-    const clip=videoInputs(n)[Number(input.dataset.clipIndex)], value=input.valueAsNumber;
+    const audio=!!input.dataset.audioPoint, point=audio?input.dataset.audioPoint:input.dataset.clipPoint;
+    const clip=audio?audioInputs(n)[Number(input.dataset.audioIndex)]:videoInputs(n)[Number(input.dataset.clipIndex)];
+    const value=input.valueAsNumber;
     if (!clip) return;
     if (input.value!=="" && (!Number.isFinite(value) || value<0 || value>(clip.version?.seconds || Infinity))) {
-      toast("参考入点与出点须在视频时长内"); showPanel(); return;
+      toast("参考入点与出点须在素材时长内"); showPanel(); return;
     }
     checkpoint(); rememberVideoVersion(n);
-    if (input.value==="") delete clip.edge[input.dataset.clipPoint];
-    else clip.edge[input.dataset.clipPoint]=value;
+    if (input.value==="") delete clip.edge[point];
+    else clip.edge[point]=value;
     save(); showPanel();
   });
   $$("input[data-time]", refs).forEach(inp => {
@@ -1406,8 +1425,8 @@ function showPanel() {
     const rem = isRemote(n);
     if (reference) {
       const services = referenceServices(n), selected = referenceService(n);
-      const opts = {"":"选择参考服务", ...Object.fromEntries(services.map(s => [s.id, esc(s.name)]))};
-      h = services.length ? pill("provider", opts, `${esc(selected?.name || "选择参考服务")}${ico("down")}`, "model")
+      const opts = {"":"自动选择参考服务", ...Object.fromEntries(services.map(s => [s.id, esc(s.name)]))};
+      h = services.length ? pill("provider", opts, `${esc(selected?.name || "自动选择参考服务")}${ico("down")}`, "model")
         : `<span class="pill" title="在控制台配置视频生成服务">待配置${guide || clips.length ? "视频参考" : "音频参考"}服务</span>`;
       if (selected) h += nodeModelPill(n,pill,selected,true);
     } else {
@@ -1552,7 +1571,10 @@ function renderFields(n, on) {
   box.innerHTML = FIELDS.map(x => `<label class="f"><span>${x.t}${x.sub ? `<small>${x.sub}</small>` : ""}</span><textarea rows="1" data-k="${x.k}" placeholder="${esc(x.k === "action" ? "输入 @ 引用素材。"+x.ph : x.ph)}"></textarea></label>`).join("");
   $$("textarea", box).forEach(t => {
     t.value = f[t.dataset.k] || ""; fieldGrow(t);
-    t.addEventListener("input", () => { f[t.dataset.k] = t.value; fieldGrow(t); save(); placeOverlays(); });
+    t.addEventListener("input", () => {
+      f[t.dataset.k] = t.value; fieldGrow(t); save(); placeOverlays();
+      renderCanvasCost(n,$("[data-generation-cost]"));
+    });
     t.addEventListener("focus", () => { lastField = t; t._before = snap(); });
     t.addEventListener("blur", () => { if (t._before && t._before !== snap()) checkpoint(t._before); });
     t.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (!n.job) generate(n); } });
@@ -1610,30 +1632,107 @@ function renderPreviewInputs(items, duration) {
   }
   list.hidden = !list.childElementCount;
 }
-async function previewPrompt(n) {
-  const req = videoReq(n, fullPrompt(n)); if (!req) return;
+function videoPreviewRequest(n, silent=false) {
+  const req = videoReq(n,fullPrompt(n),{silent});
+  if (!req) return null;
   req.board = boardId;
   applyVideoMemory(n, req);
   const services = req.previs_guide || req.audio_refs || req.video_refs ? referenceServices(n) : CAPS_LIST.video;
   if (services?.some(service => service.id === n.data.provider)) req.provider = n.data.provider;
   if (n.data.selected_model) Object.assign(req,{provider:n.data.provider,selected_model:n.data.selected_model});
+  return req;
+}
+
+async function checkVideoModels(n, request, current) {
+  const button=$("#pvModelCheck"), panel=$("#pvModels"), status=$("#pvModelStatus"), list=$("#pvModelList");
+  const candidate=structuredClone(request);
+  const edges=videoInputs(n);
+  for (const [index,input] of (candidate.video_refs||[]).entries()) {
+    const edge=edges[index]?.edge;
+    if (!edge || edge.extension || edge.segment_edit) continue;
+    if (!Number.isFinite(edge.start)) delete input.start;
+    if (!Number.isFinite(edge.end)) delete input.end;
+  }
+  if (!candidate.segment_edit) candidate.duration=Number(n.data.duration)||candidate.duration;
+  candidate.quality=n.data.quality||candidate.quality;
+  if (n.data.draft) candidate.draft=true;
+  const signature=videoPreviewSignature(request);
+  panel.hidden=false;
+  button.disabled=true;
+  list.replaceChildren();
+  status.textContent="正在检查素材与模型…";
+  try {
+    const result=await api("/api/video/reference-models",candidate);
+    if (!current()) return;
+    const ready=result.models.filter(model=>!model.error).length;
+    status.textContent=result.message || `${ready} / ${result.models.length} 个${result.image_only?" Seedance ":""}模型可用`;
+    for (const model of result.models) {
+      const entry=document.createElement("li"), details=document.createElement("div");
+      const title=document.createElement("strong"), info=document.createElement("small");
+      title.textContent=[model.provider,model.model,model.endpoint_model,model.selected?"当前":""].filter(Boolean).join(" · ");
+      const limits=model.limits, counts=result.counts;
+      const usage=[counts.images&&`图 ${counts.images}/${limits.images}`,
+        counts.videos&&`视频 ${counts.videos}/${limits.videos}${Number.isFinite(model.video_seconds)?`，${model.video_seconds}/${limits.seconds} 秒`:""}`,
+        counts.audio&&`音频 ${counts.audio}/${limits.audio}${Number.isFinite(model.audio_seconds)?`，${model.audio_seconds}/${limits.seconds} 秒`:""}`,
+        limits.total&&`合计 ${counts.images+counts.videos+counts.audio}/${limits.total}`].filter(Boolean);
+      info.textContent=[model.error || `${model.duration} 秒 · ${model.resolution}${model.draft?" 样片":""}`,...usage].join(" · ");
+      details.append(title,info);entry.append(details);
+      if (!model.error) {
+        const use=document.createElement("button");use.type="button";use.className="pill";
+        use.textContent="采用";
+        use.onclick=()=>{
+          const latest=videoPreviewRequest(n,true);
+          if (!current() || !latest || videoPreviewSignature(latest)!==signature || n.job || prepping.has(n.id) ||
+              !canvasCanEdit() || nodeLocked(n)) {
+            status.textContent="生成设置已变化，请重新预览后再选择。";
+            return;
+          }
+          checkpoint();rememberVideoVersion(n);
+          Object.assign(n.data,{provider:model.provider_id,selected_model:model.model,quality:model.quality,draft:model.draft});
+          if (!candidate.segment_edit) n.data.duration=model.duration;
+          save();render(n);showPanel();
+          void previewPrompt(n);
+        };
+        entry.append(use);
+      }
+      list.append(entry);
+    }
+  } catch(error) {
+    if (current()) status.textContent=error.message;
+  } finally {
+    if (current()) button.disabled=false;
+  }
+}
+
+async function previewPrompt(n) {
+  const req=videoPreviewRequest(n);
+  if (!req) return;
   const board = B, sequence = ++previewSequence;
   const current = () => sequence === previewSequence && B === board && node(n.id) === n && sel.has(n.id);
+  const render = r => {
+    if (!current()) return;
+    if (r.reference_preview) videoReferencePreviews.set(n,{key:r.reference_preview,signature:videoPreviewSignature(req)});
+    else videoReferencePreviews.delete(n);
+    renderPreviewInputs(r.inputs || [], req.duration);
+    $("#pvt").textContent = r.prompt || "";
+    $("#pvt").hidden = $("#pvCopy").hidden = !r.prompt;
+    $("#pvm").textContent = r.mode || "";
+    $("#pvModels").hidden = true;
+    const check=$("#pvModelCheck");
+    check.disabled=false;
+    check.onclick=()=>checkVideoModels(n,req,current);
+    $("#pv").classList.add("on");
+    $("#pvClose").focus();
+  };
   try {
     if (req.previs_guide || req.audio_refs || req.video_refs) {
       await flushSave();
       if (!current()) return;
     }
-    const r = await api("/api/preview", req);
-    if (!current()) return;
-    if (r.reference_preview) videoReferencePreviews.set(n,{key:r.reference_preview,signature:videoPreviewSignature(req)});
-    else videoReferencePreviews.delete(n);
-    renderPreviewInputs(r.inputs || [], req.duration);
-    $("#pvt").textContent = r.prompt;
-    $("#pvm").textContent = r.mode || "";
-    $("#pv").classList.add("on");
-    $("#pvClose").focus();
-  } catch (e) { if (current()) toast("预览失败：" + e.message, 3500); }
+    render(await api("/api/preview", req));
+  } catch (error) {
+    render({mode:"预览失败 · "+error.message});
+  }
 }
 function closePromptPreview() {
   previewSequence++;
@@ -1653,6 +1752,7 @@ function insertTok(tok) {
 }
 $("#prompt").addEventListener("input", e => {
   const n = node(e.target._node); if (!n) return; n.data.prompt = e.target.value; autoGrow(e.target); save(); placeOverlays();
+  if (n.type === "video") renderCanvasCost(n,$("[data-generation-cost]"));
 });
 $("#prompt").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); const n = node(e.target._node); if (n && !n.job) generate(n); } });
 $("#prompt").addEventListener("focus", e => { e.target._before = snap(); });
@@ -1662,12 +1762,13 @@ document.addEventListener("pointerdown", e => { if (!e.target.closest("#more, #m
 function nodeAction(n, a) {
   if (a === "text-document") return openTextDocument(n);
   if (a === "panorama") return openPanorama(n);
-  if (!canvasCanEdit() && !["prev","next","full","compare-video","dl","gif-export","playlist-open"].includes(a)) return;
+  if (!canvasCanEdit() && !["prev","next","full","compare-video","compare-draft","dl","gif-export","playlist-open"].includes(a)) return;
   const v = curV(n);
   if (a === "prev" || a === "next") { switchVersion(n, (n.cur + (a === "next" ? 1 : -1) + n.versions.length) % n.versions.length); }
   else if (a === "dl") { const x = document.createElement("a"); x.href = v.url; x.download = v.ref.split("/").pop(); x.click(); }
   else if (a === "full") lightbox(v,n);
   else if (a === "compare-video") openVideoCompare(n);
+  else if (a === "compare-draft") openDraftComparison(n);
   else if (a === "broll") openBroll(n);
   else if (a === "unlock-node") markCanvasNodes([n.id],false,{lock:true});
   else if (a === "del") removeNodes([n.id]);
@@ -1847,6 +1948,7 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
     ? {v:active,i:source.cur} : previous || choices.find(({v})=>v.ref!==version.ref));
   const imageCompare = !!comparison;
   const videoCompareAvailable = type === "video" && choices.length > 1;
+  const draftCompareAvailable = type === "video" && draftVideoComparison(source,version);
   const editable = index >= 0 && version.ref && canvasCanEdit() && !source.job && !prepping.has(source.id);
   const title = source?.name || version.ref?.split("/").pop() || "媒体";
   const prompt = [version.generation_record?.prompt,version.prompt,version.edit?.recipe?.prompt]
@@ -1903,8 +2005,14 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
         ${usedAssets.length ? `<h3>生成时使用的资产</h3><ul>${usedAssets.map(asset => {
           const refs = Array.isArray(asset.references) ? asset.references :
             asset.ref ? [{ref:asset.ref}] : [];
-          const links = refs.filter(item=>item?.ref).map(({ref,view})=>
-            `<a href="/media?ref=${encodeURIComponent(ref)}" target="_blank" rel="noopener">${esc(CHARACTER_VIEWS[view]?.[0] || "参考图")}</a>`);
+          const links = refs.filter(item=>item?.ref).map(item=>{
+            const {ref,view,start,end}=item, kind=cmMediaType(ref,item);
+            const label=CHARACTER_VIEWS[view]?.[0] || ({video:"参考视频",audio:"参考音频"}[kind] || "参考图");
+            const hasRange=(kind==="video"||kind==="audio") && Number.isFinite(start) && Number.isFinite(end) && start>=0 && end>start;
+            const fragment=hasRange ? `#t=${start},${end}` : "";
+            const caption=hasRange ? `${label} ${Number(start.toFixed(2))}–${Number(end.toFixed(2))} 秒` : label;
+            return `<a href="/media?ref=${encodeURIComponent(ref)}${fragment}" target="_blank" rel="noopener">${esc(caption)}</a>`;
+          });
           return `<li>${esc(asset.name)}${links.length ? " · "+links.join("、") : ""}</li>`;
         }).join("")}</ul>` : ""}
         ${transcripts.map(n => `<details open><summary>${esc(n.name)}</summary><pre>${esc(n.data.text)}</pre></details>`).join("")}
@@ -1917,6 +2025,8 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
         `<option value="${i}" ${i === index ? "selected" : ""}>版本 ${i + 1}${i === source.cur ? " · 当前" : ""}${v.label ? " · " + esc(v.label) : ""}</option>`).join("")}</select>` : ""}
       ${choices.length > 1 ? '<button type="button" data-light-overview aria-pressed="false">所有版本</button>' : ""}
       ${imageCompare || videoCompareAvailable ? `<button type="button" data-light-compare>${comparing ? "结束对比" : "对比版本"}</button>` : ""}
+      ${draftCompareAvailable ? '<button type="button" data-light-compare-draft>对比样片与定稿</button>' : ""}
+      ${editable && type==="video" && version.draft_expires ? '<button type="button" data-light-draft-final>从此样片生成定稿</button>' : ""}
       ${type==="image" && previous && !comparing ? '<button type="button" data-light-peek title="按住反斜杠键或此按钮">按住看上一版</button>' : ""}
       ${hasDetails ? '<button type="button" data-light-details aria-controls="lightDetails" aria-expanded="false">版本信息</button>' : ""}
       ${index>=0 && hasGenerationDraft(source,version) ? '<button type="button" data-light-generation-draft>用此版本改稿</button>' : ""}
@@ -2102,6 +2212,18 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
     } else {
       renderLightbox(current.versions[index],current,!comparing && imageCompare);
     }
+  });
+  bind("compare-draft",() => {
+    const current = currentSource(index);
+    if (!current) return;
+    closeLightbox();
+    openDraftComparison(current,current.versions[index]);
+  });
+  bind("draft-final",() => {
+    const current = currentSource(index);
+    if (!current) return;
+    closeLightbox();
+    openVideoDraftFinal(current,current.versions[index]);
   });
   bind("edit",() => {
     const current = currentSource(index);
@@ -2292,6 +2414,7 @@ function ctxMenu(e) {
     if (n.type === "video") add("remake", "video", "视频重制 · 替换角色");
     if (n.type === "video") add("trim-video", "scissors", "裁剪视频 / 智能拆镜头");
     if (n.type === "video" && v.draft_expires) add("draft-final","hd","从样片生成定稿");
+    if (draftVideoComparison(n,v)) add("compare-draft","fit","对比样片与定稿");
     if (n.type === "video" && n.versions.filter(v=>v.url).length > 1) add("compare-video", "stack", "对比视频版本");
     if (n.type === "video" && v.source!=="previs") {
       add("segment-edit","edit","修改视频片段");
