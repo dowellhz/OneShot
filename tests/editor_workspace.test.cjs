@@ -98,6 +98,10 @@ w.fetch=async(url,options={})=>{
    w.__memories=(w.__memories||[]).filter(a=>a.id!==result.id).concat(result);
   }else result=w.__memories||[];
  }
+ else if(pathname==='/api/memory/search'){
+  w.__semanticSearch=JSON.parse(options.body);
+  result={method:'semantic',items:['doc','char'].map(id=>w.__memories.find(item=>item.id===id))};
+ }
  else if(pathname==='/api/memory/char/impact')result={canvas:[{node:'n1',name:'Image',ref:'input:h3studio/base.png',version:1}],remake:[]};
  else if(pathname==='/api/memory/import-canvas'){
   const p=JSON.parse(options.body);w.__batchImports=(w.__batchImports||[]).concat(p);
@@ -634,6 +638,12 @@ async function run(){
  evaluate('ME_USER={id:1,role:"member"};document.getElementById("assetLibraryBtn").click()');
  await ready('AL.items.length===5 && document.getElementById("alLoading").hidden','asset library entry');
  equal(evaluate('document.getElementById("assetLibrary").hidden'),false,'dedicated workspace opens');
+ evaluate(`$("#alSearch").value="这部片子讲什么，谁戴眼镜";$("#alSearch").dispatchEvent(new Event("input"));$("#alSemantic").click();`);
+ await ready('$("#alSemanticStatus").textContent==="按描述匹配" && $("#alSort").value==="relevance"','description search shows the result status and sort');
+ equal(w.__semanticSearch,{board:'btest',scope:'current',query:'这部片子讲什么，谁戴眼镜'});
+ equal(evaluate('$$("#alGrid .al-card").map(item=>item.dataset.id)'),['doc','char'],'the semantic results keep their ranking');
+ evaluate('$("#alReset").click()');
+ assert.equal(evaluate('$("#alSemanticStatus").hidden'),true,'reset clears the description search');
  equal(evaluate('[$("#alScope").value,$("#alScope option:checked").textContent,$$("#alGrid .al-card").length]'),
   ['current','当前资产库 · '+evaluate('B.name'),3],'the standalone library shows only the current canvas assets');
  equal(evaluate('document.querySelector("#alGrid .al-card[data-id=doc] strong svg")'),null,'asset names are escaped');

@@ -809,7 +809,7 @@ function acAppendEvent(e,replay=false){
   const result=d.result, output=$(".ac-output",el);
   if(result.creative_directions?.length||result.previs_node||result.playlist_node||result.workflow||result.workflow_templates||result.template_fill_plan||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_review||result.shot_revision||result.shot_range_plan||result.remake_plan||result.review_versions?.length||
      result.preview?.completed?.length||result.video?.completed||d.name==="video_remake_export"&&result.export_ref||
-     ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length)el.open=true;
+     ["video_broll_generate","video_extend"].includes(d.name)&&result.nodes?.length||result.sources?.length||result.memories?.length)el.open=true;
   el.classList.add(result.error||d.retry_count?"error":"done");
   const state=result.error?"未完成":d.retry_count?"部分失败":result.profile_suggestion||result.reference_plan||result.group_run_plan||result.storyboard_plan||result.shot_revision||result.shot_range_plan||result.template_fill_plan?"等待确认":"完成";
   $("summary",el).textContent=el.dataset.label+" · "+state;
@@ -821,7 +821,9 @@ function acAppendEvent(e,replay=false){
   else if(d.name==="image_segment")description="选区已准备好，可继续局部编辑。";
   else if(d.name==="canvas_focus")description="已向页面发送定位请求。";
   else if(result.adopted)description="已采用："+result.adopted.map(a=>a.name).join("、");
-  else if(result.memories)description="找到 "+result.memories.length+" 条创作记忆。";
+  else if(result.memories)description=result.memories.length
+   ? ["找到 "+result.memories.length+" 条创作记忆",...result.memories.map(a=>`${a.name} · ${cmKind(a)}`)].join("\n")
+   : "当前范围内没有匹配的资产。";
   else if(result.memory)description="已保存记忆："+result.memory.name;
   detail.textContent=result.error||result.text||description;
   output.replaceChildren(detail);

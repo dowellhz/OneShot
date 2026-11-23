@@ -2,7 +2,7 @@
 import io
 import json
 from zipfile import ZipFile
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from aiohttp import FormData, web
 from PIL import Image
 import image_editor
@@ -442,6 +442,55 @@ class MemoryIntegration(ChatFixture):
         for _ in range(2):
             self.assertEqual(await (await self.client.get('/api/library')).json(),[])
         self.assertEqual(json.loads(server.LIBRARY.read_text()),[old])
+
+    async def test_assistant_semantic_search_only_uses_accessible_candidates_in_scope(self):
+        st = self.app["creative_memory"]
+        user = {"id":7,"role":"member"}
+        clue = await self.create(name="回程钥匙",kind="prop",desc="小巧的铜制开锁物，属于故事主角。")
+        await self.create(name="普通盘子",kind="prop",desc="白色餐具")
+        await self.create(name="个人挂件",kind="prop",board="")
+        await self.client.put("/api/board/other-library",json={"nodes":[]})
+        st.put(user,{"name":"另一画布的门卡","kind":"prop","board":"other-library"})
+        query = "把能开启房门的随身器物放在长凳上"
+        self.assertNotIn(clue["id"],[a["id"] for a in st.list(user,"test",query)])
+
+        async def shortlist(_, raw, **kwargs):
+            request = json.loads(raw)
+            self.assertEqual(request["query"],query)
+            candidates = request["candidates"]
+            self.assertEqual({a["name"] for a in candidates},{"回程钥匙","普通盘子"})
+            self.assertNotIn(clue["ref"],raw)
+            number = next(a["number"] for a in candidates if a["name"]=="回程钥匙")
+            return json.dumps({"matches":[number,number]})
+
+        self.svc.model.side_effect = [call("memory_search",{"query":query,"kind":"prop"}),answer()]
+        llm = self.app["llm"]
+        llm.available = lambda:True
+        llm.chat = AsyncMock(side_effect=shortlist)
+        rid = await self.send(query)
+        self.assertEqual((await self.wait(rid))["state"],"done")
+        result = json.loads(db.one("SELECT result FROM chat_calls WHERE run_id=?",rid)["result"])
+        self.assertEqual(result["search_method"],"semantic")
+        self.assertEqual([a["id"] for a in result["memories"]],[clue["id"]])
+        self.assertEqual(llm.chat.await_count,1)
+
+        assets, method = await st.search(llm,user,"test","回程钥匙")
+        self.assertEqual(([a["id"] for a in assets],method),([clue["id"]],"exact"))
+        self.assertEqual(llm.chat.await_count,1)
+        personal, method = await st.search(llm,user,"test","个人挂件",scope="available")
+        self.assertEqual(([a["name"] for a in personal],method),(["个人挂件"],"exact"))
+        query_payload = {"board":"test","query":"个人挂件","scope":"personal","kind":"prop"}
+        response = await self.client.post("/api/memory/search",json=query_payload)
+        self.assertEqual(response.status,200,await response.text())
+        match = await response.json()
+        self.assertEqual(match["method"],"exact")
+        self.assertEqual([entry["name"] for entry in match["items"]],["个人挂件"])
+        self.assertIn("folder_id",match["items"][0])
+        hidden = await self.client.post("/api/memory/search",json=query_payload,headers={"X-Uid":"8"})
+        self.assertEqual(hidden.status,403,await hidden.text())
+        llm.chat = AsyncMock(return_value='{"matches":[999]}')
+        assets, method = await st.search(llm,user,"test","回程钥匙",mode="semantic")
+        self.assertEqual(([a["id"] for a in assets],method),([clue["id"]],"keyword"))
 
     async def test_agent_retrieves_and_adopts_implicit_memory(self):
         a=await self.create(tags=['森林','主角'], character_view='main')

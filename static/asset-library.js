@@ -39,12 +39,44 @@ function alBaseItems() {
   const found = AL.documentQuery===q ? AL.documentResults : new Map();
   const items = new Map(AL.items.map(a=>[a.id,a]));
   for(const [id,a] of found)items.set(id,a);
-  return [...items.values()].filter(a => (!q || found.has(a.id) ||
+  const ranked = AL.semantic?.ids;
+  const candidates = ranked ? ranked.map(id=>items.get(id)).filter(Boolean) : [...items.values()];
+  return candidates.filter(a => (ranked || !q || found.has(a.id) ||
     [a.name,a.desc,a.document?.name,a.document?.text||a.document?.excerpt,...(a.aliases||[]),...(a.tags||[])].join(' ').toLocaleLowerCase().includes(q))
     && (AL.scope === 'current' && inCurrent(a) ||
       AL.scope === 'personal' && alPersonal(a) || AL.scope === 'shared' && a.shared || AL.scope.startsWith('team:') && a.team === AL.scope.slice(5))
     && (AL.source === 'all' || alSource(a) === AL.source)
     && (AL.folder === 'all' || (AL.folder === 'none' ? !alFolderSlot(a) : alFolderSlot(a) === AL.folder)));
+}
+function alClearSemantic() {
+  AL.semantic = null;
+  if(AL.sort==="relevance")AL.sort="recent";
+}
+function alCanFindByDescription() {
+  return AL.open && $("#alLoading").hidden && !!AL.query.trim() && !AL.semantic?.pending;
+}
+async function alFindByDescription() {
+  if (!alCanFindByDescription()) return;
+  const bid = boardId, query = AL.query.trim();
+  const search = AL.semantic = {pending:true,ids:null};
+  alRender();
+  try {
+    const {items,method} = await boardRequest("/api/memory/search","POST",{
+      board:bid,query,scope:AL.scope,...(AL.kind==="all"?{}:{kind:AL.kind}),
+    });
+    if (!AL.open || AL.semantic!==search || boardId!==bid) return;
+    const merged = new Map(AL.items.map(asset=>[asset.id,asset]));
+    for (const asset of items) merged.set(asset.id,asset);
+    AL.items = [...merged.values()];
+    search.ids = items.map(asset=>asset.id);
+    search.method = method;
+    AL.sort = "relevance";
+    AL.marked.clear();
+  } catch(e) {
+    if(AL.semantic===search)search.error=e.message || "按描述查找失败";
+  } finally {
+    if(AL.semantic===search){search.pending=false;alRender();}
+  }
 }
 function alSearchDocuments() {
   clearTimeout(AL.documentTimer);
@@ -125,7 +157,15 @@ function alRender() {
   $("#alScope option[value=current]").textContent = currentLabel;
   $("#alTitle").textContent = AL.scope === "current" ? currentLabel : "资产库";
   const base = alBaseItems(), list = base.filter(a => AL.kind === 'all' || a.kind === AL.kind);
-  list.sort((a,b) => AL.sort === 'name' ? a.name.localeCompare(b.name,'zh-CN') : (b.mtime||0)-(a.mtime||0));
+  if(AL.sort!=="relevance")list.sort((a,b) => AL.sort === 'name' ? a.name.localeCompare(b.name,'zh-CN') : (b.mtime||0)-(a.mtime||0));
+  $("#alSort option[value=relevance]").hidden = !AL.semantic?.ids;
+  $("#alSort").value = AL.sort;
+  $("#alSemantic").disabled = !alCanFindByDescription();
+  const status = $("#alSemanticStatus");
+  status.textContent = AL.semantic?.pending ? "正在按描述查找…" : AL.semantic?.error || ({
+    semantic:"按描述匹配", exact:"名称匹配", keyword:"已使用关键词查找",
+  })[AL.semantic?.method] || "";
+  status.hidden = !status.textContent;
   for (const b of $$('#alCategories [data-kind]')) {
     b.classList.toggle('on', b.dataset.kind === AL.kind); b.setAttribute('aria-pressed', String(b.dataset.kind === AL.kind));
     b.querySelector('small').textContent = base.filter(a => b.dataset.kind === 'all' || a.kind === b.dataset.kind).length;
@@ -162,7 +202,9 @@ function alRender() {
   }
 }
 async function alRefresh() {
+  alClearSemantic();
   const epoch = ++AL.epoch, bid = boardId; $('#alError').hidden = true; $('#alLoading').hidden = false;
+  $("#alSemantic").disabled = true;
   const team = alFolderTeam();
   try {
     const [r,folders,teams,teamFolders] = await Promise.all([fetch('/api/memory?board=' + encodeURIComponent(bid)),
@@ -199,9 +241,15 @@ async function alRefresh() {
     if (AL.open && AL.epoch === epoch && bid === boardId) alRender();
   } catch (e) {
     if (AL.open && AL.epoch === epoch) { $('#alError').textContent = e.message + '，可点击刷新重试。'; $('#alError').hidden = false; }
-  } finally { if (AL.epoch === epoch) $('#alLoading').hidden = true; }
+  } finally {
+    if (AL.epoch === epoch) {
+      $("#alLoading").hidden = true;
+      $("#alSemantic").disabled = !alCanFindByDescription();
+    }
+  }
 }
 function alResetFilters(scope='current',folder='all') {
+  alClearSemantic();
   AL.query='';AL.scope=scope;AL.source='all';AL.folder=folder;
   AL.marked.clear();AL.filing=false;
   $('#alSearch').value='';$('#alScope').value=scope;$('#alSource').value='all';
@@ -228,6 +276,7 @@ async function alOpen(destination=null) {
 }
 function alClose() {
   if (!AL.open) return;
+  alClearSemantic();
   clearTimeout(AL.documentTimer);AL.documentQuery="";AL.documentResults=new Map();
   AL.open=false; AL.epoch++; $('#assetLibrary').hidden=true; $('#assetBtn').classList.remove('on'); $('#assetLibraryBtn').setAttribute('aria-expanded','false');
   alEndDrag();
@@ -534,7 +583,7 @@ function alChanged(a, removed=false) {
 function alBoardChanged() { alClose(); alCloseCanvasImport(); AL.board=null; AL.items=[]; AL.selected=null; AL.marked.clear(); AL.filing=false; $("#alFolderEditor").replaceChildren(); CM.editor?.remove(); CM.editor=null; alEmptyDetail(); }
 function initAssetLibrary() {
   const pane=document.createElement('section');pane.id='assetLibrary';pane.hidden=true;pane.setAttribute('role','dialog');pane.setAttribute('aria-modal','false');pane.setAttribute('aria-labelledby','alTitle');
-  pane.innerHTML=`<header class="al-head"><div class="al-title">${ico('assets')}<div><h1 id="alTitle">当前资产库</h1></div></div><button type="button" id="alClose" aria-label="返回画布">${ico('left')}返回画布</button></header><div class="al-body"><nav class="al-sidebar" aria-label="资产分类"><div class="al-nav-label">创作资产</div><div id="alCategories">${Object.entries(AL_KINDS).map(([k,v])=>`<button type="button" data-kind="${k}" aria-pressed="${k==='all'}"><span>${v}</span><small>0</small></button>`).join('')}</div><div class="al-sidebar-note">资产可包含参考图、视频和文字设定。<br>输入 @ 自动引用，生成历史持续保留。</div><button type="button" id="alTemplate">工作流模板</button><button type="button" id="alHistory">${ico('clock')}素材历史</button></nav><main class="al-main"><div class="al-toolbar"><label class="al-search">${ico('search')}<input id="alSearch" placeholder="搜索名称、标签和文档正文" aria-label="搜索资产"></label><button type="button" id="alUpload">${ico('upload')}上传素材</button><button type="button" id="alNew">${ico('plus')}新建资产</button><input id="alFile" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf" hidden></div><div class="al-filterbar"><h2 id="alHeading">所有资产</h2><span id="alCount">0 项资产</span><div class="al-filters"><select id="alScope" aria-label="资产范围"><option value="current">当前资产库</option><option value="personal">个人资产库</option><option value="shared">共享素材</option></select><select id="alSource" aria-label="资产来源"><option value="all">所有来源</option><option value="upload">用户上传</option><option value="generated">生成素材</option><option value="mixed">多种来源</option><option value="text">文本资料</option><option value="other">已有素材</option></select><select id="alSort" aria-label="资产排序"><option value="recent">最近更新</option><option value="name">名称排序</option></select><button type="button" id="alReset" title="重置筛选">重置</button><button type="button" id="alRefresh" title="刷新资产库" aria-label="刷新资产库">${ico('redo')}</button></div></div><div class="al-feedback"><span id="alLoading" hidden>正在读取资产…</span><span id="alError" role="alert" hidden></span></div><div class="al-content"><div id="alGrid" class="al-grid"></div><div id="alEmpty" class="al-empty">${ico('assets')}<h3 id="alEmptyTitle">还没有资产</h3><p id="alEmptyText"></p><div><button type="button" id="alEmptyNew">新建资产</button><button type="button" id="alFromCanvas">从画布收录</button></div></div></div><div class="al-foot"><span>拖动资产卡片可放入画布。</span><button type="button" id="alImportBtn">从画布收录</button></div><div id="alImport" class="al-import" hidden></div></main><aside id="alDetail" class="al-detail" aria-label="资产详情"></aside></div>`;
+  pane.innerHTML=`<header class="al-head"><div class="al-title">${ico('assets')}<div><h1 id="alTitle">当前资产库</h1></div></div><button type="button" id="alClose" aria-label="返回画布">${ico('left')}返回画布</button></header><div class="al-body"><nav class="al-sidebar" aria-label="资产分类"><div class="al-nav-label">创作资产</div><div id="alCategories">${Object.entries(AL_KINDS).map(([k,v])=>`<button type="button" data-kind="${k}" aria-pressed="${k==='all'}"><span>${v}</span><small>0</small></button>`).join('')}</div><div class="al-sidebar-note">资产可包含参考图、视频和文字设定。<br>输入 @ 自动引用，生成历史持续保留。</div><button type="button" id="alTemplate">工作流模板</button><button type="button" id="alHistory">${ico('clock')}素材历史</button></nav><main class="al-main"><div class="al-toolbar"><label class="al-search">${ico('search')}<input id="alSearch" maxlength="1000" placeholder="输入名称、标签或镜头描述" aria-label="搜索资产"></label><button type="button" id="alSemantic">按描述找</button><button type="button" id="alUpload">${ico('upload')}上传素材</button><button type="button" id="alNew">${ico('plus')}新建资产</button><input id="alFile" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.txt,.md,.markdown,.csv,.json,.docx,.pdf" hidden></div><div class="al-filterbar"><h2 id="alHeading">所有资产</h2><span id="alCount">0 项资产</span><div class="al-filters"><select id="alScope" aria-label="资产范围"><option value="current">当前资产库</option><option value="personal">个人资产库</option><option value="shared">共享素材</option></select><select id="alSource" aria-label="资产来源"><option value="all">所有来源</option><option value="upload">用户上传</option><option value="generated">生成素材</option><option value="mixed">多种来源</option><option value="text">文本资料</option><option value="other">已有素材</option></select><select id="alSort" aria-label="资产排序"><option value="relevance" hidden>按相关性</option><option value="recent">最近更新</option><option value="name">名称排序</option></select><button type="button" id="alReset" title="重置筛选">重置</button><button type="button" id="alRefresh" title="刷新资产库" aria-label="刷新资产库">${ico('redo')}</button></div></div><div class="al-feedback"><span id="alLoading" hidden>正在读取资产…</span><span id="alError" role="alert" hidden></span><span id="alSemanticStatus" role="status" hidden></span></div><div class="al-content"><div id="alGrid" class="al-grid"></div><div id="alEmpty" class="al-empty">${ico('assets')}<h3 id="alEmptyTitle">还没有资产</h3><p id="alEmptyText"></p><div><button type="button" id="alEmptyNew">新建资产</button><button type="button" id="alFromCanvas">从画布收录</button></div></div></div><div class="al-foot"><span>拖动资产卡片可放入画布。</span><button type="button" id="alImportBtn">从画布收录</button></div><div id="alImport" class="al-import" hidden></div></main><aside id="alDetail" class="al-detail" aria-label="资产详情"></aside></div>`;
   document.body.append(pane);alEmptyDetail();
   pane.insertAdjacentHTML("afterend",`<dialog id="alCanvasImport" aria-labelledby="alCanvasImportTitle"><h2 id="alCanvasImportTitle">收录到资产库</h2><div data-canvas-import-form></div></dialog>`);
   const canvasImport=$("#alCanvasImport"), importForm=$("[data-canvas-import-form]",canvasImport);
@@ -583,10 +632,13 @@ function initAssetLibrary() {
   });
   pane.addEventListener('pointerdown',e=>e.stopPropagation());pane.addEventListener('wheel',e=>e.stopPropagation(),{passive:true});pane.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Escape'){if(!$('#alImport').hidden){$('#alImport').hidden=true;return;}if(CM.editor?.closest('#assetLibrary')){CM.editor.querySelector('[data-close]').click();return;}alClose();}});
   $('#alClose').onclick=alClose;$('#alNew').onclick=()=>alNew();$('#alEmptyNew').onclick=()=>alNew();$('#alRefresh').onclick=alRefresh;
-  $('#alSearch').oninput=e=>{AL.query=e.target.value;alSearchDocuments();alRender();};
+  $('#alSearch').oninput=e=>{AL.query=e.target.value;alClearSemantic();alSearchDocuments();alRender();};
+  $('#alSearch').onkeydown=e=>{if(e.key==="Enter"&&!e.isComposing){e.preventDefault();void alFindByDescription();}};
+  $('#alSemantic').onclick=alFindByDescription;
   $('#alScope').onchange=e=>{
     const previous=alFolderTeam();
     AL.scope=e.target.value;
+    alClearSemantic();
     if(previous!==alFolderTeam()){
       AL.folder='all'; AL.marked.clear(); AL.filing=false; $("#alFolderEditor").replaceChildren();
       void alRefresh();
@@ -594,7 +646,7 @@ function initAssetLibrary() {
     alRender();
   };
   for(const [id,field] of [['alSource','source'],['alSort','sort']])$('#'+id).onchange=e=>{AL[field]=e.target.value;alRender();};
-  $$('#alCategories [data-kind]').forEach(b=>b.onclick=()=>{AL.kind=b.dataset.kind;alRender();});
+  $$('#alCategories [data-kind]').forEach(b=>b.onclick=()=>{AL.kind=b.dataset.kind;alClearSemantic();alRender();});
   $('#alReset').onclick=()=>{alResetFilters();alRender();};
   $('#alFromCanvas').onclick=$('#alImportBtn').onclick=alImportMenu;
   $('#alUpload').onclick=()=>$('#alFile').click();$('#alFile').onchange=e=>{const file=e.target.files[0];if(file)alNew({file,kind:CM_DOCUMENT_EXT.test(file.name)?'document':undefined,preset:{name:file.name.replace(/\.[^.]+$/,'')}});e.target.value='';};
