@@ -47,6 +47,7 @@ import asset_transfers
 import mcp_bridge
 import connector_oauth
 import video_remake
+import video_prompt_adapters
 import workflow_presets
 import workflow_review
 from board_store import BOARD_ID as _ID, access_role, board_meta, can_edit, can_see
@@ -250,6 +251,10 @@ def ref2va_prompt(prompt: str, captions, times, mode: str) -> str:
             + f"\n\ndetailed_description:\n[Shot 1] The shot begins from <Picture 1>. {prompt}{steps}")
 
 
+def is_character_reference(image):
+    return image.get("role") == "subject" and image.get("memory_kind") in (None,"character")
+
+
 def planned_prompt(prompt: str, subj, frames, end: float) -> str:
     """Ref2VA's structured prompt for character references (<Picture 1..S>) and timed frames (<Picture S+1..>)."""
     S = len(subj)
@@ -275,6 +280,9 @@ def planned_prompt(prompt: str, subj, frames, end: float) -> str:
             steps += f" At {ts(t)} the shot matches <Picture {pn}>."
     tag = "[keyframe completion + reference generation]" if frames else "[reference generation]"
     start = " The shot begins from <Picture %d>." % (S + 1) if frames and float(frames[0]["time"]) <= 0.01 else ""
+    if frames and any(is_character_reference(image) for image in subj):
+        keep.append("People shown in the keyframes and their corresponding character references share the same identity. "
+                    "Keep one on-screen instance per character unless the shot explicitly calls for duplicates.")
     return (f"subject_definitions:\n" + "\n".join(lines) + f"\n\nsummary:\n{tag} {prompt}\n\nretention_analysis:\n" + "\n".join(keep)
             + f"\n\ndetailed_description:\n[Shot 1]{start} {prompt}{steps}")
 
@@ -2693,12 +2701,17 @@ def apply_fields(p: dict, for_llm: bool = False) -> dict:
         ppl = pfields.people(f)
         refs = [im for im in imgs if im.get("role") == "subject"][:9]
         for im in refs:   # a named character image (e.g. from the asset library) counts even if 人物 doesn't list it
-            nm = (im.get("name") or "").strip()
-            if nm and not re.fullmatch(r"(图片|image)\s*\d+.*", nm, re.I) and not any(n in nm for n in ppl):
-                ppl[nm] = clean(im.get("caption")) or "the character in the reference image"
+            if not is_character_reference(im):
+                continue
+            canonical = clean(im.get("memory_name"))
+            nm = canonical or (im.get("name") or "").strip()
+            if canonical or (nm and not re.fullmatch(r"(图片|image)\s*\d+.*", nm, re.I) and not any(n in nm for n in ppl)):
+                ppl.setdefault(nm, clean(im.get("caption")) or "the character in the reference image")
         for k, im in enumerate(refs):
+            if not is_character_reference(im):
+                continue
             label = f"{im.get('name') or ''} {im.get('caption') or ''}"
-            hit = next((n for n in ppl if n and n in label), None)
+            hit = clean(im.get("memory_name")) or next((n for n in ppl if n in label), None)
             if hit is None and len(ppl) == 1 and len(refs) == 1:
                 hit = next(iter(ppl))
             if hit and hit not in subj:
@@ -2828,9 +2841,9 @@ async def preview(req):
         inputs = review["inputs"]
         for item in inputs:
             if item.get("role") in ("subject", "frame"):
-                item["role"] = "image_ref"
-        details = {"reference_preview":review["key"]} if needs_reference_review(payload) else {}
-        return web.json_response({"prompt": reference_prompt(payload), "mode": mode, "inputs": inputs, **details})
+                set_video_preview_image_role(item,"image_ref")
+        return web.json_response({"prompt": review["prompt"], "mode": mode, "inputs": inputs,
+                                  "duration":review["duration"], "reference_preview":review["key"]})
     inputs = workflow_review.capture_generation(payload)["inputs"]
     route = requested_generation_route(payload, "video")
     if route and route["provider"]["kind"] != "local_h3":
@@ -2839,16 +2852,19 @@ async def preview(req):
         if not prompt:
             raise bad("提示词不能为空")
         mode = f"{route['provider']['name']} · {route['model']} · {resolution}"
-        if limit := ark_reference_images(payload,route["provider"],route["model"]):
+        if limit := image_reference_limit(payload,route["provider"],route["model"]):
+            resolve_video_reference_images(req["user"],payload)
+            inputs = numbered_reference_inputs(inputs,payload,h3_labels=is_cloud_h3(route["provider"],route["model"]))
             seconds = reference_video_duration(payload,route["provider"],route["model"],None)
             mode += f" · {seconds:g} 秒 · 参考图 {len(inputs)}/{limit}"
             if any(entry.get("role")!="subject" for entry in inputs):
                 mode += " · 关键帧构图由提示词引导"
         for item, role in zip(inputs, roles):
-            item["role"] = role
+            set_video_preview_image_role(item,role)
         details = {}
-        if has_ark_asset_images(payload,route):
+        if limit:
             details["reference_preview"] = reference_preview_fingerprint(payload,route,guide_frames=True)
+            details["duration"] = seconds
         return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs, **details})
     resolution = checked_video_resolution(payload,"local_h3","h3-video")
     p = apply_fields(payload)
@@ -3261,6 +3277,8 @@ def requested_generation_route(raw, cap):
         return {"provider":choice, "model":selected}
     if choice and choice["enabled"] and cap in providers.caps_of(choice):
         return {"provider": choice, "model": raw.get("provider_model") or providers.default_model(choice, cap)}
+    if cap=="video" and provider_id=="local_h3":
+        raise bad("本地 H3 服务已不可用，请重新选择模型")
     return providers.primary(cap)
 
 
@@ -3316,7 +3334,7 @@ def generation_unit_cost(raw):
     return quoted_video_unit_cost(route,raw,seconds)
 
 
-def quoted_video_unit_cost(route, raw, seconds):
+def quoted_video_unit_cost(route, raw, seconds, *, input_video_seconds=None):
     provider, model = route["provider"], route["model"]
     adapter = provider["kind"]
     rates = provider["config"].get("generation_rates", {})
@@ -3329,8 +3347,34 @@ def quoted_video_unit_cost(route, raw, seconds):
     if quality in ("480p","4k") and quality not in options:
         return None
     quality = quality if isinstance(quality,str) and quality in options else "std"
+    if adapter=="minimax" and model in motion_reference.H3_CLOUD_MODELS:
+        return quoted_h3_video_unit_cost(model,quality,rates,raw,seconds,input_video_seconds)
     rate = rates.get(f"video {model} {quality}")
     return round(rate * seconds,4) if rate is not None else None
+
+
+def quoted_h3_video_unit_cost(model, quality, rates, raw, seconds, input_video_seconds):
+    images = raw.get("images") or []
+    if not isinstance(images,list) or any(not isinstance(image,dict) for image in images):
+        return None
+    has_video = bool(raw.get("video_refs") or raw.get("previs_guide"))
+    has_av = has_video or bool(raw.get("audio_refs"))
+    reference_mode = has_av or wants_image_references(raw)
+    image_count = len(images)
+    if reference_mode and image_count > motion_reference.image_limit(model):
+        return None
+    output_key = "video-ref" if reference_mode and model=="MiniMax-H3-MG" else "video"
+    output = rates.get(f"{output_key} {model} {quality}")
+    if output is None:
+        return None
+    free_images = 0 if model in ("MiniMax-H3-Max","MiniMax-H3-Max-Turbo") else 5
+    billed_images = 0 if model=="MiniMax-H3-MG" else max(0,image_count-free_images)
+    image_rate = rates.get(f"video-image {model} {quality}")
+    video_rate = rates.get(f"video-input {model} {quality}")
+    if (billed_images and image_rate is None) or (has_video and (video_rate is None or input_video_seconds is None)):
+        return None
+    return round(output*seconds + (image_rate or 0)*billed_images +
+                 (video_rate or 0)*(input_video_seconds or 0),4)
 
 
 @routes.post("/api/generation-cost")
@@ -5328,12 +5372,13 @@ def plain_prompt(p: dict) -> str:
 
 def remote_video_prompt(raw, provider, model):
     images = raw.get("images") or []
-    if limit := ark_reference_images(raw,provider,model):
+    if limit := image_reference_limit(raw,provider,model):
         if len(images)>limit:
             raise bad(f"此模型最多支持 {limit} 张参考图")
         if any(not 1 <= int(mark) <= len(images) for mark in re.findall(r"@(?:图|图片)(\d+)",plain_prompt(raw))):
             raise bad("提示词引用的参考图不存在，请重新选择")
-        return reference_prompt(raw,guide_frames=True), ["image_ref"]*len(images)
+        prompt = video_reference_prompt(raw,provider,model,guide_frames=True)
+        return prompt, ["image_ref"]*len(images)
     frames = [i for i, image in enumerate(images) if image.get("role") != "subject"]
     subjects = [i for i, image in enumerate(images) if image.get("role") == "subject"]
     kling = provider["kind"] == "kling"
@@ -5353,7 +5398,10 @@ def remote_video_prompt(raw, provider, model):
             raise bad(f"当前视频服务无法采用 {match[0]}，请调整参考素材或切换视频服务")
         return labels[i]
 
-    return _IMAGE_MENTION.sub(replace, plain_prompt(raw)), roles
+    prompt = _IMAGE_MENTION.sub(replace,plain_prompt(raw))
+    if is_cloud_h3(provider,model):
+        prompt = video_prompt_adapters.h3_cloud_prompt(prompt)
+    return prompt,roles
 
 
 def wants_image_references(raw):
@@ -5361,15 +5409,14 @@ def wants_image_references(raw):
     return len(images)>2 or any(image.get("role")=="subject" for image in images)
 
 
-def ark_reference_images(raw, provider, model):
+def image_reference_limit(raw, provider, model):
     if wants_image_references(raw):
-        return motion_reference.ark_image_reference_limit(provider,model)
+        return motion_reference.image_reference_limit(provider,model)
     return None
 
 
-def has_ark_asset_images(raw, route):
-    return bool(route and any(image.get("memory_id") for image in raw.get("images") or []) and
-                ark_reference_images(raw,route["provider"],route["model"]))
+def has_remote_image_references(raw, route):
+    return bool(route and image_reference_limit(raw,route["provider"],route["model"]))
 
 
 def configured_models(provider, cap, routes):
@@ -5380,9 +5427,12 @@ def configured_models(provider, cap, routes):
     return list(dict.fromkeys(model for model in models if model))
 
 
-def reference_routes(*, require_motion=False, segment_edit=False, extension=False, all_models=False):
+def reference_routes(*, require_motion=False, segment_edit=False, extension=False, all_models=False, image_only=False):
     check = motion_reference.supports if require_motion or segment_edit else motion_reference.supports_audio
     def supports(provider, model):
+        if image_only:
+            return (provider["enabled"] and provider.get("secrets",{}).get("api_key")
+                    and motion_reference.image_reference_limit(provider,model))
         return (check(provider,model) and (not extension or provider["kind"] == "ark") and
                 (not segment_edit or "seedance-2-5" in motion_reference.video_model_for_limits(provider,model)))
     choices = {}
@@ -5495,8 +5545,15 @@ async def prepare_reference_generation(user, raw, object_plan, *, fixed_route=No
 
 def reference_preview_fingerprint(raw, route, *, guide_frames=False):
     snapshot = workflow_review.capture_generation(raw)
+    if not guide_frames:
+        if plan := resolve_camera_plan(raw):
+            snapshot["camera_plan"] = plan
+        if plan := resolve_object_edit(raw):
+            snapshot["object_edit"] = plan
     provider = route["provider"]
-    details = [raw.get("board"),provider["id"],provider.get("updated"),route["model"],reference_prompt(raw,guide_frames=guide_frames),
+    prompt = (remote_video_prompt(raw,provider,route["model"])[0] if guide_frames
+              else video_reference_prompt(raw,provider,route["model"]))
+    details = [raw.get("board"),provider["id"],provider.get("updated"),route["model"],prompt,
                snapshot,raw.get("draft")]
     return hashlib.sha256(json.dumps(details,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
@@ -5507,13 +5564,16 @@ def needs_reference_review(raw):
 
 
 def verify_reference_preview(req, raw, route, *, guide_frames=False):
-    reviewed = has_ark_asset_images(raw,route) if guide_frames else needs_reference_review(raw)
+    reviewable = (has_remote_image_references(raw,route) if guide_frames else
+                  bool(route and raw.get("kind")=="video" and any(raw.get(k) for k in ("previs_guide","video_refs","audio_refs"))))
     key = req.get("reference_preview")
-    if not key and not (reviewed and req.get("reference_reviewed")):
+    confirmed = req.get("reference_reviewed")
+    # Older assistant approvals for explicitly selected services did not store a preview key.
+    if not key and not (confirmed and reviewable and (guide_frames or needs_reference_review(raw))):
         return
-    if not reviewed or key != reference_preview_fingerprint(raw,route,guide_frames=guide_frames):
-        next_step = "重新确认生成" if req.get("reference_reviewed") else "重新预览"
-        reason = "参考素材或生成服务已变化" if reviewed else "参考素材已变化"
+    if not reviewable or key != reference_preview_fingerprint(raw,route,guide_frames=guide_frames):
+        next_step = "重新确认生成" if confirmed else "重新预览"
+        reason = "参考素材或生成服务已变化" if reviewable else "参考素材已变化"
         creative_memory.fail(f"{reason}，请{next_step}",409)
 
 
@@ -5537,22 +5597,10 @@ async def video_reference_models(req):
     image_only = not (motion or payload.get("video_refs") or payload.get("audio_refs"))
     if image_only and not wants_image_references(payload):
         return web.json_response({"models":[],"message":"当前使用普通文生视频或原生首尾帧。可在节点设置直接选择模型。"})
-    images = {image["ref"] for image in payload.get("images",[]) if isinstance(image.get("ref"),str)}
-    if any(not isinstance(image.get("ref"),str) for image in payload.get("images",[])):
-        raise bad("请选择可读取的参考图")
-    require_media(user,images)
-    for ref in images:
-        try:
-            path = tools.ref_path(COMFY_DIR,ref)
-        except ValueError:
-            raise bad("请选择可读取的参考图") from None
-        if path.suffix.lower() not in creative_memory.IMAGE_EXT or not path.is_file():
-            raise bad("请选择可读取的参考图")
+    resolve_video_reference_images(user,payload)
     routes = reference_routes(require_motion=bool(motion or payload.get("video_refs")),
                               segment_edit=bool(payload.get("segment_edit")),extension=bool(payload.get("extension")),
-                              all_models=True)
-    if image_only:
-        routes = [route for route in routes if route["provider"]["kind"]=="ark"]
+                              all_models=True,image_only=image_only)
     requested_quality = payload.get("quality")
     requested_quality = requested_quality if isinstance(requested_quality,str) and requested_quality else "hd"
     try:
@@ -5593,7 +5641,9 @@ async def video_reference_models(req):
 
 
 async def describe_video_references(user,payload,object_plan):
-    route, motion, _, _ = await prepare_reference_generation(user,payload,object_plan)
+    check_reference_operation(payload)
+    resolve_video_reference_images(user,payload)
+    route, motion, clips, _ = await prepare_reference_generation(user,payload,object_plan)
     model, provider = route["model"],route["provider"]
     seconds = reference_video_duration(payload,provider,model,motion)
     if payload.get("segment_edit") and payload.get("video_refs"):
@@ -5605,10 +5655,14 @@ async def describe_video_references(user,payload,object_plan):
     counts = (("图",len(payload.get("images") or []),motion_reference.image_limit(model_for_limits)),
               ("视频",len(payload.get("video_refs") or [])+bool(motion),limit),
               ("音频",len(payload.get("audio_refs") or []),limit))
-    inputs = workflow_review.capture_generation(payload)["inputs"]
+    inputs = numbered_reference_inputs(workflow_review.capture_generation(payload)["inputs"],payload,
+                                       h3_labels=is_cloud_h3(provider,model))
+    input_video_seconds = (sum(clip["ticks"] for clip in clips) + (motion["ticks"] if motion else 0))/film.FPS
     return {"provider":provider["name"],"model":model,"duration":seconds,"quality":quality,
+            "prompt":video_reference_prompt(payload,provider,model),
             "counts":counts,"inputs":inputs,"assets":[item["name"] for item in payload.get("memory_used",[])],
-            "key":reference_preview_fingerprint(payload,route),"unit_cost":quoted_video_unit_cost(route,payload,seconds)}
+            "key":reference_preview_fingerprint(payload,route),
+            "unit_cost":quoted_video_unit_cost(route,payload,seconds,input_video_seconds=input_video_seconds)}
 
 
 async def asset_reference_review(req,raw,*,replay_ref=None):
@@ -5623,14 +5677,8 @@ async def asset_reference_review(req,raw,*,replay_ref=None):
         payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"],raw,replay_ref=replay_ref,
             owner_only=bool(req.get("connector_own_assets"))))
     if any(payload.get(key) for key in ("previs_guide","video_refs","audio_refs")):
-        review_required = needs_reference_review(payload)
-        try:
-            review = await describe_video_references(req["user"],payload,resolve_object_edit(payload))
-        except web.HTTPException:
-            if review_required:
-                raise
-            return None,None
-        return (review if review_required else None),review["unit_cost"]
+        review = await describe_video_references(req["user"],payload,resolve_object_edit(payload))
+        return review,review["unit_cost"]
     route = requested_generation_route(payload,"video")
     provider = route["provider"] if route else None
     maximum = (remote.video_durations(provider["kind"],route["model"],provider=provider)[-1]
@@ -5638,18 +5686,20 @@ async def asset_reference_review(req,raw,*,replay_ref=None):
     duration = payload.get("duration")
     if type(duration) in (int,float) and duration > maximum:
         raise bad(f"此模式成片最长 {maximum} 秒")
-    if has_ark_asset_images(payload,route):
+    if has_remote_image_references(payload,route):
         provider,model = route["provider"],route["model"]
         _, roles = remote_video_prompt(payload,provider,model)
-        inputs = workflow_review.capture_generation(payload)["inputs"]
+        resolve_video_reference_images(req["user"],payload)
+        inputs = numbered_reference_inputs(workflow_review.capture_generation(payload)["inputs"],payload,
+                                           h3_labels=is_cloud_h3(provider,model))
         for entry,role in zip(inputs,roles):
-            entry["role"] = role
+            set_video_preview_image_role(entry,role)
         seconds = reference_video_duration(payload,provider,model,None)
         quality = checked_video_resolution(payload,provider["kind"],model,provider=provider)
-        limit = motion_reference.ark_image_reference_limit(provider,model)
+        limit = image_reference_limit(payload,provider,model)
         cost = quoted_video_unit_cost(route,payload,seconds)
         return {"provider":provider["name"],"model":model,"duration":seconds,"quality":quality,
-                "counts":[("图",len(inputs),limit)],"inputs":inputs,"assets":[item["name"] for item in payload["memory_used"]],
+                "counts":[("图",len(inputs),limit)],"inputs":inputs,"assets":[item["name"] for item in payload.get("memory_used",[])],
                 "key":reference_preview_fingerprint(payload,route,guide_frames=True),"unit_cost":cost},cost
     quote = {key:value for key,value in payload.items()
              if key not in ("memory_ids","memory_views","has_asset","prompt","fields")}
@@ -5703,36 +5753,68 @@ def resolve_object_edit(raw):
         raise bad(str(error)) from None
 
 
+def numbered_reference_inputs(inputs, payload, *, h3_labels=False):
+    image_count = len(payload.get("images") or [])
+    pictures, media = inputs[:image_count],inputs[image_count:]
+    guide = next((item for item in media if item.get("role")=="previs"),None)
+    videos = motion_reference.ordered_video_references(guide,(item for item in media if item.get("role")=="video_ref"),
+                    source_first=bool(payload.get("extension") or payload.get("segment_edit")))
+    audio = [item for item in media if item.get("role")=="audio_ref"]
+    for prefix,group in (("图片",pictures),("视频",videos),("音频",audio)):
+        for index,item in enumerate(group,1):
+            item["prompt_reference"] = (video_prompt_adapters.h3_reference_label(prefix,index) if h3_labels
+                                        else f"@{prefix}{index}")
+    return pictures + videos + audio
+
+
+def set_video_preview_image_role(item, role):
+    if role=="image_ref" and item.get("role") in ("subject","frame"):
+        item["image_role"] = item["role"]
+    item["role"] = role
+
+
+def is_cloud_h3(provider, model):
+    return provider["kind"] == "minimax" and model in motion_reference.H3_CLOUD_MODELS
+
+
+def video_reference_prompt(raw, provider, model, *, guide_frames=False):
+    prompt = reference_prompt(raw,guide_frames=guide_frames)
+    if is_cloud_h3(provider,model):
+        return video_prompt_adapters.h3_cloud_prompt(prompt,images=raw.get("images") or [],reference=True)
+    return prompt
+
+
 def reference_prompt(raw, *, guide_frames=False):
     retake = resolve_camera_plan(raw)
     object_plan = resolve_object_edit(raw)
     prompt = plain_prompt(raw)
     if not prompt and not retake and not object_plan:
         raise bad("请描述正式视频的内容或画面风格")
-    prompt = re.sub(r"@图(\d+)", r"@图片\1", prompt)
-    prompt = re.sub(r"@音(\d+)", r"@音频\1", prompt)
-    if guide_frames or has_asset_media(raw):
-        frames = [i for i,entry in enumerate(raw.get("images") or [],1)
-                  if entry.get("role")=="frame" or guide_frames and entry.get("role")!="subject"]
-        if frames:
-            guidance = []
-            duration = raw.get("duration")
-            for index,i in enumerate(frames):
-                at = raw["images"][i-1].get("time")
-                if guide_frames and raw.get("planned") and isinstance(at,(int,float)) and 0 <= at <= 30:
-                    position = ("开头" if at <= .01 else "结尾"
-                                if isinstance(duration,(int,float)) and at >= duration-.25 else f"约在 {at:g} 秒")
-                elif index==0:
-                    position = "开头"
-                elif index==len(frames)-1:
-                    position = "结尾"
-                elif isinstance(at,(int,float)) and 0 < at <= 30:
-                    position = f"约在 {at:g} 秒"
-                else:
-                    continue
-                guidance.append(f"{position}参考 @图片{i} 的构图。")
-            if guidance:
-                prompt = "".join(guidance) + "\n" + prompt
+    prompt = video_prompt_adapters.map_reference_tokens(
+        prompt,lambda kind,number: "@"+{"图":"图片","音":"音频"}.get(kind,kind)+number)
+    images = raw.get("images") or []
+    frames = [(i,entry) for i,entry in enumerate(images,1)
+              if entry.get("role")=="frame" or guide_frames and entry.get("role")!="subject"]
+    if frames:
+        guidance = []
+        duration = raw.get("duration")
+        for index,(i,entry) in enumerate(frames):
+            at = entry.get("time")
+            if raw.get("planned") and isinstance(at,(int,float)) and 0 <= at <= 30:
+                position = ("开头" if at <= .01 else "结尾"
+                            if isinstance(duration,(int,float)) and at >= duration-.25 else f"约在 {at:g} 秒")
+            elif index==0:
+                position = "开头"
+            elif index==len(frames)-1:
+                position = "结尾"
+            elif isinstance(at,(int,float)) and 0 < at <= 30:
+                position = f"约在 {at:g} 秒"
+            else:
+                continue
+            guidance.append(f"{position}参考 @图片{i} 的构图。")
+        if any(is_character_reference(image) for image in images):
+            guidance.append("关键帧里出现的人物与各自的角色参考图共用同一身份。除非镜头明确要求分身，同一角色同时只出现一位。")
+        prompt = "".join(guidance) + "\n" + prompt
     extension = raw.get("extension")
     edit = raw.get("segment_edit")
     if raw.get("previs_guide"):
@@ -5917,6 +5999,22 @@ def media_info(path: Path, kind: str) -> dict:
     return {}
 
 
+def resolve_video_reference_images(user, raw):
+    images = raw.get("images") or []
+    if not isinstance(images,list) or any(not isinstance(image,dict) or not isinstance(image.get("ref"),str)
+                                          for image in images):
+        raise bad("请选择可读取的参考图")
+    refs = [image["ref"] for image in images]
+    require_media(user,set(refs))
+    try:
+        paths = [tools.ref_path(COMFY_DIR,ref) for ref in refs]
+    except ValueError:
+        raise bad("请选择可读取的参考图") from None
+    if any(path.suffix.lower() not in creative_memory.IMAGE_EXT or not path.is_file() for path in paths):
+        raise bad("参考图无法读取，请重新选择")
+    return paths
+
+
 def ensure_reference_media_count(raw, provider_kind, model, object_plan):
     limit = motion_reference.image_limit(model)
     extra = (1 + bool(object_plan.get("replacement_ref"))) if object_plan else 0
@@ -5939,9 +6037,9 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
     from_previs = motion and motion.get("source") == "previs"
     object_plan = raw.get("object_edit")
     full_reference = from_previs or audio_refs or video_refs
-    image_references = cap == "video" and not full_reference and ark_reference_images(raw,p,model)
+    image_references = cap == "video" and not full_reference and image_reference_limit(raw,p,model)
     if full_reference:
-        prompt = reference_prompt(raw)
+        prompt = video_reference_prompt(raw,p,model)
     elif cap == "video":
         prompt, _ = remote_video_prompt(raw, p, model)
     else:
@@ -5949,27 +6047,24 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
     if not prompt:
         raise bad("提示词不能为空")
     imgs = []
-    for im in raw.get("images") or []:
-        try:
-            imgs.append({**im, "path": tools.ref_path(COMFY_DIR, im["ref"])})
-        except Exception:
-            pass
+    if not (full_reference or image_references):
+        for im in raw.get("images") or []:
+            try:
+                imgs.append({**im, "path": tools.ref_path(COMFY_DIR, im["ref"])})
+            except Exception:
+                pass
     if cap == "image":
         nreq = {"prompt": re.sub(r"@图(\d+)", r"图\1", prompt), "images": [x["path"] for x in imgs], "ar": float(raw.get("ar") or 1), "n": int(raw.get("count") or 1)}
     elif full_reference or image_references:
         model_for_limits = motion_reference.video_model_for_limits(p,model)
-        limit = motion_reference.image_limit(model_for_limits)
         ensure_reference_media_count(raw,p["kind"],model_for_limits,object_plan)
-        if (len(imgs) != len(raw.get("images") or []) or
-                any(x["path"].suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp") or not x["path"].is_file() for x in imgs)):
-            raise bad(f"此服务最多支持 {limit} 张有效参考图")
-        require_media(u, {x["ref"] for x in imgs})
+        paths = resolve_video_reference_images(u,raw)
         try:
             seconds = reference_video_duration(raw,p,model,motion)
             ratio = image_editor.number(raw.get("ar"), .4, 2.5, "画面宽高比", 16 / 9)
         except ValueError as exc:
             raise bad(str(exc))
-        nreq = {"prompt":prompt, "first":None, "last":None, "refs":[x["path"] for x in imgs],
+        nreq = {"prompt":prompt, "first":None, "last":None, "refs":paths,
                 "duration":seconds, "ar":ratio,
                 "quality":raw.get("quality") or "hd", "audio":True, "audio_refs":audio_refs}
         if raw.get("extension"):
@@ -6070,10 +6165,6 @@ async def finalize_video_draft(req):
     if not node or not any(v.get("ref") == ref for v in node.get("versions", [])):
         raise bad("画布里的样片版本已移除")
     require_media(user, {ref})
-    source = video_draft_source(ref)
-    if not source:
-        raise bad("这个视频版本没有可用的样片任务")
-
     jid = "r" + hashlib.sha256(f"draft-final:{user['id']}:{key}".encode()).hexdigest()[:24]
     fingerprint = {"board":bid,"node":nid,"ref":ref,"resolution":resolution}
     if existing := db.one("SELECT request FROM tasks WHERE id=?", jid):
@@ -6081,6 +6172,9 @@ async def finalize_video_draft(req):
         if any(saved.get(field) != value for field, value in fingerprint.items()):
             raise bad("该定稿请求已经用于另一项任务")
         return web.json_response({"ids":[jid],"meta":JOBS.get(jid, {}).get("meta", {})})
+    source = video_draft_source(ref)
+    if not source:
+        raise bad("这个视频版本没有可用的样片任务")
     if source["expires"] <= time.time():
         raise bad("样片已过定稿有效期，请重新生成样片")
     provider = providers.get(source["provider_id"])
@@ -6281,6 +6375,7 @@ def canvas_model_choice(provider, cap, model):
     kind = provider["kind"]
     audio = motion_reference.supports_audio(provider,model)
     video = motion_reference.supports(provider,model)
+    ref_images = motion_reference.image_reference_limit(provider,model)
     model_for_limits = motion_reference.video_model_for_limits(provider,model)
     count, seconds = motion_reference.av_limits(model_for_limits)
     return {"id":model,"draft":remote.supports_video_draft(provider,model),
@@ -6288,8 +6383,8 @@ def canvas_model_choice(provider, cap, model):
             "qualities":remote.video_resolutions(kind,model,provider=provider),
             **({"endpoint_model":model_for_limits} if model_for_limits != model else {}),
             "accepts_audio":audio,"accepts_video":video,
-            **({"reference_limits":{"images":motion_reference.image_limit(model_for_limits),"videos":count if video else 0,
-                "audio":count,"seconds":seconds,**({"total":12} if kind == "minimax" else {})}} if audio else {})}
+            **({"reference_limits":{"images":ref_images,"videos":count if video else 0,
+                "audio":count if audio else 0,"seconds":seconds,**({"total":12} if kind == "minimax" else {})}} if ref_images else {})}
 
 
 def canvas_reference_choices(**constraints):

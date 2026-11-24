@@ -38,6 +38,26 @@ function vtMergeInfo(ids){
 function hasVideoRecipeInputs(recipe) {
   return !!recipe && (["images","audio_refs","video_refs"].some(key=>Array.isArray(recipe[key])) || !!recipe.previs_guide);
 }
+function vtRestoreVideoModel(data,version) {
+  const recipe=version.video_recipe, recorded=version.generation_record?.settings;
+  const saved=recipe?.provider && (recipe.selected_model || recipe.provider==="local_h3")
+    ? {provider:recipe.provider,model:recipe.selected_model}
+    : {provider:recorded?.provider,model:recorded?.provider_model};
+  if (!saved.provider || (!saved.model && saved.provider!=="local_h3")) return;
+  data.provider=saved.provider;
+  if (saved.provider==="local_h3") delete data.selected_model;
+  else data.selected_model=saved.model;
+}
+function vtEdgesWithReferenceRanges(edges,recipe) {
+  const references={audio_ref:recipe?.audio_refs,video_ref:recipe?.video_refs};
+  return edges.map(edge=>{
+    const entries=references[edge.relation];
+    const match=Array.isArray(entries) && entries.find(input=>input.node_id===edge.from && input.ref===edge.ref);
+    if (!match) return edge;
+    return {...edge,...(Number.isFinite(match.start)?{start:match.start}:{}),
+      ...(Number.isFinite(match.end)?{end:match.end}:{})};
+  });
+}
 function videoRecipeEdges(n,r) {
   const end=(vidFrames(r.duration||n.data.duration)-4)/24;
   const edges=(r.images||[]).filter(im=>im.node_id).map((im,k)=>{
@@ -65,6 +85,8 @@ function vtSnapshot(n,i){
     v.draft_final.source_node=n.id;
   if(!Array.isArray(v.input_edges)){
     v.input_edges=hasVideoRecipeInputs(v.video_recipe)?videoRecipeEdges(n,v.video_recipe):vtClone(B.edges.filter(e=>e.to===n.id));
+  } else {
+    v.input_edges=vtEdgesWithReferenceRanges(v.input_edges,v.video_recipe);
   }
   if(!v.node_data){
     v.node_data=vtClone(n.data);const r=v.video_recipe;
@@ -77,6 +99,7 @@ function vtSnapshot(n,i){
       if(r.ar)v.node_data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-r.ar)<.001) || "auto";
       v.node_data.mode=r.planned?"keyframes":"auto";v.node_data.pmode=r.fields?"fields":"free";}
   }
+  vtRestoreVideoModel(v.node_data,v);
   v.label=v.label||n.name;
   v.tab_nodes=[...new Set([...(v.tab_nodes||[]),n.id])];
   v.tab_origin=v.tab_origin||{id:n.id,name:n.name,x:n.x,y:n.y,version_index:i,groups:(B.groups||[]).filter(g=>g.nodes.includes(n.id)).map(g=>g.id)};

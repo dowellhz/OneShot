@@ -384,7 +384,9 @@ function canvasVideoDurationChoices(n) {
 function canvasVideoDuration(n) {
   const seconds=Number(n.data.duration) || 5;
   const options=canvasVideoDurationChoices(n);
-  if (!(hasMediaReferences(n) || isRemote(n)) || !videoOutputModel(n)?.durations || !options.length) return seconds;
+  if (!options.length) return seconds;
+  if (!hasMediaReferences(n) && !isRemote(n)) return Math.min(options.at(-1),Math.max(options[0],seconds));
+  if (!videoOutputModel(n)?.durations) return seconds;
   const rounded=Math.round(seconds);
   return options.reduce((best,value)=>Math.abs(rounded-value)<Math.abs(rounded-best)?value:best);
 }
@@ -443,8 +445,7 @@ function plan(n) {
   const imgs=inputs.map(input=>input.source);
   const guide = hasMediaReferences(n);
   let roles = es.map(e => e.role || "auto");
-  if (guide) roles = roles.map(() => "subject");
-  else if (d.mode === "reference") roles = roles.map(r => r === "auto" ? "subject" : r);
+  if (guide || d.mode === "reference") roles = roles.map(r => r === "auto" ? "subject" : r);
   const subj = [], fr = [];
   roles.forEach((r, i) => (r === "subject" ? subj : fr).push(i));
   const ordered = [...fr.filter(i => roles[i] === "first"), ...fr.filter(i => roles[i] === "auto" || roles[i] === "keyframe"), ...fr.filter(i => roles[i] === "last")];
@@ -458,7 +459,7 @@ function plan(n) {
     else if (es[i].time != null && isFinite(+es[i].time)) t = Math.min(end, Math.max(0, +es[i].time));   // a time the user typed in
     times[i] = t; labels[i] = t <= 0.01 ? "首帧" : t >= end - 0.05 ? "尾帧" : t.toFixed(1) + "s";
   });
-  subj.forEach(i => labels[i] = guide ? "参考图" : "人物设定");
+  subj.forEach(i => labels[i] = guide && es[i].role !== "subject" ? "参考图" : "人物设定");
   const name = !useRef ? ["文生视频", "首帧生视频", "首尾帧生视频"][Math.min(ordered.length, 2)]
     : (subj.length ? "人物设定" : "") + (subj.length && ordered.length ? " + " : "") + (ordered.length === 1 ? labels[ordered[0]] : ordered.length ? "关键帧" : "");
   return { imgs, es, inputs, roles, labels, times, useRef, ordered, subj, mode: useRef ? "ref" : "fl2v", name };
@@ -609,13 +610,15 @@ function switchVersion(n, i, {recordUndo = true} = {}) {
   const v = n.versions[i];
   if (n.type === "video") {
     if (Array.isArray(v.input_edges)) {
-      const edges = v.input_edges.filter(e => e.to === n.id && e.from !== n.id && validVideoInput(e));
+      const edges = vtEdgesWithReferenceRanges(v.input_edges,v.video_recipe)
+        .filter(e => e.to === n.id && e.from !== n.id && validVideoInput(e));
       B.edges = B.edges.filter(e => e.to !== n.id).concat(JSON.parse(JSON.stringify(edges)));
       if (edges.length !== v.input_edges.length) toast("部分历史输入节点已删除，已恢复仍存在的连线");
     }
     if (v.node_data) n.data = JSON.parse(JSON.stringify(v.node_data));
     else if(v.video_recipe?.video_optics)n.data.video_optics=structuredClone(v.video_recipe.video_optics);
     else delete n.data.video_optics;
+    vtRestoreVideoModel(n.data,v);
   }
   if (n.type === "audio") {
     if (v.audio_recipe) Object.assign(n.data,{...defaults("audio"),...v.audio_recipe});
@@ -690,6 +693,10 @@ function generationDraft(n,v) {
   const inputs = Array.isArray(receipt?.inputs) ? receipt.inputs : [];
   const legacyImage = n.type==="image" && (!v.node_data || !Array.isArray(v.input_edges));
   let links = n.type==="audio" ? [] : v.input_edges;
+  if (n.type==="video") {
+    links=vtEdgesWithReferenceRanges(links,v.video_recipe);
+    vtRestoreVideoModel(data,v);
+  }
   if (legacyImage) {
     const {model,provider,provider_model,quality,seed,count,ar} = receipt.settings || {};
     data.prompt=receipt.prompt;
@@ -1006,7 +1013,7 @@ function drawEdges() {
       const pa = port(a, "out"), pb = port(b, "in"), lb = document.createElement("div");
       lb.className = "elabel" + (p.roles[k] === "subject" ? " subj" : "");
       lb.style.left = (pa.x + pb.x) / 2 + "px"; lb.style.top = (pa.y + pb.y) / 2 + "px";
-      lb.innerHTML = esc(p.labels[k] || "未使用") + (hasMediaReferences(b) ? "" : ` ▾${roleSelect(e)}`);
+      lb.innerHTML = esc(p.labels[k] || "未使用") + ` ▾${roleSelect(e)}`;
       relation=p.labels[k]||"未使用";
       world.appendChild(lb); wireRoleSelects(lb);
     }
@@ -1302,7 +1309,7 @@ function showPanel() {
       // keyframes get a seconds box: where in the video this picture should be reached
       const tbox = p.useRef && r !== "subject" && r !== "first" && r !== "last" && p.times[i] != null
         ? `<input class="tsec" type="number" min="0" max="${end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
-      const label = reference ? '<span class="role">参考图</span>' : `<span class="role rsel">${p.labels[i]} ▾${roleSelect(p.es[i])}</span>`;
+      const label = `<span class="role rsel">${p.labels[i]} ▾${roleSelect(p.es[i])}</span>`;
       items.push(imagePromptChip(input,i,label+tbox)); });
   }
   inputs(n, "text").forEach(t => items.push(`<span class="ref" title="${esc(t.data.text.slice(0, 200))}"><span class="tx">${ico("text")}</span>${esc(t.name)}<span class="role">已并入</span></span>`));
@@ -1425,8 +1432,10 @@ function showPanel() {
     const rem = isRemote(n);
     if (reference) {
       const services = referenceServices(n), selected = referenceService(n);
+      const unavailable = d.provider && !selected;
       const opts = {"":"自动选择参考服务", ...Object.fromEntries(services.map(s => [s.id, esc(s.name)]))};
-      h = services.length ? pill("provider", opts, `${esc(selected?.name || "自动选择参考服务")}${ico("down")}`, "model")
+      if (unavailable) opts[d.provider]=esc(d.provider+"（不可用）");
+      h = services.length || unavailable ? pill("provider", opts, `${esc(selected?.name || (unavailable?"重新选择参考服务":"自动选择参考服务"))}${ico("down")}`, "model")
         : `<span class="pill" title="在控制台配置视频生成服务">待配置${guide || clips.length ? "视频参考" : "音频参考"}服务</span>`;
       if (selected) h += nodeModelPill(n,pill,selected,true);
     } else {
@@ -1501,13 +1510,20 @@ function showPanel() {
   };
   // ---- more
   const more = $("#more");
-  more.innerHTML = `<label>随机种子<input type="number" id="mSeed" value="${d.seed}"></label><div class="h">-1 为每次随机；固定数字可复现同一结果</div>` +
+  more.innerHTML = (canBranchGeneration(n)?'<button type="button" class="pill" id="generationBranch">生成到新节点（1 个）</button>':"") +
+    `<label>随机种子<input type="number" id="mSeed" value="${d.seed}"></label><div class="h">-1 为每次随机；固定数字可复现同一结果</div>` +
     (n.type === "image" ? `<label>画面描述<input type="text" id="mCap" value="${esc(d.caption)}" placeholder="供多图视频使用"></label><div class="h">上传的图片建议填写；生成的图片自动使用提示词</div>` :
       (d.pmode === "fields" ? `<div class="h">分栏模式：声音、配乐在上方填写。<br>极速：4~8 步，约 1~2.5 分钟；高质量 20 步，慢约 4 倍</div>` :
       `<label>声音<input type="text" id="mSound" value="${esc(d.sound)}" placeholder="环境音、动作音效"></label>
        <label>配乐<input type="text" id="mMusic" value="${esc(d.music)}" placeholder="留空 = 无配乐"></label>
        <div class="h">会写进官方格式的 overall_soundscape / non_diegetic_music。台词直接写进提示词，如：裴照低声问："谁？"<br>极速：4~8 步，约 1~2.5 分钟；高质量 20 步，慢约 4 倍</div>`));
   $("#mSeed").onchange = e => { n.data.seed = Number(e.target.value); save(); };
+  const branch=$("[id=generationBranch]",more);
+  if (branch) branch.onclick=()=>{
+    more.classList.remove("on");
+    if (n.type==="video") void previewPrompt(n,{branch:true});
+    else void generate(n,{branch:true});
+  };
   const mc = $("#mCap"); if (mc) mc.oninput = e => { n.data.caption = e.target.value; save(); };
   const ms = $("#mSound"); if (ms) ms.oninput = e => { n.data.sound = e.target.value; save(); };
   const mm = $("#mMusic"); if (mm) mm.oninput = e => { n.data.music = e.target.value; save(); };
@@ -1526,13 +1542,14 @@ function roleSelect(e) {
 }
 function wireRoleSelects(root) {
   $$("select[data-edge]", root).forEach(sl => {
+    sl.disabled = !canvasCanEdit();
     sl.addEventListener("pointerdown", e => e.stopPropagation());
     sl.addEventListener("click", e => e.stopPropagation());
     sl.onchange = () => {
-      const e = B.edges[+sl.dataset.edge]; if (!e) return;
+      const e = B.edges[+sl.dataset.edge]; if (!e || !canvasCanEdit()) return;
       checkpoint(); e.role = sl.value === "auto" ? undefined : sl.value; save();
       const v = node(e.to); render(v); drawEdges(); if (sel.has(v.id)) showPanel();
-      if (sl.value === "subject") toast("人物设定：保持这张图里人物的长相和服装，用 Ref2VA 生成", 2600);
+      if (sl.value === "subject") toast("这张图将用于参考人物的长相和服装", 2600);
     };
   });
 }
@@ -1603,13 +1620,14 @@ function renderPreviewInputs(items, duration) {
     previs:"白模参考", video_ref:"视频参考", audio_ref:"音频参考", unused_image:"当前服务未采用"
   };
   for (const item of items) {
-    const {role, ref, time, start, end} = item;
+    const {role, image_role, ref, time, start, end} = item;
     if (!ref) continue;
-    const label = labels[role] || (time > 0.01 ? time >= (vidFrames(duration)-4)/24-.05 ? "尾帧" : "关键帧" : "首帧");
-    const details = [];
+    const label = labels[image_role || role] || (time > 0.01 ? time >= (vidFrames(duration)-4)/24-.05 ? "尾帧" : "关键帧" : "首帧");
+    const details = item.prompt_reference ? [item.prompt_reference] : [];
     const version = item.version ?? (node(item.node_id)?.versions.findIndex(v => v.ref === ref) ?? -1)+1;
     if (version > 0) details.push("版本 "+version);
     if (label === "关键帧") details.push(Number(time.toFixed(2))+" 秒");
+    if (image_role === "frame") details.push("构图参考");
     if (Number.isFinite(start) && Number.isFinite(end)) details.push(start+"–"+end+" 秒");
     const row = document.createElement("li");
     if (role === "audio_ref" || role === "video_ref" || role === "previs") {
@@ -1638,12 +1656,12 @@ function videoPreviewRequest(n, silent=false) {
   req.board = boardId;
   applyVideoMemory(n, req);
   const services = req.previs_guide || req.audio_refs || req.video_refs ? referenceServices(n) : CAPS_LIST.video;
-  if (services?.some(service => service.id === n.data.provider)) req.provider = n.data.provider;
+  if (n.data.provider==="local_h3" || services?.some(service => service.id === n.data.provider)) req.provider = n.data.provider;
   if (n.data.selected_model) Object.assign(req,{provider:n.data.provider,selected_model:n.data.selected_model});
   return req;
 }
 
-async function checkVideoModels(n, request, current) {
+async function checkVideoModels(n, request, current, {branch=false}={}) {
   const button=$("#pvModelCheck"), panel=$("#pvModels"), status=$("#pvModelStatus"), list=$("#pvModelList");
   const candidate=structuredClone(request);
   const edges=videoInputs(n);
@@ -1665,7 +1683,7 @@ async function checkVideoModels(n, request, current) {
     const result=await api("/api/video/reference-models",candidate);
     if (!current()) return;
     const ready=result.models.filter(model=>!model.error).length;
-    status.textContent=result.message || `${ready} / ${result.models.length} 个${result.image_only?" Seedance ":""}模型可用`;
+    status.textContent=result.message || `${ready} / ${result.models.length} 个模型可用`;
     for (const model of result.models) {
       const entry=document.createElement("li"), details=document.createElement("div");
       const title=document.createElement("strong"), info=document.createElement("small");
@@ -1682,6 +1700,7 @@ async function checkVideoModels(n, request, current) {
         use.textContent="采用";
         use.onclick=()=>{
           const latest=videoPreviewRequest(n,true);
+          if (latest && branch) latest.count=1;
           if (!current() || !latest || videoPreviewSignature(latest)!==signature || n.job || prepping.has(n.id) ||
               !canvasCanEdit() || nodeLocked(n)) {
             status.textContent="生成设置已变化，请重新预览后再选择。";
@@ -1691,7 +1710,7 @@ async function checkVideoModels(n, request, current) {
           Object.assign(n.data,{provider:model.provider_id,selected_model:model.model,quality:model.quality,draft:model.draft});
           if (!candidate.segment_edit) n.data.duration=model.duration;
           save();render(n);showPanel();
-          void previewPrompt(n);
+          void previewPrompt(n,{branch});
         };
         entry.append(use);
       }
@@ -1704,23 +1723,36 @@ async function checkVideoModels(n, request, current) {
   }
 }
 
-async function previewPrompt(n) {
+async function previewPrompt(n,{branch=false}={}) {
   const req=videoPreviewRequest(n);
   if (!req) return;
+  if (branch) req.count=1;
   const board = B, sequence = ++previewSequence;
   const current = () => sequence === previewSequence && B === board && node(n.id) === n && sel.has(n.id);
   const render = r => {
     if (!current()) return;
     if (r.reference_preview) videoReferencePreviews.set(n,{key:r.reference_preview,signature:videoPreviewSignature(req)});
     else videoReferencePreviews.delete(n);
-    renderPreviewInputs(r.inputs || [], req.duration);
+    renderPreviewInputs(r.inputs || [], r.duration ?? req.duration);
     $("#pvt").textContent = r.prompt || "";
     $("#pvt").hidden = $("#pvCopy").hidden = !r.prompt;
     $("#pvm").textContent = r.mode || "";
     $("#pvModels").hidden = true;
     const check=$("#pvModelCheck");
     check.disabled=false;
-    check.onclick=()=>checkVideoModels(n,req,current);
+    check.onclick=()=>checkVideoModels(n,req,current,{branch});
+    const submit=$("#pvBranchCommit");
+    submit.hidden=!branch || !r.prompt;
+    submit.onclick=()=>{
+      const latest=videoPreviewRequest(n,true);
+      if (latest) latest.count=1;
+      if (!current() || !latest || videoPreviewSignature(latest)!==videoPreviewSignature(req) || !canBranchGeneration(n)) {
+        toast("生成设置已变化，请重新预览");
+        return;
+      }
+      closePromptPreview();
+      void generate(n,{branch:true});
+    };
     $("#pv").classList.add("on");
     $("#pvClose").focus();
   };

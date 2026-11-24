@@ -94,7 +94,8 @@ CATALOG: dict[str, dict] = {
                          {"k": "api_key", "t": "API Key", "secret": True, "hint": "可灵开放平台控制台创建（只显示一次）"}],
               "desc": "4.0 最长 30 秒、1080p，自带音频；参考图走 Omni 接口"},
     "minimax": {"label": "MiniMax（云端 H3 / 语音 / 音乐）", "group": "multi", "caps": ["video", "tts", "music"],
-                "models": {"video": ["MiniMax-H3", "MiniMax-H3-Highspeed", "MiniMax-H3-Lite", "MiniMax-H3-Max"],
+                "models": {"video": ["MiniMax-H3", "MiniMax-H3-Highspeed", "MiniMax-H3-Lite", "MiniMax-H3-Max",
+                                     "MiniMax-H3-Max-Turbo", "MiniMax-H3-MG", "MiniMax-H3-NC"],
                            "tts": ["speech-2.8-hd", "speech-2.8-turbo"], "music": ["music-3.0"], "image": []},
                 "fields": [{"k": "region", "t": "地域", "options": {"cn": "中国 api.minimax.cn", "intl": "国际 api.minimax.io"}, "default": "cn"},
                            {"k":"motion_origin","t":"音视频参考公网地址（可选）","hint":"填 MiniMax 可访问的 OneShot HTTPS 站点根地址"},
@@ -204,8 +205,8 @@ def all_providers() -> list[dict]:
     return out
 
 
-def generation_rates(value, caps):
-    """Read rates in CNY per image or per video second at a given quality."""
+def generation_rates(value, caps, *, kind=None):
+    """Read configured output and MiniMax reference rates in CNY."""
     if not isinstance(value, str) or len(value) > 8000:
         raise ProviderError("费用设置须为最多 8000 字符的文本")
     rates = {}
@@ -214,9 +215,11 @@ def generation_rates(value, caps):
             continue
         parts = line.split()
         cap = parts[0]
-        if (cap not in ("image", "video") or cap not in caps or
+        reference_rate = cap in ("video-ref","video-input","video-image") and kind=="minimax"
+        if (cap not in ("image", "video") and not reference_rate or
+                ("video" if reference_rate else cap) not in caps or
                 len(parts) != (3 if cap == "image" else 4) or len(parts[1]) > 200 or
-                cap == "video" and parts[2] not in ("std","hd","480p","4k") or
+                cap != "image" and parts[2] not in ("std","hd","480p","4k") or
                 not re.fullmatch(r"[0-9]{1,6}(?:\.[0-9]{1,4})?", parts[-1])):
             raise ProviderError(f"第 {number} 行费用设置格式有误")
         key = " ".join(parts[:-1])
@@ -271,7 +274,7 @@ def save(pid: str | None, kind: str, name: str, config: dict, secrets: dict, ena
         elif old and "video_endpoint_models" in old["config"]:
             conf["video_endpoint_models"] = old["config"]["video_endpoint_models"]
     if "generation_rates" in config:
-        conf["generation_rates"] = generation_rates(config["generation_rates"], cat["caps"])
+        conf["generation_rates"] = generation_rates(config["generation_rates"], cat["caps"],kind=kind)
     elif old and "generation_rates" in old["config"]:
         conf["generation_rates"] = old["config"]["generation_rates"]
     sec = dict(old["secrets"]) if old else {}

@@ -198,18 +198,16 @@ function showPlaylistClipMenu(F,clip,trigger,x,y) {
 }
 
 async function downloadFilmPlaylistSources(F) {
+  if (ctDownloading) return;
   const refs = [...new Set(F.spec.clips.map(clip => filmVersion(clip)?.ref).filter(Boolean))];
   if (!refs.length) return;
   const button = $("#fmPlaylistSources");
-  button.disabled = true;
+  F.sourceDownload = button.disabled = true;
   try {
-    await flushSave();
-    const response = await fetchOk("/api/assets/export",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({refs})});
-    const blob = await response.blob(), url = URL.createObjectURL(blob), anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${F.n.name}-原片.zip`;
-    anchor.click();
-    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    await downloadAssetRefs(refs,`${F.n.name}-原片.zip`,{prepare:flushSave,host:$("#film")});
   } catch (error) { toast("原片下载失败：" + error.message,4000); }
-  finally { if (FILM === F) button.disabled = false; }
+  finally {
+    F.sourceDownload = false;
+    if (FILM === F) button.disabled = !F.spec.clips.length;
+  }
 }

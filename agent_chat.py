@@ -1073,7 +1073,7 @@ class AgentService:
                         node["data"] = agent_video.node_data(v.get("video_recipe") or {}) if kind=="video" else dict(v["audio_recipe"])
                         nodes.append(node)
                         if kind=="video":
-                            agent_video.connect_inputs(b, nid, v.get("video_recipe") or {})
+                            agent_video.connect_inputs(self, b, nid, v.get("video_recipe") or {})
                 else:
                     nodes.append(node)
                 add_subtitle(node,v)

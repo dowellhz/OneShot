@@ -1578,13 +1578,17 @@ function acRenderApprovals() {
    plan.voice,graphics && plan.mode,name==="video_draft_finalize" && (plan.placement==="branch"?"相连的新节点":"原节点的新版本"),
    plan.references>0 && `${plan.references} 个素材引用`,plan.asset_count>0 && `${plan.asset_count} 个资产引用`].filter(Boolean).join(" · ");
   const editable=plan.editable||{};
-  const referenceLabels={audio_ref:"音频",video_ref:"视频",previs:"白模",frame:"图片",subject:"图片"};
+  const referenceLabels={audio_ref:"音频",video_ref:"视频",previs:"白模",subject:"参考图"};
   const referenceMarkup=review?.inputs?.length?`<details open><summary>生成参考 · ${esc(review.counts.filter(([,count])=>count)
     .map(([label,count,limit])=>`${label} ${count}/${limit}`).join(" · "))}</summary>
     <ul class="ac-approval-items">${review.inputs.map(input=>{
-     const timing=Number.isFinite(input.start)&&Number.isFinite(input.end)?` · ${input.start}–${input.end} 秒`:"";
+     const role=input.image_role || input.role;
+     const timedFrame=role==="frame" && Number.isFinite(input.time);
+     const label=role==="frame"?"构图参考":referenceLabels[role]||"图片";
+     const timing=Number.isFinite(input.start)&&Number.isFinite(input.end)?` · ${input.start}–${input.end} 秒`:
+      timedFrame?` · ${Number(input.time.toFixed(2))} 秒`:"";
      const version=Number.isInteger(input.version)?` · 版本 ${input.version}`:"";
-     return `<li>${esc((input.name||"参考素材")+" · "+(referenceLabels[input.role]||"图片")+version+timing)}</li>`;
+     return `<li>${esc([input.name||"参考素材",input.prompt_reference,label+version+timing].filter(Boolean).join(" · "))}</li>`;
    }).join("")}</ul></details>`:"";
   const form=editable.prompt||editable.count?`<details><summary>调整参数</summary>
     <form class="ac-approval-editor" data-approval-edit="${esc(id)}">

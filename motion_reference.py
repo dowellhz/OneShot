@@ -42,10 +42,21 @@ def ark_multimodal_model(model):
         re.fullmatch(r"doubao-seedance-2-[05](?:-[a-z0-9]+)*",model))
 
 
-def ark_image_reference_limit(provider, model):
+def image_reference_limit(provider, model):
     if provider["kind"] == "ark" and ark_multimodal_model(model):
         return image_limit(video_model_for_limits(provider,model))
+    if provider["kind"] == "minimax" and model in H3_CLOUD_MODELS:
+        return image_limit(model)
     return None
+
+
+def ordered_video_references(guide, clips, *, source_first=False):
+    clips = list(clips)
+    if not guide:
+        return clips
+    if source_first and clips:
+        return [clips[0],guide,*clips[1:]]
+    return [guide,*clips]
 
 
 class PublicAccessLogger(AccessLogger):

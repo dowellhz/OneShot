@@ -488,11 +488,14 @@ class PrevisIntegration(ChatFixture):
             self.assertEqual((await self.client.post(path, json=request, headers={"X-Uid":"8"})).status, 403)
             self.assertEqual((await self.client.post(path, json={**request, "provider":"local_h3"})).status, 400)
             self.assertEqual((await self.client.post(path, json={**request, "previs_guide":{"ref":ref,"node_id":"n2"}})).status, 400)
-            preview = await self.client.post("/api/preview", json=request)
-            self.assertEqual(preview.status, 200, await preview.text())
-            expected_prompt = (await preview.json())["prompt"]
             for images, roles in [([], ["reference_video"]), ([{"ref":self.source["ref"],"role":"frame"}], ["reference_image","reference_video"])]:
-                response = await self.client.post(path, json={**request, "images":images, "provider_model":"unconfigured-model"})
+                payload = {**request, "images":images, "provider_model":"unconfigured-model"}
+                preview = await self.client.post("/api/preview", json=payload)
+                self.assertEqual(preview.status, 200, await preview.text())
+                review = await preview.json()
+                expected_prompt = review["prompt"]
+                self.assertEqual("开头参考 @图片1 的构图。" in expected_prompt, bool(images))
+                response = await self.client.post(path, json={**payload, "reference_preview":review["reference_preview"]})
                 self.assertEqual(response.status, 200, await response.text())
                 jid = (await response.json())["ids"][0]
                 for _ in range(300):

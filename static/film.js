@@ -23,7 +23,7 @@ function saveFilmDraft(F = FILM) {
   const offset = clip ? Math.max(0, Math.min(clipLen(clip), filmClipOffset(F))) : 0;
   const spec = {...F.spec, clips:F.spec.clips.map(({src_len, ...c}) => c)};
   const state = JSON.stringify({spec, sel:F.sel, offset:Math.round(offset * 4) / 4, node:F.n?.id, target:F.target,
-    attempt:F.attempt,downloadExport:F.downloadExport,playlistBase:F.playlistBase,storySource:F.storySource});
+    attempt:F.attempt,canvasAttempt:F.canvasAttempt,downloadExport:F.downloadExport,playlistBase:F.playlistBase,storySource:F.storySource});
   if (state === F.saved) return;
   try {
     localStorage.setItem(F.key, state);
@@ -541,13 +541,14 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
   const sel = Math.max(0, Math.min(spec.clips.length - 1, saved?.sel || 0));
   FILM = {n:saved?.node ? node(saved.node) || n : n, target, spec, sel, key, board:boardId, story,
     storySource:story?.scope[0] || saved?.storySource,attempt:saved?.attempt,
-    downloadExport:saved?.downloadExport,playlistBase};
+    canvasAttempt:saved?.canvasAttempt,downloadExport:saved?.downloadExport,playlistBase};
   $("#fmStoryReuse").hidden=!(story && canvasCanEdit() && !FILM.n && story.base===storyDraftSignature(spec) && earlierStoryDrafts(FILM).length);
   $("#fmHeading").textContent = playlistBase ? n.name : "成片编辑";
   $("#film").classList.toggle("playlist-review",!!playlistBase && !canvasCanEdit());
   $("#fmSaveList").hidden = !playlistBase || !canvasCanEdit();
   $("#fmPlaylistSources").hidden = !playlistBase;
   $("#fmDownloadMerged").hidden = !playlistBase || !canvasCanEdit();
+  $("#fmExportCanvas").hidden = !playlistBase || !canvasCanEdit();
   $("#fmDownloadStatus").textContent = "";
   $("#fmGo").textContent = target ? "导出为新版本" : "导出成片";
   $("#fmGo").disabled = !canvasCanEdit();
@@ -565,6 +566,8 @@ function closeFilm() {
   saveFilmDraft(); if (FILM) syncFilmAudio(FILM);
   playAll = false; FILM = null;
   clearFilmCutawayPreview();
+  const transfer=$("#assetTransferPanel");
+  if (transfer.parentElement===$("#film")) document.body.append(transfer);
   $("#film").classList.remove("on"); $("#fmAdd").classList.remove("on");
   for (const id of ["fmV", "fmOriginal", "fmA"]) {
     const media = $("#"+id);
@@ -578,8 +581,9 @@ function renderFilm() {
   const playlist = !!F.n?.data.playlist, editable = canvasCanEdit();
   if (playlist) $("#fmGo").disabled = !editable || F.busy || !s.clips.length;
   $("#fmDownloadMerged").disabled = !editable || F.busy || !s.clips.length;
+  $("#fmExportCanvas").disabled = $("#fmDownloadMerged").disabled;
   $("#fmAll").disabled = !s.clips.length;
-  $("#fmPlaylistSources").disabled = !s.clips.length;
+  $("#fmPlaylistSources").disabled = !!F.sourceDownload || !s.clips.length;
   $("#fmTotal").textContent = filmTotalLabel(s,total);
   $("#fmTiming").hidden=!s.clips.some(clip=>clip.kind==="video" && Number.isSafeInteger(clip.story_frames) && clip.story_frames>0);
   // timeline strip
@@ -1500,16 +1504,18 @@ function addClipMenu(e) {
 }
 
 // ---- export: create / update the film node and render it as a job
-async function exportFilm(downloadOnly=false) {
+async function exportFilm(destination="version") {
   const F = FILM;
   if (!F || F.busy || !canvasCanEdit()) return;
+  const downloadOnly = destination==="download";
+  if (destination==="canvas" && !F.n?.data.playlist) return;
   if (!F.spec.clips.length) return toast("先添加视频片段");
   if (F.captionRequests?.size) return toast("请等待字幕识别完成后再导出");
   if (!downloadOnly && F.n?.job) return toast("此成片仍在导出，请稍候");
   F.busy = true;
-  $("#fmGo").disabled = $("#fmDownloadMerged").disabled = true;
+  $("#fmGo").disabled = $("#fmDownloadMerged").disabled = $("#fmExportCanvas").disabled = true;
   if(downloadOnly)$("#fmDownloadStatus").textContent="正在检查剪辑内容…";
-  try { await submitFilm(F,downloadOnly); }
+  try { await submitFilm(F,destination); }
   catch (error) {
     if(FILM!==F)return;
     if(downloadOnly)$("#fmDownloadStatus").textContent=error.message;
@@ -1517,7 +1523,8 @@ async function exportFilm(downloadOnly=false) {
   }
   finally {
     F.busy = false;
-    if (FILM === F) $("#fmGo").disabled = $("#fmDownloadMerged").disabled = !canvasCanEdit() || !F.spec.clips.length;
+    if (FILM === F) $("#fmGo").disabled = $("#fmDownloadMerged").disabled = $("#fmExportCanvas").disabled =
+      !canvasCanEdit() || !F.spec.clips.length;
   }
 }
 
@@ -1560,7 +1567,7 @@ async function downloadFilmRender(F,spec) {
   }
 }
 
-async function submitFilm(F,downloadOnly=false) {
+async function submitFilm(F,destination) {
   const s = vtClone(F.spec);
   const clips = s.clips.map(c => ({ c, v: filmVersion(c) }));
   const missing = clips.findIndex(x => !x.v);
@@ -1601,14 +1608,16 @@ async function submitFilm(F,downloadOnly=false) {
     if (FILM !== F || F.board !== boardId) return;
   }
   spec.narration = narration();
-  if(downloadOnly)return downloadFilmRender(F,spec);
-  const target = F.target;
+  if(destination==="download")return downloadFilmRender(F,spec);
+  const newNode = destination==="canvas";
+  const target = newNode ? null : F.target;
   let n = target ? node(target.id) : F.n && node(F.n.id);
+  if (newNode && (!n?.data.playlist || n!==F.n)) throw new Error("播放列表已移除，请重新打开");
   const versionIndex = target ? n?.versions.findIndex(v => v.ref === target.ref) : -1;
   if (target && !(versionIndex >= 0)) throw new Error("剪辑所用的视频版本已移除");
   if (n?.job || prepping.has(n?.id)) throw new Error("节点正在处理另一个任务，请稍候");
   const sourceVersion = target ? vtSnapshot(n,versionIndex) : null;
-  if (!target && !n?.data.playlist) checkpoint();
+  if (!target && !n?.data.playlist && !newNode) checkpoint();
   if (!n) {
     const src = clips.map(x => node(x.c.node)).filter(Boolean);
     const right = src.reduce((a, b) => !a || b.x + size(b).w > a.x + size(a).w ? b : a, null);
@@ -1618,27 +1627,41 @@ async function submitFilm(F,downloadOnly=false) {
   }
   const keep = s;
   keep.clips.forEach((c,i) => { c.ref = clips[i].v.ref; delete c.src_len; });
-  if (!target && n.data.playlist) {
+  if (!newNode && !target && n.data.playlist) {
     if (!saveFilmPlaylist(F,{notify:false,spec:keep})) return;
-  } else if (!target) n.data.film = keep;
+  } else if (!newNode && !target) n.data.film = keep;
   const fingerprint = JSON.stringify(spec);
-  if (F.attempt?.fingerprint !== fingerprint) {
-    F.attempt = {key:filmExportKey(), fingerprint};
+  const attemptField = newNode ? "canvasAttempt" : "attempt";
+  if (F[attemptField]?.fingerprint !== fingerprint) {
+    F[attemptField] = {key:filmExportKey(), fingerprint,...(newNode?{nodeId:newCanvasNodeId()}:{})};
   }
+  const attempt = F[attemptField];
   saveFilmDraft(F);
   const filmNodeId = n.id;
+  const sourceBoard = B;
   prepping.add(filmNodeId);
   let r;
   try {
     save(); await flushSave();
     if (FILM !== F || F.board !== boardId || node(filmNodeId) !== n || n.job) return;
-    r = await api("/api/render", {spec, board:F.board, label:n.name, request_key:F.attempt.key,
+    const label = newNode ? n.name.slice(0,54)+" · 成片" : n.name;
+    r = await api("/api/render", {spec, board:F.board, label, request_key:attempt.key,
       ...(target ? {target:{node:filmNodeId,ref:target.ref}} : {})});
-    if (F.board !== boardId || node(filmNodeId) !== n || n.job) return;
+    if (B!==sourceBoard || F.board !== boardId || node(filmNodeId) !== n || n.job) return;
+    if (newNode) {
+      const source = n, previous = node(attempt.nodeId);
+      if (previous) {
+        F[attemptField] = null;saveFilmDraft(F);return;
+      }
+      checkpoint();
+      const at = freeSpot(source.x+size(source).w+110,source.y,"video");
+      n = addNode("video",at.x,at.y,{aspect:s.aspect==="source"?"auto":s.aspect,film:keep},
+                  {id:attempt.nodeId,name:label});
+    }
   } finally {
     prepping.delete(filmNodeId);
   }
-  F.attempt = null;
+  F[attemptField] = null;
   saveFilmDraft(F);
   const filmRecipe = {
     clips:spec.clips.map(({ref,in:at,out,duration,trans,speed,audio_ref,audio_start}, index)=>
@@ -1663,8 +1686,7 @@ async function submitFilm(F,downloadOnly=false) {
   }
   n.job = { ids: r.ids, prompt: sourceVersion?.prompt || "", t0: Date.now(), st: {}, source:"film", history };
   save(); render(n); poll();
-  if (FILM === F) closeFilm();
-  selectOnly(n.id); fit([n]);
+  if (FILM === F) { closeFilm();selectOnly(n.id);fit([n]); }
   toast(target ? "正在导出，完成后会加入原视频的版本 Tab" : `正在导出 ${preflight.dimensions.join("×")} 成片，完成后可在节点上播放和下载`, 4000);
 }
 
@@ -1754,6 +1776,7 @@ function initFilm() {
 .fm-title-block[data-style=label] { padding:.4em; border-radius:.4em; background:#141417dc; text-shadow:none; }
 #fmStillControls { display: flex; align-items: center; gap: 10px; }
 #fmStillControls[hidden] { display: none; }
+#fmExportCanvas[hidden] { display: none; }
 #fmStillSeek { flex: 1; accent-color: var(--c-image); }
 #fmClip .still-duration { font-size: var(--fs-small); color: var(--dim); }
 #fmClip .still-duration input { width: 75px; margin: 0 5px; padding: 4px 7px; background: var(--card-hi); border: 1px solid var(--line); border-radius: 6px; }
@@ -1855,7 +1878,8 @@ function initFilm() {
     <button class="pill" id="fmTiming" type="button" hidden>核对镜长</button>
     <button class="pill" id="fmStoryReuse" type="button" hidden>沿用剪辑草稿</button>
     <button class="pill" id="fmSaveList" type="button" hidden>保存列表</button><button class="pill" id="fmPlaylistSources" type="button" hidden>下载原片</button>
-    <button class="pill" id="fmDownloadMerged" type="button" hidden>下载合并 MP4</button><span class="dim" id="fmDownloadStatus" role="status"></span>
+    <button class="pill" id="fmDownloadMerged" type="button" hidden>下载合并 MP4</button>
+    <button class="pill" id="fmExportCanvas" type="button" hidden>导出到新节点</button><span class="dim" id="fmDownloadStatus" role="status"></span>
     <button class="pill" id="fmAll" title="从头顺序播放片段与字幕">▶ 预览全片</button>
     <button class="pill" id="fmClose">关闭</button><button class="pill" id="fmGo">导出成片</button></div>
   <div class="main">
@@ -1907,7 +1931,8 @@ function initFilm() {
   $("#fmPlaylistSources").onclick = () => { if (FILM) downloadFilmPlaylistSources(FILM); };
   if (typeof ResizeObserver === "function") new ResizeObserver(sizeFilmTitleLayer).observe($("#fmTitleLayer").parentElement);
   $("#fmGo").onclick = () => void exportFilm();
-  $("#fmDownloadMerged").onclick = () => void exportFilm(true);
+  $("#fmDownloadMerged").onclick = () => void exportFilm("download");
+  $("#fmExportCanvas").onclick = () => void exportFilm("canvas");
   initFilmPlaylistPicker();
   $("#fmMainPlay").onclick = () => {
     if (!FILM) return;

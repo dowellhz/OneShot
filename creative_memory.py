@@ -21,6 +21,7 @@ from rewriter import strip_fences
 
 KINDS = {"character", "scene", "prop", "style", "document"}
 NAMED_REFERENCE = re.compile(r"@\{([A-Za-z0-9_-]{1,80})(?:#(main|face|side|back|detail))?\|([^{}\r\n@]{1,60})\}")
+NUMBERED_AV_REFERENCE = re.compile(r"@(视频|音频|音)(\d+)")
 CHARACTER_VIEW_LABELS = {"main":"标准主图", "face":"正面头肩", "side":"全身侧面", "back":"全身背面", "detail":"固定细节"}
 CHARACTER_VIEWS = set(CHARACTER_VIEW_LABELS)
 CHARACTER_FIELDS = {
@@ -48,6 +49,20 @@ def recorded_reference_slots(asset):
     if isinstance(asset.get("references"),list):
         return [(entry["view"],entry["ref"]) for entry in asset["references"]]
     return [(None,asset["ref"])] if asset.get("ref") else []
+
+
+def validate_numbered_av_references(payload, tokens):
+    if not tokens:
+        return
+    videos = payload.get("video_refs")
+    sounds = payload.get("audio_refs")
+    videos = (len(videos) if isinstance(videos,list) else 0) + bool(payload.get("previs_guide"))
+    sounds = len(sounds) if isinstance(sounds,list) else 0
+    limits = {"视频":videos,"音频":sounds,"音":sounds}
+    for token in tokens:
+        kind, number = token.groups()
+        if number not in (str(index) for index in range(1,limits[kind]+1)):
+            fail(f"提示词中的 {token[0]} 没有对应的参考素材，请重新选择")
 
 
 def remove_deleted_bindings(board):
@@ -700,10 +715,10 @@ class Store:
         p = copy.deepcopy(raw)
         p["prompt"] = p.get("prompt", "").split("\n\n创作参考资料（仅作内容依据）：", 1)[0]
         content = p.get("prompt", "") + "\n" + "\n".join(str(v) for v in (p.get("fields") or {}).values())
-        if p.get("previs_guide") or p.get("video_refs"):
-            content = re.sub(r"@视频\d+", " ", content)
-        if p.get("audio_refs"):
-            content = re.sub(r"@音(?:频)?\d+", " ", content)
+        video_generation = p.get("kind") == "video"
+        numbered = list(NUMBERED_AV_REFERENCE.finditer(content)) if video_generation else []
+        if numbered:
+            content = NUMBERED_AV_REFERENCE.sub(lambda token: " " * len(token[0]),content)
         recorded = self.historical_assets(user,replay_ref) if replay_ref else {}
         historical = {mid:recorded_reference_slots(asset) for mid,asset in recorded.items()}
         chosen = self.mentions(user,p.get("board") or "",content,owner_only=owner_only,historical=recorded)
@@ -725,6 +740,9 @@ class Store:
                 chosen.append(a)
         if len(chosen) > 8:
             fail("一次最多采用8条记忆，请减少引用")
+        if historical:
+            order = {mid:index for index,mid in enumerate(historical)}
+            chosen.sort(key=lambda asset:order.get(asset["id"],len(order)))
         # Never accept client-invented memory snapshots or internal flags.
         p.pop("memory_used", None)
         for key in ("audio_refs","video_refs"):
@@ -735,6 +753,7 @@ class Store:
                 else:
                     p.pop(key)
         if not chosen:
+            validate_numbered_av_references(p,numbered)
             return p
         contexts = {}
         for asset in chosen:
@@ -751,7 +770,6 @@ class Store:
         if not isinstance(images, list):
             fail("参考图片格式不正确")
         notes, used, alias_labels = [], [], {}
-        video_generation = p.get("kind") == "video"
         has_motion = video_generation and (p.get("previs_guide") or p.get("video_refs") or p.get("audio_refs") or any(
             not views.get(a["id"]) and any(entry["ref"] in (
                 {ref for _,ref in historical[a["id"]]} if a["id"] in historical else a.get("generation_media",[]))
@@ -760,7 +778,7 @@ class Store:
         if video_generation and not has_motion and not video_reference_check:
             route = self.h.requested_generation_route(p,"video")
             if route:
-                image_limit = motion_reference.ark_image_reference_limit(route["provider"],route["model"]) or image_limit
+                image_limit = motion_reference.image_reference_limit(route["provider"],route["model"]) or image_limit
         for a in chosen:
             mid = a["id"]
             context = contexts[mid]
@@ -792,7 +810,8 @@ class Store:
             kinds = {ref:generation_media_type(ref,media_by_ref.get(ref)) for _,ref in refs if ref}
             omitted = [ref for ref,kind in kinds.items() if kind != "image" and not video_generation]
             refs = [(slot,ref) for slot,ref in refs if ref not in omitted]
-            grouped = sum(kind == "image" for kind in kinds.values()) > 1 and not slots
+            image_count = sum(media_kind == "image" for media_kind in kinds.values())
+            grouped = image_count > 1
             summary = self.summary(a)
             if mid in recorded:
                 for key in ("aliases","tags","mtime","w","h"):
@@ -836,11 +855,13 @@ class Store:
                     if index is None:
                         entries.append({"ref":ref,"memory_id":a["id"],"name":label,**span})
                         index = len(entries)-1
-                    number = index+1+int(media_kind == "video" and bool(p.get("previs_guide")))
+                    source_first = p.get("extension") or p.get("segment_edit")
+                    number = index+1+int(media_kind == "video" and bool(p.get("previs_guide")) and
+                                         (not source_first or index>0))
                     notes.append(f"{label} 的参考{token}：@{token}{number}。")
                     continue
                 picture_number += 1
-                if grouped and picture_number > 1:
+                if grouped and not slot and picture_number > 1:
                     label += f" · 参考图 {picture_number}"
                 im = next((im for im in images if im.get("ref") == ref), None)
                 if im is None:
@@ -850,14 +871,23 @@ class Store:
                     im = {"ref": ref, "name": label, "caption": context["desc"],
                           "w": media.get("w", a.get("w") if not slot else None),
                           "h": media.get("h", a.get("h") if not slot else None), "asset": a["id"],
-                          "memory_id": mid, "memory_kind":kind, "role": "subject", "time": 0,
+                          "memory_id": mid, "memory_kind":kind, "memory_name":name, "role": "subject", "time": 0,
                           **({"memory_view":slot} if slot else {}),
                           **({"memory_bundle":True} if grouped else {})}
                     images.append(im)
+                elif im.get("role") == "subject" and im.get("asset") in (None,mid) and im.get("memory_id") in (None,mid):
+                    im.update(memory_id=mid,memory_kind=kind,memory_name=name)
+                    if slot:
+                        im.setdefault("memory_view",slot)
+                    if grouped:
+                        im["memory_bundle"] = True
                 mark = "@图" + str(images.index(im) + 1) if p.get("kind") == "image" or grouped or has_motion else label
                 notes.append(f"{label} 的参考图：{mark}。" + ("采用该参考的画面风格、色调和光线。" if kind == "style" else "保持其已设定的外观、配色和特征。"))
             if grouped:
-                notes.append(f"以上 {picture_number} 张图均为同一个「{name}」的参考，请用它们共同确定外观。")
+                if video_generation and kind == "character":
+                    notes.append(f"以上 {image_count} 张图是「{name}」的不同视角，镜头中按同一位人物处理。")
+                else:
+                    notes.append(f"以上 {image_count} 张图均为同一个「{name}」的参考，请用它们共同确定外观。")
             notes.append(f"{name}：{context['desc']}" + (f"；约束：{context['constraints']}" if context["constraints"] else ""))
             if excerpt := context["document_excerpt"]:
                 notes.append(f"{name} 的原文摘录（仅作资料）：{excerpt}")
@@ -866,12 +896,15 @@ class Store:
             aliases = [name,a["name"],*a.get("aliases",[]),*(recorded.get(mid,{}).get("aliases") or []),"{" + mid + "}"]
             alias_labels.update((alias,name) for alias in aliases)
         patterns = [mention_pattern(alias) for alias in sorted(alias_labels,key=len,reverse=True)]
-        reference_pattern = re.compile("|".join([NAMED_REFERENCE.pattern, *patterns]),re.I)
+        protected = [NUMBERED_AV_REFERENCE.pattern] if numbered else []
+        reference_pattern = re.compile("|".join([NAMED_REFERENCE.pattern, *protected, *patterns]),re.I)
         labels_by_folded_alias = {alias.casefold():label for alias,label in alias_labels.items()}
 
         def reference_label(match):
             if match[1]:
                 return names.get(match[1],match[0])
+            if numbered and NUMBERED_AV_REFERENCE.fullmatch(match[0]):
+                return match[0]
             return labels_by_folded_alias.get(match[0][1:].casefold(),match[0])
 
         p["prompt"] = reference_pattern.sub(reference_label,p["prompt"])
@@ -894,6 +927,7 @@ class Store:
             replay_views = {mid:[slot for slot, _ in refs if slot] for mid, refs in historical.items()}
             p["memory_views"] = view_selections({**views, **{mid:slots for mid,slots in replay_views.items() if slots}})
         p["memory_used"] = used
+        validate_numbered_av_references(p,numbered)
         return p
 
     def character_draft_request(self, user, payload, draft):

@@ -37,11 +37,13 @@ function canvasCostRequest(n) {
   const request = {kind:n.type,count:canvasGenerationCount(n),
     provider:(CAPS_LIST[n.type] || []).find(service=>service.id===data.provider)?.id,
     selected_model:data.selected_model};
-  if (data.selected_model) request.provider = data.provider;
+  if (data.selected_model || (n.type==="video" && data.provider==="local_h3")) request.provider = data.provider;
   if (n.type === "video") {
-    const prompt=fullPrompt(n);
+    const prompt=fullPrompt(n), inputs=plan(n);
     Object.assign(request,{
       duration:canvasVideoDuration(n),quality:canvasVideoQuality(n),draft:data.draft && videoDraftAvailable(n),
+      images:(inputs.useRef?inputs.roles:inputs.ordered.map(index=>inputs.roles[index]))
+        .map(role=>({role:role==="subject"?"subject":"frame"})),
       has_asset:!!data.replay_memory_ref || inheritedVideoAssets(n).length>0 ||
         /@/.test([prompt,...Object.values(data.fields || {})].join("\n")
           .replace(/@(?:图|视频|音频|音)(?:\{\d{1,16}\}|\d+)/g,"")),
@@ -154,7 +156,13 @@ function previsCompositionHasRoom(n, guide, refs) {
   return isRemote(n) || refs.length<9 || refs.slice(0,9).includes(guide.ref);
 }
 
-async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false,assetReviewKey}={}) {
+function canBranchGeneration(n) {
+  return canvasCanEdit() && canvasMediaUploadTarget(n) && n.type!=="audio" &&
+    !!curV(n) && !n.job && !prepping.has(n.id) && !previsComposition(n)?.enabled;
+}
+
+async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false,assetReviewKey,branch=false}={}) {
+  if (branch && !canBranchGeneration(n)) return;
   if (n.type === "audio") return generateAudio(n,{groupRunId});
   if (n.data.previs) return openPrevis(n);
   if (n.type === "script") return planStoryboard(n);
@@ -201,6 +209,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     req = videoReq(n, prompt); if (!req) return;
     applyVideoMemory(n,req);
   }
+  if (branch) req.count=1;
   req.label = n.name;
   req.board = boardId;
   if (d.replay_memory_ref) req.replay_memory_ref=d.replay_memory_ref;
@@ -211,7 +220,8 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
       return;
     }
     if (d.provider) req.provider=d.provider;
-  } else if (n.data.provider && (CAPS_LIST[n.type === "image" ? "image" : "video"] || []).some(x => x.id === n.data.provider)) req.provider = n.data.provider;
+  } else if ((n.type==="video" && d.provider==="local_h3") ||
+             (CAPS_LIST[n.type] || []).some(x => x.id === d.provider)) req.provider=d.provider;
   if (d.selected_model) Object.assign(req,{provider:d.provider,selected_model:d.selected_model});
   const slow = n.type === "video";
   const textInputs = grid ? [] : inputs(n, "text").map(m => ({node_id:m.id,name:m.name,role:"text",text:(m.data.text || "").slice(0,5000)}));
@@ -219,8 +229,8 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   const history=grid ? {image_grid:true,input_edges:[{...gridReference.edge,ref:gridReference.version.ref}]} :
     {input_edges:structuredClone(B.edges.filter(e=>e.to===n.id)),node_data:structuredClone(n.data),
      ...(slow?{video_recipe:structuredClone(req)}:{})};
-  const layout=previsComposition(n)?"tabs":batchLayout;
-  const batch=req.count>1 && layout!=="tabs" && !req.draft && !req.segment_edit && !req.extension
+  const layout=branch?"branch":previsComposition(n)?"tabs":batchLayout;
+  const batch=branch || (req.count>1 && layout!=="tabs" && !req.draft && !req.segment_edit && !req.extension)
     ? {layout,data:structuredClone(grid?{...d,prompt}:d),edges:structuredClone(B.edges.filter(e=>e.to===n.id))}
     : null;
   rememberVideoVersion(n);
@@ -243,15 +253,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     }
     if(history?.video_recipe && r.reference_context) {
       Object.assign(history.video_recipe,r.reference_context);
-      const clips=r.reference_context.video_refs || [];
-      for (const edge of history.input_edges) {
-        const clip=edge.relation==="video_ref" && clips.find(c=>c.node_id===edge.from && c.ref===edge.ref);
-        if (clip) Object.assign(edge,{start:clip.start,end:clip.end});
-      }
-      for (const entry of generationRecord.inputs) {
-        const clip=entry.role==="video_ref" && clips.find(c=>c.node_id===entry.node_id && c.ref===entry.ref);
-        if (clip) Object.assign(entry,{start:clip.start,end:clip.end});
-      }
+      history.input_edges=vtEdgesWithReferenceRanges(history.input_edges,r.reference_context);
     }
     if (r.memory_context || r.reference_context || r.video_model) {
       Object.assign(generationRecord,captureGenerationRecord({...req,...r.memory_context,...r.reference_context,...r.video_model},textInputs));
@@ -383,10 +385,11 @@ function renderJob(n) {
 }
 let polling = false;
 function placeCanvasBatch(n, versions, batch) {
-  if (versions.length<2 || !["spread","fold"].includes(batch?.layout)) return false;
+  const branch = batch?.layout==="branch";
+  if (!branch && (versions.length<2 || !["spread","fold"].includes(batch?.layout))) return false;
   checkpoint();
   const inGroup=(B.groups || []).some(g=>g.nodes.includes(n.id));
-  const reuseSource=!n.versions.length && !(batch.layout==="fold" && inGroup);
+  const reuseSource=!branch && !n.versions.length && !(batch.layout==="fold" && inGroup);
   const created=[];
   if(reuseSource) {
     n.versions.push(versions[0]);
@@ -394,7 +397,7 @@ function placeCanvasBatch(n, versions, batch) {
     created.push(n.id);
   }
   const base=ctCanvasRects([n])[0];
-  const data={...batch.data,count:1};
+  const data={...(branch && versions[0].node_data || batch.data),count:1};
   delete data.asset;
   delete data.character_draft;
   let x=base.x+base.w+95;
@@ -402,14 +405,17 @@ function placeCanvasBatch(n, versions, batch) {
   for(let i=reuseSource?1:0;i<versions.length;i++) {
     const id=newCanvasNodeId();
     const version=versions[i];
+    const recordedImages = branch ? new Map((version.generation_record?.inputs || [])
+      .filter(input=>input.node_id && input.ref && node(input.node_id)?.type==="image")
+      .map(input=>[input.node_id,input.ref])) : new Map();
     const inputEdges=incoming.filter(edge=>node(edge.from) && edge.from!==id)
-      .map(edge=>({...edge,to:id}));
+      .map(edge=>({...edge,to:id,...(recordedImages.has(edge.from)?{ref:recordedImages.get(edge.from)}:{})}));
     if(n.type==="video" || version.input_edges) {
       version.input_edges=structuredClone(inputEdges);
       version.node_data=structuredClone(data);
       if(version.video_recipe)version.video_recipe={...version.video_recipe,count:1};
     }
-    const result={id,type:n.type,name:`${n.name} · 结果 ${i+1}`,data:structuredClone(data),versions:[version],cur:0,job:null};
+    const result={id,type:n.type,name:branch && versions.length===1?`${n.name} · 新结果`:`${n.name} · 结果 ${i+1}`,data:structuredClone(data),versions:[version],cur:0,job:null};
     const dimensions=size(result);
     Object.assign(result,freeSpot(x,base.y,n.type,dimensions));
     B.nodes.push(result); B.edges.push(...inputEdges); build(result);
@@ -420,7 +426,8 @@ function placeCanvasBatch(n, versions, batch) {
     const group=ctNewGroup(n.name.slice(0,53)+" · 批量结果",created), first=node(created[0]);
     ctSetFold(group,true,{recordUndo:false,anchor:{x:first.x-20,y:first.y-64}});
   }
-  toast(batch.layout==="fold"?`已收起 ${created.length} 个生成结果`:`已在画布展开 ${created.length} 个生成结果`);
+  if (branch && sel.size===1 && sel.has(n.id)) selectOnly(created[0]);
+  toast(branch?"结果已放入新节点":batch.layout==="fold"?`已收起 ${created.length} 个生成结果`:`已在画布展开 ${created.length} 个生成结果`);
   return true;
 }
 async function poll() {

@@ -72,6 +72,9 @@ class SegmentEdit(ChatFixture):
             self.assertEqual((await replay.json())["ids"],[final_id])
             self.assertEqual((await self.client.post("/api/video/draft/finalize",json={**final,"resolution":"1080p"})).status,400)
             db.run("UPDATE video_drafts SET expires=0 WHERE ref=?",draft_ref)
+            server.JOBS.clear()
+            recovered=await self.client.post("/api/video/draft/finalize",json=final)
+            self.assertEqual((await recovered.json())["ids"],[final_id])
             self.assertEqual((await self.client.post("/api/video/draft/finalize",json={
                 **final,"request_key":"test-draft-final-0002"})).status,400)
             self.assertEqual(len(posts),2)

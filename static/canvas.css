@@ -337,6 +337,8 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 #pvInputs small { color: var(--dim); }
 #pv pre { flex: 1; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; background: #111113; border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: var(--fs-small)/1.65 var(--font-mono); color: #d8d8de; }
 #pv pre[hidden] { display: none; }
+#pvBranchCommit { align-self: flex-end; flex: none; }
+#pvBranchCommit[hidden] { display: none; }
 #pp .ref { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; background: #222226; border: 1px solid var(--line); border-radius: 9px; font-size: var(--fs-small); color: #cfcfd5; cursor: pointer; }
 #pp .ref:hover { border-color: #555; }
 #pp .ref img { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; background: #000; }
@@ -695,9 +697,11 @@ svg.i { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-widt
 .canvas-group.is-folded.cg-drop-target{outline:2px solid var(--text);outline-offset:4px}
 .canvas-group.is-folded .cg-head{height:40px}
 .canvas-group.is-folded .cg-head input{font-weight:600;color:var(--text)}
-.cg-items{position:absolute;left:10px;right:10px;bottom:10px;padding:8px;display:flex;align-items:center;gap:8px;
-  pointer-events:auto;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
-.cg-items:hover{background:var(--card-hi)}
+.cg-fold-actions{position:absolute;left:10px;right:10px;bottom:10px;display:flex;gap:6px;pointer-events:auto}
+.cg-fold-actions button{padding:8px;display:flex;align-items:center;justify-content:center;
+  border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
+.cg-fold-actions button:hover,.cg-fold-actions button:focus-visible{background:var(--card-hi)}
+.cg-fold-actions .cg-items{flex:1;justify-content:flex-start;gap:8px}
 #edges .folded-edge .vis{stroke-dasharray:5 4}
 .folded-edge-count{pointer-events:none}
 #groupGallery{width:min(740px,calc(100vw - 28px));max-height:calc(100dvh - 36px);padding:12px;color:var(--text);

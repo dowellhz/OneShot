@@ -1,8 +1,12 @@
 import asyncio
 import io
 import json
+import unittest
 import wave
-from unittest.mock import patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlsplit
 
 import av
@@ -10,8 +14,366 @@ import numpy as np
 from aiohttp import web
 from PIL import Image
 
+import agent_video
 import server
 from test_agent_chat import ChatFixture, answer, call
+
+
+class CharacterReferencePrompts(unittest.TestCase):
+    def test_asset_replay_keeps_original_numbered_audio_and_video_bindings(self):
+        def asset(index, name):
+            video = f"input:h3studio/clip{index}.mp4"
+            audio = f"input:h3studio/voice{index}.wav"
+            return {"id":str(index),"kind":"prop","name":name,"media":[{"ref":video},{"ref":audio}],
+                    "references":[{"ref":video,"view":None,"type":"video","start":1,"end":4},
+                                  {"ref":audio,"view":None,"type":"audio","start":2,"end":5}]}
+
+        first, second = asset(1,"站台素材"),asset(2,"车厢素材")
+        recorded = {item["id"]:item for item in (first,second)}
+        store = server.creative_memory.Store(server)
+        user = {"id":7,"role":"member"}
+        raw = {"kind":"video","board":"test","prompt":"重拍 @车厢素材 和 @站台素材",
+               "fields":{"action":"复用 @视频1 的运镜，按 @音频2 的节奏。"}}
+        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
+                patch.object(store,"list",return_value=[first,second]), \
+                patch.object(store,"get",side_effect=lambda _user, mid, _board: recorded[mid]), \
+                patch.object(store,"historical_assets",return_value=recorded),patch.object(server,"require_media"):
+            for item in recorded.values():
+                for media in item["media"]:
+                    path = server.tools.ref_path(server.COMFY_DIR,media["ref"])
+                    path.parent.mkdir(parents=True,exist_ok=True)
+                    path.touch()
+            restored = store.prepare(user,raw,replay_ref="output:h3studio/previous.mp4")
+            self.assertEqual([item["id"] for item in restored["memory_used"]],["1","2"])
+            self.assertEqual([(item["ref"],item["start"],item["end"]) for item in restored["video_refs"]],
+                             [("input:h3studio/clip1.mp4",1,4),("input:h3studio/clip2.mp4",1,4)])
+            self.assertEqual([(item["ref"],item["start"],item["end"]) for item in restored["audio_refs"]],
+                             [("input:h3studio/voice1.wav",2,5),("input:h3studio/voice2.wav",2,5)])
+            self.assertIn(raw["fields"]["action"],restored["fields"]["action"])
+            with self.assertRaises(web.HTTPBadRequest) as invalid:
+                store.prepare(user,{**raw,"prompt":"参照 @音3"},replay_ref="output:h3studio/previous.mp4")
+            self.assertIn("@音3",invalid.exception.text)
+            with self.assertRaises(web.HTTPBadRequest) as missing:
+                store.prepare(user,{"kind":"video","prompt":"参照 @视频1"})
+            self.assertIn("@视频1",missing.exception.text)
+            edit = {**raw,"segment_edit":True,
+                    "previs_guide":{"node_id":"guide","ref":"output:h3studio/guide.mp4"},
+                    "video_refs":[{"node_id":"source","ref":"input:h3studio/clip1.mp4","start":1,"end":4}]}
+            reused = store.prepare(user,edit,replay_ref="output:h3studio/previous.mp4")
+            self.assertIn("站台素材 的参考视频：@视频1。",reused["prompt"])
+            self.assertIn("车厢素材 的参考视频：@视频3。",reused["prompt"])
+
+    def test_mixed_media_keeps_timed_images_in_assistant_request_order(self):
+        def source(_run, _user, node_id, *, pinned_ref=None):
+            version = {"ref":pinned_ref or f"input:h3studio/{node_id}.png","w":640,"h":360}
+            return {"id":node_id,"name":node_id,"versions":[{"ref":"input:h3studio/first.png"},version]},version
+
+        service = SimpleNamespace(host=server,source=source)
+        frames = [{"node_id":"late","role":"keyframe","time":3.2,"ref":"input:h3studio/older.png"},
+                  {"node_id":"opening","role":"first"},{"node_id":"person","role":"subject"},
+                  {"node_id":"environment"},{"node_id":"ending","role":"last"}]
+        sounds = [{"ref":"input:h3studio/dialogue.wav"}]
+        clips = [{"ref":"input:h3studio/motion.mp4"}]
+        payload = agent_video.plan_payload(service,{"data":{}},{"id":7},frames,5,{},"按 @音1 的节奏。",
+                                           sounds=sounds,clips=clips)
+        self.assertTrue(payload["planned"])
+        self.assertEqual([(item["node_id"],item["role"]) for item in payload["images"]],
+                         [("late","frame"),("opening","frame"),("person","subject"),
+                          ("environment","subject"),("ending","frame")])
+        self.assertEqual([item["time"] for item in payload["images"][:2]],[3.2,0])
+        self.assertEqual(payload["images"][0]["ref"],"input:h3studio/older.png")
+        self.assertEqual(payload["images"][0]["version"],2)
+        prompt = server.reference_prompt({**payload,"audio_refs":sounds,"video_refs":clips})
+        self.assertIn("约在 3.2 秒参考 @图片1 的构图",prompt)
+        self.assertIn("开头参考 @图片2 的构图",prompt)
+        self.assertIn("结尾参考 @图片5 的构图",prompt)
+
+    def test_assistant_history_uses_recorded_ranges_and_keeps_midshot_frame_timing(self):
+        still, audio = "input:h3studio/still.png","input:h3studio/voice.wav"
+        recipe = {"planned":True,"duration":8,
+                  "images":[{"node_id":"still","role":"frame","time":3.2,"ref":still}],
+                  "audio_refs":[{"node_id":"voice","ref":audio,"start":.75,"end":4.125}]}
+        historical = {"ref":"output:h3studio/shot.mp4","video_recipe":recipe,"input_edges":[
+            {"from":"still","to":"shot","role":"keyframe","time":3.2},
+            {"from":"voice","to":"shot","relation":"audio_ref","ref":audio,"start":0}]}
+        target = {"id":"shot","cur":0,"versions":[historical],"data":{}}
+        board = {"nodes":[target,{"id":"still","type":"image","versions":[{"ref":still}]},
+                          {"id":"voice","type":"audio","versions":[{"ref":audio}]}],"edges":[]}
+        service = SimpleNamespace(host=server,current=lambda node:node["versions"][0])
+        run = {"data":{}}
+        _, _, _, edges = agent_video.video_edit_snapshot(service,run,board,target,1)
+        self.assertEqual((edges[0]["ref"],edges[0]["role"],edges[0]["time"]),(still,"keyframe",3.2))
+        self.assertEqual((edges[1]["start"],edges[1]["end"]),(.75,4.125))
+        self.assertNotIn("end",historical["input_edges"][1])
+        del historical["input_edges"]
+        _, _, _, recovered = agent_video.video_edit_snapshot(service,run,board,target,1)
+        self.assertEqual((recovered[0]["ref"],recovered[0]["role"],recovered[0]["time"]),(still,"keyframe",3.2))
+
+    def test_explicit_angles_share_one_subject_and_keep_dialogue_with_its_character(self):
+        frame, main, face, second = [f"input:h3studio/{name}.png" for name in ("frame","main","face","second")]
+        jonah = {"id":"jonah","kind":"character","name":"乔纳·里德","ref":main,"desc":"深色外套",
+                 "character_views":{"main":main,"face":face},"media":[{"ref":main},{"ref":face}]}
+        woman = {"id":"woman","kind":"character","name":"抱画女人","ref":second,"desc":"怀抱一幅画",
+                 "media":[{"ref":second}]}
+        assets = [jonah,woman]
+        store = server.creative_memory.Store(server)
+        user = {"id":7,"role":"member"}
+        raw = {"kind":"video","board":"test","duration":5,
+               "prompt":"@乔纳·里德 与 @抱画女人 在走廊相遇。",
+               "fields":{"action":"两人在门边停下。","dialogue":"乔纳·里德（轻声）：你好。\n抱画女人：你也来看画？"},
+               "images":[{"ref":frame,"role":"frame"},{"ref":main,"role":"subject","asset":"jonah"}],
+               "memory_views":[{"memory_id":"jonah","views":["main","face"]}]}
+        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
+                patch.object(store,"list",return_value=assets), patch.object(store,"get",return_value=jonah), \
+                patch.object(server,"lib_load",return_value=[]), patch.object(server,"requested_generation_route",return_value=None):
+            for ref in (frame,main,face,second):
+                path = server.tools.ref_path(server.COMFY_DIR,ref)
+                path.parent.mkdir(parents=True,exist_ok=True)
+                Image.new("RGB",(64,64),"blue").save(path)
+            prepared = store.prepare(user,raw)
+            with patch.object(store,"historical_assets",return_value={"jonah":prepared["memory_used"][0]}), \
+                    patch.object(server,"require_media"):
+                replayed = store.prepare(user,{key:value for key,value in raw.items() if key!="memory_views"},
+                                         replay_ref="output:h3studio/previous.mp4")
+            for payload in (prepared,replayed):
+                self.assertEqual([entry["ref"] for entry in payload["images"]],[frame,main,face,second])
+                self.assertEqual([entry.get("memory_view") for entry in payload["images"]],[None,"main","face",None])
+                local_request, _ = server.engine_body(server.apply_fields(payload))
+                local = local_request["prompt"]
+                self.assertIn("<Picture 2> is an additional view of the same <Subject 1>",local)
+                self.assertNotIn("<Subject 2>",local)
+                self.assertIn("<Picture 4> is the first frame",local)
+                self.assertIn("People shown in the keyframes and their corresponding character references share the same identity.",local)
+                self.assertIn("乔纳·里德 <Subject 1> (S1) 轻声 says: <d>[Chinese] 你好。</d>",local)
+                self.assertIn("抱画女人 <Subject 3> (S2) says: <d>[Chinese] 你也来看画？</d>",local)
+                remote, roles = server.remote_video_prompt(payload,{"kind":"ark","config":{}},"doubao-seedance-2-5-fixture")
+                self.assertEqual(roles,["image_ref"]*4)
+                self.assertIn("开头参考 @图片1 的构图",remote)
+                self.assertIn("关键帧里出现的人物与各自的角色参考图共用同一身份",remote)
+                self.assertIn("乔纳·里德 · 正面头肩 的参考图：@图片3",remote)
+                self.assertIn("「乔纳·里德」的不同视角，镜头中按同一位人物处理",remote)
+                self.assertIn("关键帧里出现的人物",server.reference_prompt(payload))
+
+
+class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
+    async def test_numbered_review_matches_provider_video_input_order(self):
+        guide = {"ref":"output:h3studio/guide.mp4","node_id":"guide"}
+        clips = [{"ref":"input:h3studio/source.mp4","node_id":"source"},
+                 {"ref":"input:h3studio/other.mp4","node_id":"other"}]
+        sound = {"ref":"input:h3studio/sound.wav","node_id":"sound"}
+        for source_first in (False,True):
+            raw = {"previs_guide":guide,"video_refs":clips,"audio_refs":[sound],**({"segment_edit":True} if source_first else {})}
+            rows = server.numbered_reference_inputs(server.workflow_review.capture_generation(raw)["inputs"],raw)
+            order = ["source","guide","other"] if source_first else ["guide","source","other"]
+            body = await server.remote.ark_video_body("doubao-seedance-2-5-fixture",
+                {"prompt":"测试","refs":[],"duration":5,"motion_url":guide["node_id"],
+                 "video_urls":[item["node_id"] for item in clips],"segment_edit":source_first})
+            self.assertEqual([item["video_url"]["url"] for item in body["content"][1:]],order)
+            self.assertEqual([(item["node_id"],item["prompt_reference"]) for item in rows],
+                             [*[(node_id,f"@视频{index}") for index,node_id in enumerate(order,1)],("sound","@音频1")])
+
+    def test_retired_history_routes_do_not_fall_back_to_default_provider(self):
+        with patch.object(server.providers,"get",return_value=None), patch.object(server.providers,"primary") as fallback:
+            with self.assertRaises(web.HTTPBadRequest):
+                server.requested_generation_route({"provider":"legacy","selected_model":"old-model"},"video")
+            with self.assertRaises(web.HTTPBadRequest):
+                server.requested_generation_route({"provider":"local_h3"},"video")
+            fallback.assert_not_called()
+            server.requested_generation_route({},"video")
+            fallback.assert_called_once_with("video")
+
+    async def test_explicit_video_route_checks_preview_after_normalizing_the_camera_plan(self):
+        provider = {"id":"ark","kind":"ark","name":"方舟","config":{},"updated":1}
+        route = {"provider":provider,"model":"doubao-seedance-2-5-fixture"}
+        service = SimpleNamespace(app={"creative_memory":SimpleNamespace(
+            prepare=Mock(side_effect=lambda _user, raw, **_options: raw))})
+        user = {"id":7,"role":"member"}
+        view = {"angle":"front","scale":"medium"}
+        raw = {"kind":"video","board":"test","prompt":"保留原动作", "duration":5,
+               "provider":provider["id"],"selected_model":route["model"],"segment_edit":True,
+               "camera_plan":{"mode":"move","start":view,"end":view},
+               "images":[{"role":"frame","time":0,"name":"走廊","ref":"input:h3studio/hall.png","version":2}],
+               "video_refs":[{"node_id":"clip","ref":"input:h3studio/clip.mp4","start":1,"end":6,"version":3}],
+               "audio_refs":[{"node_id":"audio","ref":"input:h3studio/audio.wav","start":0,"end":2,"version":1}]}
+
+        def request(payload, key=None):
+            req = server.agent_chat.InternalRequest(service,user,payload)
+            if key is not None:
+                req["reference_preview"] = key
+            return req
+
+        async def prepare(_user, payload, _plan, **_options):
+            clip = payload["video_refs"][0]
+            return route,None,[{"ticks":round((clip["end"]-clip["start"])*server.film.FPS)}],[]
+
+        result = web.json_response({"ids":["fixture"]})
+        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
+                patch.object(server,"require_media"), patch.object(server,"prepare_reference_generation",side_effect=prepare), \
+                patch.object(server,"generate_remote",new=AsyncMock(return_value=result)) as submit:
+            path = server.tools.ref_path(server.COMFY_DIR,raw["images"][0]["ref"])
+            path.parent.mkdir(parents=True)
+            Image.new("RGB",(64,64),"blue").save(path)
+            preview = json.loads((await server.preview(request(raw))).body)
+            self.assertFalse(server.needs_reference_review(raw))
+            self.assertIn("固定机位",preview["prompt"])
+            self.assertEqual(preview["duration"],5)
+            key = preview["reference_preview"]
+            self.assertRegex(key,r"^[0-9a-f]{64}$")
+            approval, _ = await server.asset_reference_review(request(raw),await request(raw).json())
+            self.assertEqual(approval["key"],key)
+            self.assertEqual((approval["provider"],approval["model"]),("方舟",route["model"]))
+            self.assertEqual([(item["role"],item["version"],item.get("start"),item.get("end")) for item in approval["inputs"]],
+                             [("frame",2,None,None),("video_ref",3,1,6),("audio_ref",1,0,2)])
+            self.assertIs(await server._generate_request(request(raw,key),await request(raw).json()),result)
+            self.assertEqual(submit.call_args.args[1]["camera_plan"],{"mode":"fixed","start":view})
+
+            moved = {**raw,"video_refs":[{**raw["video_refs"][0],"start":2,"end":7}]}
+            with self.assertRaises(web.HTTPConflict) as trim_conflict:
+                await server._generate_request(request(moved,key),await request(moved).json())
+            self.assertIn("重新预览",trim_conflict.exception.text)
+            provider["updated"] = 2
+            confirmed = request(raw,approval["key"])
+            confirmed["reference_reviewed"] = True
+            with self.assertRaises(web.HTTPConflict) as approval_conflict:
+                await server._generate_request(confirmed,await confirmed.json())
+            self.assertIn("重新确认生成",approval_conflict.exception.text)
+            submit.assert_awaited_once()
+            self.assertIs(await server._generate_request(request(raw),await request(raw).json()),result)
+            with patch.object(server,"prepare_reference_generation",side_effect=server.bad("参考音频超过时长")):
+                with self.assertRaises(web.HTTPBadRequest) as limit_error:
+                    await server.asset_reference_review(request(raw),await request(raw).json())
+                self.assertIn("参考音频超过时长",limit_error.exception.text)
+            path.unlink()
+            with self.assertRaises(web.HTTPBadRequest) as missing_image:
+                await server.asset_reference_review(request(raw),await request(raw).json())
+            self.assertIn("参考图无法读取",missing_image.exception.text)
+
+
+class MiniMaxVideoOptions(unittest.IsolatedAsyncioTestCase):
+    def test_cloud_h3_prompt_binds_character_views_and_preserves_dialogue(self):
+        images = [{"role":"frame"},
+                  {"role":"subject","memory_id":"hero","memory_kind":"character","memory_name":"乔纳·里德"},
+                  {"role":"subject","memory_id":"hero","memory_kind":"character","memory_name":"乔纳·里德"},
+                  {"role":"subject","memory_kind":"prop","name":"画框"}]
+        speech = "<d>[Chinese] 标签原文是 @图2。</d>"
+        raw = {"prompt":f"从 @图1 开始，借用 @视频1 的运镜和 @音1 的声音。{speech}",
+               "images":images,"video_refs":[{}],"audio_refs":[{}]}
+        cloud = server.video_reference_prompt(raw,{"kind":"minimax"},"MiniMax-H3")
+        self.assertIn("<Picture 2>、<Picture 3> 用于保持「乔纳·里德」的身份和外观",cloud)
+        self.assertIn("<Video 1> 的运镜和 <Audio 1> 的声音",cloud)
+        self.assertIn(speech,cloud)
+        self.assertNotIn("「画框」的身份",cloud)
+        self.assertIn("@视频1 的运镜和 @音频1 的声音",
+                      server.video_reference_prompt(raw,{"kind":"ark"},"doubao-seedance-2-5"))
+
+    def test_h3_quotes_include_input_costs_and_machgen_reference_rates(self):
+        rates = server.providers.generation_rates(
+            "video MiniMax-H3 hd 0.5\nvideo-input MiniMax-H3 hd 0.25\n"
+            "video-image MiniMax-H3 hd 0.1\nvideo MiniMax-H3-MG hd 0.3\nvideo-ref MiniMax-H3-MG hd 0.6\n"
+            "video MiniMax-H3-Max hd 0.4", ["video"], kind="minimax")
+        provider = {"kind":"minimax","config":{"generation_rates":rates}}
+        def estimate(model, raw, video_seconds=None):
+            return server.quoted_video_unit_cost({"provider":provider,"model":model},raw,5,
+                                                 input_video_seconds=video_seconds)
+        references = {"images":[{"role":"subject"}]*7}
+        mixed = {**references,"video_refs":[{}],"audio_refs":[{}]}
+        self.assertEqual(estimate("MiniMax-H3",references),2.7)
+        self.assertEqual(estimate("MiniMax-H3",{"images":[{},*references["images"]]}),2.8)
+        self.assertEqual(estimate("MiniMax-H3",mixed,3.5),3.575)
+        self.assertIsNone(estimate("MiniMax-H3",mixed))
+        self.assertIsNone(estimate("MiniMax-H3-Max",{"images":[{}]}))
+        self.assertEqual(estimate("MiniMax-H3-MG",references),3)
+        self.assertEqual(estimate("MiniMax-H3-MG",{"images":[{}]}),1.5)
+        self.assertIsNone(estimate("MiniMax-H3-MG",mixed,3.5))
+
+    async def test_cloud_h3_preview_and_submission_keep_frames_and_characters(self):
+        model = "MiniMax-H3"
+        provider = {"id":"cloud","kind":"minimax","name":"云端 H3","enabled":True,"updated":1,
+                    "config":{},"secrets":{"api_key":"fixture"}}
+        route = {"provider":provider,"model":model}
+        user = {"id":7,"role":"member"}
+        memory = SimpleNamespace(prepare=Mock(side_effect=lambda _user, raw, **_options: raw))
+        service = SimpleNamespace(app={"creative_memory":memory})
+        def request(payload):
+            return server.agent_chat.InternalRequest(service,user,payload)
+
+        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
+                patch.object(server,"JOBS",{}), patch.object(server,"require_media"), \
+                patch.object(server,"requested_generation_route",return_value=route), \
+                patch.object(server,"board_meta",return_value={"owner":7}), patch.object(server,"can_edit",return_value=True), \
+                patch.object(server.providers,"routes",return_value=[route]), patch.object(server.providers,"all_providers",return_value=[]), \
+                patch.object(server.db,"task_start"), patch.object(server,"start_remote") as start, \
+                patch.object(server.remote,"json_req",return_value={"task_id":"fixture"}) as remote_submit, \
+                patch.object(server.remote,"mm_result",return_value={"files":[]}):
+            assets = []
+            for name, role in (("hall","frame"),("jonah","subject"),("woman","subject")):
+                ref = f"input:h3studio/{name}.png"
+                path = server.tools.ref_path(server.COMFY_DIR,ref)
+                path.parent.mkdir(parents=True,exist_ok=True)
+                Image.new("RGB",(320,320),"blue").save(path)
+                assets.append({"ref":ref,"role":role,"time":0})
+            raw = {"kind":"video","board":"test","provider":provider["id"],"selected_model":model,"duration":5,
+                   "quality":"hd","prompt":"@图2 与 @图3 交谈。","planned":True,"images":assets}
+            options = json.loads((await server.video_reference_models(request(raw))).body)
+            self.assertEqual(options["counts"]["images"],3)
+            self.assertEqual(options["models"][0]["limits"]["images"],9)
+            self.assertNotIn("error",options["models"][0])
+            planned = json.loads((await server.preview(request(raw))).body)
+            self.assertIn("参考图 3/9",planned["mode"])
+            self.assertIn("开头参考 <Picture 1> 的构图",planned["prompt"])
+            self.assertIn("<Picture 2> 与 <Picture 3> 交谈",planned["prompt"])
+            self.assertEqual([item["role"] for item in planned["inputs"]],["image_ref"]*3)
+            self.assertEqual([item["image_role"] for item in planned["inputs"]],["frame","subject","subject"])
+            self.assertEqual([item["prompt_reference"] for item in planned["inputs"]],
+                             ["<Picture 1>","<Picture 2>","<Picture 3>"])
+
+            stale = request(raw)
+            stale["reference_preview"] = planned["reference_preview"]
+            provider["updated"] = 2
+            with self.assertRaises(web.HTTPConflict):
+                await server._generate_request(stale,stale.payload)
+            start.assert_not_called()
+            provider["updated"] = 1
+            await server._generate_request(stale,stale.payload)
+            params = start.call_args.args[-1]
+            self.assertEqual([path.name for path in params["refs"]],["hall.png","jonah.png","woman.png"])
+            await server.remote.mm_video(None,server.COMFY_DIR,provider,model,params)
+            body = remote_submit.call_args.kwargs["json"]
+            self.assertEqual(body["content"][0]["text"],planned["prompt"])
+            self.assertEqual([item["role"] for item in body["content"][1:]],["reference_image"]*3)
+
+            native = {**raw,"prompt":"由这两帧过渡。","planned":False,"images":[assets[0],{**assets[1],"role":"frame"}]}
+            await server._generate_request(request(native),native)
+            await server.remote.mm_video(None,server.COMFY_DIR,provider,model,start.call_args.args[-1])
+            self.assertEqual([item["role"] for item in remote_submit.call_args.kwargs["json"]["content"][1:]],
+                             ["first_frame","last_frame"])
+            with self.assertRaises(web.HTTPBadRequest) as too_many:
+                await server.preview(request({**raw,"images":assets*4}))
+            self.assertIn("9 张参考图",too_many.exception.text)
+
+    async def test_cloud_h3_resolution_options_match_the_provider_request(self):
+        expected = {
+            "MiniMax-H3": (4, {"480p":"480P", "std":"768P", "hd":"2K"}),
+            "MiniMax-H3-Highspeed": (4, {"std":"480P", "hd":"768P"}),
+            "MiniMax-H3-Lite": (4, {"std":"480P", "hd":"768P"}),
+            "MiniMax-H3-Max": (5, {"std":"480P", "hd":"768P"}),
+            "MiniMax-H3-Max-Turbo": (5, {"std":"480P", "hd":"768P"}),
+            "MiniMax-H3-MG": (4, {"std":"768P", "hd":"2K"}),
+            "MiniMax-H3-NC": (4, {"std":"480P", "hd":"768P"}),
+        }
+        self.assertEqual(set(server.providers.CATALOG["minimax"]["models"]["video"]), set(expected))
+        provider = {"id":"minimax","name":"云端 H3","kind":"minimax","config":{},"secrets":{"api_key":"fixture"}}
+        with patch.object(server.remote,"json_req",return_value={"task_id":"test"}) as submit, \
+                patch.object(server.remote,"mm_result",return_value={"files":[]}):
+            for model, (minimum, qualities) in expected.items():
+                self.assertEqual(server.remote.video_resolutions("minimax",model),qualities)
+                for key, resolution in qualities.items():
+                    with self.subTest(model=model, resolution=resolution):
+                        await server.remote.mm_video(None,server.COMFY_DIR,provider,model,
+                                                     {"prompt":"站台","duration":4,"quality":key})
+                        body = submit.call_args.kwargs["json"]
+                        self.assertEqual((body["model"],body["duration"],body["resolution"]),
+                                         (model,minimum,resolution))
 
 
 class ReferenceVideo(ChatFixture):
@@ -68,7 +430,8 @@ class ReferenceVideo(ChatFixture):
                          (endpoint,"extend","adaptive"))
 
     async def test_cloud_h3_sends_mixed_references_and_revokes_leases(self):
-        provider = server.providers.save(None,"minimax","云端 H3 测试",{"motion_origin":"https://studio.example"},
+        provider = server.providers.save(None,"minimax","云端 H3 测试",{"motion_origin":"https://studio.example",
+            "generation_rates":"video MiniMax-H3 std 1\nvideo-input MiniMax-H3 std 0.25"},
                                          {"api_key":"fixture"},True)
         model = "MiniMax-H3"
         server.providers.set_route("video",[{"provider_id":provider,"model":model}])
@@ -86,6 +449,9 @@ class ReferenceVideo(ChatFixture):
         request = {"kind":"video","board":"test","provider":provider,"selected_model":model,"duration":4,
                    "prompt":"参考 @视频1 和 @音频1","quality":"std","images":[{"ref":self.source["ref"]}],
                    "video_refs":[{"node_id":"n3","ref":ref}],"audio_refs":[{"node_id":"n4","ref":sound,"start":16,"end":18}]}
+        quote = await self.client.post("/api/generation-cost",json={"requests":[{**request,"count":2}]})
+        self.assertEqual(quote.status,200,await quote.text())
+        self.assertEqual((await quote.json())["amounts"],[9])
         leases = []
 
         async def upstream(_http,method,url,_name,**kwargs):
@@ -123,7 +489,7 @@ class ReferenceVideo(ChatFixture):
         options = json.loads((await server.capabilities(None)).body)
         output = next(item for item in options["video"] if item["id"]==provider)["models"][0]
         self.assertEqual((output["durations"][0],output["durations"][-1],output["qualities"]),
-                         (4,15,{"std":"768P","hd":"2K"}))
+                         (4,15,{"480p":"480P","std":"768P","hd":"2K"}))
         self.assertTrue(output["accepts_audio"] and output["accepts_video"])
         self.assertEqual(output["reference_limits"],{"images":9,"videos":3,"audio":3,"seconds":15,"total":12})
         self.assertNotIn(provider,[item["id"] for item in options["video_extension"]])

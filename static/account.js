@@ -25,10 +25,13 @@ function provPill(n, pill) {
   const cap = n.type === "image" ? "image" : "video", list = CAPS_LIST[cap] || [];
   if (list.length < 2 && !n.data.provider) return "";
   const def = list.find(x => x.default), cur = nodeProvider(n);
+  const unavailable = n.data.provider && !list.some(item=>item.id===n.data.provider) &&
+    (n.data.selected_model || n.type==="video" && n.data.provider==="local_h3");
   const opts = { "": `默认：${def ? def.name : "本地"}` };
   list.forEach(x => opts[x.id] = esc(`${x.name}${x.local ? "（本地，免费）" : ""}`));
+  if (unavailable) opts[n.data.provider] = esc(n.data.provider+"（不可用）");
   opts[""] = esc(opts[""]);
-  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "#b9b9c2" : "#d6d6dc"}"></span>${esc(cur ? cur.name : "服务")}${ico("down")}`, "model");
+  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "#b9b9c2" : "#d6d6dc"}"></span>${esc(unavailable?"重新选择服务":cur?.name || "服务")}${ico("down")}`, "model");
 }
 
 function canvasNodeModel(n, service, reference = false) {
@@ -41,7 +44,8 @@ function canvasNodeModel(n, service, reference = false) {
 }
 
 function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {
-  if (!service || service.local) return "";
+  if (!service || service.local ||
+      (n.data.selected_model && n.data.provider && n.data.provider!==service.id)) return "";
   const options = service.models || [];
   const model = canvasNodeModel(n,service,reference);
   const fallback = reference || n.data.provider ? service.model : service.default_route_model || service.model;

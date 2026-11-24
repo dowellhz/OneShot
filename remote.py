@@ -27,7 +27,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from motion_reference import image_limit, video_model_for_limits
+from motion_reference import image_limit, ordered_video_references, video_model_for_limits
 from providers import ProviderError, json_req, download, data_url, default_model
 
 
@@ -401,7 +401,11 @@ def video_duration(kind, model, duration, *, provider=None):
 def video_resolutions(kind, model, *, provider=None):
     model = video_model_for_limits(provider,model)
     if kind == "minimax":
-        return {"std":"768P","hd":"2K"} if model in ("MiniMax-H3","MiniMax-H3-MG") else {"std":"480P","hd":"768P"}
+        if model == "MiniMax-H3":
+            return {"480p":"480P","std":"768P","hd":"2K"}
+        if model == "MiniMax-H3-MG":
+            return {"std":"768P","hd":"2K"}
+        return {"std":"480P","hd":"768P"}
     if kind == "kling":
         if model == "kling-4.0-flash":
             return {"std":"720p"}
@@ -500,7 +504,7 @@ async def mm_video(http, comfy_dir, p, model, req, on_submitted=None):
             content.append({"type": "image_url", "image_url": {"url": data_url(req["last"], 2048)}, "role": "last_frame"})
         body["ratio"] = "adaptive"
     elif req.get("refs"):
-        content += [{"type": "image_url", "image_url": {"url": data_url(x, 2048)}, "role": "reference_image"} for x in req["refs"][:9]]
+        content += [{"type": "image_url", "image_url": {"url": data_url(x, 2048,min_side=300)}, "role": "reference_image"} for x in req["refs"][:9]]
         body["ratio"] = _ratio(req.get("ar") or 16 / 9)
     else:
         body["ratio"] = _ratio(req.get("ar") or 16 / 9)
@@ -558,11 +562,9 @@ async def ark_video_body(model, req, *, provider=None):
                 "resolution":req["resolution"], "watermark":False}
     profile_model = video_model_for_limits(provider,model)
     content = [{"type": "text", "text": req["prompt"]}]
-    motion_url = req.get("motion_url")
-    video_urls = ([motion_url] if motion_url else []) + list(req.get("video_urls") or [])
     extension, edit = req.get("extension"), req.get("segment_edit")
-    if (extension or edit) and motion_url and len(video_urls)>1:
-        video_urls[0], video_urls[1] = video_urls[1], video_urls[0]
+    video_urls = ordered_video_references(req.get("motion_url"),req.get("video_urls") or [],
+                                          source_first=bool(extension or edit))
     audio_refs = req.get("audio_refs") or []
     if video_urls or audio_refs:
         content.extend({"type": "image_url", "image_url": {"url": data_url(path, 2048, min_side=300)}, "role": "reference_image"}

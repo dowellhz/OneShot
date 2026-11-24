@@ -176,7 +176,11 @@ function ctCreateGroupElement(group) {
     <button type="button" data-group-archive aria-label="下载分组素材" title="下载分组素材">${ico("dl")}</button>
     <button type="button" data-group-fold aria-label="收起分组" title="收起分组"></button>
     <button type="button" data-group-dissolve aria-label="取消编组" title="取消编组">${ico("minus")}</button></div>
-    <button type="button" class="cg-items" data-group-items>${ico("stack")}<span></span></button>`;
+    <div class="cg-fold-actions" hidden>
+      <button type="button" class="cg-items" data-group-items>${ico("stack")}<span></span></button>
+      <button type="button" data-fold-chat aria-label="将分组素材加入助手" title="将分组素材加入助手">${ico("comment")}</button>
+      <button type="button" data-fold-collect aria-label="收录分组素材" title="收录分组素材">${ico("assets")}</button>
+    </div>`;
   const input = $("input",el);
   input.onpointerdown = e => e.stopPropagation();
   input.onblur = () => {
@@ -199,6 +203,8 @@ function ctCreateGroupElement(group) {
   $("[data-group-fold]",el).onclick = () => ctSetFold(group,!group.collapsed);
   $("[data-group-dissolve]",el).onclick = () => ctUngroup(group.nodes);
   $("[data-group-items]",el).onclick = () => ctOpenGroupGallery(group);
+  $("[data-fold-chat]",el).onclick = () => ctAddGroupToChat(group);
+  $("[data-fold-collect]",el).onclick = () => alOpenCanvasImport(group.nodes.map(node).filter(Boolean));
   $(".cg-head",el).onpointerdown = e => ctDragGroup(e,group);
   world.insertBefore(el,world.firstChild);
   CT_GROUPS.set(group.id,el);
@@ -235,7 +241,9 @@ function ctRenderGroups() {
     $("[data-group-template]",el).hidden=!(B.access==="owner" || !B.access && B.owner===ME_USER?.id) || members.length<2;
     $("[data-group-archive]",el).hidden=!ctDownloadable(members).length;
     $("[data-group-dissolve]",el).hidden=!canvasCanEdit();
-    $("[data-group-items]",el).hidden=!folded;
+    $(".cg-fold-actions",el).hidden=!folded;
+    $("[data-fold-chat]",el).hidden=!folded || !canvasCanEdit() || !members.some(ctGroupChatMedia);
+    $("[data-fold-collect]",el).hidden=!folded || !canvasCanEdit() || !members.some(alCanvasCollectable);
     $("[data-group-items] span",el).textContent=`查看 ${members.length} 个节点`;
     toggle.hidden=members.length<2;
     toggle.setAttribute("aria-expanded",String(!folded));
@@ -333,6 +341,18 @@ function ctDragGalleryMember(group,n,handle,event) {
   handle.addEventListener("lostpointercapture",end);
 }
 
+function ctGroupChatMedia(n) {
+  return ["image","video","audio"].includes(n.type) && !!curV(n)?.ref;
+}
+
+function ctAddGroupToChat(group) {
+  if (!canvasCanEdit()) return;
+  const media=group.nodes.map(node).filter(n=>n && ctGroupChatMedia(n));
+  if (!media.length) return;
+  ctCloseGroupGallery();
+  void acUseNodes(media);
+}
+
 function ctOpenGroupGallery(group) {
   const dialog=$("#groupGallery"), members=group.nodes.map(node).filter(Boolean);
   if (!members.length) return;
@@ -366,7 +386,6 @@ function ctOpenGroupGallery(group) {
     finally{download.disabled=!ctDownloadable(members).length;}
   };
   const chat=$("[data-group-chat]",dialog);
-  const media=members.filter(n=>["image","video","audio"].includes(n.type)&&curV(n)?.ref);
   const collect=$("[data-group-collect]",dialog);
   const assets=members.filter(alCanvasCollectable);
   collect.hidden=!canvasCanEdit();
@@ -379,12 +398,8 @@ function ctOpenGroupGallery(group) {
     void alImportCanvasAssets(host,assets,ctCloseGroupGallery);
   };
   chat.hidden=!canvasCanEdit();
-  chat.disabled=!media.length;
-  chat.onclick=()=>{
-    if(!canvasCanEdit())return;
-    ctCloseGroupGallery();
-    void acUseNodes(media);
-  };
+  chat.disabled=!members.some(ctGroupChatMedia);
+  chat.onclick=()=>ctAddGroupToChat(group);
   if(!dialog.open){if(dialog.showModal)dialog.showModal();else dialog.setAttribute("open","");}
 }
 

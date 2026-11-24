@@ -261,7 +261,7 @@ function editProvider(p) {
       <span class="faint">使用接入点 ID 时，每行填一组 ID 和型号，例如 ep-example seedance-2.5。可填 seedance-2.0、seedance-2.0-fast、seedance-2.0-mini、seedance-2.5、seedance-2.5-flash。</span></label>`:""}
     ${cat.caps.some(c=>["image","video"].includes(c))?`<label class="f">生成费用参考（人民币）
       <textarea class="in" id="generationRates" rows="3" maxlength="8000">${esc(Object.entries(p.config.generation_rates || {}).map(([key,value])=>key+" "+value).join("\n"))}</textarea>
-      <span class="faint">每行一项。图片填 image 模型名 每张费用。视频填 video 模型名 std、hd、480p 或 4k 每秒费用。价格随输入或其他参数变化时，留空。</span></label>`:""}
+      <span class="faint">每行一项。图片填 image 模型名 每张费用。视频填 video 模型名 档位 每秒费用，档位为 std、hd、480p 或 4k。${p.kind==="minimax"?" 云端 H3 可用相同格式增填 video-input（每秒参考视频）、video-image（每张超额参考图）和 video-ref（MG 参考模式每秒成片）。":""} 单价未知时留空。</span></label>`:""}
     <label class="f">状态<select class="in" id="pe"><option value="1" ${p.enabled ? "selected" : ""}>启用</option><option value="0" ${!p.enabled ? "selected" : ""}>停用</option></select></label>
     <div class="row" style="margin-top:16px">${isNew ? "" : `<button class="btn danger" id="pdel">删除</button>`}<span class="grow"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn pri" id="psave">保存并测试</button></div>
     <div class="faint" id="pmsg" style="margin-top:8px"></div>`);

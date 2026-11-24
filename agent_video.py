@@ -44,9 +44,10 @@ def node_data(recipe):
             **{key:copy.deepcopy(recipe[key]) for key in ("selected_model","camera_plan","object_edit","draft","video_optics") if recipe.get(key)}}
 
 
-def connect_inputs(board, nid, recipe):
+def connect_inputs(s, board, nid, recipe):
     images = recipe.get("images", [])
-    end = max((im.get("time", 0) for im in images if im.get("role") != "subject"), default=0)
+    duration = workflow_review.number(recipe.get("duration")) or 5
+    end = (s.host.frames_for(duration) - 4) / 24
     for i, image in enumerate(images):
         source_id = image.get("node_id")
         if not source_id or not any(n["id"] == source_id and n.get("type") == "image" for n in board["nodes"]):
@@ -54,7 +55,7 @@ def connect_inputs(board, nid, recipe):
         if image.get("role") == "subject":
             role = "subject"
         elif recipe.get("planned"):
-            role = "first" if image.get("time", 0) <= .01 else "last" if end and image.get("time", 0) >= end else "keyframe"
+            role = "first" if image.get("time", 0) <= .01 else "last" if image.get("time", 0) >= end-.05 else "keyframe"
         else:
             role = "first" if i == 0 else "last"
         edge = {"from": source_id, "to": nid, "role": role}
@@ -114,7 +115,7 @@ def queued_node(s, run, user, cid, pending):
                     for prop in ("selected_model","camera_plan","object_edit","draft","video_optics"):
                         if not recipe.get(prop):
                             n["data"].pop(prop, None)
-                    connect_inputs(b, nid, recipe)
+                    connect_inputs(s, b, nid, recipe)
             elif pending.get("audio_recipe"):
                 for field in ("subtitles","audio_format","sample_rate","pitch_semitones","gain","references"):
                     if field not in pending["audio_recipe"]:
@@ -143,7 +144,7 @@ def queued_node(s, run, user, cid, pending):
                         if any(v.get("ref")==draft["source_ref"] for v in source["versions"]):
                             b["edges"].extend(copy.deepcopy(version_history["input_edges"]))
                 else:
-                    connect_inputs(b, nid, recipe)
+                    connect_inputs(s, b, nid, recipe)
                 if source := pending.get("broll_source"):
                     if any(item["id"] == source["node"] and any(v.get("ref")==source["ref"] for v in item.get("versions",[])) for item in b["nodes"]):
                         b["edges"].append({"from":source["node"],"to":nid,"relation":"broll","ref":source["ref"]})
@@ -500,18 +501,29 @@ def video_edit_snapshot(s, run, board, node, version=None):
     incoming = [edge for edge in board.get("edges", []) if edge.get("to") == node["id"]]
     if current is not active or (version is not None and recipe):
         if isinstance(current.get("input_edges"), list):
-            incoming = current["input_edges"]
+            incoming = copy.deepcopy(current["input_edges"])
         else:
             detached = {"nodes":board["nodes"],"edges":[]}
-            connect_inputs(detached,node["id"],recipe)
+            connect_inputs(s,detached,node["id"],recipe)
             incoming = detached["edges"]
+        ranges = {(relation,item.get("node_id"),item.get("ref")):item
+                  for relation,key in (("audio_ref","audio_refs"),("video_ref","video_refs"))
+                  for item in recipe.get(key) or []}
+        images = {item.get("node_id"):item.get("ref") for item in recipe.get("images") or []}
+        for edge in incoming:
+            relation, source = edge.get("relation"),edge["from"]
+            if recorded := ranges.get((relation,source,edge.get("ref"))):
+                edge.update({key:recorded[key] for key in ("start","end") if recorded.get(key) is not None})
+            if not relation and not edge.get("ref") and images.get(source):
+                edge["ref"] = images[source]
         data = copy.deepcopy(current["node_data"]) if isinstance(current.get("node_data"), dict) else node_data(recipe)
     return current, recipe, data, incoming
 
 
 def historical_video_model(user, board_id, version, recipe):
     if recipe.get("provider") and (recipe.get("selected_model") or recipe["provider"]=="local_h3"):
-        return {key:recipe[key] for key in ("provider","selected_model") if recipe.get(key)}
+        return {"provider":"local_h3"} if recipe["provider"]=="local_h3" else {
+            key:recipe[key] for key in ("provider","selected_model")}
     recorded = (version.get("generation_record") or {}).get("settings",{})
     provider, model = recorded.get("provider"),recorded.get("provider_model")
     if not provider or not model:
@@ -931,17 +943,19 @@ def resolve_canvas_prompt(prompt, images, sounds=(), clips=(), *, guide=False, s
 
 def plan_payload(s, run, user, frames, duration, data, prompt, *, sounds=(), clips=(), guide=False, special=False):
     frames=[{**f,"_slot":i} for i,f in enumerate(frames)]
-    images, kinds = [], []
+    media_reference = bool(guide or sounds or clips)
+    if media_reference or data.get("mode") == "reference":
+        frames = [{**f,"role":"subject"} if f.get("role","auto") == "auto" else f for f in frames]
+    images = []
     end = (s.host.frames_for(duration) - 4) / 24
     ordered = [f for f in frames if f.get("role") != "subject"]
     ordered = [f for f in ordered if f.get("role") == "first"] + [f for f in ordered if f.get("role") not in ("first", "last")] + [f for f in ordered if f.get("role") == "last"]
-    planned = any(f.get("role") in ("subject", "keyframe") for f in frames) or len(ordered) > 2 or data.get("mode") in ("keyframes", "reference") or (len(ordered) == 1 and ordered[0].get("role") == "last")
-    if data.get("mode") == "reference":
-        frames = [{**f, "role": "subject"} if f.get("role", "auto") == "auto" else f for f in frames]
-        ordered = [f for f in ordered if f.get("role", "auto") != "auto"]
+    planned = media_reference or any(f.get("role") in ("subject", "keyframe") for f in frames) or len(ordered) > 2 or data.get("mode") in ("keyframes", "reference") or (len(ordered) == 1 and ordered[0].get("role") == "last")
     for i, f in enumerate(frames):
         src, version = s.source(run, user, f["node_id"],pinned_ref=f.get("ref"))
         pinned = bool(f.get("ref")) or src["id"] in run["data"].get("pinned_versions", ())
+        version_number = next((number for number, item in enumerate(src.get("versions",[]),1)
+                               if item.get("ref") == version["ref"]),None)
         role = f.get("role", "auto")
         t = 0
         if role != "subject" and f in ordered:
@@ -950,8 +964,8 @@ def plan_payload(s, run, user, frames, duration, data, prompt, *, sounds=(), cli
             t = max(0, min(end, t))
         images.append({"node_id": src["id"], "ref": version["ref"], "name": src.get("name"), "caption": src.get("data", {}).get("caption", ""),
                        "index": i + 1, "role": "subject" if role == "subject" else "frame", "time": t, "w": version.get("w"), "h": version.get("h"),
+                       **({"version":version_number} if version_number is not None else {}),
                        **reference_slot(f), **({"pinned":True} if pinned else {})})
-        kinds.append(role)
     if not planned:
         indices = [frames.index(f) for f in ordered]
         images = [images[i] for i in indices]
@@ -1202,12 +1216,11 @@ async def execute(s, run, user, cid, name, args):
             guide_aspect["aspect"] = f"{sample['w']}:{sample['h']}"
         if chosen:
             duration = max(durations[0][0],round(duration))
-        frames = [{**f, "role":"subject"} for f in frames]
     else:
         route = s.host.requested_generation_route(data,"video")
         maximum = (s.host.remote.video_durations(route["provider"]["kind"],route["model"],provider=route["provider"])[-1]
                    if route and route["provider"]["kind"] != "local_h3" else 15)
-        image_limit = (motion_reference.ark_image_reference_limit(route["provider"],route["model"]) if route else None) or 12
+        image_limit = (motion_reference.image_reference_limit(route["provider"],route["model"]) if route else None) or 12
         if len(frames) > image_limit or duration > maximum:
             exceeds_plain_route = (image_limit,maximum)
     special = bool(extension or segment)

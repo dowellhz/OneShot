@@ -29,9 +29,11 @@ function openVideoDraftFinal(n, selectedVersion = null) {
   }
   const board=boardId, send=$("button[type=submit]",form), status=$("[data-draft-status]",form);
   const expired=version.draft_expires<=Date.now()/1000;
-  status.textContent=expired?"样片已过定稿有效期，请重新生成样片。":"";
-  send.disabled=expired;
   const saved=n.draft_finalize_attempt?.ref===version.ref?n.draft_finalize_attempt:null;
+  status.textContent=expired?(saved?"可恢复已提交的定稿任务。":"样片已过定稿有效期，请重新生成样片。"):"";
+  send.disabled=expired&&!saved;
+  send.textContent=expired&&saved?"恢复定稿":"生成定稿";
+  $("[data-draft-guidance]",form).textContent=saved?"使用原请求查看定稿任务。":"沿用所选样片的提示词与参考素材，提交一项新的定稿任务。";
   form.elements.resolution.value=saved?.resolution || (edge && n.data.quality==="4k"?"4k":"1080p");
   form.elements.placement.value=edge?"branch":saved?.placement || "tab";
   form.elements.placement.disabled=!!edge;
@@ -53,6 +55,9 @@ function openVideoDraftFinal(n, selectedVersion = null) {
     }
     const resolution=form.elements.resolution.value, placement=edge?"branch":form.elements.placement.value;
     const prior=n.draft_finalize_attempt;
+    if (version.draft_expires<=Date.now()/1000 && prior?.ref!==version.ref) {
+      status.textContent="样片已过定稿有效期，请重新生成样片。";send.disabled=true;return;
+    }
     if (prior && prior.ref===version.ref && (prior.resolution!==resolution || (prior.placement || "tab")!==placement)) {
       status.textContent="上一项定稿请求尚未确认。请用相同的分辨率和结果位置重试。";return;
     }
@@ -66,6 +71,8 @@ function openVideoDraftFinal(n, selectedVersion = null) {
     try {
       await flushSave();
       if (!current()) throw new Error("原样片版本已改变，请重新打开定稿");
+      const savedAttempt=AC.base.get(board)?.nodes?.find(item=>item.id===n.id)?.draft_finalize_attempt;
+      if (savedAttempt?.key!==attempt.key) throw new Error("定稿请求尚未保存，请重试");
       const result=await api("/api/video/draft/finalize",{board,node:source.id,ref:version.ref,resolution,request_key:attempt.key});
       if (boardId!==board || node(n.id)!==n) return;
       const copy=vtClone(version.node_data || source.data), recipe=vtClone(version.video_recipe || {});
