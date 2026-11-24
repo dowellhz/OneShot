@@ -7,9 +7,9 @@ from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 
-import auth
-import creative_events
-import db
+from oneshot.web import auth
+from oneshot.canvas import creative_events
+from oneshot.storage import db
 import server
 from test_agent_chat import ChatFixture
 

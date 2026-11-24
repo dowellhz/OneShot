@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock, patch
 from aiohttp import web
 from PIL import Image, ImageDraw
 
-import agent_editing as edit
-import db
-import image_editor
+from oneshot.assistant import agent_editing as edit
+from oneshot.storage import db
+from oneshot.editing import image_editor
 import server
 from test_agent_chat import ChatFixture, answer, call
 

@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock
 import av
 from PIL import Image, ImageDraw
 
-import image_editor
-import db
+from oneshot.editing import image_editor
+from oneshot.storage import db
 import server
 from test_agent_chat import ChatFixture, answer, call
 

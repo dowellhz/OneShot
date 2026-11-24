@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import av
 import numpy as np
 
-import db
+from oneshot.storage import db
 import server
 from test_agent_chat import ChatFixture, answer, call
 

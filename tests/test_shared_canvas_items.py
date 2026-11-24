@@ -5,11 +5,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 
-import auth
-import db
-import image_editor
+from oneshot.web import auth
+from oneshot.storage import db
+from oneshot.editing import image_editor
 import server
-import shared_canvas_items
+from oneshot.canvas import shared_canvas_items
 from test_agent_chat import ChatFixture
 
 

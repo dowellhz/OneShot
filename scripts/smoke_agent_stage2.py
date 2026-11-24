@@ -21,10 +21,10 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import agent_chat
-import db
-import providers
-import rewriter
+from oneshot.assistant import agent_chat
+from oneshot.storage import db
+from oneshot.providers import catalog as providers
+from oneshot.generation import rewriter
 import server
 
 

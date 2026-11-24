@@ -3,7 +3,7 @@ import json
 import wave
 from urllib.parse import quote
 
-import db
+from oneshot.storage import db
 import server
 from test_agent_chat import ChatFixture, answer, call
 

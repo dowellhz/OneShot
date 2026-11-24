@@ -7,7 +7,7 @@ import zipfile
 from array import array
 from unittest.mock import patch
 
-import db
+from oneshot.storage import db
 import server
 from PIL import Image
 from test_agent_chat import ChatFixture

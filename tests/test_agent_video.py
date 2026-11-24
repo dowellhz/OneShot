@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock, patch
 from aiohttp import web
 from PIL import Image
 
-import agent_chat
-import agent_video
-import db
-import image_editor
+from oneshot.assistant import agent_chat
+from oneshot.assistant import agent_video
+from oneshot.storage import db
+from oneshot.editing import image_editor
 import server
 from test_agent_chat import ChatFixture, answer, call
 
@@ -649,7 +649,7 @@ class VideoIntegration(ChatFixture):
     async def test_planned_three_keyframes_times_are_retained(self):
         rid = await self.send()
         await self.wait(rid)
-        import db
+        from oneshot.storage import db
         run = db.one("SELECT * FROM chat_runs WHERE id=?", rid);run["data"] = json.loads(run["data"])
         payload = agent_video.plan_payload(self.svc, run, {"id": 7, "role": "member"}, [
             {"node_id": "n1", "role": "first"}, {"node_id": "n1", "role": "keyframe", "time": 2}, {"node_id": "n1", "role": "last"}], 5, {}, "move")
@@ -687,5 +687,5 @@ class VideoIntegration(ChatFixture):
 
 
 def db_row(rid):
-    import db
+    from oneshot.storage import db
     return db.one("SELECT result FROM chat_calls WHERE run_id=? ORDER BY updated DESC LIMIT 1", rid)

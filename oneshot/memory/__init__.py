@@ -1,0 +1,1 @@
+"""OneShot memory modules."""

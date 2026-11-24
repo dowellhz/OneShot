@@ -3,8 +3,8 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from PIL import Image
-import db
-import web_research as research
+from oneshot.storage import db
+from oneshot.integrations import web_research as research
 from test_agent_chat import ChatFixture, answer, call
 
 

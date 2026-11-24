@@ -9,11 +9,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 
-import agent_chat as chat
-import auth
-import db
-import image_editor
-import mcp_bridge
+from oneshot.assistant import agent_chat as chat
+from oneshot.web import auth
+from oneshot.storage import db
+from oneshot.editing import image_editor
+from oneshot.integrations import mcp_bridge
 import server
 from test_agent_chat import ChatFixture
 

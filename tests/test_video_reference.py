@@ -14,7 +14,7 @@ import numpy as np
 from aiohttp import web
 from PIL import Image
 
-import agent_video
+from oneshot.assistant import agent_video
 import server
 from test_agent_chat import ChatFixture, answer, call
 

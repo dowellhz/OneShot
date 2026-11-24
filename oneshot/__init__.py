@@ -1,0 +1,1 @@
+"""OneShot web application package."""

@@ -10,9 +10,9 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from yarl import URL
 from PIL import Image
 
-import auth
-import db
-import image_editor
+from oneshot.web import auth
+from oneshot.storage import db
+from oneshot.editing import image_editor
 import server
 from test_agent_chat import ChatFixture, answer, call
 

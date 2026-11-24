@@ -1,5 +1,5 @@
 """Project grouping preserves board content and the existing board permissions."""
-import db
+from oneshot.storage import db
 from test_agent_chat import ChatFixture
 
 

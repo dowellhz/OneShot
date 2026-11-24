@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 import server
-import db
+from oneshot.storage import db
 from test_agent_chat import ChatFixture, answer, call
 
 

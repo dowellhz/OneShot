@@ -16,11 +16,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 
-import agent_chat as chat
-import db
-import fields
-import image_editor
-import providers
+from oneshot.assistant import agent_chat as chat
+from oneshot.storage import db
+from oneshot.generation import fields
+from oneshot.editing import image_editor
+from oneshot.providers import catalog as providers
 import server
 
 

@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock
 
-import tools
+from oneshot.generation import tools
 
 
 class StoryboardTiming(IsolatedAsyncioTestCase):

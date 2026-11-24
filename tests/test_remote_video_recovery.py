@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 
-import db
+from oneshot.storage import db
 import server
 from test_agent_chat import ChatFixture
 

@@ -14,7 +14,7 @@ import aiohttp
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from render import FPS, SR, original_pcm, probe
+from oneshot.editing.render import FPS, SR, original_pcm, probe
 
 
 def require(condition, message):

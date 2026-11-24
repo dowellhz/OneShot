@@ -20,13 +20,13 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from PIL import Image, ImageDraw
 from yarl import URL
 
-import db
-import image_editor
-import motion_reference
+from oneshot.storage import db
+from oneshot.editing import image_editor
+from oneshot.generation import motion_reference
 import server
-import video_depth
-import video_remake
-import video_matte
+from oneshot.editing import video_depth
+from oneshot.editing import video_remake
+from oneshot.editing import video_matte
 from scripts import smoke_video_remake
 
 

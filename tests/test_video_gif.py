@@ -5,7 +5,7 @@ from unittest.mock import patch
 from aiohttp import web
 from PIL import Image
 
-import db
+from oneshot.storage import db
 import server
 from test_agent_chat import ChatFixture, answer, call
 

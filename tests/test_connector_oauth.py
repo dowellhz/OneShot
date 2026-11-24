@@ -8,11 +8,11 @@ from urllib.parse import parse_qs, urlsplit
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import agent_chat
-import auth
-import connector_oauth
-import db
-import mcp_bridge
+from oneshot.assistant import agent_chat
+from oneshot.web import auth
+from oneshot.integrations import connector_oauth
+from oneshot.storage import db
+from oneshot.integrations import mcp_bridge
 import server
 from test_agent_chat import ChatFixture
 

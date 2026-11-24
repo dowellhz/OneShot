@@ -92,25 +92,26 @@ OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一�
               │
               ├─▶ engine/service.py（:8189，本机）── H3 引擎：diffusers 运行完整 MiniMax-H3 / H3-Image
               ├─▶ llama-server（:8191，按需）── Qwen3.5-9B 写剧本、改写、看图
-              ├─▶ tts_worker.py（CPU）── Kokoro 配音
-              └─▶ 第三方 API（remote.py）
+              ├─▶ oneshot/editing/tts_worker.py（CPU）── Kokoro 配音
+              └─▶ 第三方 API（oneshot/providers/remote.py）
 ```
 
 | 文件 | 内容 |
 |---|---|
-| `server.py` | Web 服务、画布 API、生成路由、剪辑渲染、控制台 API |
-| `board_store.py` | 画布编号与数据校验、JSON 读取、原子写入 |
-| `auth.py` / `db.py` | 多人账号（scrypt）、会话、SQLite（服务、路由、任务），API Key 用 Fernet 加密存储 |
-| `providers.py` / `remote.py` | 服务目录与能力路由；第三方生图 / 视频 / 配音 / 音乐适配器 |
+| `server.py` / `oneshot/app.py` | 启动入口、Web 应用、画布与生成 API、控制台 API |
+| `oneshot/config.py` | 定位项目根目录、数据目录、模型与静态文件 |
+| `oneshot/canvas/board_store.py` | 画布编号与数据校验、JSON 读取、原子写入 |
+| `oneshot/web/auth.py` / `oneshot/storage/db.py` | 多人账号（scrypt）、会话、SQLite（服务、路由、任务），API Key 用 Fernet 加密存储 |
+| `oneshot/providers/catalog.py` / `oneshot/providers/remote.py` | 服务目录与能力路由；第三方生图 / 视频 / 配音 / 音乐适配器 |
 | `engine/h3engine.py` | 完整 H3（31B BF16）在 24 GB 显卡上运行：权重放在锁页内存里按 Transformer 块流式上卡，文本编码器 FP8 存储，turbo LoRA 加载时合并 |
 | `engine/service.py` | 引擎服务：单 GPU 队列、进度、取消、视频 / 图片模型按需切换 |
-| `rewriter.py` / `fields.py` / `tools.py` | 提示词改写与分栏合成、分镜、反推、拉片、宫格、拼接 |
-| `image_editor.py` / `static/image-editor.js` | 图像编辑、选区上下文、扩图与遮罩合成、历史版本界面 |
-| `agent_chat.py` / `agent_editing.py` / `agent_video.py` / `static/agent-chat.js` | 持久化聊天与工具执行、图片版本绑定、防重复提交、进度、停止、撤销与画布同步 |
-| `video_remake.py` / `video_matte.py` / `static/video-remake.js` | 原片分析、角色替换、局部合成、镜头审核与保留原声导出 |
-| `creative_memory.py` / `static/asset-library.js` | 资产库、参考素材与生成历史、助手检索和生成引用 |
-| `render.py` | 成片渲染（转场、字幕、配乐压低、旁白） |
-| `local_admin.py` / `engine.sh` | 本地部署页：GPU / 内存 / 磁盘、服务启停、模型文件 |
+| `oneshot/generation/rewriter.py` / `oneshot/generation/fields.py` / `oneshot/generation/tools.py` | 提示词改写与分栏合成、分镜、反推、拉片、宫格、拼接 |
+| `oneshot/editing/image_editor.py` / `static/image-editor.js` | 图像编辑、选区上下文、扩图与遮罩合成、历史版本界面 |
+| `oneshot/assistant/agent_chat.py` / `oneshot/assistant/agent_editing.py` / `oneshot/assistant/agent_video.py` / `static/agent-chat.js` | 持久化聊天与工具执行、图片版本绑定、防重复提交、进度、停止、撤销与画布同步 |
+| `oneshot/editing/video_remake.py` / `oneshot/editing/video_matte.py` / `static/video-remake.js` | 原片分析、角色替换、局部合成、镜头审核与保留原声导出 |
+| `oneshot/memory/creative_memory.py` / `static/asset-library.js` | 资产库、参考素材与生成历史、助手检索和生成引用 |
+| `oneshot/editing/render.py` | 成片渲染（转场、字幕、配乐压低、旁白） |
+| `oneshot/web/local_admin.py` / `engine.sh` | 本地部署页：GPU / 内存 / 磁盘、服务启停、模型文件 |
 | `static/index.html` / `static/canvas.css` | 工作台页面结构、画布和通用控件样式 |
 | `static/canvas.js` | 画布状态、保存与撤销、节点、连线和交互 |
 | `static/canvas-generation.js` | 生成参数、任务轮询、上传与素材历史 |

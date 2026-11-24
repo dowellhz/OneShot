@@ -6,8 +6,8 @@ from zipfile import ZipFile
 from unittest.mock import AsyncMock, patch
 from aiohttp import FormData, web
 from PIL import Image
-import image_editor
-import db
+from oneshot.editing import image_editor
+from oneshot.storage import db
 import server
 from test_agent_chat import ChatFixture, call, answer
 
@@ -1173,7 +1173,7 @@ class MemoryIntegration(ChatFixture):
         result = image_editor.save(server.COMFY_DIR, Image.new("RGB", (64, 64), "green"))["ref"]
         job_id = "character-test"
         async def submit(req, payload):
-            from db import task_start, task_update
+            from oneshot.storage.db import task_start, task_update
             task_start(id=job_id, user_id=7, board_id="test", capability="image")
             task_update(job_id, state="done", outputs=[result])
             server.JOBS[job_id] = {"id": job_id, "state": "done", "outputs": [{"ref": result}]}

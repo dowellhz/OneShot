@@ -9,8 +9,8 @@ import numpy as np
 from aiohttp import web
 from PIL import Image
 
-import db
-import previs
+from oneshot.storage import db
+from oneshot.editing import previs
 import server
 from test_agent_chat import ChatFixture, answer, call
 

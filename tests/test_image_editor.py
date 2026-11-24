@@ -14,8 +14,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image, ImageChops, ImageDraw
 
-import image_editor as editor
-import image_upscale
+from oneshot.editing import image_editor as editor
+from oneshot.editing import image_upscale
 import server
 
 

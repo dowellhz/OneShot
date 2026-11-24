@@ -3,9 +3,9 @@ import json
 
 from PIL import Image
 
-import db
-import document_review
-import image_editor
+from oneshot.storage import db
+from oneshot.memory import document_review
+from oneshot.editing import image_editor
 import server
 from test_agent_chat import ChatFixture, answer, call
 
