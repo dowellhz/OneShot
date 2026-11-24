@@ -449,7 +449,7 @@ function plan(n) {
   const subj = [], fr = [];
   roles.forEach((r, i) => (r === "subject" ? subj : fr).push(i));
   const ordered = [...fr.filter(i => roles[i] === "first"), ...fr.filter(i => roles[i] === "auto" || roles[i] === "keyframe"), ...fr.filter(i => roles[i] === "last")];
-  const end = (vidFrames(d.duration) - 4) / 24;
+  const end = (vidFrames(canvasVideoDuration(n)) - 4) / 24;
   const useRef = subj.length > 0 || d.mode === "keyframes" || ordered.length > 2 || roles.includes("keyframe") || (ordered.length === 1 && roles[ordered[0]] === "last");
   const times = {}, labels = [];
   if (!useRef) { if (ordered.length >= 1) labels[ordered[0]] = "首帧"; if (ordered.length === 2) labels[ordered[1]] = "尾帧"; }
@@ -462,7 +462,7 @@ function plan(n) {
   subj.forEach(i => labels[i] = guide && es[i].role !== "subject" ? "参考图" : "人物设定");
   const name = !useRef ? ["文生视频", "首帧生视频", "首尾帧生视频"][Math.min(ordered.length, 2)]
     : (subj.length ? "人物设定" : "") + (subj.length && ordered.length ? " + " : "") + (ordered.length === 1 ? labels[ordered[0]] : ordered.length ? "关键帧" : "");
-  return { imgs, es, inputs, roles, labels, times, useRef, ordered, subj, mode: useRef ? "ref" : "fl2v", name };
+  return { imgs, es, inputs, roles, labels, times, end, useRef, ordered, subj, mode: useRef ? "ref" : "fl2v", name };
 }
 
 // ================================================================= node DOM
@@ -1296,7 +1296,6 @@ function showPanel() {
       const role=version ? `${edge.segment_edit?"待修改片段 · ":edge.extension?extensionLabel(edge.extension)+" · ":""}视频 ${number} · 版本 ${index+1}` : "版本已移除";
       items.push(`<span class="ref" data-tok="${promptMediaToken("video",edge.prompt_slot,number)}" title="${esc(source?.name || "视频参考")}"><span class="tx">${ico("video")}</span>${esc(source?.name || "视频参考")}<span class="role">${role}</span>${settings}${change ? `<button type="button" data-video-update="${i}">改用当前版本</button>` : ""}</span>`);
     });
-    const end = (vidFrames(n.data.duration) - 4) / 24;
     sounds.forEach(({edge,source,version,index},i)=>{
       const change = curV(source) && curV(source) !== version;
       const settings=version ? ["start","end"].map((point,j)=>`<label>${j?"出":"入"} <input class="tsec" type="number"
@@ -1308,7 +1307,7 @@ function showPanel() {
     p.inputs.forEach((input, i) => { const r = p.roles[i];
       // keyframes get a seconds box: where in the video this picture should be reached
       const tbox = p.useRef && r !== "subject" && r !== "first" && r !== "last" && p.times[i] != null
-        ? `<input class="tsec" type="number" min="0" max="${end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
+        ? `<input class="tsec" type="number" min="0" max="${p.end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
       const label = `<span class="role rsel">${p.labels[i]} ▾${roleSelect(p.es[i])}</span>`;
       items.push(imagePromptChip(input,i,label+tbox)); });
   }

@@ -156,6 +156,23 @@ class CharacterReferencePrompts(unittest.TestCase):
 
 
 class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
+    async def test_native_preview_uses_submitted_keyframe_positions(self):
+        raw = {"kind":"video","prompt":"A steady camera", "duration":2.5,"planned":True,
+               "images":[{"role":"frame","time":time,"index":i,"ref":f"input:h3studio/frame-{i}.png"}
+                         for i,time in enumerate((0,2.53,5.5),1)]}
+        service = SimpleNamespace(app={"creative_memory":SimpleNamespace(
+            prepare=Mock(side_effect=lambda _user, raw, **_options: raw))})
+        request = server.agent_chat.InternalRequest(service,{"id":7,"role":"member"},raw)
+        with patch.object(server.providers,"primary",return_value=None), patch.object(server,"engine_up",return_value=True):
+            preview = json.loads((await server.preview(request)).body)
+        body, _ = server.engine_body(server.apply_fields(raw))
+        self.assertEqual(body["frames"],124)
+        self.assertEqual([item["frame"] for item in body["keyframes"]],[0,61,120])
+        self.assertEqual([item["time"] for item in preview["inputs"]],[0,61/24,5])
+        self.assertEqual(preview["duration"],124/24)
+        self.assertEqual(preview["prompt"],body["prompt"])
+        self.assertIn("<Picture 3> is the last frame",preview["prompt"])
+
     async def test_numbered_review_matches_provider_video_input_order(self):
         guide = {"ref":"output:h3studio/guide.mp4","node_id":"guide"}
         clips = [{"ref":"input:h3studio/source.mp4","node_id":"source"},

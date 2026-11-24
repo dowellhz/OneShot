@@ -96,6 +96,10 @@ def engine_video_frames(seconds: float) -> int:
     return min(345, max(124, frames_for(seconds)))
 
 
+def keyframe_index(seconds, length):
+    return max(0, min(length - 4, round(float(seconds or 0) * 24)))
+
+
 def load_name(ref: str) -> str:
     """'input:sub/x.png' -> 'sub/x.png'; 'output:sub/x.png' -> 'sub/x.png [output]' (LoadImage's annotated names)."""
     try:
@@ -287,17 +291,18 @@ def planned_prompt(prompt: str, subj, frames, end: float) -> str:
             + f"\n\ndetailed_description:\n[Shot 1]{start} {prompt}{steps}")
 
 
-def graph_video_planned(p: dict):
+def graph_video_planned(p: dict, *, native=False):
     imgs = p.get("images") or []
     seconds = min(15.0, max(2.0, float(p.get("duration") or 5)))
-    length = frames_for(seconds)
+    length = engine_video_frames(seconds) if native else frames_for(seconds)
     end = (length - 4) / 24
     hd = p.get("quality", "hd") == "hd"
     w, h = size_for(float(p.get("ar") or 16 / 9), 1.0 if hd else 0.4)
     turbo = bool(p.get("turbo", True))
     seed = seed_of(p.get("seed"))
     subj = [im for im in imgs if im["role"] == "subject"][:9]
-    frames = sorted([im for im in imgs if im["role"] != "subject"], key=lambda im: float(im.get("time", 0)))
+    frames = sorted((im for im in imgs if im["role"] != "subject"), key=lambda im: float(im.get("time", 0)))
+    frames = [{**im, "time": keyframe_index(im.get("time"), length) / 24} for im in frames]
     # @图k (the k-th input on the canvas) -> its picture number
     pic = {}
     for k, im in enumerate(subj): pic[im["index"]] = k + 1
@@ -331,7 +336,7 @@ def graph_video_planned(p: dict):
         g[f"f{j}"] = {"class_type": "LoadImage", "inputs": {"image": load_name(im["ref"])}}
         g[f"guide{j}"] = {"class_type": "MiniMaxH3AddGuide", "inputs": {
             "positive": cond, "latent": latent, "vae": ["3", 0], "audio_vae": ["4", 0], "image": [f"f{j}", 0],
-            "frame_idx": max(0, min(length - 4, round(float(im["time"]) * 24)))}}
+            "frame_idx": keyframe_index(im["time"], length)}}
         cond = [f"guide{j}", 0]
     g.update({
         "7": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}},
@@ -379,8 +384,8 @@ def no_speech_guard(full: str) -> str:
     return full
 
 
-def graph_video(p: dict):
-    g, meta = _graph_video(p)
+def graph_video(p: dict, *, native=False):
+    g, meta = _graph_video(p, native=native)
     full = meta["full_prompt"]
     if p.get("_preserve_speech_motion") is not True:
         full = no_speech_guard(full)
@@ -390,9 +395,9 @@ def graph_video(p: dict):
     return g, meta
 
 
-def _graph_video(p: dict):
+def _graph_video(p: dict, *, native=False):
     if p.get("planned"):
-        return graph_video_planned(p)
+        return graph_video_planned(p, native=native)
     imgs = p.get("images") or []
     n = len(imgs)
     mode = p.get("mode") or "auto"
@@ -403,7 +408,7 @@ def _graph_video(p: dict):
     if mode in ("keyframes", "reference") and n == 0:
         mode = "fl2v"
     seconds = min(15.0, max(2.0, float(p.get("duration") or 5)))
-    length = frames_for(seconds)
+    length = engine_video_frames(seconds) if native else frames_for(seconds)
     hd = p.get("quality", "hd") == "hd"
     ar = float(p.get("ar") or 16 / 9)
     w, h = size_for(ar, 1.0 if hd else 0.4)
@@ -2871,13 +2876,18 @@ async def preview(req):
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
     p = await to_english(req.app, p)
-    _, meta = graph_video(p)
+    _, meta = graph_video(p, native=await engine_up(req.app))
+    if meta["mode"] == "planned":
+        for item in inputs:
+            if item.get("role") == "frame":
+                item["time"] = keyframe_index(item.get("time"), meta["frames"]) / 24
     if meta.get("mode") == "fl2v" and len(inputs) > 1:
         inputs[-1]["role"] = "last_frame"
     mode = " · ".join(filter(None,(meta.get("mode_name"), "本地 H3", resolution)))
     if p.get("_xlate_err"):
         mode += " · 未翻译成英文：" + p["_xlate_err"]
-    return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode, "inputs": inputs})
+    return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode, "inputs": inputs,
+                              "duration": meta["frames"] / 24})
 
 
 @routes.post("/api/generate")
@@ -5100,7 +5110,7 @@ async def generate_engine(req, p: dict, count: int):
     """Queue the video at once (ids 'p…'); the prompt is translated to English and the job handed to the engine in the
     background, in click order, so 生成 answers immediately."""
     u = req["user"]
-    _, meta = graph_video(p)                         # mode name, seed and size for the queue entry (prompt rebuilt later)
+    _, meta = graph_video(p, native=True)            # mode name, seed and size for the queue entry (prompt rebuilt later)
     cls, units, dflt = job_class(p)
     meta.update(prompt=p["prompt"], cls=cls, units=units, est=estimate(cls, units, dflt), label=clean(p.get("label"))[:60], uid=u["id"],
                 board=clean(p.get("board")), engine=True)
@@ -5167,7 +5177,7 @@ async def prepare_engine(app, p: dict, pids: list, prev):
 
 def engine_body(p: dict):
     """The same request the ComfyUI graph was built from, sent to the engine: prompt, keyframes or references, size."""
-    g, meta = graph_video(p)                         # reuse the prompt building (official structure, @图 names, times)
+    _, meta = graph_video(p, native=True)
     ar = float(p.get("ar") or 16 / 9)
     short = 768 if p.get("quality", "hd") == "hd" else 480
     long_ = min(int(round(short * max(ar, 1 / ar) / 32)) * 32, (1032192 // short) // 32 * 32)
@@ -5175,22 +5185,23 @@ def engine_body(p: dict):
     meta.update(provider="本地 H3",model="h3-video",resolution=f"{short}P")
     imgs = p.get("images") or []
     paths = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs]
-    body = {"kind": "video", "prompt": meta["full_prompt"], "frames": engine_video_frames(float(p.get("duration") or 5)), "height": meta["height"],
+    body = {"kind": "video", "prompt": meta["full_prompt"], "frames": meta["frames"], "height": meta["height"],
             "width": meta["width"], "steps": meta["steps"], "turbo": bool(p.get("turbo", True))}
     mode = meta["mode"]
     nframes = body["frames"]
-    at = lambda t: max(0, min(nframes - 4, round(float(t or 0) * 24)))   # the pixel frame a keyframe is anchored at
     if mode == "planned":                          # character references + keyframes at their times (ComfyUI AddGuide)
         subj = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs if im.get("role") == "subject"][:9]
         frames = sorted([im for im in imgs if im.get("role") != "subject"], key=lambda im: float(im.get("time") or 0))
         body["references"] = subj
-        body["keyframes"] = [{"path": str(tools.ref_path(COMFY_DIR, im["ref"])), "frame": at(im.get("time"))} for im in frames]
+        body["keyframes"] = [{"path": str(tools.ref_path(COMFY_DIR, im["ref"])), "frame": keyframe_index(im.get("time"), nframes)}
+                             for im in frames]
     elif mode == "reference":
         body["references"] = paths[:9]
     elif mode == "keyframes":                      # like the ComfyUI graph: the first image as reference, the rest anchored
         times = meta.get("times") or []
         body["references"] = paths[:1]
-        body["keyframes"] = [{"path": paths[i], "frame": at(times[i] if i < len(times) else 0)} for i in range(1, len(paths))]
+        body["keyframes"] = [{"path": paths[i], "frame": keyframe_index(times[i] if i < len(times) else 0, nframes)}
+                             for i in range(1, len(paths))]
     elif paths:
         body["image"] = paths[0]
         if len(paths) > 1:

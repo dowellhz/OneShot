@@ -4059,11 +4059,16 @@ async function run(){
     {ref:"input:h3studio/branch-next.png",url:"/media?ref=input:h3studio/branch-next.png",w:640,h:480}],cur:0});
   const branchVideo=addNode("video",1550,330,{prompt:"原地转身",count:3,duration:2.5},{versions:[
     {ref:"output:h3studio/branch-original.mp4",url:"/media?ref=output:h3studio/branch-original.mp4",w:640,h:480}],cur:0});
-  link(branchUpstream,branchVideo,true);selectOnly(branchVideo.id);
+  const branchEnding=addNode("image",1150,610,{},{versions:[
+    {ref:"input:h3studio/branch-ending.png",url:"/media?ref=input:h3studio/branch-ending.png",w:640,h:480}],cur:0});
+  link(branchUpstream,branchVideo,true,{role:"keyframe",time:2.5});
+  link(branchEnding,branchVideo,true,{role:"last"});
+  selectOnly(branchVideo.id);
   $("#moreBtn").click();$("#generationBranch").click();`);
  await ready('$("#pv").classList.contains("on") && !$("#pvBranchCommit").hidden','video branch opens a review');
  assert.equal(branchPreview.count,1);
  assert.equal(branchPreview.duration,5,'local preview uses the visible minimum for a legacy short duration');
+ equal(branchPreview.images.map(image=>image.time),[2.5,5],'legacy nodes use the current duration for the last keyframe');
  evaluate('branchVideo.data.prompt="已更改动作";$("#pvBranchCommit").click()');
  assert.equal(submittedBatches.length,branchIndex,'review becomes stale when generation settings change');
  evaluate('closePromptPreview();$("#generationBranch").click()');
