@@ -3692,6 +3692,7 @@ async def storyboard(req):
     candidates = req.app["creative_memory"].storyboard_assets(req["user"],p["board"],p["story"]) if p.get("board") else []
     return await llm_call(req, tools.storyboard(req.app["llm"], COMFY_DIR, p["story"], p.get("refs") or [], p.get("shots"),
                                                 p.get("seconds"), clean(p.get("style")), p.get("aspect") or "16:9", p.get("target_seconds"),
+                                                **({"motion_frames":True} if p.get("motion_frames") is True else {}),
                                                 **({"asset_candidates":candidates} if candidates else {})))
 
 

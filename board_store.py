@@ -189,6 +189,10 @@ def workflow_template(board, selected=None, include_upstream=False):
         if isinstance(data.get("made"),list):
             data["made"] = [{k:v for k,v in item.items() if k not in ("img","vid") or v in ids}
                             for item in data["made"] if item.get("img") in ids or item.get("vid") in ids]
+            for item in data["made"]:
+                if isinstance(item.get("motion_frames"),dict):
+                    item["motion_frames"] = {phase:ref for phase,ref in item["motion_frames"].items()
+                                             if isinstance(ref,str) and ref in ids}
         clean_timeline(data.get("film"))
         clean_audio_references(data)
 

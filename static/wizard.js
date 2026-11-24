@@ -48,7 +48,18 @@ function goStep(k) { W.step = k; wizSave(); wizSig = ""; renderWiz(); }
 // ---- shared bits
 function shotPairs() {
   const s=wizScript();
-  return s?scriptShotLinks(s).map((pair,index)=>({img:node(pair?.img),vid:node(pair?.vid),index})).filter(pair=>pair.img&&pair.vid):[];
+  return s?scriptShotLinks(s).map((pair,index)=>({record:pair,img:node(pair?.img),vid:node(pair?.vid),index})).filter(pair=>pair.img&&pair.vid):[];
+}
+function wizardShotFrames(pair) {
+  const timing=plan(pair.vid);
+  const captured=pair.record.shared_first&&timing.inputs.find(input=>input.edge.role==="first"&&input.version?.capture?.position==="last");
+  const middle=timing.inputs.findIndex(input=>input.source.id===pair.record.motion_frames?.middle);
+  const seconds=value=>Number(Number(value).toFixed(2));
+  return [
+    {node:captured?.source||pair.img,phase:"first",label:captured?"首帧 · 上一镜成片尾帧":pair.record.shared_first?"首帧 · 沿用上一镜分镜尾帧":"首帧 · 0 秒"},
+    {node:node(pair.record.motion_frames?.middle),phase:"middle",label:`中帧 · ${seconds(timing.times[middle]??0)} 秒`},
+    {node:node(pair.record.motion_frames?.end),phase:"end",label:`尾帧 · ${seconds(timing.end)} 秒`},
+  ].filter(frame=>frame.node);
 }
 function jobText(n) {
   if (!n?.job) return "";
@@ -79,12 +90,13 @@ function maxStep() {
   if (!storyFilmSelection(s).missing.length) return 5;
   const pairs = shotPairs();
   if (!pairs.length) return 2;
-  if (!pairs.every(p => curV(p.img))) return 3;
+  if (pairs.length!==s.data.shots.length||!pairs.every(p => !missingMotionFrames(s.data.shots[p.index],p.record) &&
+      wizardShotFrames(p).every(frame=>storyboardFrameReady(frame.node)))) return 3;
   return 4;
 }
 function sigOf() {
   const s = wizScript(); if (!s) return "";
-  const ns = [s, ...shotPairs().flatMap(p => [p.img, p.vid]), ...castNodes(), ...B.nodes.filter(n => n.data.film)];
+  const ns = [s, ...shotPairs().flatMap(p => [...wizardShotFrames(p).map(frame=>frame.node),p.vid]), ...castNodes(), ...B.nodes.filter(n => n.data.film)];
   return JSON.stringify(ns.map(n => [n.id, n.versions.length, n.cur, n.job ? jobText(n) : 0, toolBusy.has(n.id)])) + W.step + (s.data.shots || []).length;
 }
 setInterval(() => {
@@ -126,7 +138,8 @@ function stepScript() {
         <div class="h"><b>镜头 ${i + 1}</b><select data-f="duration">${SCRIPT_VIDEO_DURATIONS.map(t => `<option value="${t}" ${t === scriptVideoDuration(x.duration) ? "selected" : ""}>${t} 秒</option>`).join("")}</select>
           <input data-f="cam" value="${esc([x.shot_size, x.camera].filter(Boolean).join("，"))}" placeholder="景别和运镜，如：中景，缓慢推近">
           <span class="grow"></span><button class="ic" data-m="up" title="上移">↑</button><button class="ic" data-m="down" title="下移">↓</button><button class="ic" data-m="del" title="删除这个镜头">×</button></div>
-        <label>画面<textarea data-f="keyframe" rows="2">${esc(x.keyframe)}</textarea></label>
+        <label>首帧画面<textarea data-f="keyframe" rows="2">${esc(x.keyframe)}</textarea></label>
+        ${x.motion_frames?["middle","end"].map(phase=>`<label>${phase==="middle"?"中帧画面":"尾帧画面"}<textarea data-motion-frame="${phase}" rows="2">${esc(x.motion_frames[phase])}</textarea></label>`).join(""):""}
         <label>动作<textarea data-f="action" rows="2" placeholder="一行一个动作">${esc(x.action.join("\n"))}</textarea></label>
         <label>台词<textarea data-f="dialogue" rows="1" placeholder="名字：台词（没有可以空着）">${esc(x.dialogue.join("\n"))}</textarea></label></div>`).join("")}
       <button class="add" data-m="add">＋ 加一个镜头</button></div>
@@ -157,16 +170,21 @@ function stepCast() {
 // ④ 分镜图
 function stepBoards() {
   const pairs = shotPairs(), d = wizScript().data;
-  const ready = pairs.filter(p => curV(p.img)).length;
-  return `<div class="wz4"><p class="tip">每个镜头的第一帧。不满意可以重画，或者写一句怎么改。${ready < pairs.length ? `已完成 ${ready}/${pairs.length}` : "全部就绪"}</p>
-    <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map(p => {
-      const i=p.index;
-      const v = curV(p.img), busy = p.img.job, s = d.shots[i] || {};
-      return `<div class="bc"><div class="pic">${v ? `<img src="${v.url}">` : ""}${busy ? `<div class="pend"><div class="spin"></div>${jobText(p.img)}</div>` : !v ? `<div class="pend">等待生成</div>` : ""}</div>
-        <div class="cap"><b>镜头 ${i + 1}</b>${verNav(p.img)}</div><div class="txt">${esc(s.keyframe || "")}</div>
-        <div class="fix"><input placeholder="怎么改？例如：人物离镜头近一点" data-fix="${p.img.id}"><button class="ghost sm" data-redo="${p.img.id}">${v ? "重画" : "生成"}</button></div></div>`;
+  const cards=pairs.flatMap(p=>wizardShotFrames(p).map(frame=>({...frame,pair:p})));
+  const images=[...new Set(cards.map(frame=>frame.node))];
+  const ready=images.filter(storyboardFrameReady).length;
+  const missing=pairs.length!==d.shots.length||pairs.some(p=>missingMotionFrames(d.shots[p.index],p.record));
+  return `<div class="wz4"><p class="tip">核对每镜的构图和动作姿态。${ready < images.length ? `已完成 ${ready}/${images.length} 张` : "画面已就绪"}</p>
+    <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${cards.map(({node:image,phase,label,pair}) => {
+      const v=curV(image), busy=image.job, shot=d.shots[pair.index];
+      const shared=phase==="first"&&pair.record.shared_first;
+      return `<div class="bc"><div class="pic">${v ? `<img src="${esc(v.url)}">` : ""}${busy ? `<div class="pend"><div class="spin"></div>${jobText(image)}</div>` : !v ? `<div class="pend">等待生成</div>` : ""}</div>
+        <div class="cap"><b>镜头 ${pair.index+1} · ${label}</b>${shared?"":verNav(image)}</div><div class="txt">${esc(shared?image.data.caption : phase==="first"?shot.keyframe:shot.motion_frames?.[phase]||image.data.caption)}</div>
+        ${shared?"":`<div class="fix"><input placeholder="怎么改？例如：人物离镜头近一点" data-fix="${image.id}"><button class="ghost sm" data-redo="${image.id}" ${busy?"disabled":""}>${v ? "重画" : "生成"}</button></div>`}</div>`;
     }).join("")}</div>
-    <div class="nav"><button class="ghost" data-goto="2">← 角色</button><button class="go" data-go="videos" ${ready < pairs.length ? "disabled" : ""}>下一步：生成视频 →</button></div></div>`;
+    <div class="nav"><button class="ghost" data-goto="2">← 角色</button>
+      ${missing||ready<images.length?`<button class="ghost" data-go="fill-frames">补齐关键帧</button>`:""}
+      <button class="go" data-go="videos" ${missing||ready<images.length ? "disabled" : ""}>下一步：生成视频 →</button></div></div>`;
 }
 // ⑤ 视频
 function stepVideos() {
@@ -179,7 +197,9 @@ function stepVideos() {
       const v = curV(p.vid), s = d.shots[i] || {};
       return `<div class="bc"><div class="pic">${v ? `<video src="${v.url}" controls playsinline preload="metadata"></video>` : curV(p.img) ? `<img src="${curV(p.img).url}" class="dimg">` : ""}
           ${p.vid.job ? `<div class="pend"><div class="spin"></div>${jobText(p.vid)}</div>` : ""}</div>
-        <div class="cap"><b>镜头 ${i + 1}</b>${verNav(p.vid)}<span class="grow"></span><button class="ghost sm" data-vredo="${p.vid.id}" ${p.vid.job ? "disabled" : ""}>${v ? "再抽一个" : "生成"}</button></div>
+        <div class="cap"><b>镜头 ${i + 1}</b>${verNav(p.vid)}<span class="grow"></span>
+          ${p.record.shared_first&&curV(node(scriptShotLinks(wizScript())[i-1]?.vid))?`<button class="ghost sm" data-motion-tail="${i}" ${p.vid.job||scriptContinuityPending.has(p.vid)?"disabled":""}>接上一镜成片尾帧</button>`:""}
+          <button class="ghost sm" data-vredo="${p.vid.id}" ${p.vid.job ? "disabled" : ""}>${v ? "再抽一个" : "生成"}</button></div>
         <div class="txt">${esc((s.dialogue || []).join(" ") || (s.action || []).join("，"))}</div></div>`;
     }).join("")}</div>
     <div class="nav"><button class="ghost" data-goto="3">← 分镜图</button>${unexpanded && missing.length ? '<button class="ghost" data-go="repair-shots">补齐镜头节点</button>' : ""}
@@ -234,14 +254,18 @@ function wireStep(body) {
         if (k === "duration") x.duration = +v;
         else if (k === "cam") { x.shot_size = v; x.camera = ""; }
         else if (k === "action" || k === "dialogue") x[k] = v.split("\n").map(t => t.trim()).filter(Boolean);
-        else x[k] = v;
+        else {
+          if(k==="keyframe"&&x[k]!==v)delete x.continues_previous;
+          x[k]=v;
+        }
         save(); render(s);
       });
+      $$("[data-motion-frame]",el).forEach(field=>field.oninput=()=>{x.motion_frames[field.dataset.motionFrame]=field.value;save();});
     });
     $$("[data-m]", body).forEach(b => b.onclick = () => {
       const el = b.closest(".sh"), i = el ? +el.dataset.i : -1, m = b.dataset.m;
       checkpoint();ensureScriptShotIds(s);
-      if (m === "add") d.shots.push({ id:newCanvasNodeId(), duration: 5, shot_size: "中景", camera: "", scene: d.shots.at(-1)?.scene || "", characters: d.shots.at(-1)?.characters || [], action: [], dialogue: [], sound: "", keyframe: "" });
+      if (m === "add") d.shots.push({ id:newCanvasNodeId(), duration: 5, shot_size: "中景", camera: "", scene: d.shots.at(-1)?.scene || "", characters: d.shots.at(-1)?.characters || [], action: [], dialogue: [], sound: "", keyframe: "",motion_frames:{middle:"",end:""} });
       else if (m === "del") d.shots.splice(i, 1);
       else if (m === "up" && i > 0) d.shots.splice(i - 1, 0, d.shots.splice(i, 1)[0]);
       else if (m === "down" && i + 1 < d.shots.length) d.shots.splice(i + 1, 0, d.shots.splice(i, 1)[0]);
@@ -256,6 +280,11 @@ function wireStep(body) {
     save(); generate(n); setTimeout(renderWiz, 300);
   });
   $$("[data-vredo]", body).forEach(b => b.onclick = () => { const n = node(b.dataset.vredo); n.data.count = 1; generate(n); setTimeout(renderWiz, 300); });
+  $$("[data-motion-tail]",body).forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    await useRenderedMotionTail(wizScript(),Number(b.dataset.motionTail));
+    if(W&&$("#wiz").classList.contains("on"))renderWiz();
+  });
   const eta = $("#wzEta", body);
   if (eta) fetch("/api/queue").then(r => r.json()).then(q => { if (q.total) eta.textContent = `全部完成约 ${fmtT(q.total)}（${clock(q.total)}）。`; }).catch(() => {});
 }
@@ -316,7 +345,7 @@ async function wizGo(what, btn) {
     if (n.data.made?.length) toast("新分镜生成后会展开为一组新镜头");
     Object.assign(n.data, { prompt: `${idea}\n风格：${W.style}`, nshots:"auto", shotlen:"auto", aspect:W.aspect, quality:W.quality });
     W.step = 1; wizSave();
-    const job = planStoryboard(n,{targetSeconds:W.dur,resetLinks:true});
+    const job = planStoryboard(n,{targetSeconds:W.dur,resetLinks:true,motionFrames:true});
     renderWiz();
     await job;
     fit(B.nodes); wizSig = ""; renderWiz();
@@ -338,7 +367,12 @@ async function wizGo(what, btn) {
     expandMissingScriptShots(s);
     W.step = 3; wizSave(); renderWiz();
     await batchImages(s); wizSig = ""; renderWiz();
+  } else if (what === "fill-frames") {
+    expandMissingScriptShots(s);
+    wizSig="";renderWiz();
+    await batchImages(s);
   } else if (what === "videos") {
+    if(maxStep()<4)return toast("请先补齐分镜关键帧");
     W.step = 4; wizSave(); renderWiz();
     wizGo("genvids");
   } else if (what === "repair-shots") {

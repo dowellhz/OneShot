@@ -2797,7 +2797,11 @@ function paste(items, dx = 40, dy = 40, fragment = null) {
   checkpoint(); const map = Object.create(null); const made = [];
   for (const o of items) { const n = addNode(o.type, o.x + dx, o.y + dy, o.data); n.versions = JSON.parse(JSON.stringify(o.versions)); n.cur = o.cur; n.name = o.name + " 副本"; map[o.id] = n.id; render(n); made.push(n.id); }
   const remapData = data=>{
-    for(const shot of data?.made || []) for(const key of ["img","vid"]) if(shot[key]) shot[key]=map[shot[key]]||"";
+    for(const shot of data?.made || []){
+      for(const key of ["img","vid"]) if(shot[key]) shot[key]=map[shot[key]]||"";
+      for(const phase of ["middle","end"])if(shot.motion_frames?.[phase])
+        shot.motion_frames[phase]=map[shot.motion_frames[phase]]||"";
+    }
     if(data?.previs_source) data.previs_source=map[data.previs_source]||"";
     if(data?.film?.story_script) data.film.story_script=map[data.film.story_script]||"";
     for(const clip of data?.film?.clips || []) if(clip.node) clip.node=map[clip.node]||"";

@@ -440,6 +440,7 @@ async function linkPreviousShotFrame(script,index,{batch=false,allowNew=!batch,s
     return false;
   };
   if(!canvasCanEdit() || node(script.id)!==script || nodeLocked(script))return;
+  if(!batch&&scriptShotLinks(script)[index]?.shared_first)return useRenderedMotionTail(script,index);
   const pairs=scriptShotLinks(script), source=node(pairs[index-1]?.vid), picture=node(pairs[index]?.img);
   const version=curV(source);
   if(!version?.ref)return fail("请先为上一镜生成或选好视频版本");
@@ -491,6 +492,46 @@ async function linkPreviousShotFrame(script,index,{batch=false,allowNew=!batch,s
     return false;
   }
   finally{scriptContinuityPending.delete(picture);}
+}
+
+async function useRenderedMotionTail(script,index) {
+  const pair=scriptShotLinks(script)[index], previous=node(scriptShotLinks(script)[index-1]?.vid), video=node(pair?.vid);
+  const version=curV(previous);
+  const first=video&&B.edges.find(edge=>edge.to===video.id&&edge.role==="first");
+  const middle=node(pair?.motion_frames?.middle);
+  const previousFrame=first&&B.edges.find(edge=>edge.from===first.from&&edge.to===middle?.id&&edge.prompt_slot===1);
+  if(!canvasCanEdit()||nodeLocked(script)||!pair?.shared_first||!version||!first||nodeLocked(video)||
+     video.job||prepping.has(video.id)||middle?.job||prepping.has(middle?.id)||
+     scriptContinuityPending.has(video)||vtReferenceAncestors(previous).has(video.id))return false;
+  const originalSource=first.from, originalRef=first.ref;
+  const priorCapture=node(first.from)?.versions.find(item=>item.ref===first.ref)?.capture;
+  if(priorCapture?.source_ref===version.ref&&priorCapture.position==="last"){
+    toast("已使用上一镜当前版本的成片尾帧");
+    return true;
+  }
+  scriptContinuityPending.add(video);
+  try{
+    const frame=await captureOnCanvas(previous.id,version,{position:"last",select:false,
+      active:()=>node(script.id)===script&&node(video.id)===video&&curV(previous)===version&&
+        !video.job&&!prepping.has(video.id)&&!nodeLocked(video)&&B.edges.includes(first)&&
+        first.from===originalSource&&first.ref===originalRef&&
+        !middle?.job&&!prepping.has(middle?.id)&&
+        scriptShotLinks(script)[index]===pair&&scriptShotLinks(script)[index-1]?.vid===previous.id&&
+        !vtReferenceAncestors(previous).has(video.id),
+      onCaptured:image=>{
+        rememberVideoVersion(video);
+        Object.assign(first,{from:image.id,ref:curV(image).ref});
+        if(previousFrame&&B.edges.includes(previousFrame)&&previousFrame.from===originalSource&&!nodeLocked(middle))
+          Object.assign(previousFrame,{from:image.id,ref:curV(image).ref});
+        drawEdges();
+        return video;
+      }});
+    toast(frame?"已用上一镜成片尾帧作为本镜首帧，可重生成本镜":"镜头或版本已经变化，请重试");
+    return !!frame;
+  }catch(error){
+    toast("取得上一镜尾帧失败："+error.message);
+    return false;
+  }finally{scriptContinuityPending.delete(video);}
 }
 
 function renderScript(n, body) {
@@ -555,7 +596,7 @@ function madeShots(n) {
   return (n.data.made||[]).filter(pair=>(!pair.shot_id||positions.has(pair.shot_id))&&(node(pair.img)||node(pair.vid)))
     .sort((a,b)=>(positions.get(a.shot_id)??shots.length)-(positions.get(b.shot_id)??shots.length));
 }
-async function planStoryboard(n, {targetSeconds, resetLinks=false}={}) {
+async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=false}={}) {
   const d = n.data, story = fullPrompt(n);
   if (!story.trim()) { toast("先写一段剧情"); $("#prompt").focus(); return; }
   const refs = scriptRefs(n);
@@ -565,6 +606,7 @@ async function planStoryboard(n, {targetSeconds, resetLinks=false}={}) {
     if(boardId!==bid||node(n.id)!==n)return;
     const r = await api("/api/storyboard", { board:bid, story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
       seconds: d.shotlen === "auto" ? null : +d.shotlen, style: "", aspect: d.aspect,
+      ...(motionFrames ? {motion_frames:true} : {}),
       ...(targetSeconds ? {target_seconds:targetSeconds} : {}) });
     if(node(n.id)!==n)return;
     checkpoint();ensureScriptShotIds(n);
@@ -576,8 +618,31 @@ async function planStoryboard(n, {targetSeconds, resetLinks=false}={}) {
   });
 }
 function expandMissingScriptShots(n) {
-  const indexes=scriptShotLinks(n).flatMap((pair,i)=>shotNeedsNodes(pair)?[i]:[]);
+  const indexes=scriptShotLinks(n).flatMap((pair,i)=>shotNeedsNodes(pair)||missingMotionFrames(n.data.shots[i],pair)?[i]:[]);
   expandScript(n,indexes);
+}
+
+function shotFrameIds(pair) {
+  return [pair.img,pair.motion_frames?.middle,pair.motion_frames?.end].filter(Boolean);
+}
+
+function missingMotionFrames(shot,pair) {
+  return !!shot?.motion_frames&&["middle","end"].some(phase=>!node(pair?.motion_frames?.[phase]));
+}
+
+function makeShotMotionFrame(script,shot,settings,index,phase,prior,x,y) {
+  const description=shot.motion_frames[phase]?.trim()||[...(shot.action||[]),
+    phase==="end"?"动作已结束，保持最终站位和道具状态":"动作进行到中间时的姿态"].join("，");
+  const moment=phase==="end"?"尾帧":"中帧";
+  const assets=(shot.asset_refs||[]).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+  const prompt=[`参考 @图{1} 延续同一镜头。锁定机位、构图、角色身份、服装、道具位置及光线，只推进动作到本帧状态。`,
+    script.data.style,shot.scene,[shot.shot_size,shot.camera].filter(Boolean).join("，"),
+    `${moment}画面：${description}`,assets&&"参考资产 "+assets].filter(Boolean).join("\n");
+  const image=addNode("image",x,y,{prompt,caption:description,aspect:script.data.aspect,quality:"4mp",image_ref_seq:1},
+    {name:`镜${index+1} · ${moment}`});
+  B.edges.push({from:prior.id,to:image.id,prompt_slot:1});
+  settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:image.id,...(ref.pinned?{ref:ref.ref}:{})}));
+  return image;
 }
 
 const SCRIPT_VIDEO_DURATIONS = [5,8,10,14];
@@ -655,21 +720,27 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
   if(!canvasCanEdit() || node(n.id)!==n || nodeLocked(n))return;
   const d = n.data, shots = d.shots || []; if (!shots.length) return;
   const links=indexes?scriptShotLinks(n):null;
-  const selected=indexes?[...new Set(indexes)].filter(i=>shots[i]&&shotNeedsNodes(links[i])):shots.map((_,i)=>i);
+  const selected=indexes?[...new Set(indexes)].filter(i=>shots[i]&&(shotNeedsNodes(links[i])||missingMotionFrames(shots[i],links[i]))).sort((a,b)=>a-b):shots.map((_,i)=>i);
   if(!selected.length)return;
   if(recordUndo)checkpoint();
   ensureScriptShotIds(n);
   const refs=scriptRefs(n);
   const s0 = size(n), x0 = n.x + s0.w + 140;
   let y0 = n.y;
-  (d.made||[]).forEach(x => [x.img, x.vid].map(node).filter(Boolean).forEach(m => { y0 = Math.max(y0, m.y + size(m).h + 120); }));
+  (d.made||[]).forEach(x => [...shotFrameIds(x),x.vid].map(node).filter(Boolean).forEach(m => { y0 = Math.max(y0, m.y + size(m).h + 120); }));
   const made = [], newRecords=[];
+  const assembled=new Map();
   let x = x0;
   selected.forEach(i => {
     const s=shots[i], pair=links?.[i];
     const settings=scriptShotSettings(n,s,refs);
     const created=[];
     let img=node(pair?.img), vid=node(pair?.vid);
+    const prior=shots[i-1], previousPair=assembled.get(i-1)||links?.[i-1];
+    const previousTail=node(previousPair?.motion_frames?.end);
+    const continuous=s.motion_frames&&s.continues_previous===true&&prior&&previousTail&&s.scene&&
+      ["scene","shot_size","camera"].every(key=>s[key]===prior[key]);
+    if(!img&&continuous)img=previousTail;
     if(!img){
       const composition=s.frame?.source==="previs-frame" ? {previs_composition:{ref:s.frame.ref}} : {};
       img=addNode("image",x,y0,{...settings.image,...composition,aspect:d.aspect,quality:"4mp"},{name:`镜${i+1} · 分镜图`});
@@ -682,32 +753,60 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
       settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,...(r.pinned?{ref:r.ref}:{})}));
       created.push(img);
     }
+    let nextY=y0+(created.length?Math.max(size(img).h,300)+110:0);
+    const motionFrames={};
+    let priorFrame=img;
+    for(const phase of ["middle","end"]){
+      if(!s.motion_frames)break;
+      const frame=node(pair?.motion_frames?.[phase])||
+        makeShotMotionFrame(n,s,settings,i,phase,priorFrame,x,nextY);
+      if(!node(pair?.motion_frames?.[phase])){
+        created.push(frame);
+        nextY+=Math.max(size(frame).h,300)+110;
+      }else if(!B.edges.some(edge=>edge.to===frame.id&&edge.prompt_slot===1)){
+        B.edges.push({from:priorFrame.id,to:frame.id,prompt_slot:1});
+      }
+      motionFrames[phase]=frame.id;
+      priorFrame=frame;
+    }
     if(!vid){
-      const offset=created.length?Math.max(size(img).h,300)+110:0;
-      vid=addNode("video",x,y0+offset,{...settings.video,quality:d.quality,aspect:d.aspect,pmode:"fields"},{name:`镜${i+1}`});
+      const provider=s.motion_frames&&CAPS_LIST.video?.some(item=>item.id==="local_h3")?"local_h3":undefined;
+      vid=addNode("video",x,nextY,{...settings.video,quality:d.quality,aspect:d.aspect,pmode:"fields",
+        ...(provider?{provider}:{})},{name:`镜${i+1}`});
       B.edges.push({from:img.id,to:vid.id,role:"first"});
       for(const r of settings.references){
         if(r.node.id!==img.id)B.edges.push({from:r.node.id,to:vid.id,role:"subject",...(r.pinned?{ref:r.ref}:{})});
       }
       created.push(vid);
     }
-    const record={img:img.id,vid:vid.id,shot_id:s.id};
+    if(s.motion_frames){
+      for(const [id,role,time] of [[img.id,"first"],[motionFrames.middle,"keyframe",Math.floor(settings.video.duration/2)],[motionFrames.end,"last"]]){
+        if(id&&!B.edges.some(edge=>edge.to===vid.id&&(edge.from===id||role==="first"&&edge.role==="first")))
+          B.edges.push({from:id,to:vid.id,role,...(time!=null?{time}:{})});
+      }
+    }
+    const record={img:img.id,vid:vid.id,shot_id:s.id,
+      ...(s.motion_frames?{motion_frames:motionFrames,shared_first:img===previousTail}:{})};
     if(pair)Object.assign(pair,record);
     else newRecords.push(record);
     made.push(record);
-    x+=Math.max(...created.map(m=>size(m).w))+80;
+    assembled.set(i,record);
+    x+=Math.max(...created.map(m=>size(m).w),size(img).w)+80;
   });
   d.made = [...(d.made||[]).filter(pair=>node(pair.img)||node(pair.vid)), ...newRecords];
   B.nodes.forEach(m => render(m)); drawEdges(); save();
   sel = new Set(made.flatMap(m => [m.img, m.vid])); updateSel();
   fit([n, ...made.flatMap(m => [node(m.img), node(m.vid)])]);
-  const need = made.filter(m => !storyboardFrameReady(node(m.img))).length;
+  const need = made.some(m => shotFrameIds(m).some(id=>!storyboardFrameReady(node(id))));
   toast(`已展开 ${made.length} 个镜头。${need ? "点「批量出分镜图」生成分镜图，满意后" : "分镜图已就位，"}点「批量生成视频」。每个镜头的分栏都可以单独改`, 5000);
 }
 async function batchImages(n) {
   const board=B;
-  const todo = madeShots(n).map(x => node(x.img)).filter(m => m && !storyboardFrameReady(m) && !m.job && !prepping.has(m.id));
+  const shots=madeShots(n);
+  const todo = [...new Set(shots.flatMap(shotFrameIds))].map(node)
+    .filter(m => m && !storyboardFrameReady(m) && !m.job && !prepping.has(m.id));
   if (!todo.length) return toast("分镜图都已经生成了；想重画某一张就选中它单独生成");
+  if(shots.some(pair=>pair.motion_frames))return openCanvasSelectionRun(todo);
   let queued=0;
   for (const m of todo){
     if(B!==board || node(n.id)!==n)return;
@@ -721,7 +820,9 @@ async function batchImages(n) {
 }
 async function batchVideos(n) {
   const all = madeShots(n), ready = [], wait = [];
-  for (const x of all) { const v = node(x.vid), im = node(x.img); if (!v || v.job || curV(v)) continue; (im && curV(im) ? ready : wait).push(v); }
+  for (const x of all) { const v = node(x.vid); if (!v || v.job || curV(v)) continue;
+    const shot=n.data.shots.find(item=>item.id===x.shot_id);
+    (node(x.img)&&!missingMotionFrames(shot,x)&&shotFrameIds(x).every(id=>node(id)&&storyboardFrameReady(node(id))) ? ready : wait).push(v); }
   if (!ready.length) return toast(wait.length ? "分镜图还没生成好，先点「批量出分镜图」" : "视频都已经生成了；想重做某一镜就选中它单独生成");
   for (const v of ready) await generate(v);
   toast(`已排队 ${ready.length} 段视频${wait.length ? `，另有 ${wait.length} 镜等分镜图` : ""}；全部完成后点「拼接成片」`, 4000);

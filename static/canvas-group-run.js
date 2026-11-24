@@ -33,8 +33,10 @@ function canvasRunScope({groupId,story,template,selection}) {
     return video && Array.isArray(ticks) && ticks.length===2 && ticks.every(Number.isInteger) && ticks[1]>ticks[0]
       ? [[video,(ticks[1]-ticks[0])/PV_FPS]] : [];
   }));
-  return {name,nodes:targets.flatMap(target=>[target.imageId,target.videoId]).filter(Boolean),
-    images:targets.map(target=>target.imageId).filter(Boolean),videos:targets.map(target=>target.videoId).filter(Boolean),indices,links,previsTiming};
+  const images=[...new Set(indices.flatMap(index=>shotFrameIds(links[index])))];
+  const videos=targets.map(target=>target.videoId).filter(Boolean);
+  const nodes=[...new Set(indices.flatMap(index=>[...shotFrameIds(links[index]),links[index].vid]).filter(Boolean))];
+  return {name,nodes,images,videos,indices,links,previsTiming};
 }
 
 function preserveCanvasGroupRun(run) {
@@ -329,7 +331,7 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     let canRefresh=false, canConnect=false;
     for(const index of current.indices||[]){
       const img=current.links[index]?.img, picture=node(img), edge=edges.get(img);
-      if(index===0||picture?.type!=="image"||(affected&&!affected.has(img))||(!includeExisting&&storyboardFrameReady(picture)))continue;
+      if(index===0||current.links[index].shared_first||picture?.type!=="image"||(affected&&!affected.has(img))||(!includeExisting&&storyboardFrameReady(picture)))continue;
       if(edge){
         pinned.add(img);
         canRefresh=true;

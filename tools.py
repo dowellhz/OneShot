@@ -77,6 +77,13 @@ STORYBOARD_SYS = """你是电影分镜师。把用户的剧情拆成一组连续
 - 台词只用剧情里写到的或剧情明显需要的，台词原文保留；没有台词就给空数组。
 - 全部用中文。"""
 
+MOTION_FRAMES = """
+本次用于多关键帧动画。每镜优先只安排一个主要动作，能容纳对白时优先用 5 秒，后续动作拆到下一镜。
+除 keyframe 首帧外，每镜再写 motion_frames 对象，包含 middle（动作进行时）和 end（动作完成后的状态）两个字符串。
+三帧各用一句话描述可绘制的静态画面，人物、服装、道具、机位和光线一致，动作姿态随时间推进。不要重复同一帧描述。
+仅当首帧可直接复用上一镜尾帧且不切换机位时，设置 continues_previous 为 true，并逐字沿用上一镜的 scene、shot_size 和 camera。
+"""
+
 STORYBOARD_SPLIT_SYS = """你是电影分镜师，负责拆分已有脚本中的超长镜头。只返回指定 replacement JSON。
 每个替换镜头包含 duration、shot_size、camera、scene、characters、action、dialogue、sound、keyframe。
 时长使用 5、8、10、14 秒。按真实动作和语速安排，完整保留原动作、台词、说话人及顺序。
@@ -116,6 +123,10 @@ def storyboard_shots(raw, preferred):
             "scene":str(s.get("scene") or ""), "characters":[str(c) for c in (s.get("characters") or [])],
             "action":action, "dialogue":dialogue, "sound":str(s.get("sound") or ""), "keyframe":str(s.get("keyframe") or ""),
             **({"asset_refs":s["asset_refs"]} if isinstance(s.get("asset_refs"),list) else {}),
+            **({"motion_frames":{key:s["motion_frames"][key].strip()[:1200] for key in ("middle","end")
+                                 if isinstance(s["motion_frames"].get(key),str)}}
+               if isinstance(s.get("motion_frames"),dict) else {}),
+            **({"continues_previous":True} if s.get("continues_previous") is True else {}),
         })
     return shots, overloaded
 
@@ -206,7 +217,7 @@ def bind_storyboard_assets(shots, candidates):
             shot["asset_refs"] = bound
 
 
-async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None, *, asset_candidates=()) -> dict:
+async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None, *, asset_candidates=(), motion_frames=False) -> dict:
     content = []
     head = f"剧情：\n{story.strip()}\n"
     if style:
@@ -235,7 +246,8 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
     for r in refs[:8]:
         content.append({"type": "text", "text": f"参考图「{r.get('name') or '参考图'}」"})
         content.append(image_part(ref_path(comfy_dir, r["ref"]), 640))
-    out = parse_json(await llm.chat(STORYBOARD_SYS, content, max_tokens=6200, temperature=.4))
+    motion_instructions = MOTION_FRAMES if motion_frames else ""
+    out = parse_json(await llm.chat(STORYBOARD_SYS + motion_instructions, content, max_tokens=6200, temperature=.4))
     shots, overloaded = storyboard_shots(out.get("shots") or [], seconds)
     if overloaded:
         limits = "\n".join(f"第 {item['shot']} 镜：至少拆成 {item['minimum_shots']} 个镜头，"
@@ -249,7 +261,7 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
                     + json.dumps({"overloaded":overloaded,"previous":out},ensure_ascii=False)}
         messages = [*content,revision]
         for attempt in range(2):
-            reply = await llm.chat(STORYBOARD_SPLIT_SYS,messages,max_tokens=6200,temperature=.3)
+            reply = await llm.chat(STORYBOARD_SPLIT_SYS + motion_instructions,messages,max_tokens=6200,temperature=.3)
             try:
                 shots = apply_storyboard_splits(shots,overloaded,parse_json(reply))
                 break
@@ -260,6 +272,21 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
                                  + limits + "\n上一份拆分：\n" + reply})
     if not shots:
         raise RuntimeError("没有拆出镜头，请把剧情写具体一些再试")
+    if motion_frames:
+        for shot in shots:
+            frames = shot.setdefault("motion_frames", {})
+            action = "，".join(shot["action"])
+            seen = {shot_text_key(shot["keyframe"])}
+            for phase, state in (("middle","动作正在进行的中间状态"), ("end","动作完成后的最终站位、姿态和道具状态")):
+                key = shot_text_key(frames.get(phase,""))
+                if not key or key in seen:
+                    frames[phase] = "，".join(filter(None,(action,state)))
+                    key = shot_text_key(frames[phase])
+                seen.add(key)
+    else:
+        for shot in shots:
+            shot.pop("motion_frames",None)
+            shot.pop("continues_previous",None)
     bind_storyboard_assets(shots,asset_candidates)
     chars = [{"name": str(c.get("name") or ""), "look": str(c.get("look") or ""), "voice": str(c.get("voice") or "")}
              for c in (out.get("characters") or []) if c.get("name")]

@@ -4091,6 +4091,50 @@ async function run(){
  assert.equal(evaluate('curV(node(branchVideo.id)).ref'),"output:h3studio/branch-original.mp4");
  evaluate('restore(branchTestBase)');
  console.log('Generation to a new node passed: preview count, stale review, preserved source and pinned input, undo.');
+ const motionStart=submittedBatches.length;
+ evaluate(`const beforeMotionWizard=snap(), oldMotionWizard=W;
+   const motionShot={duration:5,shot_size:"中景",camera:"固定机位",scene:"空走廊",characters:[],action:["走出门"],dialogue:[],
+     keyframe:"门里",motion_frames:{middle:"一脚跨门槛",end:"停在门外"}};
+   const motionScript=addNode("script",4500,200,{style:"写实",shots:[motionShot,{...motionShot,
+     keyframe:"停在门外",action:["举画"],motion_frames:{middle:"举到胸口",end:"举到眼前"},continues_previous:true}]});
+   expandScript(motionScript);
+   const motionPairs=scriptShotLinks(motionScript);
+   const motionFirst=node(motionPairs[0].img), motionMiddle=node(motionPairs[0].motion_frames.middle), motionTail=node(motionPairs[0].motion_frames.end);
+   W={step:3,script:motionScript.id,takes:1,quality:"std"};
+   renderWiz();`);
+ equal(evaluate(`[motionPairs[1].img===motionTail.id,imageInputs(motionMiddle)[0].source.id===motionFirst.id,
+   imageInputs(motionTail)[0].source.id===motionMiddle.id,
+   Object.values(plan(node(motionPairs[0].vid)).times),
+   $$("#wzBody .bc").length,$('#wzBody [data-go=videos]').disabled]`),[true,true,true,[0,2,5],6,true]);
+ evaluate('batchImages(motionScript)');
+ await ready('!$("#groupRunConfirm [type=submit]").disabled','the animation frames are ready for batch confirmation');
+ evaluate('approveWorkflow()');
+ for(let i=0;i<5;i++){
+   await ready(`groupRun.steps[${i}]?.status==="running"`,'animation frame waits for its visual reference',350);
+   assert.equal(submittedBatches.length,motionStart+i+1);
+   if(i)assert.equal(submittedBatches[motionStart+i].req.images[0].ref,
+     `output:h3studio/layout-job-${motionStart+i-1}-0.png`);
+   finishBatch(motionStart+i,1);
+ }
+ await ready('!groupRun.active && motionTail.versions.length===1','all animation frames complete',350);
+ evaluate('renderWiz()');
+ assert.equal(evaluate('$("#wzBody [data-go=videos]").disabled'),false);
+ await evaluate('batchVideos(motionScript)');
+ assert.equal(submittedBatches[motionStart+5].req.images.length,3);
+ assert.equal(submittedBatches[motionStart+6].req.images[0].ref,submittedBatches[motionStart+5].req.images[2].ref);
+ finishBatch(motionStart+5,1);finishBatch(motionStart+6,1);
+ await ready('motionPairs.every(pair=>!node(pair.vid).job && curV(node(pair.vid)))','the wizard generates separate videos from their keyframes',350);
+ const motionCaptureFetch=w.fetch;
+ w.fetch=async(url,options)=>String(url)==="/api/lastframe"
+   ? {ok:true,text:async()=>JSON.stringify({ref:"input:h3studio/actual-motion-tail.png",url:"/media?ref=actual-motion-tail",w:720,h:1280})}
+   : motionCaptureFetch(url,options);
+ await evaluate('useRenderedMotionTail(motionScript,1)');
+ w.fetch=motionCaptureFetch;
+ equal(evaluate(`[imageInputs(node(motionPairs[1].vid)).find(input=>input.edge.role==="first").version.ref,
+                  curV(motionTail).ref,node(motionPairs[0].vid).versions.length]`),
+   ["input:h3studio/actual-motion-tail.png",`output:h3studio/layout-job-${motionStart+2}-0.png`,1]);
+ evaluate('$("#groupRunProgress [data-dismiss]").click();restore(beforeMotionWizard);W=oldMotionWizard');
+ console.log('Wizard animation passed: dependent keyframes, a shared boundary, and the actual rendered tail for reruns.');
  w.fetch=generationFetch;
  console.log('Group run DOM passed: confirmation, dependency order, pinned result reuse, failure isolation and stopping later submissions.');
  evaluate(`const runRangeBase=snap();

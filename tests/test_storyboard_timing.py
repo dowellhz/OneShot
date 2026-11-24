@@ -7,6 +7,21 @@ import tools
 
 
 class StoryboardTiming(IsolatedAsyncioTestCase):
+    async def test_motion_storyboards_keep_distinct_phases_and_continuity(self):
+        llm = AsyncMock()
+        llm.chat.return_value = json.dumps({"shots":[
+            {"duration":5,"keyframe":"她站在门内","action":["她走出门"],
+             "motion_frames":{"middle":"她一脚踩过门槛","end":"她停在门外"}},
+            {"duration":5,"keyframe":"她停在门外","action":["她举起画"],"continues_previous":True,
+             "motion_frames":{"middle":"她停在门外","end":"她停在门外"}},
+        ]})
+        result = await tools.storyboard(llm,Path("."),"她走出门举起画",[],None,None,"","16:9",motion_frames=True)
+        first,second = result["shots"]
+        self.assertIn("motion_frames",llm.chat.await_args.args[0])
+        self.assertEqual(first["motion_frames"],{"middle":"她一脚踩过门槛","end":"她停在门外"})
+        self.assertTrue(second["continues_previous"])
+        self.assertEqual(len({second["keyframe"],*second["motion_frames"].values()}),3)
+
     async def test_replans_a_long_take_into_separate_usable_shots(self):
         actions = ["走到窗边","拉开窗帘","找到钥匙","走到门口","拿起大衣","打开门","回身关灯"]
         single = {"shots":[{"duration":5,"action":actions,"keyframe":"客厅门边"},
