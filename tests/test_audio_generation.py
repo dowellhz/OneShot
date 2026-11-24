@@ -11,6 +11,7 @@ import numpy as np
 
 from oneshot.storage import db
 import server
+from oneshot.editing import audio_routes
 from test_agent_chat import ChatFixture, answer, call
 
 
@@ -149,7 +150,7 @@ class AudioGeneration(ChatFixture):
         api = "/api/audio/generate"
         async def speak(*_):
             return {"ref":ref}
-        with patch.object(server,"audio_routes",return_value=[self.local]), patch.object(server.tts,"say",side_effect=speak):
+        with patch.object(audio_routes,"audio_routes",return_value=[self.local]), patch.object(server.tts,"say",side_effect=speak):
             self.assertEqual((await self.client.post(api,json={**p,"sample_rate":44100})).status,400)
             self.assertEqual((await self.client.post(api,json={**p,"audio_format":"flac"})).status,400)
             response = await self.client.post(api,json=p)
@@ -185,7 +186,7 @@ class AudioGeneration(ChatFixture):
                    "request_key":"audio-effects-fixture"}
         async def speak(*_):
             return {"ref":ref}
-        with patch.object(server,"audio_routes",return_value=[self.local]), patch.object(server.tts,"say",side_effect=speak):
+        with patch.object(audio_routes,"audio_routes",return_value=[self.local]), patch.object(server.tts,"say",side_effect=speak):
             for invalid in ({"pitch_semitones":12.5},{"gain":2.1}):
                 self.assertEqual((await self.client.post("/api/audio/generate",json={**payload,**invalid})).status,400)
             response = await self.client.post("/api/audio/generate",json=payload)
@@ -344,7 +345,7 @@ class AudioGeneration(ChatFixture):
 
         payload = {"board":"test","mode":"sfx","provider":"sfx-test","prompt":"车窗雨声","duration_seconds":8,
                    "loop":True,"prompt_influence":0,"request_key":"sound-effect-test-1"}
-        with patch.object(server,"audio_routes",side_effect=lambda mode:[route] if mode=="sfx" else []), \
+        with patch.object(audio_routes,"audio_routes",side_effect=lambda mode:[route] if mode=="sfx" else []), \
                 patch.object(server.remote,"run",side_effect=synth):
             for invalid in ({"duration_seconds":.2},{"prompt_influence":1.2},{"loop":1}):
                 self.assertEqual((await self.client.post("/api/audio/generate",json={**payload,**invalid})).status,400)
@@ -543,7 +544,7 @@ class AudioGeneration(ChatFixture):
         base={"board":"test","node":"n3","mode":"tts","provider":"kokoro","prompt":"你好，\n欢迎登车。","speed":.8,
               "request_key":"first-speech-attempt"}
         path="/api/audio/generate"
-        with patch.object(server,"audio_routes",return_value=[self.local]),patch.object(server.tts,"say",side_effect=speak) as mock:
+        with patch.object(audio_routes,"audio_routes",return_value=[self.local]),patch.object(server.tts,"say",side_effect=speak) as mock:
             self.assertEqual((await self.client.post(path,json=base,headers={"X-Uid":"8"})).status,403)
             self.assertEqual((await self.client.post(path,json={**base,"voice":"not-present"})).status,400)
             result=await self.client.post(path,json=base)
@@ -581,7 +582,7 @@ class AudioGeneration(ChatFixture):
             path,ref=self.tone()
             return {"files":[{"path":path,"ref":ref,"kind":"audio"}]}
 
-        with patch.object(server,"audio_routes",side_effect=lambda mode:[self.music] if mode=="music" else [self.local]), \
+        with patch.object(audio_routes,"audio_routes",side_effect=lambda mode:[self.music] if mode=="music" else [self.local]), \
                 patch.object(server.remote,"run",side_effect=remote_synth):
             self.svc.model.side_effect=[call("audio_generate",{"mode":"music","prompt":"慢拍爵士","name":"站台配乐"}),answer()]
             await self.wait(await self.send("生成站台配乐",selected=[],placement={"x":-420,"y":-180}))
@@ -608,7 +609,7 @@ class AudioGeneration(ChatFixture):
             path,ref = self.tone()
             return {"files":[{"path":path,"ref":ref,"kind":"audio"}]}
 
-        with patch.object(server,"audio_routes",return_value=[self.music]), patch.object(server.remote,"run",side_effect=synth):
+        with patch.object(audio_routes,"audio_routes",return_value=[self.music]), patch.object(server.remote,"run",side_effect=synth):
             self.svc.model.side_effect = [call("audio_generate",{"mode":"music","prompt":"慢拍爵士","lyrics":"到站了"}),answer()]
             await self.wait(await self.send("生成音乐",selected=[]))
             failed = self.load()["nodes"][-1]

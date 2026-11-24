@@ -292,7 +292,7 @@ python scripts/smoke_video_remake.py --url https://oneshot.example +  --username
 
 ## 实现与接口
 
-`agent_chat.py` 提供模型工具循环、白名单注册、参数校验、业务适配、持久化和生命周期管理。`static/agent-chat.js` / `.css` 提供聊天面板、事件展示、引用和画布同步。
+`agent_chat.py` 提供模型工具循环、白名单注册、参数校验、业务适配、持久化和生命周期管理。`static/assistant/agent-chat.js` / `.css` 提供聊天面板、事件展示、引用和画布同步。
 
 | 接口 | 用途 |
 | --- | --- |

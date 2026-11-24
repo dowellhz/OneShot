@@ -98,7 +98,9 @@ OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一�
 
 | 文件 | 内容 |
 |---|---|
-| `server.py` / `oneshot/app.py` | 启动入口、Web 应用、画布与生成 API、控制台 API |
+| `server.py` / `oneshot/app.py` | 启动入口、Web 应用装配和后台服务生命周期 |
+| `oneshot/web/routing.py` | HTTP 路由清单，处理函数位于各业务模块 |
+| `oneshot/generation/requests.py` / `oneshot/generation/jobs.py` | 生成预览与提交、任务状态和恢复 |
 | `oneshot/config.py` | 定位项目根目录、数据目录、模型与静态文件 |
 | `oneshot/canvas/board_store.py` | 画布编号与数据校验、JSON 读取、原子写入 |
 | `oneshot/web/auth.py` / `oneshot/storage/db.py` | 多人账号（scrypt）、会话、SQLite（服务、路由、任务），API Key 用 Fernet 加密存储 |
@@ -106,17 +108,17 @@ OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一�
 | `engine/h3engine.py` | 完整 H3（31B BF16）在 24 GB 显卡上运行：权重放在锁页内存里按 Transformer 块流式上卡，文本编码器 FP8 存储，turbo LoRA 加载时合并 |
 | `engine/service.py` | 引擎服务：单 GPU 队列、进度、取消、视频 / 图片模型按需切换 |
 | `oneshot/generation/rewriter.py` / `oneshot/generation/fields.py` / `oneshot/generation/tools.py` | 提示词改写与分栏合成、分镜、反推、拉片、宫格、拼接 |
-| `oneshot/editing/image_editor.py` / `static/image-editor.js` | 图像编辑、选区上下文、扩图与遮罩合成、历史版本界面 |
-| `oneshot/assistant/agent_chat.py` / `oneshot/assistant/agent_editing.py` / `oneshot/assistant/agent_video.py` / `static/agent-chat.js` | 持久化聊天与工具执行、图片版本绑定、防重复提交、进度、停止、撤销与画布同步 |
-| `oneshot/editing/video_remake.py` / `oneshot/editing/video_matte.py` / `static/video-remake.js` | 原片分析、角色替换、局部合成、镜头审核与保留原声导出 |
-| `oneshot/memory/creative_memory.py` / `static/asset-library.js` | 资产库、参考素材与生成历史、助手检索和生成引用 |
+| `oneshot/editing/image_editor.py` / `static/editing/image-editor.js` | 图像编辑、选区上下文、扩图与遮罩合成、历史版本界面 |
+| `oneshot/assistant/agent_chat.py` / `oneshot/assistant/agent_editing.py` / `oneshot/assistant/agent_video.py` / `static/assistant/agent-chat.js` | 持久化聊天与工具执行、图片版本绑定、防重复提交、进度、停止、撤销与画布同步 |
+| `oneshot/editing/video_remake.py` / `oneshot/editing/video_matte.py` / `static/editing/video-remake.js` | 原片分析、角色替换、局部合成、镜头审核与保留原声导出 |
+| `oneshot/memory/creative_memory.py` / `static/memory/asset-library.js` | 资产库、参考素材与生成历史、助手检索和生成引用 |
 | `oneshot/editing/render.py` | 成片渲染（转场、字幕、配乐压低、旁白） |
 | `oneshot/web/local_admin.py` / `engine.sh` | 本地部署页：GPU / 内存 / 磁盘、服务启停、模型文件 |
-| `static/index.html` / `static/canvas.css` | 工作台页面结构、画布和通用控件样式 |
-| `static/canvas.js` | 画布状态、保存与撤销、节点、连线和交互 |
-| `static/canvas-generation.js` | 生成参数、任务轮询、上传与素材历史 |
-| `static/canvas-projects.js` | 画布切换、示例及工作台启动 |
-| `static/tools.js` / `static/film.js` / `static/wizard.js` | 画布工具、剪辑台、一句话成片 |
+| `static/index.html` / `static/canvas/canvas.css` | 工作台页面结构、画布和通用控件样式 |
+| `static/canvas/canvas.js` | 画布状态、保存与撤销、节点、连线和交互 |
+| `static/generation/canvas-generation.js` | 生成参数、任务轮询、上传与素材历史 |
+| `static/canvas/canvas-projects.js` | 画布切换、示例及工作台启动 |
+| `static/generation/tools.js` / `static/editing/film.js` / `static/generation/wizard.js` | 画布工具、剪辑台、一句话成片 |
 
 浏览器通过 `/api/board/{id}` 保存画布，助手完成工具操作后也写入同一份画布。浏览器保存时检查版本号，助手把工具结果和画布修改一起写入，避免重复执行。
 
@@ -167,22 +169,22 @@ bash engine.sh engine-start
 
 生成与尺寸适配的结果可按任务编号查询。连接令牌 30 天有效，可在同一页面撤销。
 
-## TapNow 对齐待办
+## 功能验收记录
 
-更新于 2026-11-24。以下按公开文档和当前实现核对。4090 重启后曾恢复 `0a0fc3d` 的 Web 服务和 H3 引擎。后续改动先在独立实例验收，正式部署版本以 4090 的发布记录为准。
+更新于 2026-11-24。以下按当前实现与实测记录更新。4090 重启后曾恢复 `0a0fc3d` 的 Web 服务和 H3 引擎。后续改动先在独立实例验收，正式部署版本以 4090 的发布记录为准。
 
 ### 功能进度与待验证项
 
 | 事项 | 当前进度与验收条件 |
 | --- | --- |
-| 多模态元素 | `@资产` 已支持成组参考图、带区间的视频和音频，以及资产文字资料。已用隔离的 H3 V2 接口测试服务验证模型选择、提交前预览、裁剪后的素材传输及历史版本追溯。待用真实服务验证模型输出与限制提示。[元素文档](https://docs.tapnow.ai/en/docs/canvas/create-and-use-elements) |
-| 语音实时转写 | 已在隔离 Chrome 验证麦克风授权与拒绝、录音预览、停止、取消、中断和文件转写，以及助手关闭时释放麦克风并保留草稿。4090 正式服务已接上本机 Faster Whisper，使用中文样本通过预览、完整转写和分段时间码验收。浏览器麦克风仍需 HTTPS 或本机回环地址。[语音文档](https://docs.tapnow.ai/en/docs/new-canvas/talk-with-your-voice) |
-| 样片与定稿分支 | Seedance 定稿可保留为同节点版本，也可另建相连节点。浏览器回归覆盖画布保存失败时拦住定稿提交。使用隔离的方舟接口测试服务，已验证 Web 进程重启后续查原任务、样片过期后恢复已提交的定稿，以及定稿文件下载。仍待真实 Seedance 服务验收。[视频生成与编辑](https://docs.tapnow.ai/en/docs/canvas/generate-and-edit-video) |
-| 视频模型能力验收 | 已有 Seedance 和云端 MiniMax-H3 全模态路由。云端 H3 的目录、时长和分辨率已按官方接口核对。模拟提交已验证首帧与角色图一起进入参考模式，以及普通首尾帧的原生模式。4090 当前只有本地 H3 视频路由。云端素材限制和输出档位待有配置后实测。[MiniMax H3 接口](https://platform.minimax.io/docs/api-reference/video-generation-v2-create) · [视频生成与编辑](https://docs.tapnow.ai/en/docs/canvas/generate-and-edit-video) |
+| 多模态元素 | `@资产` 已支持成组参考图、带区间的视频和音频，以及资产文字资料。已用隔离的 H3 V2 接口测试服务验证模型选择、提交前预览、裁剪后的素材传输及历史版本追溯。待用真实服务验证模型输出与限制提示。 |
+| 语音实时转写 | 已在隔离 Chrome 验证麦克风授权与拒绝、录音预览、停止、取消、中断和文件转写，以及助手关闭时释放麦克风并保留草稿。4090 正式服务已接上本机 Faster Whisper，使用中文样本通过预览、完整转写和分段时间码验收。浏览器麦克风仍需 HTTPS 或本机回环地址。 |
+| 样片与定稿分支 | Seedance 定稿可保留为同节点版本，也可另建相连节点。浏览器回归覆盖画布保存失败时拦住定稿提交。使用隔离的方舟接口测试服务，已验证 Web 进程重启后续查原任务、样片过期后恢复已提交的定稿，以及定稿文件下载。仍待真实 Seedance 服务验收。 |
+| 视频模型能力验收 | 已有 Seedance 和云端 MiniMax-H3 全模态路由。云端 H3 的目录、时长和分辨率已按官方接口核对。模拟提交已验证首帧与角色图一起进入参考模式，以及普通首尾帧的原生模式。4090 当前只有本地 H3 视频路由。云端素材限制和输出档位待有配置后实测。[MiniMax H3 接口](https://platform.minimax.io/docs/api-reference/video-generation-v2-create) |
 
 ### 本地实测与剩余验收
 
-- 已通过隔离浏览器和本地 H3 实测图片与视频的「生成到新节点」。各生成一个结果，原节点与原版本保留，刷新后成品仍可打开。生成中切换上游版本时，新节点的连线和生成记录仍保留提交时的素材版本。视频先预览素材和提示词。[堆叠与重生成](https://docs.tapnow.ai/en/docs/canvas/stack-nodes)
+- 已通过隔离浏览器和本地 H3 实测图片与视频的「生成到新节点」。各生成一个结果，原节点与原版本保留，刷新后成品仍可打开。生成中切换上游版本时，新节点的连线和生成记录仍保留提交时的素材版本。视频先预览素材和提示词。
 - 在 4090 的隔离 Chromium 验证了提示词面板拖动和缩放、拖入历史版本缩略图保留指定版本，以及输入 `@` 后按回车插入资产。用两个独立浏览器会话验证了审阅邀请、进入和离开协作、光标共享、跟随视角、画布变更和评论同步。
 - 已在 4090 的独立引擎上用原素材复跑「镜1」。约 14 秒的两次生成都出现背景路人。5.17 秒版本抽样时走廊保持空旷，三帧版出现过机位跳切或动作重复。方法与指标见 [H3 指令依从性验收](docs/video-reference.md#h3-指令依从性验收)。
 - 云端路由配置后，仍需用真实服务验证成组参考图、显式模型选择、历史版本改稿和重生成，再核对结果、版本记录和素材引用。

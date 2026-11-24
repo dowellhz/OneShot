@@ -6,6 +6,7 @@ from PIL import Image
 
 from oneshot.storage import db
 import server
+from oneshot.generation import remote_jobs
 from test_agent_chat import ChatFixture
 
 
@@ -24,7 +25,7 @@ class RemoteVideoRecovery(ChatFixture):
         server.record_remote_video(job,receipt)
 
         renamed = {**provider,"name":"现在的服务名称"}
-        with patch.object(server.providers,"get",return_value=renamed), patch.object(server,"start_remote") as start:
+        with patch.object(server.providers,"get",return_value=renamed), patch.object(remote_jobs,"start_remote") as start:
             restored = server.restore_logged_job(self.app,db.one("SELECT * FROM tasks WHERE id=?",jid))
         expected = {"provider":provider["name"],"model":model,"resolution":"4k","mode_name":"局部修改","prompt":prompt}
         self.assertEqual({k:restored["meta"][k] for k in expected},expected)
@@ -101,7 +102,7 @@ class RemoteVideoRecovery(ChatFixture):
                 with patch.object(server.remote, "json_req", side_effect=upstream), \
                         patch.object(server.remote, "download", side_effect=download), \
                         patch.object(server.providers, "get", return_value=provider), \
-                        patch.object(server, "start_remote", wraps=server.start_remote) as start:
+                        patch.object(remote_jobs, "start_remote", wraps=server.start_remote) as start:
                     task = server.start_remote(self.app, job, provider, model, "video", request)
                     try:
                         await asyncio.wait_for(polling.wait(), 2)
@@ -171,7 +172,7 @@ class RemoteVideoRecovery(ChatFixture):
         db.task_start(id=older, capability="video", provider_kind="ark", request={"prompt":"车站"})
         db.task_start(id=cancelled, capability="video", provider_kind="ark", state="error",
                       error="已取消", request={"remote_video":{"task_id":"external-42"}})
-        with patch.object(server, "start_remote") as start:
+        with patch.object(remote_jobs, "start_remote") as start:
             server.recover_remote_videos(self.app)
             self.assertNotIn(older, server.JOBS)
             self.assertNotIn(cancelled, server.JOBS)

@@ -24,6 +24,16 @@ from oneshot.storage import db
 from oneshot.editing import image_editor
 from oneshot.generation import motion_reference
 import server
+from oneshot import config
+from oneshot.canvas import routes as canvas_routes
+from oneshot.editing import image_routes
+from oneshot.editing import timeline_routes
+from oneshot.generation import jobs as generation_jobs
+from oneshot.generation import local as local_generation
+from oneshot.generation import prompts
+from oneshot.generation import requests as generation_requests
+from oneshot.memory import legacy_routes
+from oneshot.web import http as http_errors
 from oneshot.editing import video_depth
 from oneshot.editing import video_remake
 from oneshot.editing import video_matte
@@ -49,14 +59,14 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         root = Path(directory)
         self.enterContext(patch.object(db, "_conn", None))
         self.enterContext(patch.object(db, "DB_PATH", root / "remake.db"))
-        self.enterContext(patch.object(server, "COMFY_DIR", root / "media"))
-        self.enterContext(patch.object(server, "BOARDS", root / "boards"))
-        self.enterContext(patch.object(server, "LIBRARY", root / "library.json"))
-        self.enterContext(patch.object(server, "JOBS", {}))
-        self.enterContext(patch.object(server, "PREP_TAIL", [None]))
-        self.enterContext(patch.object(server, "STATS", {}))
-        self.enterContext(patch.object(server, "STATS_FILE", root / "stats.json"))
-        self.enterContext(patch.object(server, "RENDER_LOCK", asyncio.Lock()))
+        self.enterContext(patch.object(config, "COMFY_DIR", root / "media"))
+        self.enterContext(patch.object(canvas_routes, "BOARDS", root / "boards"))
+        self.enterContext(patch.object(legacy_routes, "LIBRARY", root / "library.json"))
+        self.enterContext(patch.object(generation_jobs, "JOBS", {}))
+        self.enterContext(patch.object(local_generation, "PREP_TAIL", [None]))
+        self.enterContext(patch.object(generation_jobs, "STATS", {}))
+        self.enterContext(patch.object(generation_jobs, "STATS_FILE", root / "stats.json"))
+        self.enterContext(patch.object(timeline_routes, "RENDER_LOCK", asyncio.Lock()))
         self.addCleanup(db.conn().close)
         server.BOARDS.mkdir()
         self.user = {"id": 7, "role": "member"}
@@ -78,7 +88,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         opened = json.loads((await server.remake(Request(source,self.user))).body)
         self.assertEqual(opened["video_limits"],[10])
         submit = AsyncMock(return_value=web.json_response({"ids":["remake-10"]}))
-        with patch.object(server,"generate_request",submit):
+        with patch.object(generation_requests,"generate_request",submit):
             with self.assertRaises(web.HTTPBadRequest) as error:
                 await server.remake(Request(source,self.user,{"action":"generate_video","shot":0}))
             self.assertIn("10 秒",error.exception.text)
@@ -93,7 +103,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(server.agent_chat.ToolError, "剪辑点已更新"):
             await assistant.execute(run, self.user, "stale", "video_remake_split_long", {**args,"cut_revision":1})
         self.assertEqual(len(video_remake.load(key)["shots"]),1)
-        with patch.object(server,"llm_call",side_effect=self.no_vision):
+        with patch.object(http_errors,"llm_call",side_effect=self.no_vision):
             split = await assistant.execute(run, self.user, "split", "video_remake_split_long", args)
         self.assertEqual(split["cut_revision"],1)
         self.assertEqual(split["split_shots"],[
@@ -297,7 +307,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.board_path("test").write_text(json.dumps({"owner":7, "nodes":[
             {"id":"n3", "type":"video", "versions":[{"ref":source}]},
         ]}))
-        with patch.object(server, "llm_call", side_effect=self.no_vision):
+        with patch.object(http_errors, "llm_call", side_effect=self.no_vision):
             response = await server.remake(Request(source, self.user, {"action":"analyze"}))
         shots = json.loads(response.body)["shots"]
         self.assertEqual([round(shot["start"] * 24) for shot in shots], [0, 37, 49])
@@ -560,7 +570,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             db.task_start(id="assistant-image", user_id=7, state="done", outputs=[self.source["ref"]])
             return web.json_response({"ids":["assistant-image"]})
 
-        with patch.object(server, "_generate_request", side_effect=generate) as submit:
+        with patch.object(generation_requests, "_generate_request", side_effect=generate) as submit:
             run["data"]["generated"] = 4
             with self.assertRaises(server.agent_chat.ToolError):
                 await service.execute(run, self.user, "preview", "video_remake_preview", preview_args)
@@ -604,7 +614,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             db.task_start(id="assistant-video", user_id=7, state="done", outputs=[source])
             return web.json_response({"ids":["assistant-video"]})
 
-        with patch.object(server, "_generate_request", side_effect=generate_video) as submit_video:
+        with patch.object(generation_requests, "_generate_request", side_effect=generate_video) as submit_video:
             generated = await service.execute(run, self.user, "video", "video_remake_generate", video_args)
             with self.assertRaises(server.agent_chat.ToolError):
                 await service.execute(run, self.user, "video", "video_remake_generate", video_args)
@@ -643,7 +653,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with self.assertRaises(web.HTTPConflict):
             await act("split_long_shot")
         db.task_start(id="long-preview", user_id=7, state="done", outputs=[self.source["ref"]])
-        with patch.object(server, "llm_call", side_effect=self.no_vision):
+        with patch.object(http_errors, "llm_call", side_effect=self.no_vision):
             split = await act("split_long_shot")
         pairs = [(round(shot["start"] * 24), round(shot["end"] * 24)) for shot in split["shots"]]
         self.assertEqual(pairs, [(0,232), (232,464), (464,696), (696,720)])
@@ -703,7 +713,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
 
         request = Request("", self.user, {"ids":[pending_id]})
         request.app.update(http=SimpleNamespace(post=post), llm=SimpleNamespace(running=lambda: False))
-        with patch.object(server, "engine_body", return_value=({}, {})), patch.object(server, "to_english", translate):
+        with patch.object(local_generation, "engine_body", return_value=({}, {})), patch.object(prompts, "to_english", translate):
             task = asyncio.create_task(server.prepare_engine(request.app, {}, [pending_id], None))
             await asyncio.wait_for(submitted.wait(), 1)
             try:
@@ -760,8 +770,8 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         request = Request("", self.user)
         request.query["ids"] = pending_id
         request.app.update(http=SimpleNamespace(post=submit, get=status), llm=SimpleNamespace(running=lambda: False))
-        with patch.object(server, "engine_body", return_value=({}, {})), patch.object(server, "to_english", translate), \
-                patch.object(server, "follow_engine", skip_initial_poll):
+        with patch.object(local_generation, "engine_body", return_value=({}, {})), patch.object(prompts, "to_english", translate), \
+                patch.object(generation_jobs, "follow_engine", skip_initial_poll):
             await server.prepare_engine(request.app, {}, [pending_id], None)
         receipt = json.loads(db.one("SELECT request FROM tasks WHERE id=?", pending_id)["request"])["engine"]
         self.assertEqual(receipt["id"], engine_id)
@@ -791,7 +801,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         async def cancel_engine(app, ids):
             cancelled.extend(ids)
 
-        with patch.object(server, "cancel_engine_jobs", cancel_engine):
+        with patch.object(generation_jobs, "cancel_engine_jobs", cancel_engine):
             await server.cancel(Request("", {"id":8, "role":"member"}, {"ids":[pending_id]}))
             self.assertEqual(cancelled, [])
             self.assertNotIn(pending_id, server.JOBS)
@@ -910,7 +920,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.JOBS.pop(job)
         ref = json.loads(task["outputs"])[0]
         self.assertEqual((await act())["playback"]["ref"], ref)
-        with patch.object(server, "llm_call", side_effect=self.no_vision):
+        with patch.object(http_errors, "llm_call", side_effect=self.no_vision):
             analyzed = await act("analyze")
         self.assertEqual(analyzed["playback"]["ref"], ref)
         self.assertEqual(analyzed["shots"][0]["end"], duration)
@@ -958,7 +968,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             response = await server.remake(Request(source, self.user, {"action":action, "shot":0, **fields}))
             return json.loads(response.body)
 
-        with patch.object(server, "llm_call", side_effect=self.no_vision):
+        with patch.object(http_errors, "llm_call", side_effect=self.no_vision):
             analyzed = await act("analyze")
         first = analyzed["shots"][0]["frames"]["first"]
         self.assertEqual((first["w"], first["h"]), (64, 96))
@@ -1079,7 +1089,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             mask.paste(255, (16, 16, 48, 48))
             return image_editor.save(server.COMFY_DIR, mask, "segment", "input")
 
-        with patch.object(server, "run_image_tool", side_effect=segment):
+        with patch.object(image_routes, "run_image_tool", side_effect=segment):
             selected = await act("apply_person_hint", person="人物1")
             self.assertEqual(selected["shots"][0]["frames"]["first"]["selection"]["source_person"], "人物1")
             with self.assertRaises(web.HTTPConflict):
@@ -1152,7 +1162,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         async def translated(app, payload):
             return {**payload, "prompt":"Preserve the reviewed character and camera position."}
 
-        with patch.object(server, "to_english", translated):
+        with patch.object(prompts, "to_english", translated):
             generated = await act("generate_video")
             video_job = generated["shots"][0]["videos"][-1]["job"]
             await self.wait_for_render(video_job)
@@ -1209,7 +1219,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             }],
         }
         reply = {"role":"assistant", "content":"成片已就绪"}
-        with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue, \
+        with patch.object(timeline_routes, "enqueue_film", wraps=server.enqueue_film) as enqueue, \
                 patch.object(service, "model", side_effect=[model_call, reply]) as model:
             async with server.RENDER_LOCK:
                 waiting = asyncio.create_task(service.work(run["id"]))
@@ -1338,7 +1348,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         output_dir.mkdir()
         args = SimpleNamespace(source=source_path, reference=reference_path, output=output_dir, shot=1,
                                timeout=15, person=None, rect=[.25, .25, .75, .75], motion="缓慢转身")
-        with patch.object(server, "to_english", translated), redirect_stdout(io.StringIO()):
+        with patch.object(prompts, "to_english", translated), redirect_stdout(io.StringIO()):
             await smoke_video_remake.smoke(client, args)
         evidence = json.loads((output_dir / "report.json").read_text())
         self.assertGreater(evidence["export"]["audio_correlation"], .99)
@@ -1362,7 +1372,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
 
         async def act(action=None, **fields):
             payload = {"action":action, "shot":0, **fields} if action else None
-            with patch.object(server, "llm_call", side_effect=self.no_vision):
+            with patch.object(http_errors, "llm_call", side_effect=self.no_vision):
                 return json.loads((await server.remake(Request(source, self.user, payload))).body)
 
         await act("analyze")
@@ -1649,7 +1659,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertFalse(check["ok"])
         self.assertEqual(check["issues"][0]["clip"], 1)
         self.assertEqual(check["dimensions"], (64,64))
-        with patch.object(server, "enqueue_film", wraps=server.enqueue_film) as enqueue:
+        with patch.object(timeline_routes, "enqueue_film", wraps=server.enqueue_film) as enqueue:
             req = Request(source, self.user, {"spec":spec,"request_key":"same-render-attempt-1"})
             first = json.loads((await server.render_film(req)).body)
             repeat = json.loads((await server.render_film(req)).body)
@@ -1879,7 +1889,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
                 {"shot":index, "frame":entry if index == 1 else "first", "view":view} for index, view in shots
             ]))["batch_previews"]
 
-        with patch.object(server, "_generate_request", side_effect=submit):
+        with patch.object(generation_requests, "_generate_request", side_effect=submit):
             with self.assertRaises(web.HTTPBadRequest):
                 await batch((0, "main"), (2, "main"))
             stale = await act("batch_previews", person="人物甲", asset=asset["id"],
@@ -1917,7 +1927,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
 
         video_inputs = [{"shot":0, "first_job":"batch-1", "motion":"回头"},
                         {"shot":1, "first_job":"batch-3", "motion":"挥手"}]
-        with patch.object(server, "_generate_request", side_effect=submit_video):
+        with patch.object(generation_requests, "_generate_request", side_effect=submit_video):
             mismatch = await act("batch_videos", person="人物甲", asset=asset["id"], shots=[
                 {"shot":0, "first_job":"stale", "motion":"回头"},
             ])
@@ -1940,7 +1950,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         server.creative_memory.Store(server).put(self.user, {
             "id":asset["id"], "ref":replacement["ref"], "default_ref":replacement["ref"], "source_board":"test",
         })
-        with patch.object(server, "_generate_request", side_effect=submit):
+        with patch.object(generation_requests, "_generate_request", side_effect=submit):
             stale = await act("batch_previews", person="人物甲", asset=asset["id"],
                               shots=[{"shot":0, "view":"main", "reference":self.source["ref"]}])
             self.assertIn("角色参考图已更新", stale["batch_previews"]["failed"][0]["error"])
@@ -2009,7 +2019,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             db.task_start(id=job, user_id=7, board_id="test", state="done", outputs=[next(results)])
             return web.json_response({"ids":[job]})
 
-        with patch.object(server, "generate_request", side_effect=generate):
+        with patch.object(generation_requests, "generate_request", side_effect=generate):
             await act("generate_video", motion="第一秒回头")
             self.assertEqual(requests[0]["images"][0]["ref"], self.source["ref"])
             self.assertIn("第一秒回头", requests[0]["prompt"])
@@ -2038,7 +2048,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
             db.task_start(id=job, user_id=7, state="done", outputs=[ref])
             return web.json_response({"ids":[job]})
 
-        with patch.object(server, "_generate_request", side_effect=render_guide):
+        with patch.object(generation_requests, "_generate_request", side_effect=render_guide):
             await act("preview", frame=correction, asset=asset["id"])
         reviewed = await act("approve", frame=correction, job="guide")
         self.assertEqual(reviewed["shots"][0]["frames"]["first"]["approved"], "frame-preview")
@@ -2056,13 +2066,13 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         with self.assertRaises(web.HTTPBadRequest) as missing_guide:
             await act("localize", job="shot-gen-1")
         self.assertIn("人物重新入画", missing_guide.exception.text)
-        with patch.object(server, "_generate_request", side_effect=render_guide):
+        with patch.object(generation_requests, "_generate_request", side_effect=render_guide):
             await act("preview", frame=return_frame, asset=asset["id"])
         await act("approve", frame=return_frame, job="return-guide")
         with self.assertRaises(web.HTTPBadRequest):
             await act("generate_video")
         server.providers.seed()
-        with patch.object(server, "generate_request", side_effect=generate):
+        with patch.object(generation_requests, "generate_request", side_effect=generate):
             guided = await act("generate_video")
         self.assertEqual(requests[1]["provider"], "local_h3")
         self.assertEqual(guided["shots"][0]["videos"][-1]["guides"], [{"tick":24,"ref":guide_ref}, {"tick":36,"ref":return_ref}])
@@ -2156,7 +2166,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertTrue((await act("keep"))["export"]["stale"])
         self.assertFalse((await act("approve_video", job=local_job))["export"]["stale"])
 
-        with patch.object(server, "llm_call", side_effect=self.no_vision):
+        with patch.object(http_errors, "llm_call", side_effect=self.no_vision):
             split = await act("split_shot", at=1.02)
         self.assertEqual(split["selected_shot"], 1)
         self.assertEqual([(s["start"], s["end"]) for s in split["shots"]], [(0,1), (1,2), (2,4)])
@@ -2173,7 +2183,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         self.assertEqual(restored["mapping"]["shots"], [0])
 
         await act("set_absence", frame="first", absent=True)
-        with patch.object(server, "generate_request", side_effect=generate):
+        with patch.object(generation_requests, "generate_request", side_effect=generate):
             entry = await act("generate_video")
         self.assertEqual(entry["shots"][0]["videos"][-1]["entry_tick"], 36)
         self.assertEqual([p["ref"] for p in requests[2]["images"]], [shot_frame["ref"], return_ref])
@@ -2194,7 +2204,7 @@ class VideoRemakeIntegration(IsolatedAsyncioTestCase):
         await act("approve_video", job=prefix_version["job"])
         await act("set_absence", frame="first", absent=False)
 
-        with patch.object(server, "llm_call", side_effect=self.no_vision):
+        with patch.object(http_errors, "llm_call", side_effect=self.no_vision):
             moved = await act("move_cut", shot=1, at=2.5)
             self.assertEqual(moved["shots"][0]["end"], 2.5)
             self.assertEqual(moved["mapping"]["shots"], [])

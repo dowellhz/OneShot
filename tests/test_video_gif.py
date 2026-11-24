@@ -7,6 +7,7 @@ from PIL import Image
 
 from oneshot.storage import db
 import server
+from oneshot.generation import requests as generation_requests
 from test_agent_chat import ChatFixture, answer, call
 
 
@@ -128,7 +129,7 @@ class GifExport(ChatFixture):
             return answer()
 
         self.svc.model.side_effect = model
-        with patch.object(server, "generate_request", side_effect=submit):
+        with patch.object(generation_requests, "generate_request", side_effect=submit):
             rid = await self.send("用参考图生成循环动图")
             self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
         self.assertEqual(len(generation),1)
@@ -158,7 +159,7 @@ class GifExport(ChatFixture):
             return answer()
 
         self.svc.model.side_effect = model
-        with patch.object(server,"generate_request",side_effect=submit):
+        with patch.object(generation_requests,"generate_request",side_effect=submit):
             rid = await self.send("用参考图做一个两行三列的循环动画")
             self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
         self.assertEqual(len(generation),1)

@@ -15,6 +15,7 @@ from oneshot.storage import db
 from oneshot.editing import image_editor
 from oneshot.integrations import mcp_bridge
 import server
+from oneshot.generation import requests as generation_requests
 from test_agent_chat import ChatFixture
 
 
@@ -117,7 +118,7 @@ class ConnectorIntegration(ChatFixture):
 
             app["agent_chat"].model = AsyncMock(side_effect=AssertionError("MCP uses the external client's planning"))
             settings = {"board":"test","prompt":"生成外部海报","reference_ids":["n1"],"asset_ids":[asset],"request_key":"generate-test-key"}
-            with patch.object(server,"generate_request",side_effect=generate) as submission:
+            with patch.object(generation_requests,"generate_request",side_effect=generate) as submission:
                 data = (await use("request_image",settings))["structuredContent"]
                 rid = data["task_id"]
                 self.assertIn("session=",data["canvas_url"])
@@ -146,7 +147,7 @@ class ConnectorIntegration(ChatFixture):
                                         "error":"场景失败" if index==1 else None,
                                         "outputs":[] if index==1 else [{**result,"meta":{"width":128,"height":96}}]}
                     return web.json_response({"ids":[jid]})
-                with patch.object(server,"generate_request",side_effect=set_image) as make_set:
+                with patch.object(generation_requests,"generate_request",side_effect=set_image) as make_set:
                     plan = {"board":"test","request_key":"image-set-test-key","name":"商品图套组","style":"暖色背景",
                             "reference_ids":["n1"],"items":[{"name":"白底","prompt":"红色商品白色衬底","aspect":"1:1"},
                             {"name":"场景","prompt":"放在桌面上","aspect":"16:9"},{"name":"细节","prompt":"拍摄边沿"}]}

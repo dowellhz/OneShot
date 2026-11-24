@@ -12,6 +12,7 @@ from PIL import Image
 from oneshot.storage import db
 from oneshot.editing import previs
 import server
+from oneshot.generation import requests as generation_requests
 from test_agent_chat import ChatFixture, answer, call
 
 
@@ -122,7 +123,7 @@ class PrevisIntegration(ChatFixture):
             return web.json_response({"ids":[jid]})
         args = {"node_id":"picture","prompt":"让 @图{3} 的角色出现在夜景里"}
         self.svc.model.side_effect = [call("image_previs_frame",args),answer()]
-        with patch.object(server,"generate_request",submit):
+        with patch.object(generation_requests,"generate_request",submit):
             rid = await self.send("用固定白模构图生成这一镜的首帧",selected=["picture"])
             self.assertEqual((await self.wait(rid,timeout=8))["state"],"done")
         request, = received
@@ -140,7 +141,7 @@ class PrevisIntegration(ChatFixture):
         self.assertEqual(video["versions"],[])
 
         self.svc.model.side_effect = [call("image_previs_frame",args),answer()]
-        with patch.object(server,"generate_request",submit):
+        with patch.object(generation_requests,"generate_request",submit):
             response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages",json={
                 "text":"先确认，再生成首帧","request_key":"previs-approval","generation_mode":"manual","selected":["picture"]})
             self.assertEqual(response.status,200)

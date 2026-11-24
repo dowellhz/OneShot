@@ -215,8 +215,8 @@ async def consent(req):
     account = html.escape(req["user"].get("name") or req["user"]["username"])
     return web.Response(text=f"""<!doctype html>
 <html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>授权外部助手 · OneShot</title><link rel="stylesheet" href="/static/showcase.css?v=2">
-<link rel="stylesheet" href="/static/connect-agents.css?v=1">
+<title>授权外部助手 · OneShot</title><link rel="stylesheet" href="/static/public/showcase.css?v=2">
+<link rel="stylesheet" href="/static/public/connect-agents.css?v=1">
 <main class="connector"><h1>授权外部助手</h1><section class="connector-panel">
 <h2>{name}</h2><p>当前账号为 {account}。授权后，此助手可以查看你拥有的画布和资产、收录素材并适配图片尺寸。图片和视频生成仍需你在画布内确认。</p>
 <p>继续后将返回 {callback}。你可以在「连接外部助手」页面撤销访问。</p>

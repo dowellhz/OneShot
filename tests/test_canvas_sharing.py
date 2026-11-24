@@ -14,6 +14,7 @@ from oneshot.web import auth
 from oneshot.storage import db
 from oneshot.editing import image_editor
 import server
+from oneshot import config
 from test_agent_chat import ChatFixture, answer, call
 
 
@@ -474,7 +475,7 @@ class CanvasSharing(ChatFixture):
         server.write_board(server.board_path("test"),self.board)
         refs = [sources[1][1],sources[0][1],sources[1][1]]
         headers = {"X-Uid":"8"}
-        with patch.object(server,"DATA",self.root):
+        with patch.object(config,"DATA_DIR",self.root):
             denied = await self.client.post("/api/assets/export",headers=headers,json={"refs":refs})
             self.assertEqual(denied.status,400)
             self.assertEqual((await self.client.patch("/api/board/test/access",json={"username":"test8","role":"reviewer"})).status,200)

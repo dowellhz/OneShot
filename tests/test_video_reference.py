@@ -16,6 +16,14 @@ from PIL import Image
 
 from oneshot.assistant import agent_video
 import server
+from oneshot import config
+from oneshot.generation import jobs as generation_jobs
+from oneshot.generation import local as local_generation
+from oneshot.generation import reference as video_reference
+from oneshot.generation import remote_jobs
+from oneshot.generation import requests as generation_requests
+from oneshot.memory import legacy_routes
+from oneshot.web import media as media_routes
 from test_agent_chat import ChatFixture, answer, call
 
 
@@ -34,10 +42,10 @@ class CharacterReferencePrompts(unittest.TestCase):
         user = {"id":7,"role":"member"}
         raw = {"kind":"video","board":"test","prompt":"重拍 @车厢素材 和 @站台素材",
                "fields":{"action":"复用 @视频1 的运镜，按 @音频2 的节奏。"}}
-        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
+        with TemporaryDirectory() as directory, patch.object(config,"COMFY_DIR",Path(directory)), \
                 patch.object(store,"list",return_value=[first,second]), \
                 patch.object(store,"get",side_effect=lambda _user, mid, _board: recorded[mid]), \
-                patch.object(store,"historical_assets",return_value=recorded),patch.object(server,"require_media"):
+                patch.object(store,"historical_assets",return_value=recorded),patch.object(media_routes,"require_media"):
             for item in recorded.values():
                 for media in item["media"]:
                     path = server.tools.ref_path(server.COMFY_DIR,media["ref"])
@@ -123,16 +131,16 @@ class CharacterReferencePrompts(unittest.TestCase):
                "fields":{"action":"两人在门边停下。","dialogue":"乔纳·里德（轻声）：你好。\n抱画女人：你也来看画？"},
                "images":[{"ref":frame,"role":"frame"},{"ref":main,"role":"subject","asset":"jonah"}],
                "memory_views":[{"memory_id":"jonah","views":["main","face"]}]}
-        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
+        with TemporaryDirectory() as directory, patch.object(config,"COMFY_DIR",Path(directory)), \
                 patch.object(store,"list",return_value=assets), patch.object(store,"get",return_value=jonah), \
-                patch.object(server,"lib_load",return_value=[]), patch.object(server,"requested_generation_route",return_value=None):
+                patch.object(legacy_routes,"lib_load",return_value=[]), patch.object(generation_requests,"requested_generation_route",return_value=None):
             for ref in (frame,main,face,second):
                 path = server.tools.ref_path(server.COMFY_DIR,ref)
                 path.parent.mkdir(parents=True,exist_ok=True)
                 Image.new("RGB",(64,64),"blue").save(path)
             prepared = store.prepare(user,raw)
             with patch.object(store,"historical_assets",return_value={"jonah":prepared["memory_used"][0]}), \
-                    patch.object(server,"require_media"):
+                    patch.object(media_routes,"require_media"):
                 replayed = store.prepare(user,{key:value for key,value in raw.items() if key!="memory_views"},
                                          replay_ref="output:h3studio/previous.mp4")
             for payload in (prepared,replayed):
@@ -163,7 +171,7 @@ class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
         service = SimpleNamespace(app={"creative_memory":SimpleNamespace(
             prepare=Mock(side_effect=lambda _user, raw, **_options: raw))})
         request = server.agent_chat.InternalRequest(service,{"id":7,"role":"member"},raw)
-        with patch.object(server.providers,"primary",return_value=None), patch.object(server,"engine_up",return_value=True):
+        with patch.object(server.providers,"primary",return_value=None), patch.object(local_generation,"engine_up",return_value=True):
             preview = json.loads((await server.preview(request)).body)
         body, _ = server.engine_body(server.apply_fields(raw))
         self.assertEqual(body["frames"],124)
@@ -224,9 +232,9 @@ class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
             return route,None,[{"ticks":round((clip["end"]-clip["start"])*server.film.FPS)}],[]
 
         result = web.json_response({"ids":["fixture"]})
-        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
-                patch.object(server,"require_media"), patch.object(server,"prepare_reference_generation",side_effect=prepare), \
-                patch.object(server,"generate_remote",new=AsyncMock(return_value=result)) as submit:
+        with TemporaryDirectory() as directory, patch.object(config,"COMFY_DIR",Path(directory)), \
+                patch.object(media_routes,"require_media"), patch.object(video_reference,"prepare_reference_generation",side_effect=prepare), \
+                patch.object(remote_jobs,"generate_remote",new=AsyncMock(return_value=result)) as submit:
             path = server.tools.ref_path(server.COMFY_DIR,raw["images"][0]["ref"])
             path.parent.mkdir(parents=True)
             Image.new("RGB",(64,64),"blue").save(path)
@@ -256,7 +264,7 @@ class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
             self.assertIn("重新确认生成",approval_conflict.exception.text)
             submit.assert_awaited_once()
             self.assertIs(await server._generate_request(request(raw),await request(raw).json()),result)
-            with patch.object(server,"prepare_reference_generation",side_effect=server.bad("参考音频超过时长")):
+            with patch.object(video_reference,"prepare_reference_generation",side_effect=server.bad("参考音频超过时长")):
                 with self.assertRaises(web.HTTPBadRequest) as limit_error:
                     await server.asset_reference_review(request(raw),await request(raw).json())
                 self.assertIn("参考音频超过时长",limit_error.exception.text)
@@ -314,12 +322,13 @@ class MiniMaxVideoOptions(unittest.IsolatedAsyncioTestCase):
         def request(payload):
             return server.agent_chat.InternalRequest(service,user,payload)
 
-        with TemporaryDirectory() as directory, patch.object(server,"COMFY_DIR",Path(directory)), \
-                patch.object(server,"JOBS",{}), patch.object(server,"require_media"), \
-                patch.object(server,"requested_generation_route",return_value=route), \
-                patch.object(server,"board_meta",return_value={"owner":7}), patch.object(server,"can_edit",return_value=True), \
+        with TemporaryDirectory() as directory, patch.object(config,"COMFY_DIR",Path(directory)), \
+                patch.object(generation_jobs,"JOBS",{}), patch.object(media_routes,"require_media"), \
+                patch.object(generation_requests,"requested_generation_route",return_value=route), \
+                patch.object(video_reference,"board_meta",return_value={"owner":7}), \
+                patch.object(video_reference,"can_edit",return_value=True), \
                 patch.object(server.providers,"routes",return_value=[route]), patch.object(server.providers,"all_providers",return_value=[]), \
-                patch.object(server.db,"task_start"), patch.object(server,"start_remote") as start, \
+                patch.object(server.db,"task_start"), patch.object(remote_jobs,"start_remote") as start, \
                 patch.object(server.remote,"json_req",return_value={"task_id":"fixture"}) as remote_submit, \
                 patch.object(server.remote,"mm_result",return_value={"files":[]}):
             assets = []
@@ -432,7 +441,7 @@ class ReferenceVideo(ChatFixture):
         self.assertIn("22 秒 · 4k",(await preview.json())["mode"])
         costs = await self.client.post("/api/generation-cost",json={"requests":[{**request,"count":2}]})
         self.assertEqual((await costs.json())["amounts"],[11])
-        with patch.object(server,"start_remote") as submit:
+        with patch.object(remote_jobs,"start_remote") as submit:
             response = await self.client.post("/api/generate",json=request)
             self.assertEqual(response.status,200,await response.text())
         self.assertEqual((await response.json())["video_model"],{"provider":provider,"selected_model":endpoint})
@@ -519,8 +528,8 @@ class ReferenceVideo(ChatFixture):
         async def engine(_req,payload,_count):
             requested.append(payload)
             return web.json_response({"ids":["optic-job"]})
-        with patch.object(server.providers,"primary",return_value=None),patch.object(server,"engine_up",return_value=True), \
-                patch.object(server,"generate_engine",side_effect=engine):
+        with patch.object(server.providers,"primary",return_value=None),patch.object(local_generation,"engine_up",return_value=True), \
+                patch.object(local_generation,"generate_engine",side_effect=engine):
             response=await self.client.post("/api/generate",json=raw)
             self.assertEqual(response.status,200,await response.text())
             self.assertEqual(requested[0]["prompt"].count("85 mm"),1)

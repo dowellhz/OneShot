@@ -1,4 +1,4 @@
-"use strict";
+import {fetchJSON} from "../shared/http.mjs";
 
 const endpoint="/api/connector/tokens";
 const byId=id=>document.getElementById(id);
@@ -13,12 +13,11 @@ handoff.value=(canvas!=="/"?"在 OneShot 的画布 "+new URL(canvas,location.ori
   "请确认 MCP 连接可用，再提出可选的创作方向。生成前先跟我确认内容和数量；发起任务后把 OneShot 确认链接发给我。";
 
 async function request(path,method="GET",data) {
-  const response=await fetch(path,{method,...(data?{headers:{"Content-Type":"application/json"},body:JSON.stringify(data)}:{})});
+  const {response,value}=await fetchJSON(path,method,data);
   if(response.status===401){
     location.href="/login?next="+encodeURIComponent(location.pathname+location.search);
     throw new Error("请先登录");
   }
-  const value=await response.json().catch(()=>null);
   if(!response.ok)throw new Error(value?.error||"暂时无法读取连接");
   return value;
 }

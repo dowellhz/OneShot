@@ -26,6 +26,9 @@ from oneshot.storage import db
 from oneshot.providers import catalog as providers
 from oneshot.generation import rewriter
 import server
+from oneshot import config
+from oneshot.canvas import routes as canvas_routes
+from oneshot.generation import jobs as generation_jobs
 
 
 async def main(project, scenario):
@@ -44,10 +47,10 @@ async def main(project, scenario):
         db.DB_PATH = root / "test.db"
         db.conn()
         db.run("INSERT INTO users(id,username,pw_hash,role,disabled) VALUES(991,'smoke','disabled','member',0)")
-        server.BOARDS = root / "boards"
+        canvas_routes.BOARDS = root / "boards"
         server.BOARDS.mkdir()
-        server.DATA = root / "data"
-        server.EDIT_JOBS = root / "edits"
+        config.DATA_DIR = root / "data"
+        generation_jobs.EDIT_JOBS = root / "edits"
         board = {"name": "Agent smoke", "owner": 991, "rev": 1, "seq": 2, "nodes": [{
             "id": "n1", "type": "image", "name": "参考小屋", "x": 100, "y": 100,
             "data": {"aspect": "auto"}, "versions": [receipt["source"]], "cur": 0, "job": None}],

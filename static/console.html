@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>控制台 · OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
-<link rel="stylesheet" href="/static/type.css?v=1">
+<link rel="stylesheet" href="/static/shared/type.css?v=1">
 <style>
 :root { --bg: #0b0b0c; --panel: #141417; --card: #18181b; --line: #2a2a2e; --line2: #3a3a40; --text: #ededf0; --dim: #8b8b93; --faint: #5d5d65;
   --success: #d6d6dc; --red: #ff5d5d; --yellow: #ffcf5a; --blue: #5b8cff; --accent: #222226; }
@@ -120,7 +120,7 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 .meter { background: #26262b; }
 
 </style>
-<link rel="stylesheet" href="/static/console-projects.css?v=1">
+<link rel="stylesheet" href="/static/console/console-projects.css?v=1">
 </head>
 <body>
 <div class="app">
@@ -140,7 +140,7 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 </div>
 <div class="modal" id="modal"><div class="box" id="mbox"></div></div>
 <div class="toast" id="toast"></div>
-<script src="/static/console-projects.js?v=2"></script>
+<script src="/static/console/console-projects.js?v=2"></script>
 <script>
 "use strict";
 const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];

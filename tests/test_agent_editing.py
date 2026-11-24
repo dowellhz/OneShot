@@ -14,6 +14,8 @@ from oneshot.assistant import agent_editing as edit
 from oneshot.storage import db
 from oneshot.editing import image_editor
 import server
+from oneshot.editing import image_routes
+from oneshot.generation import requests as generation_requests
 from test_agent_chat import ChatFixture, answer, call
 
 
@@ -61,7 +63,7 @@ class EditingIntegration(ChatFixture):
             return web.json_response({"ids":["camera-qa"]})
 
         url = "/api/image-edit/generate"
-        with patch.object(server,"generate_request",side_effect=generate) as called:
+        with patch.object(generation_requests,"generate_request",side_effect=generate) as called:
             for invalid in ({"count":5},{"backend":"native"},{"strength":.5},
                             *({"camera_view":{**view,key:value}} for key,value in
                               (("yaw",181),("aperture","0.8"),("sensor","unknown"),("optics",[])))):
@@ -95,7 +97,7 @@ class EditingIntegration(ChatFixture):
         self.svc.model.side_effect = [call("image_camera",{"node_id":"n1","camera_view":camera}),answer(),
                                       call("image_reuse",{"node_id":"n1","version_index":2}),answer()]
         session = f"/api/chat/sessions/{self.sid}"
-        with patch.object(server,"image_edit_generate",side_effect=self.fake_generation) as generate:
+        with patch.object(image_routes,"image_edit_generate",side_effect=self.fake_generation) as generate:
             response = await self.client.post(session+"/messages",json={"text":"把旧版从左侧拍一张近景",
                 "request_key":"assistant-camera-pin","generation_mode":"manual","selected":["n1"],
                 "selected_versions":[{"node_id":"n1","ref":old}]})
@@ -128,7 +130,7 @@ class EditingIntegration(ChatFixture):
         settings = {"x":70,"y":-55,"depth":-75,"key":55,"exposure":0,"temperature":-50,"rim":35}
         self.svc.model.side_effect = [call("image_relight",{"node_id":"n1","relight":settings}),answer(),
                                       call("image_reuse",{"node_id":"n1","version_index":1}),answer()]
-        with patch.object(server,"image_edit_generate",side_effect=self.fake_generation):
+        with patch.object(image_routes,"image_edit_generate",side_effect=self.fake_generation):
             self.assertEqual((await self.wait(await self.send("用冷色背光重新布光")))["state"],"done")
             self.assertEqual((await self.wait(await self.send("用同样参数再来一版",key="relight-reuse")))["state"],"done")
         self.assertEqual([(req["ref"],req["relight"],req["prompt"]) for req in self.generated],
@@ -191,7 +193,7 @@ class EditingIntegration(ChatFixture):
     async def test_automatic_background_edit_preserves_foreground(self):
         self.generated = []
         self.svc.model.side_effect = [call("image_edit", {"node_id": "n1", "prompt": "green background", "target": "background", "backend": "native", "feather": 0}), answer()]
-        with patch.object(server, "image_edit_tool", AsyncMock(return_value=web.json_response(self.foreground()))), patch.object(server, "image_edit_generate", side_effect=self.fake_generation):
+        with patch.object(image_routes, "image_edit_tool", AsyncMock(return_value=web.json_response(self.foreground()))), patch.object(image_routes, "image_edit_generate", side_effect=self.fake_generation):
             rid = await self.send()
             self.assertEqual((await self.wait(rid))["state"], "done")
         self.assertEqual(self.generated[0]["mode"], "region")
@@ -213,7 +215,7 @@ class EditingIntegration(ChatFixture):
         saved = edit.persist_selection(self.svc, run, "n1", self.source["ref"], self.mask(), "manual")
         self.generated = []
         self.svc.model.side_effect = [call("image_edit", {"node_id": "n1", "prompt": "green", "selection_id": saved["selection_id"], "target": "selection"}), answer()]
-        with patch.object(server, "image_edit_generate", side_effect=self.fake_generation):
+        with patch.object(image_routes, "image_edit_generate", side_effect=self.fake_generation):
             rid = await self.send("继续修改同一选区", "request002")
             await self.wait(rid)
         self.assertEqual(self.generated[0]["mask"], saved["mask_ref"])
@@ -244,7 +246,7 @@ class EditingIntegration(ChatFixture):
 
         self.generated = []
         self.svc.model.side_effect = [call("image_edit", {"node_id": "n1", "prompt": "green", "feather": 0}), answer()]
-        with patch.object(server, "image_edit_generate", side_effect=self.fake_generation):
+        with patch.object(image_routes, "image_edit_generate", side_effect=self.fake_generation):
             response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages", json=message)
             self.assertEqual(response.status, 200, await response.text())
             run = await self.wait((await response.json())["id"])
@@ -278,7 +280,7 @@ class EditingIntegration(ChatFixture):
             call("image_edit",{"node_id":"n1","prompt":"绿色","feather":0}),
             call("image_edit",{"node_id":"n1","review_id":ids[1],"prompt":"只改第二处","feather":0},"one-review"),
             answer()]
-        with patch.object(server,"image_edit_generate",side_effect=self.fake_generation):
+        with patch.object(image_routes,"image_edit_generate",side_effect=self.fake_generation):
             response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages",json={
                 "text":"按区域批注修改","review_ids":ids,"request_key":"apply-image-review-regions"})
             self.assertEqual(response.status,200,await response.text())
@@ -305,7 +307,7 @@ class EditingIntegration(ChatFixture):
                 return call("image_edit", {"node_id": "n1", "prompt": "blue roof", "target": "selection", "selection_id": selection["selection_id"]}, "edit")
             return answer()
         self.svc.model.side_effect = model
-        with patch.object(server, "image_edit_generate", side_effect=self.fake_generation):
+        with patch.object(image_routes, "image_edit_generate", side_effect=self.fake_generation):
             rid = await self.send()
             pending = await self.wait_input(rid)
             self.assertEqual(db.one("SELECT state FROM chat_runs WHERE id=?", rid)["state"], "waiting_input")
@@ -402,7 +404,7 @@ class EditingIntegration(ChatFixture):
         im = image_editor.load(server.COMFY_DIR, patch_version["ref"])
         self.assertEqual(im.getpixel((0, 0))[3], 0)
         self.generated = []
-        with patch.object(server, "image_edit_generate", side_effect=self.fake_generation):
+        with patch.object(image_routes, "image_edit_generate", side_effect=self.fake_generation):
             await self.svc.execute(run, {"id": 7, "role": "member"}, "reuse", "image_reuse", {"node_id": "n1", "prompt": "green", "seed": 73})
         self.assertEqual(self.generated[0]["ref"], self.source["ref"])
         self.assertEqual(self.generated[0]["mask"], version["edit"]["recipe"]["mask"])

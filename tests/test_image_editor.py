@@ -17,6 +17,14 @@ from PIL import Image, ImageChops, ImageDraw
 from oneshot.editing import image_editor as editor
 from oneshot.editing import image_upscale
 import server
+from oneshot import config
+from oneshot.canvas import routes as canvas_routes
+from oneshot.editing import image_routes
+from oneshot.generation import graphs
+from oneshot.generation import jobs as generation_jobs
+from oneshot.generation import local as local_generation
+from oneshot.memory import legacy_routes
+from oneshot.web import media as media_routes
 
 
 class ImageEdits(unittest.TestCase):
@@ -126,9 +134,9 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.patchers = [patch.object(server.db, "DB_PATH", self.root / "memory.db"), patch.object(server.db, "_conn", None), patch.object(server, "LIBRARY", self.root / "library.json"), patch.object(server, "COMFY_DIR", self.root), patch.object(server, "EDIT_JOBS", self.root / "jobs"),
-                         patch.object(server, "DATA", self.root / "data"), patch.object(server, "BOARDS", self.root / "boards"),
-                         patch.object(server.db, "task_start"), patch.object(server.db, "task_update"), patch.object(server, "record")]
+        self.patchers = [patch.object(server.db, "DB_PATH", self.root / "memory.db"), patch.object(server.db, "_conn", None), patch.object(legacy_routes, "LIBRARY", self.root / "library.json"), patch.object(config, "COMFY_DIR", self.root), patch.object(generation_jobs, "EDIT_JOBS", self.root / "jobs"),
+                         patch.object(config, "DATA_DIR", self.root / "data"), patch.object(canvas_routes, "BOARDS", self.root / "boards"),
+                         patch.object(server.db, "task_start"), patch.object(server.db, "task_update"), patch.object(generation_jobs, "record")]
         for p in self.patchers:
             p.start()
         server.JOBS.clear()
@@ -185,7 +193,7 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
             {"name":"预留 <绿色>","ref":hidden,"visible":False},
             {"name":"前景","ref":top,"x":-2,"y":4,"w":16,"h":12,"opacity":.5},
         ]}
-        with patch.object(server, "can_read_media", side_effect=lambda _user, ref: ref != hidden):
+        with patch.object(media_routes, "can_read_media", side_effect=lambda _user, ref: ref != hidden):
             denied = await self.client.post("/api/image-edit/openraster",json=payload,headers={"X-Test-Role":"user"})
         self.assertEqual(denied.status,403)
         response = await self.client.post("/api/image-edit/openraster",json=payload)
@@ -269,7 +277,7 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
             draw.rectangle((31,12,45,37),fill=2)
             return editor.save(self.root,labels)
 
-        with patch.object(server,"run_image_tool",segmentation):
+        with patch.object(image_routes,"run_image_tool",segmentation):
             response = await self.client.post("/api/image-edit/decompose",json={"ref":source})
         self.assertEqual(response.status,200,await response.text())
         result = await response.json()
@@ -312,7 +320,7 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
 
     async def test_upscale_rejects_invalid_scale_and_reports_missing_models(self):
         url = "/api/image-edit/upscale"
-        with patch.object(server, "IMAGE_UPSCALE_MODELS", self.root / "uninstalled"):
+        with patch.object(config, "IMAGE_UPSCALE_MODELS", self.root / "uninstalled"):
             for scale, message in ((True,"2× 或 4×"),(3,"2× 或 4×"),("2","2× 或 4×"),(2,"超分模型")):
                 response = await self.client.post(url, json={"ref":self.source,"scale":scale})
                 self.assertEqual(response.status,400)
@@ -462,7 +470,7 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"enative123456": {"state": "done", "out": str(editor.ref_path(self.root, generated["ref"]))}})
         backend.router.add_post("/jobs", submit); backend.router.add_get("/jobs", jobs)
         async with TestServer(backend) as stub:
-            with patch.object(server, "ENGINE", str(stub.make_url("")).rstrip("/")):
+            with patch.object(config, "ENGINE", str(stub.make_url("")).rstrip("/")):
                 r = await self.client.post("/api/image-edit/generate", json={**self.payload(), "prompt": "a green roof", "backend": "native", "seed": 77})
                 self.assertEqual(r.status, 200, await r.text())
                 jid = (await r.json())["ids"][0]
@@ -488,10 +496,10 @@ class EditAPI(unittest.IsolatedAsyncioTestCase):
         async with TestServer(backend) as stub:
             for engine, expected_id in ((True, "e123456789abc"), (False, "comfy-test")):
                 with self.subTest(engine=engine), patch.object(server.providers, "primary", return_value=None), \
-                     patch.object(server, "ENGINE", str(stub.make_url("")).rstrip("/")), \
-                     patch.object(server, "COMFY", str(stub.make_url("")).rstrip("/")), \
-                     patch.object(server, "engine_up", return_value=engine), \
-                     patch.object(server, "graph_image", return_value=({}, {"mode_name": "image", "seed": 42})):
+                     patch.object(config, "ENGINE", str(stub.make_url("")).rstrip("/")), \
+                     patch.object(config, "COMFY", str(stub.make_url("")).rstrip("/")), \
+                     patch.object(local_generation, "engine_up", return_value=engine), \
+                     patch.object(graphs, "graph_image", return_value=({}, {"mode_name": "image", "seed": 42})):
                     r = await self.client.post("/api/image-edit/generate", json=self.payload())
                     self.assertEqual(r.status, 200, await r.text())
                     jid = (await r.json())["ids"][0]

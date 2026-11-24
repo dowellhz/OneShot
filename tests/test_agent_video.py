@@ -16,6 +16,10 @@ from oneshot.assistant import agent_video
 from oneshot.storage import db
 from oneshot.editing import image_editor
 import server
+from oneshot.generation import jobs as generation_jobs
+from oneshot.generation import prompts
+from oneshot.generation import reference as video_reference
+from oneshot.generation import requests as generation_requests
 from test_agent_chat import ChatFixture, answer, call
 
 
@@ -52,7 +56,7 @@ class VideoIntegration(ChatFixture):
             answer(),
         ]
         explicit = "@{"+hero["id"]+"#main|林森}"
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             rid = await self.send(text=f"用 {explicit} 做三段测试镜头")
             row = await self.wait(rid)
         self.assertEqual(row["state"],"done",row.get("error"))
@@ -301,7 +305,7 @@ class VideoIntegration(ChatFixture):
                 "outputs": [{"ref": video["ref"], "meta": {"width": 64, "height": 64, "duration": 2}}]}
             return web.json_response({"ids": ["e123456789012"]})
         self.svc.model.side_effect = [call("video_generate", {"prompt": "camera slowly moves", "frames": [{"node_id": "n1", "role": "first"}], "duration": 5, "quality": "std"}), answer()]
-        with patch.object(server, "generate_request", side_effect=submit):
+        with patch.object(generation_requests, "generate_request", side_effect=submit):
             rid = await self.send("生成视频")
             self.assertEqual((await self.wait(rid))["state"], "done")
         self.assertEqual(received[0]["kind"], "video")
@@ -361,7 +365,7 @@ class VideoIntegration(ChatFixture):
             server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[self.make_video()]}
             return web.json_response({"ids":[jid]})
 
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             for key, options, expected in (
                 ("preserve-original",{"reuse_asset_references":True},face),
                 ("use-current",{},replacement),
@@ -404,7 +408,7 @@ class VideoIntegration(ChatFixture):
             call("video_generate", {"prompt":"camera slowly moves", "frames":[{"node_id":"n1", "role":"first"}]}),
             answer(),
         ]
-        with patch.object(server, "generate_request", side_effect=submit):
+        with patch.object(generation_requests, "generate_request", side_effect=submit):
             response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages", json={
                 "text":"用第一版图片生成视频", "request_key":"pin-first-frame", "selected":["n1"],
                 "selected_versions":[{"node_id":"n1", "ref":self.source["ref"]}],
@@ -442,8 +446,8 @@ class VideoIntegration(ChatFixture):
             return web.json_response({"ids":[job]})
 
         local = {"kind":"local_h3","id":"local-test","enabled":True}
-        with patch.object(server,"reference_routes",return_value=[]), patch.object(server.providers,"all_providers",return_value=[local]), \
-                patch.object(server,"generate_request",side_effect=submit):
+        with patch.object(video_reference,"reference_routes",return_value=[]), patch.object(server.providers,"all_providers",return_value=[local]), \
+                patch.object(generation_requests,"generate_request",side_effect=submit):
             for direction, position, role in (("after","last","first"),("before","first","last")):
                 self.svc.model.side_effect = [
                     call("video_extend",{"node_id":"n3","version":1,"direction":direction,"duration":2.4,"prompt":"列车靠站"}),
@@ -521,7 +525,7 @@ class VideoIntegration(ChatFixture):
             return web.json_response({"e123456789012": {"state": "done" if finish.is_set() else "running", "meta": {"seed": 42},
                                     "outputs": [{"ref": new["ref"]}] if finish.is_set() else []}})
         self.svc.model.side_effect = [call("video_regenerate", {"node_id": "video", "prompt": "new movement", "replacements": [{"from_node_id": "n1", "to_node_id": "corrected"}]}), answer()]
-        with patch.object(server, "generate_request", side_effect=submit), patch.object(server, "jobs", side_effect=jobs):
+        with patch.object(generation_requests, "generate_request", side_effect=submit), patch.object(generation_jobs, "jobs", side_effect=jobs):
             rid = await self.send("原视频上再修改", selected=["video"])
             await started.wait()
             waiting = self.load(); n = next(n for n in waiting["nodes"] if n["id"] == "video")
@@ -590,7 +594,7 @@ class VideoIntegration(ChatFixture):
             server.JOBS["e123456789012"] = {"state": "error", "created": 1, "meta": {"uid": 7}, "error": "failed"}
             return web.json_response({"ids": ["e123456789012"]})
         self.svc.model.side_effect = [call("video_regenerate", {"node_id": "video", "prompt": "new movement"}), answer()]
-        with patch.object(server, "generate_request", side_effect=submit):
+        with patch.object(generation_requests, "generate_request", side_effect=submit):
             rid = await self.send(selected=["video"]); await self.wait(rid)
         n = self.load()["nodes"][-1]
         self.assertEqual(n["versions"][0]["ref"], old["ref"])
@@ -611,7 +615,7 @@ class VideoIntegration(ChatFixture):
             return web.json_response({"e123456789012": {"state": "done" if finish.is_set() else "running", "phase": "sampling",
                 "meta": {"seed": 42}, "outputs": [{"ref": video["ref"]}] if finish.is_set() else []}})
         self.svc.model.side_effect = [call("video_generate", {"prompt": "move", "frames": [{"node_id": "n1", "role": "first"}]}), answer()]
-        with patch.object(server, "generate_request", side_effect=submit), patch.object(server, "jobs", side_effect=jobs):
+        with patch.object(generation_requests, "generate_request", side_effect=submit), patch.object(generation_jobs, "jobs", side_effect=jobs):
             rid = await self.send("生成视频")
             await started.wait()
             b = self.load();pending = b["nodes"][-1];nid = pending["id"]
@@ -640,7 +644,7 @@ class VideoIntegration(ChatFixture):
             ready.set()
             return web.json_response({"e123456789012":{"state":"done" if finish.is_set() else "running","meta":{},"outputs":[{"ref":video["ref"]}] if finish.is_set() else []}})
         self.svc.model.side_effect=[call("video_generate",{"prompt":"move","frames":[{"node_id":"n1"}]}),answer()]
-        with patch.object(server,"generate_request",side_effect=submit),patch.object(server,"jobs",side_effect=jobs):
+        with patch.object(generation_requests,"generate_request",side_effect=submit),patch.object(generation_jobs,"jobs",side_effect=jobs):
             rid=await self.send();await ready.wait()
             b=self.load();b["nodes"]=b["nodes"][:-1];b["edges"]=[]
             await self.client.put("/api/board/test",json=b);finish.set();await self.wait(rid)
@@ -663,7 +667,7 @@ class VideoIntegration(ChatFixture):
             server.JOBS["e123456789012"] = {"state": "done", "created": 1, "meta": {"uid": 7}, "outputs": [{"ref": self.source["ref"]}]}
             return web.json_response({"ids": ["e123456789012"]})
         self.svc.model.side_effect = [call("video_generate", {"prompt": "move"}), answer()]
-        with patch.object(server, "generate_request", side_effect=submit):
+        with patch.object(generation_requests, "generate_request", side_effect=submit):
             rid = await self.send("生成视频")
             await self.wait(rid)
         self.assertIn("error", json.loads(db_row(rid)["result"]))
@@ -678,7 +682,7 @@ class VideoIntegration(ChatFixture):
         b["nodes"].append({"id": "n3", "type": "video", "name": "视频", "x": 0, "y": 0, "data": {}, "versions": [self.make_video()], "cur": 0})
         server.board_path("test").write_text(json.dumps(b))
         self.svc.model.side_effect = [call("media_describe", {"node_id": "n3"}), answer()]
-        with patch.object(server, "describe", AsyncMock(return_value=web.json_response({"text": "实际视频画面"}))) as describe:
+        with patch.object(prompts, "describe", AsyncMock(return_value=web.json_response({"text": "实际视频画面"}))) as describe:
             rid = await self.send("看视频", selected=["n3"])
             await self.wait(rid)
             request = await describe.await_args.args[0].json()

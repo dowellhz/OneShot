@@ -1971,7 +1971,7 @@ async function run(){
    return {ok:true,json:async()=>url.endsWith('/auth/state')?{user:null}:
      {token:publicToken,title:"公开动图",author:"创作者",creator:"visitor",prompt:publicPrompt,media_kind:"gif"}};
   };
-  vm.runInContext(fs.readFileSync(path.join(root,'static/showcase.js'),'utf8'),watchDOM.getInternalVMContext());
+  vm.runInContext(fs.readFileSync(path.join(root,'static/public/showcase.js'),'utf8'),watchDOM.getInternalVMContext());
   for(let i=0;i<30&&!watch.document.querySelector('.showcase-prompt');i++) await pause(10);
   const card=watch.document.querySelector('.showcase-prompt');
   assert.equal(watch.document.querySelector('.showcase-watch > img').getAttribute('src'),'/api/showcase/'+publicToken+'/gif');

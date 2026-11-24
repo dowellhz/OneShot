@@ -1,4 +1,4 @@
-"use strict";
+import {fetchJSON} from "../shared/http.mjs";
 
 const area = document.querySelector("#eventContent");
 const statusLine = document.querySelector("#eventStatus");
@@ -29,10 +29,8 @@ function dates(event) {
   return new Date(event.starts*1000).toLocaleString()+" 至 "+new Date(event.closes*1000).toLocaleString();
 }
 async function request(url,method="GET",body) {
-  const data=body instanceof FormData ? {body} : body ? {headers:{"Content-Type":"application/json"},body:JSON.stringify(body)} : {};
-  const result=await fetch(url,{method,...data});
-  const value=await result.json().catch(()=>null);
-  if(!result.ok)throw new Error(value?.error || "暂时无法读取活动信息");
+  const {response,value}=await fetchJSON(url,method,body);
+  if(!response.ok)throw new Error(value?.error || "暂时无法读取活动信息");
   return value;
 }
 function action(form, method, url, makeBody, after) {

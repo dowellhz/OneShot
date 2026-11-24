@@ -22,6 +22,17 @@ from oneshot.generation import fields
 from oneshot.editing import image_editor
 from oneshot.providers import catalog as providers
 import server
+from oneshot import config
+from oneshot.canvas import routes as canvas_routes
+from oneshot.editing import audio_routes
+from oneshot.editing import image_routes
+from oneshot.generation import jobs as generation_jobs
+from oneshot.generation import prompts
+from oneshot.generation import reference as video_reference
+from oneshot.generation import remote_jobs
+from oneshot.generation import requests as generation_requests
+from oneshot.memory import legacy_routes
+from oneshot.web import media as media_routes
 
 
 def answer(text="已完成"):
@@ -76,8 +87,8 @@ class VideoTimingTranslation(unittest.IsolatedAsyncioTestCase):
         source = {"prompt":"0–0.5 s: 保持站姿。\n0.5–2.25 s: 走到门口。"}
         expected = "0–0.5 s: Hold still.\n0.5–2.25 s: Walk to the door."
         llm = SimpleNamespace(available=lambda:True, chat=AsyncMock())
-        with patch.object(server, "_XLATE_CACHE", {}), tempfile.TemporaryDirectory() as folder, \
-                patch.object(server, "XLATE_FILE", Path(folder)/"timing.json"):
+        with patch.object(prompts, "_XLATE_CACHE", {}), tempfile.TemporaryDirectory() as folder, \
+                patch.object(prompts, "XLATE_FILE", Path(folder)/"timing.json"):
             for invalid in (expected.replace("2.25", "2.5"), expected.replace("\n", " ")):
                 llm.chat.return_value = json.dumps({"prompt":invalid})
                 rejected = await server.to_english({"llm":llm}, source)
@@ -93,9 +104,9 @@ class ChatFixture(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.patchers = [patch.object(db, "DB_PATH", self.root / "chat.db"), patch.object(db, "_conn", None),
-                         patch.object(server, "BOARDS", self.root / "boards"), patch.object(server, "COMFY_DIR", self.root / "media"),
-                         patch.object(server, "LIBRARY", self.root / "library.json"),
-                         patch.object(server, "EDIT_JOBS", self.root / "edits"), patch.object(server, "record")]
+                         patch.object(canvas_routes, "BOARDS", self.root / "boards"), patch.object(config, "COMFY_DIR", self.root / "media"),
+                         patch.object(legacy_routes, "LIBRARY", self.root / "library.json"),
+                         patch.object(generation_jobs, "EDIT_JOBS", self.root / "edits"), patch.object(generation_jobs, "record")]
         for p in self.patchers:
             p.start()
         db.conn()
@@ -151,8 +162,8 @@ class ChatFixture(unittest.IsolatedAsyncioTestCase):
             json.dumps({"prompt": "Start at @图1, then @图2 talks with @图3."}),
         ]))
         with patch.object(server.providers, "primary", return_value=None), patch.object(
-            server, "_XLATE_CACHE", {}
-        ), patch.object(server, "XLATE_FILE", self.root / "translate.json"), patch.dict(self.app, {"llm": llm}):
+            prompts, "_XLATE_CACHE", {}
+        ), patch.object(prompts, "XLATE_FILE", self.root / "translate.json"), patch.dict(self.app, {"llm": llm}):
             failed = await self.client.post("/api/preview", json=raw)
             self.assertEqual(failed.status, 200, await failed.text())
             fallback = await failed.json()
@@ -229,8 +240,8 @@ class ChatIntegration(ChatFixture):
         with patch.object(server.providers,"get",return_value=provider), patch.object(
             server.providers,"all_providers",return_value=[provider]
         ), patch.object(server.providers,"routes",side_effect=lambda cap:routes.get(cap,[])), patch.object(
-            server,"generate_remote",send
-        ), patch.object(server,"resolve_audio_refs",AsyncMock(return_value=[("source.wav",0,4)])):
+            remote_jobs,"generate_remote",send
+        ), patch.object(video_reference,"resolve_audio_refs",AsyncMock(return_value=[("source.wav",0,4)])):
             capabilities = json.loads((await server.capabilities(None)).body)
             self.assertEqual(capabilities["image"][0]["default_route_model"],image_model)
             self.assertEqual([m["id"] for m in capabilities["image"][0]["models"]],["image-default",image_model])
@@ -637,7 +648,7 @@ class ChatIntegration(ChatFixture):
             server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[result]*payload["count"]}
             return web.json_response({"ids":[jid]})
 
-        with patch.object(server,"generate_request",side_effect=generate) as submit:
+        with patch.object(generation_requests,"generate_request",side_effect=generate) as submit:
             response = await self.client.post(endpoint,json={"text":"生成海报","request_key":"manual-confirm","generation_mode":"manual"})
             self.assertEqual(response.status,200)
             rid = (await response.json())["id"]
@@ -705,7 +716,7 @@ class ChatIntegration(ChatFixture):
             return await original_review(req,payload)
 
         self.svc.model.side_effect = [call("video_generate",{"prompt":"空镜头","duration":5}),answer()]
-        with patch.object(server,"asset_reference_review",side_effect=review),patch.object(server,"start_remote") as submit:
+        with patch.object(video_reference,"asset_reference_review",side_effect=review),patch.object(remote_jobs,"start_remote") as submit:
             started = await self.client.post(endpoint,json={"text":"生成空镜头","request_key":"asset-review-edit","generation_mode":"manual"})
             rid = (await started.json())["id"]
             approval = await self.pending_generation(rid)
@@ -742,7 +753,7 @@ class ChatIntegration(ChatFixture):
         def finish_placeholder(_app,job,*args,**kwargs):
             job.update(state="done",outputs=[])
 
-        with patch.object(server,"start_remote",side_effect=finish_placeholder) as submit:
+        with patch.object(remote_jobs,"start_remote",side_effect=finish_placeholder) as submit:
             started = await self.client.post(endpoint,json={"text":"生成有站台声的镜头","request_key":"asset-review-unchanged",
                                                            "generation_mode":"manual"})
             rid = (await started.json())["id"]
@@ -782,7 +793,7 @@ class ChatIntegration(ChatFixture):
             rid = (await response.json())["id"]
             return rid,await self.pending_generation(rid)
 
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             rid, approval = await start("image-asset-adjust","只有场景")
             review = approval["plan"]["reference_review"]
             self.assertEqual(review["assets"],[])
@@ -832,7 +843,7 @@ class ChatIntegration(ChatFixture):
             server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[result]}
             return web.json_response({"ids":[jid]})
 
-        with patch.object(server,"generate_request",side_effect=generate) as submit:
+        with patch.object(generation_requests,"generate_request",side_effect=generate) as submit:
             rid = await self.send()
             approval = await self.pending_generation(rid)
             self.assertEqual(approval["plan"]["count"],3)
@@ -874,7 +885,7 @@ class ChatIntegration(ChatFixture):
             server.JOBS[jid] = {"state":state,"created":1,"meta":{"uid":7},"outputs":outputs,"error":error}
             return web.json_response({"ids":[jid]})
 
-        with patch.object(server,"_generate_request",side_effect=submit):
+        with patch.object(generation_requests,"_generate_request",side_effect=submit):
             rid = await self.send("生成三张套图")
             approval = await self.pending_generation(rid)
             await self.client.post(f"/api/chat/runs/{rid}/approvals/{approval['id']}",json={"decision":"approve"})
@@ -921,7 +932,7 @@ class ChatIntegration(ChatFixture):
             server.JOBS[jid] = {"state":state,"created":1,"meta":{"uid":7},"outputs":outputs}
             return web.json_response({"ids":[jid]})
 
-        with patch.object(server,"_generate_request",side_effect=submit):
+        with patch.object(generation_requests,"_generate_request",side_effect=submit):
             rid = await self.send("做两张套图")
             approval = await self.pending_generation(rid)
             await self.client.post(f"/api/chat/runs/{rid}/approvals/{approval['id']}",json={"decision":"approve"})
@@ -984,7 +995,7 @@ class ChatIntegration(ChatFixture):
             call_row = db.one("SELECT result FROM chat_calls WHERE run_id=? AND name='image_generate_set'",rid)
             return json.loads(call_row["result"])
 
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             stale = await review("stale-set-assets",change=True)
             self.assertIn("参考资产已更新",stale["error"])
             self.assertEqual(seen,[])
@@ -1007,7 +1018,7 @@ class ChatIntegration(ChatFixture):
             server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[result]*payload["count"]}
             return web.json_response({"ids":[jid]})
 
-        with patch.object(server,"generate_request",side_effect=generate) as submit:
+        with patch.object(generation_requests,"generate_request",side_effect=generate) as submit:
             response = await self.client.post(endpoint,json={"text":"生成画面","request_key":"smart-confirm","generation_mode":"smart"})
             self.assertEqual(response.status,200)
             rid = (await response.json())["id"]
@@ -1042,7 +1053,7 @@ class ChatIntegration(ChatFixture):
                 ids.append(jid)
             return web.json_response({"ids":ids})
 
-        with patch.object(server,"_generate_request", side_effect=generate):
+        with patch.object(generation_requests,"_generate_request", side_effect=generate):
             response = await self.client.post(endpoint,json={
                 "text":"生成海报","request_key":"retry-batch","generation_mode":"manual","selected":["n1"]})
             rid = (await response.json())["id"]
@@ -1101,7 +1112,7 @@ class ChatIntegration(ChatFixture):
             server.JOBS[jid] = {"state":"error","created":1,"meta":{"uid":7},"outputs":[],"error":"生成失败"}
             return web.json_response({"ids":[jid]})
 
-        with (patch.object(server,"generate_remote",side_effect=generate),
+        with (patch.object(remote_jobs,"generate_remote",side_effect=generate),
               patch.object(server.providers,"primary",side_effect=[
                   {"provider":first_provider,"model":"original-model"},{"provider":other_provider,"model":"changed-model"}]),
               patch.object(server.providers,"get",return_value=first_provider),
@@ -1148,7 +1159,7 @@ class ChatIntegration(ChatFixture):
             return web.json_response({"ids":[]})
         route = {"provider":{"id":"seedance-qa","kind":"ark"},"model":"doubao-seedance-2-5"}
         self.svc.model.side_effect = [call("video_regenerate",{"node_id":"n3"}),answer()]
-        with patch.object(server,"generate_request",side_effect=submit),patch.object(server,"reference_routes",return_value=[route]):
+        with patch.object(generation_requests,"generate_request",side_effect=submit),patch.object(video_reference,"reference_routes",return_value=[route]):
             rid = await self.send("用这条配方重生成",selected=["n3"])
             self.assertEqual((await self.wait(rid))["state"],"done")
         self.assertTrue(seen,db.one("SELECT result FROM chat_calls WHERE run_id=?",rid))
@@ -1173,7 +1184,7 @@ class ChatIntegration(ChatFixture):
             seen.append(raw)
             return web.json_response({"ids":[]})
         self.svc.model.side_effect = [call("video_regenerate",{"node_id":"n3"}),answer()]
-        with patch.object(server,"generate_request",side_effect=submit):
+        with patch.object(generation_requests,"generate_request",side_effect=submit):
             rid = await self.send("重拍镜头",selected=["n3"])
             self.assertEqual((await self.wait(rid))["state"],"done")
         self.assertTrue(seen,db.one("SELECT result FROM chat_calls WHERE run_id=?",rid))
@@ -1504,7 +1515,7 @@ class ChatIntegration(ChatFixture):
             return web.json_response({"ids":[jid]})
 
         self.svc.model.side_effect = model
-        with patch.object(server,"image_edit_generate",side_effect=generate) as submitted:
+        with patch.object(image_routes,"image_edit_generate",side_effect=generate) as submitted:
             first = await self.send("第一份改色","parallel-image-first")
             await asyncio.wait_for(entered.wait(),1)
             response = await self.client.post(f"/api/chat/sessions/{other}/messages",json={
@@ -2044,7 +2055,7 @@ class ChatIntegration(ChatFixture):
         with patch.object(provider, "transcribe", transcribe):
             response = await self.client.post("/api/transcription", data=form(b"<html>"))
             self.assertEqual(response.status, 400)
-            with patch.object(server, "ASR_AUDIO_LIMIT", 12):
+            with patch.object(audio_routes, "ASR_AUDIO_LIMIT", 12):
                 response = await self.client.post("/api/transcription", data=form(b"RIFF0000WAVEdata"))
                 self.assertEqual(response.status, 413)
             transcribe.assert_not_awaited()
@@ -2149,7 +2160,7 @@ class ChatIntegration(ChatFixture):
         self.svc.model.side_effect = [call("image_generate",{"prompt":"电影感夜景","count":2}),answer()]
         route = f"/api/chat/sessions/{self.sid}/messages"
         payload = {"text":"生成两张封面","request_key":"target-image-1","selected":["empty"],"empty_media_node":"empty"}
-        with patch.object(server,"generate_request",submit):
+        with patch.object(generation_requests,"generate_request",submit):
             response = await self.client.post(route,json=payload)
             self.assertEqual(response.status,200,await response.text())
             rid = (await response.json())["id"]
@@ -2176,8 +2187,8 @@ class ChatIntegration(ChatFixture):
             self.assertEqual(request["node"],"audio")
             return web.json_response({"ids":job("e000000000002",audio_ref),
                                       "recipe":{"mode":"tts","prompt":request["prompt"]}})
-        with patch.object(server,"generate_request",submit_video), patch.object(server,"generate_audio",submit_audio), \
-             patch.object(server,"media_info",return_value={"width":128,"height":96,"duration":2}):
+        with patch.object(generation_requests,"generate_request",submit_video), patch.object(audio_routes,"generate_audio",submit_audio), \
+             patch.object(media_routes,"media_info",return_value={"width":128,"height":96,"duration":2}):
             for kind, ref in (("video",video_ref),("audio",audio_ref)):
                 with self.subTest(kind=kind):
                     self.svc.model.side_effect = [call(kind+"_generate",{"prompt":"雨夜"}),answer()]
@@ -2204,7 +2215,7 @@ class ChatIntegration(ChatFixture):
             return web.json_response({"ids": list(server.JOBS)})
 
         self.svc.model.side_effect = [call("image_generate", {"prompt": "暖色产品图", "reference_ids": ["n1"], "count": 3}), answer("三个版本已生成")]
-        with patch.object(server, "generate_request", submit):
+        with patch.object(generation_requests, "generate_request", submit):
             rid = await self.send(placement={"x":-500,"y":-300})
             self.assertEqual((await self.wait(rid))["state"], "done")
         self.assertEqual(len(received), 1)
@@ -2289,7 +2300,7 @@ class ChatIntegration(ChatFixture):
             return image_editor.save(server.COMFY_DIR,image)
 
         self.svc.model.side_effect = [call("image_decompose",{"node_id":"n1"}),answer()]
-        with patch.object(server,"run_image_tool",labels):
+        with patch.object(image_routes,"run_image_tool",labels):
             rid = await self.send("把选中的图片自动拆成独立图层")
             self.assertEqual((await self.wait(rid))["state"],"done")
         versions = self.load()["nodes"][0]["versions"]
@@ -2303,7 +2314,7 @@ class ChatIntegration(ChatFixture):
     async def test_invalid_tools_and_mask_never_execute(self):
         self.svc.model.side_effect = [call("image_generate", {"prompt": "test", "count": 200}),
                                      call("image_edit", {"node_id": "n1", "prompt": "test", "mask_ref": "input:private.png"}, "badmask"), answer()]
-        with patch.object(server, "generate_request", AsyncMock()) as generate:
+        with patch.object(generation_requests, "generate_request", AsyncMock()) as generate:
             rid = await self.send()
             await self.wait(rid)
             generate.assert_not_awaited()
@@ -2347,7 +2358,7 @@ class ChatIntegration(ChatFixture):
         await self.wait(rid)
         run = db.one("SELECT * FROM chat_runs WHERE id=?", rid)
         run["data"] = json.loads(run["data"])
-        with patch.object(server, "image_edit_tool", AsyncMock(return_value=web.json_response(selection))):
+        with patch.object(image_routes, "image_edit_tool", AsyncMock(return_value=web.json_response(selection))):
             result = await self.svc.execute(run, {"id": 7}, "segment-test", "image_segment", {"node_id": "n1", "points": [{"x": 30, "y": 30}]})
         mask = image_editor.load(server.COMFY_DIR, result["mask_ref"]).convert("L")
         self.assertEqual(mask.getpixel((0, 0)), 0)
@@ -2367,7 +2378,7 @@ class ChatIntegration(ChatFixture):
         db.run("INSERT INTO chat_calls VALUES(?,?,?,?,?,?,?)", cid, rid, "image_generate", '{}', "waiting", json.dumps(pending), 1)
         db.run("UPDATE chat_runs SET state='running' WHERE id=?", rid)
         server.JOBS[pending["ids"][0]] = {"state": "done", "created": 1, "meta": {"uid": 7}, "outputs": [{"ref": result["ref"], "meta": {"width": 128, "height": 96}}]}
-        with patch.object(server, "generate_request", AsyncMock()) as submit:
+        with patch.object(generation_requests, "generate_request", AsyncMock()) as submit:
             await self.svc.work(rid)
             submit.assert_not_awaited()
         self.assertEqual(db.one("SELECT state FROM chat_runs WHERE id=?", rid)["state"], "done")
@@ -2407,7 +2418,7 @@ class ChatIntegration(ChatFixture):
         self.svc.model.return_value = call("image_generate", {"prompt": "blue"})
         async def submit(*_):
             return web.json_response({"ids": ["e111111111111"]})
-        with patch.object(server, "generate_request", side_effect=submit), patch.object(server, "jobs", AsyncMock(return_value=web.json_response({"e111111111111": {"state": "running", "phase": "sampling"}}))), patch.object(server, "cancel", AsyncMock(return_value=web.json_response({"ok": True}))) as cancel:
+        with patch.object(generation_requests, "generate_request", side_effect=submit), patch.object(generation_jobs, "jobs", AsyncMock(return_value=web.json_response({"e111111111111": {"state": "running", "phase": "sampling"}}))), patch.object(generation_jobs, "cancel", AsyncMock(return_value=web.json_response({"ok": True}))) as cancel:
             rid = await self.send()
             for _ in range(100):
                 if db.one("SELECT id FROM chat_calls WHERE run_id=? AND state='waiting'", rid):

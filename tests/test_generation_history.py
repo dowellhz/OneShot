@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from oneshot.storage import db
 import server
+from oneshot import config
 from PIL import Image
 from test_agent_chat import ChatFixture
 
@@ -54,7 +55,7 @@ class GenerationHistory(ChatFixture):
         other = server.image_editor.save(server.COMFY_DIR,Image.new("RGBA",(32,32),"blue"),"extra","input")["ref"]
         db.run("INSERT INTO memory_uploads VALUES(?,?,?)",other,7,time.time())
         route = "/api/assets/transfers"
-        with patch.object(server,"DATA",self.root),patch.object(server.asset_transfers,"TRANSFERS",{}):
+        with patch.object(config,"DATA_DIR",self.root),patch.object(server.asset_transfers,"TRANSFERS",{}):
             reply = await self.client.post(route,json={"refs":[ref,ref],"name":"素材清单.zip"})
             self.assertEqual(reply.status,202)
             single = await reply.json()

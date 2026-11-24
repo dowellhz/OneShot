@@ -55,7 +55,7 @@ AI 任务使用平台默认图像服务，也可在编辑器内单独选择已�
 
 ```bash
 python -m unittest discover -s tests -v
-node --check static/image-editor.js
+node --check static/editing/image-editor.js
 ```
 
 测试使用合成图片和模拟模型服务，覆盖选区外像素保护、融合比例、扩图、透明度、裁剪旋转、输入验证、取消，以及三条生成链路。真实模型效果需在已配置模型 / API Key 的部署环境验证。

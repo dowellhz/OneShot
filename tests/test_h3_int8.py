@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import server
+from oneshot.generation import local as local_generation
 from test_agent_chat import ChatFixture
 
 
@@ -20,8 +21,8 @@ class Int8Video(ChatFixture):
             preview = await self.client.post("/api/preview", json=request)
             self.assertEqual(preview.status, 400)
         with patch.object(server.h3_int8, "installed", return_value=True), patch.object(
-            server, "engine_up", new=AsyncMock(return_value=True)
-        ), patch.object(server, "prepare_engine", new=AsyncMock()) as prepare:
+            local_generation, "engine_up", new=AsyncMock(return_value=True)
+        ), patch.object(local_generation, "prepare_engine", new=AsyncMock()) as prepare:
             local = next(x for x in server.canvas_provider_choices("video") if x["id"] == "local_h3")
             self.assertEqual(local["model"], "h3-video")
             self.assertIn(model, [x["id"] for x in local["models"]])

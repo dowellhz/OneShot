@@ -9,6 +9,12 @@ from PIL import Image
 from oneshot.editing import image_editor
 from oneshot.storage import db
 import server
+from oneshot import config
+from oneshot.generation import local as local_generation
+from oneshot.generation import prompts
+from oneshot.generation import remote_jobs
+from oneshot.generation import requests as generation_requests
+from oneshot.web import media as media_routes
 from test_agent_chat import ChatFixture, call, answer
 
 
@@ -68,7 +74,7 @@ class MemoryIntegration(ChatFixture):
                           story_states=[{"scene":"十七号厅","notes":"改穿红色外套"}])
         request = {"kind":"video","board":"test","prompt":"","planned":True,"fields":{"scene":"十七号厅","people":"林森"},
                    "images":[{"asset":hero["id"],"ref":hero["ref"],"index":1,"role":"subject","story_cast":True}]}
-        with patch.object(server,"to_english",side_effect=lambda app,p:p):
+        with patch.object(prompts,"to_english",side_effect=lambda app,p:p):
             preview = await self.client.post("/api/preview",json=request)
         self.assertEqual(preview.status,200,await preview.text())
         reviewed = await preview.json()
@@ -76,7 +82,7 @@ class MemoryIntegration(ChatFixture):
         self.assertEqual([image["ref"] for image in reviewed["inputs"]],[costume])
         self.assertIn("改穿蓝色风衣",reviewed["prompt"])
         self.assertNotIn("改穿红色外套",reviewed["prompt"])
-        with patch.object(server,"_generate_request",new_callable=AsyncMock) as submit:
+        with patch.object(generation_requests,"_generate_request",new_callable=AsyncMock) as submit:
             submit.return_value = web.json_response({"ids":[]})
             initial = await self.client.post("/api/generate",json={**request,"asset_review_key":reviewed["asset_review_key"]})
             self.assertEqual(initial.status,200,await initial.text())
@@ -128,7 +134,7 @@ class MemoryIntegration(ChatFixture):
         response = await self.client.post(route,json={"board":"test","entries":entries},headers={"X-Uid":"8"})
         self.assertEqual(response.status,403)
 
-        with patch.object(server,"_generate_request",new_callable=AsyncMock) as submit:
+        with patch.object(generation_requests,"_generate_request",new_callable=AsyncMock) as submit:
             submit.return_value = web.json_response({"ids":[]})
             confirmed = await self.client.post("/api/generate",json={**raw,"asset_review_key":current["key"]})
             self.assertEqual(confirmed.status,200,await confirmed.text())
@@ -185,7 +191,7 @@ class MemoryIntegration(ChatFixture):
         async def submit(_req,payload):
             seen.append(payload)
             return web.json_response({"ids":[]})
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             generated = await self.client.post("/api/generate",json={"board":"test","kind":"image","prompt":token+" 上台"})
         self.assertEqual(generated.status,200,await generated.text())
         self.assertIn("道具 上台",seen[0]["prompt"])
@@ -259,7 +265,7 @@ class MemoryIntegration(ChatFixture):
         self.assertEqual((await self.client.post("/api/memory",headers=guest,json={"id":saved["id"],"name":"重命名"})).status,403)
         self.assertEqual((await self.client.get(root,headers=guest)).status,200)
         self.assertEqual((await self.client.get("/media",headers=guest,params={"ref":self.source["ref"]})).status,200)
-        with patch.object(server,"DATA",self.root):
+        with patch.object(config,"DATA_DIR",self.root):
             self.assertEqual((await self.client.get(root+"/download",headers=guest)).status,200)
 
         own_board = "/api/board/guest-board"
@@ -269,7 +275,7 @@ class MemoryIntegration(ChatFixture):
         async def submit(req,payload):
             seen.append(payload)
             return web.json_response({"ids":[]})
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             response = await self.client.post("/api/generate",headers=guest,json={"kind":"image","board":"guest-board","prompt":"@团队海报"})
             self.assertEqual(response.status,200,await response.text())
         self.assertIn(self.source["ref"],[img["ref"] for img in seen[0]["images"]])
@@ -282,7 +288,7 @@ class MemoryIntegration(ChatFixture):
         self.assertEqual((await self.client.get(root+"/download",headers=guest)).status,404)
         self.assertEqual((await self.client.get("/media",headers=guest,params={"ref":self.source["ref"]})).status,404)
         self.assertEqual(await (await self.client.get("/api/memory?board=guest-board",headers=guest)).json(),[])
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             response = await self.client.post("/api/generate",headers=guest,json={"kind":"image","board":"guest-board","prompt":"@团队海报"})
             self.assertEqual(response.status,400,await response.text())
         self.assertEqual(len(seen),1)
@@ -297,7 +303,7 @@ class MemoryIntegration(ChatFixture):
         owner_route = "/api/memory/"+saved["id"]
         guest = {"X-Uid":"8"}
         request = {"request_key":"shared-memory-copy"}
-        with patch.object(server,"DATA",self.root):
+        with patch.object(config,"DATA_DIR",self.root):
             reply = await self.client.get(owner_route+"/download",headers=guest)
             self.assertEqual(reply.status,200,await reply.text() if reply.status!=200 else "")
             self.assertIn("filename*=UTF-8''",reply.headers["Content-Disposition"])
@@ -389,7 +395,7 @@ class MemoryIntegration(ChatFixture):
             seen.append(payload)
             return web.json_response({"ids":[]})
         chat = AsyncMock(return_value='{"visual_details":["蓝灯从左侧照亮吊车"]}')
-        with patch.object(server,"_generate_request",submit), patch.object(self.app["llm"], "available", return_value=True), \
+        with patch.object(generation_requests,"_generate_request",submit), patch.object(self.app["llm"], "available", return_value=True), \
                 patch.object(self.app["llm"], "chat", chat, create=True):
             generated = await self.client.post("/api/generate",json={"kind":"image","board":"test","prompt":"@港口设定 拍吊车","images":[]})
             self.assertEqual(generated.status,200,await generated.text())
@@ -499,7 +505,7 @@ class MemoryIntegration(ChatFixture):
             seen.append(payload)
             return web.json_response({"ids":[]})
 
-        with patch.object(server, "_generate_request", submit):
+        with patch.object(generation_requests, "_generate_request", submit):
             response = await self.client.post("/api/generate", json={"kind":"image","board":"shots","prompt":"@林森 在巷口等车","images":[]})
             self.assertEqual(response.status, 200, await response.text())
         self.assertEqual(seen[0]["images"][0]["ref"], asset["ref"])
@@ -594,7 +600,7 @@ class MemoryIntegration(ChatFixture):
             seen.append(p)
             server.JOBS['e000000000001']={'id':'e000000000001','state':'done','created':1,'meta':{'uid':7},'outputs':[{'ref':output['ref'],'meta':{'width':64,'height':48}}]}
             return web.json_response({'ids':['e000000000001']})
-        with patch.object(server,'_generate_request',submit):
+        with patch.object(generation_requests,'_generate_request',submit):
             r=await self.client.post('/api/generate',json={'kind':'image','board':'test','prompt':'@小林 在书店读书','images':[]})
             result=await r.json();self.assertEqual(r.status,200,result)
         self.assertEqual(seen[0]['images'][0]['ref'],a['ref'])
@@ -657,7 +663,7 @@ class MemoryIntegration(ChatFixture):
         self.assertEqual([entry["ref"] for entry in st.prepare(user,model_payload)["images"]],[frame,a["ref"]])
         recorded = {**a,"references":[{"view":None,"ref":ref} for ref in refs]}
         with patch.object(st,"historical_assets",return_value={a["id"]:recorded}), \
-                patch.object(server,"require_media"):
+                patch.object(media_routes,"require_media"):
             replay = st.prepare(user,model_payload,replay_ref=frame)
         self.assertEqual([entry["ref"] for entry in replay["images"]],[frame,*refs])
 
@@ -680,7 +686,7 @@ class MemoryIntegration(ChatFixture):
         shot = '@林森 在旧画市门口等人，门牌写着「17」'
         generate = AsyncMock(return_value=web.json_response({"ids": []}))
         chat = AsyncMock(return_value='{"visual_details":["门框刷着磨损的暗绿色漆"]}')
-        with patch.object(server, "_generate_request", generate), patch.object(self.app["llm"], "available", return_value=True), \
+        with patch.object(generation_requests, "_generate_request", generate), patch.object(self.app["llm"], "available", return_value=True), \
                 patch.object(self.app["llm"], "chat", chat, create=True):
             response = await self.client.post("/api/generate", json={"kind":"image", "board":"test", "prompt":shot})
         self.assertEqual(response.status, 200, await response.text())
@@ -735,7 +741,7 @@ class MemoryIntegration(ChatFixture):
         self.assertIn("开头参考 @图片1",planned["prompt"])
         self.assertIn("结尾参考 @图片2",planned["prompt"])
         self.assertIn("@图片14",planned["prompt"])
-        with patch.object(server,"start_remote") as submit:
+        with patch.object(remote_jobs,"start_remote") as submit:
             generated = await self.client.post("/api/generate",json={**request,"reference_preview":planned["reference_preview"]})
             self.assertEqual(generated.status,200,await generated.text())
             _,_,service,model,_,args = submit.call_args.args
@@ -805,7 +811,7 @@ class MemoryIntegration(ChatFixture):
                          [("image_ref",original_image,None),("video_ref",video_ref,16),("audio_ref",audio_ref,3)])
         quote = await self.client.post("/api/generation-cost",json={"requests":[{**request,"count":2}]})
         self.assertEqual((await quote.json())["amounts"],[2])
-        with patch.object(server,"start_remote") as submit:
+        with patch.object(remote_jobs,"start_remote") as submit:
             rejected = await self.client.post("/api/generate",json={**request,"provider":"local_h3"})
             self.assertEqual(rejected.status,400,await rejected.text())
             rejected = await self.client.post("/api/generate",json={**request,"provider":provider,"selected_model":limited})
@@ -832,7 +838,7 @@ class MemoryIntegration(ChatFixture):
             {**request,"board":"other"},
         ]})
         self.assertEqual((await quote.json())["amounts"],[1,.4,None,None])
-        with patch.object(server,"start_remote") as submit:
+        with patch.object(remote_jobs,"start_remote") as submit:
             stale_preview = await self.client.post("/api/generate",json={**request,"reference_preview":planned["reference_preview"]})
             self.assertEqual(stale_preview.status,409,await stale_preview.text())
             submit.assert_not_called()
@@ -868,7 +874,7 @@ class MemoryIntegration(ChatFixture):
         reset_asset = await reset.json()
         self.assertNotIn("generation_video_ranges",reset_asset)
         self.assertNotIn("generation_audio_ranges",reset_asset)
-        with patch.object(server,"start_remote") as submit:
+        with patch.object(remote_jobs,"start_remote") as submit:
             stale = await self.client.post("/api/generate",json={**request,"reference_preview":planned["reference_preview"]})
             self.assertEqual(stale.status,409,await stale.text())
             submit.assert_not_called()
@@ -899,7 +905,7 @@ class MemoryIntegration(ChatFixture):
         self.assertEqual(updated.status,200,await updated.text())
 
         chat = AsyncMock(return_value='{"visual_details":["红色站台，人物拿着蓝色钥匙"]}')
-        with patch.object(server,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit, \
+        with patch.object(generation_requests,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit, \
                 patch.object(self.app["llm"], "available", return_value=True), patch.object(self.app["llm"], "chat", chat, create=True):
             response = await self.client.post("/api/generate",json={**request,"replay_memory_ref":output["ref"]})
             self.assertEqual(response.status,200,await response.text())
@@ -920,7 +926,7 @@ class MemoryIntegration(ChatFixture):
 
     async def test_ambiguous_and_unknown_mentions_never_submit(self):
         a=await self.create();b=await self.create()
-        with patch.object(server,'_generate_request') as submit:
+        with patch.object(generation_requests,'_generate_request') as submit:
             r=await self.client.post('/api/generate',json={'kind':'image','board':'test','prompt':'@林森 跑步'})
             self.assertEqual(r.status,409)
             r=await self.client.post('/api/generate',json={'kind':'image','board':'test','prompt':'@未保存人物 跑步'})
@@ -936,7 +942,7 @@ class MemoryIntegration(ChatFixture):
         younger = await self.create(name="黑夹克",aliases=["林森弟弟"],board="",project=project)
         await self.create(name="个人版本",aliases=["林森"],board="")
         raw = {"kind":"video","board":"shots","prompt":"@林森弟弟等车"}
-        with patch.object(server,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit:
+        with patch.object(generation_requests,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit:
             response = await self.client.post("/api/generate",json=raw)
             self.assertEqual(response.status,200,await response.text())
             prepared = submit.await_args.args[1]
@@ -1024,7 +1030,7 @@ class MemoryIntegration(ChatFixture):
             call('memory_use',{'memory_ids':[a['id']]},'use'),
             call('image_generate',{'prompt':'主角穿过森林，头肩近景',
                 'memory_views':[{'memory_id':a['id'],'views':['face']}]},'gen'),answer()]
-        with patch.object(server,'_generate_request',submit):
+        with patch.object(generation_requests,'_generate_request',submit):
             rid=await self.send(text='让主角穿过森林');row=await self.wait(rid)
         self.assertEqual(row['state'],'done',row.get('error'))
         self.assertEqual([image['ref'] for image in seen[0]['images']],[face['ref']])
@@ -1038,7 +1044,7 @@ class MemoryIntegration(ChatFixture):
             call("image_generate",{"prompt":"面部近景","memory_views":[{"memory_id":a["id"],"views":["main"]}]}),
             answer(),
         ]
-        with patch.object(server,"_generate_request",submit):
+        with patch.object(generation_requests,"_generate_request",submit):
             rid = await self.send(text=f"用 {explicit} 生成一张图片", key="explicit-angle")
             self.assertEqual((await self.wait(rid))["state"],"done")
         self.assertEqual([item["ref"] for item in seen[-1]["images"]],[face["ref"]])
@@ -1060,7 +1066,7 @@ class MemoryIntegration(ChatFixture):
         a=await self.create();seen=[]
         async def submit(req,p):
             seen.append(p);return web.json_response({'ids':['e000000000002']})
-        with patch.object(server,'_generate_request',submit):
+        with patch.object(generation_requests,'_generate_request',submit):
             r=await self.client.post('/api/image-edit/generate',json={'ref':self.source['ref'],'prompt':'让 @林森 戴上帽子','board':'test','backend':'h3','mode':'whole'})
             result=await r.json();self.assertEqual(r.status,200,result)
         self.assertEqual(seen[0]['images'][-1]['ref'],a['ref'])
@@ -1071,7 +1077,7 @@ class MemoryIntegration(ChatFixture):
         await self.create()
         mask=image_editor.save(server.COMFY_DIR,Image.new('L',(128,96),255),'input')
         from unittest.mock import AsyncMock
-        with patch.object(server,'generate_native_image',AsyncMock()) as native:
+        with patch.object(local_generation,'generate_native_image',AsyncMock()) as native:
             r=await self.client.post('/api/image-edit/generate',json={'ref':self.source['ref'],'mask':mask['ref'],'prompt':'让 @林森 戴上帽子','board':'test','backend':'native','mode':'region'})
             result=await r.json();self.assertEqual(r.status,400,result);self.assertIn('H3',result['error']);native.assert_not_awaited()
 
@@ -1124,7 +1130,7 @@ class MemoryIntegration(ChatFixture):
         handwritten = await self.client.post("/api/generate",json={"kind":"image","board":"test","prompt":"@林森#face"})
         self.assertEqual(handwritten.status,400,await handwritten.text())
         self.assertIn("选择已定稿视角",(await handwritten.json())["error"])
-        with patch.object(server,"_generate_request",return_value=web.json_response({"ids":[]})):
+        with patch.object(generation_requests,"_generate_request",return_value=web.json_response({"ids":[]})):
             manual = await self.client.post("/api/generate",json={
                 "kind":"video","board":"test","prompt":"慢慢回头","fields":{"people":face_token}})
         self.assertEqual(manual.status,200,await manual.text())
@@ -1179,7 +1185,7 @@ class MemoryIntegration(ChatFixture):
             server.JOBS[job_id] = {"id": job_id, "state": "done", "outputs": [{"ref": result}]}
             return web.json_response({"ids": [job_id]})
 
-        with patch.object(server, "_generate_request", submit):
+        with patch.object(generation_requests, "_generate_request", submit):
             response = await self.client.post("/api/generate", json={
                 "kind": "image", "board": "test", "prompt": "按 @图1 生成角色主图",
                 "images": [{"ref": asset["ref"]}], "character_draft": {"asset": asset["id"], "slot": "main"}
