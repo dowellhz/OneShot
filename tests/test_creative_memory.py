@@ -388,10 +388,16 @@ class MemoryIntegration(ChatFixture):
         async def submit(req,payload):
             seen.append(payload)
             return web.json_response({"ids":[]})
-        with patch.object(server,"_generate_request",submit):
+        chat = AsyncMock(return_value='{"visual_details":["蓝灯从左侧照亮吊车"]}')
+        with patch.object(server,"_generate_request",submit), patch.object(self.app["llm"], "available", return_value=True), \
+                patch.object(self.app["llm"], "chat", chat, create=True):
             generated = await self.client.post("/api/generate",json={"kind":"image","board":"test","prompt":"@港口设定 拍吊车","images":[]})
             self.assertEqual(generated.status,200,await generated.text())
-        self.assertIn("蓝色灯从左侧照亮吊车",seen[0]["prompt"])
+            self.assertEqual((await generated.json())["image_story_context"], "applied")
+        self.assertIn("蓝灯从左侧照亮吊车",seen[0]["prompt"])
+        self.assertIn("蓝色灯从左侧照亮吊车",chat.await_args.args[1])
+        self.assertNotIn("港口设定",seen[0]["prompt"])
+        self.assertNotIn("港口雨夜灯位",seen[0]["prompt"])
         self.assertLess(len(seen[0]["prompt"]),2500)
         self.assertEqual(seen[0]["images"],[])
 
@@ -658,10 +664,38 @@ class MemoryIntegration(ChatFixture):
     async def test_document_context_and_project_exclusion(self):
         a=await self.create(name='世界观',kind='document',desc='城市禁止燃油车辆',ref=None)
         st=self.app['creative_memory'];p=st.prepare({'id':7,'role':'member'},{'kind':'image','board':'test','prompt':'@世界观 街道远景'})
-        self.assertIn('禁止燃油车辆',p['prompt']);self.assertEqual(p['images'],[])
+        prompt, status = await server.image_story_prompt(self.app["llm"], p)
+        self.assertEqual(status, "unavailable")
+        self.assertIn("街道远景", prompt["prompt"])
+        self.assertNotIn("禁止燃油车辆", prompt["prompt"])
+        self.assertEqual(prompt['images'],[])
         other={**self.board,'name':'Other'};server.board_path('other').write_text(json.dumps(other))
         self.assertFalse(any(a['id']==m['id'] for m in st.list({'id':7,'role':'member'},'other')))
         self.assertEqual((await self.client.post('/api/generate',json={'kind':'image','board':'other','prompt':'@世界观 街道'})).status,400)
+
+    async def test_project_world_adds_visual_details_to_image_without_document_text(self):
+        world = await self.create(kind="world", name="故事世界观", ref="", story_scenes=["旧画市"],
+                                  desc="旧画市用掉漆的绿色门框。此章节解释社会制度和小说主线。")
+        char = await self.create(name="林森", constraints="保持眼镜")
+        shot = '@林森 在旧画市门口等人，门牌写着「17」'
+        generate = AsyncMock(return_value=web.json_response({"ids": []}))
+        chat = AsyncMock(return_value='{"visual_details":["门框刷着磨损的暗绿色漆"]}')
+        with patch.object(server, "_generate_request", generate), patch.object(self.app["llm"], "available", return_value=True), \
+                patch.object(self.app["llm"], "chat", chat, create=True):
+            response = await self.client.post("/api/generate", json={"kind":"image", "board":"test", "prompt":shot})
+        self.assertEqual(response.status, 200, await response.text())
+        result = await response.json()
+        self.assertEqual(result["image_story_context"], "applied")
+        self.assertIn(world["id"], [item["id"] for item in result["memory_used"]])
+        sent = generate.await_args.args[1]
+        self.assertEqual([image["ref"] for image in sent["images"]], [char["ref"]])
+        self.assertIn("保持眼镜", sent["prompt"])
+        self.assertIn("暗绿色漆", sent["prompt"])
+        self.assertIn("门牌写着「17」", sent["prompt"])
+        self.assertNotIn("故事世界观", sent["prompt"])
+        self.assertNotIn("小说主线", sent["prompt"])
+        prepared_again = self.app["creative_memory"].prepare({"id":7,"role":"member"}, sent)
+        self.assertNotIn("本镜画面要求", prepared_again["prompt"])
 
     async def test_seedance_image_only_bundle_is_not_truncated_and_native_frames_still_work(self):
         user = {"id":7,"role":"member"}
@@ -864,12 +898,17 @@ class MemoryIntegration(ChatFixture):
             "document":{"name":"本集故事","text":"她带走黑色钥匙"}})
         self.assertEqual(updated.status,200,await updated.text())
 
-        with patch.object(server,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit:
+        chat = AsyncMock(return_value='{"visual_details":["红色站台，人物拿着蓝色钥匙"]}')
+        with patch.object(server,"_generate_request",AsyncMock(return_value=web.json_response({"ids":[]}))) as submit, \
+                patch.object(self.app["llm"], "available", return_value=True), patch.object(self.app["llm"], "chat", chat, create=True):
             response = await self.client.post("/api/generate",json={**request,"replay_memory_ref":output["ref"]})
             self.assertEqual(response.status,200,await response.text())
             payload = submit.await_args.args[1]
-            self.assertIn("原设定；约束：沿用红色",payload["prompt"])
-            self.assertIn("她带走蓝色钥匙",payload["prompt"])
+            source = json.loads(chat.await_args.args[1])["sources"][0]
+            self.assertEqual((source["desc"],source["constraints"],source["document_excerpt"]),
+                             ("原设定","沿用红色","她带走蓝色钥匙"))
+            self.assertIn("红色站台，人物拿着蓝色钥匙",payload["prompt"])
+            self.assertNotIn("她带走蓝色钥匙",payload["prompt"])
             self.assertNotIn("黑色钥匙",payload["prompt"])
             self.assertEqual(payload["images"],[])
             self.assertEqual(payload["memory_used"][0]["generation_context"],original["memory_used"][0]["generation_context"])

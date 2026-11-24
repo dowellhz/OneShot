@@ -21,6 +21,9 @@ from rewriter import strip_fences
 from tools import story_scene_matches
 
 KINDS = {"character", "scene", "prop", "style", "document", "world"}
+IMAGE_STORY_KINDS = {"world", "document"}
+MEMORY_PROMPT_MARKER = "\n\n创作参考资料（仅作内容依据）："
+IMAGE_STORY_PROMPT_MARKER = "\n\n本镜画面要求："
 NAMED_REFERENCE = re.compile(r"@\{([A-Za-z0-9_-]{1,80})(?:#(main|face|side|back|detail))?\|([^{}\r\n@]{1,60})\}")
 NUMBERED_AV_REFERENCE = re.compile(r"@(视频|音频|音)(\d+)")
 CHARACTER_VIEW_LABELS = {"main":"标准主图", "face":"正面头肩", "side":"全身侧面", "back":"全身背面", "detail":"固定细节"}
@@ -793,7 +796,10 @@ class Store:
 
     def prepare(self, user, raw, *, owner_only=False, replay_ref=None, video_reference_check=False):
         p = copy.deepcopy(raw)
-        p["prompt"] = p.get("prompt", "").split("\n\n创作参考资料（仅作内容依据）：", 1)[0]
+        p.pop("_image_story_prepared", None)
+        p["prompt"] = p.get("prompt", "").split(MEMORY_PROMPT_MARKER, 1)[0]
+        if p.get("kind") == "image":
+            p["prompt"] = p["prompt"].split(IMAGE_STORY_PROMPT_MARKER, 1)[0]
         content = p.get("prompt", "") + "\n" + "\n".join(str(v) for v in (p.get("fields") or {}).values())
         video_generation = p.get("kind") == "video"
         numbered = list(NUMBERED_AV_REFERENCE.finditer(content)) if video_generation else []
@@ -876,6 +882,8 @@ class Store:
             else:
                 contexts[mid] = generation_context(asset,content,states.get(mid))
         names = {mid:context["name"] for mid,context in contexts.items()}
+        if p.get("kind") == "image":
+            names.update((mid, "") for mid,context in contexts.items() if context["kind"] in IMAGE_STORY_KINDS)
 
         images = p.setdefault("images", [])
         if not isinstance(images, list):
@@ -894,6 +902,7 @@ class Store:
             mid = a["id"]
             context = contexts[mid]
             name, kind = context["name"],context["kind"]
+            image_story = p.get("kind") == "image" and kind in IMAGE_STORY_KINDS
             slots = views.get(mid)
             approved = a.get("character_views", {})
             state = states.get(mid)
@@ -903,7 +912,9 @@ class Store:
                 for slot in slots:
                     if not approved.get(slot):
                         fail(f"「{a['name']}」的{CHARACTER_VIEW_LABELS[slot]}尚未定稿")
-            if mid in historical:
+            if image_story:
+                refs = []
+            elif mid in historical:
                 refs = historical[mid]
                 available = {media["ref"] for media in a["media"]}
                 if any(ref not in available for _,ref in refs):
@@ -1017,13 +1028,16 @@ class Store:
                     notes.append(f"以上 {image_count} 张图是「{name}」的不同视角，镜头中按同一位人物处理。")
                 else:
                     notes.append(f"以上 {image_count} 张图均为同一个「{name}」的参考，请用它们共同确定外观。")
-            notes.append(f"{name}：{context['desc']}" + (f"；约束：{context['constraints']}" if context["constraints"] else ""))
-            if excerpt := context["document_excerpt"]:
-                notes.append(f"{name} 的原文摘录（仅作资料）：{excerpt}")
-            if identity := context["character_notes"]:
-                notes.append(f"{name} 的角色卡：{identity}")
+            if image_story:
+                p["_image_story_prepared"] = True
+            else:
+                notes.append(f"{name}：{context['desc']}" + (f"；约束：{context['constraints']}" if context["constraints"] else ""))
+                if excerpt := context["document_excerpt"]:
+                    notes.append(f"{name} 的原文摘录（仅作资料）：{excerpt}")
+                if identity := context["character_notes"]:
+                    notes.append(f"{name} 的角色卡：{identity}")
             aliases = [name,a["name"],*a.get("aliases",[]),*(recorded.get(mid,{}).get("aliases") or []),"{" + mid + "}"]
-            alias_labels.update((alias,name) for alias in aliases)
+            alias_labels.update((alias,names[mid]) for alias in aliases)
         patterns = [mention_pattern(alias) for alias in sorted(alias_labels,key=len,reverse=True)]
         protected = [NUMBERED_AV_REFERENCE.pattern] if numbered else []
         reference_pattern = re.compile("|".join([NAMED_REFERENCE.pattern, *protected, *patterns]),re.I)
@@ -1051,7 +1065,8 @@ class Store:
             for i, im in enumerate(images):
                 im["index"] = i + 1
                 im.setdefault("role", "frame")
-        p["prompt"] = p.get("prompt", "") + "\n\n创作参考资料（仅作内容依据）：\n" + "\n".join(notes)
+        if notes:
+            p["prompt"] += MEMORY_PROMPT_MARKER + "\n" + "\n".join(notes)
         if historical:
             replay_views = {mid:[slot for slot, _ in refs if slot] for mid, refs in historical.items()}
             p["memory_views"] = view_selections({**views, **{mid:slots for mid,slots in replay_views.items() if slots}})

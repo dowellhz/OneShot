@@ -255,6 +255,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     const r = await api("/api/generate",{...req,...(checked&&preview.key?{reference_preview:preview.key}:{}),
       ...(rememberedAssetKey?{asset_review_key:rememberedAssetKey}:{})});
     if (B!==sourceBoard || node(n.id)!==n) return;
+    if (r.image_story_context === "unavailable") toast("世界观细节暂时无法提取，本次按镜头描述生图", 4500);
     if(history?.video_recipe && r.memory_context)Object.assign(history.video_recipe,r.memory_context);
     if(history?.video_recipe && r.video_model) {
       Object.assign(history.video_recipe,r.video_model);
