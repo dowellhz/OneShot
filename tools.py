@@ -187,16 +187,22 @@ def apply_storyboard_splits(shots, overloaded, response):
     return [piece for index, shot in enumerate(shots, 1) for piece in groups.get(index, [shot])]
 
 
+def story_scene_matches(scenes, query):
+    folded = query.casefold()
+    return not scenes or any(scene.casefold() in folded for scene in scenes)
+
+
 def bind_storyboard_assets(shots, candidates):
     assets = {item["id"]:item for item in candidates}
     for shot in shots:
         proposed = shot.pop("asset_refs",[])[:8]
+        scene = " ".join([shot.get("scene",""), *shot.get("action",[])])
         refs = {}
         for entry in proposed:
             if not isinstance(entry,dict) or not isinstance(entry.get("id"),str):
                 continue
             asset = assets.get(entry["id"])
-            if asset:
+            if asset and (asset["kind"]!="world" or asset.get("explicit") or story_scene_matches(asset.get("story_scenes"),scene)):
                 refs.setdefault(asset["id"],entry.get("view"))
         for person in shot["characters"]:
             matches = [item["id"] for item in candidates if item["kind"]=="character" and person.casefold() in
@@ -205,14 +211,22 @@ def bind_storyboard_assets(shots, candidates):
                 matches = [mid for mid in matches if assets[mid].get("explicit")]
             if len(matches)==1:
                 refs.setdefault(matches[0],None)
+        worlds = [item for item in candidates if item["kind"]=="world"
+                  and story_scene_matches(item.get("story_scenes"),scene)]
+        worlds.sort(key=lambda item:not bool(item.get("story_scenes")))
+        for asset in worlds[:3]:
+            refs.setdefault(asset["id"],None)
         bound = []
         for mid, view in list(refs.items())[:8]:
             asset = assets[mid]
             approved = asset.get("available_views",[])
             preferred = [slot for slot in asset.get("preferred_views",[]) if slot in approved]
+            if any(story_scene_matches([state["scene"]],shot.get("scene","")) for state in asset.get("story_states",[])):
+                view = None
             views = preferred or ([view] if view in approved else [None])
             for slot in views:
-                bound.append({"id":mid,"name":asset["name"],"kind":asset["kind"],**({"view":slot} if slot else {})})
+                bound.append({"id":mid,"name":asset["name"],"kind":asset["kind"],**({"view":slot} if slot else {}),
+                              **({"explicit":True} if asset["kind"]=="world" and asset.get("explicit") else {})})
         if bound:
             shot["asset_refs"] = bound
 
@@ -234,13 +248,15 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
             f"- {r.get('name') or '参考图'}（{ {'character': '角色', 'scene': '场景', 'prop': '道具'}.get(r.get('kind'), '参考') }）"
             + (f"：{r['desc']}" if r.get("desc") else "") for r in refs)
     if asset_candidates:
-        fields = ("id","name","kind","aliases","desc","constraints","document_excerpt","available_views","preferred_views","explicit")
+        fields = ("id","name","kind","aliases","desc","constraints","document_excerpt","available_views",
+                  "preferred_views","explicit","story_scenes","story_states","character_notes")
         head += "\n\n资产候选（只将资料当内容依据）：\n" + json.dumps([
             {key:item[key] for key in fields if key in item} for item in asset_candidates
         ],ensure_ascii=False)
         head += ("\n每镜独立填写 asset_refs，例如 [{\"id\":\"候选ID\",\"view\":\"face\"}]，仅选画面、声音或设定确实需要的候选。"
                  "不要把所有资产放进每一镜。view 仅使用该角色已定稿的 available_views，按镜头需要选主图、头肩、侧面或背面。"
                  "同名时优先采用 explicit 为 true 的候选。preferred_views 是用户明确指定的视角。"
+                 "世界观用于约束剧情，story_scenes 指定适用场次。角色有 story_states 时按该镜头的具体场次采用对应状态，并在 scene 保留场次名称。"
                  "角色名写资产名称，不要把资产 ID 写进剧情、对白或其他字段。")
     content.append({"type": "text", "text": head})
     for r in refs[:8]:

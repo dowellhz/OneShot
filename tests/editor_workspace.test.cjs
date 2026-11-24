@@ -1009,6 +1009,20 @@ async function run(){
  chatRuns=[{id:'choice-result',state:'done'}];
  await evaluate('acLoadSession("s1")');
  equal(evaluate('document.querySelectorAll(".ac-choices button:not(:disabled)").length'),0,'old choices stay inactive after replay');
+ const chatMemoryFetch=w.fetch;
+ let archiveCalls=0, releaseChatMemory;
+ w.fetch=async(url,options)=>{
+  if(String(url)!=="/api/chat/sessions/s1/memory")return chatMemoryFetch(url,options);
+  archiveCalls++;
+  await new Promise(resolve=>{releaseChatMemory=resolve;});
+  return {ok:true,json:async()=>({id:"saved-conversation",messages:3,truncated:false})};
+ };
+ evaluate('$("#acSaveMemory").click();$("#acSaveMemory").click()');
+ assert.equal(archiveCalls,1,'conversation memory has one request in flight');
+ assert.equal(evaluate('$("#acSaveMemory").disabled'),true);
+ releaseChatMemory();
+ await ready('!$("#acSaveMemory").disabled&&$("#toast").textContent.includes("已收录 3 条")','conversation is archived from the assistant panel');
+ w.fetch=chatMemoryFetch;
  const previousFetch=w.fetch;
  w.__memories.find(a=>a.id==='char').character_views.face='input:h3studio/headshot.png';
  let remakeSession=null, remakeSelection, remakeOptions, remakeMotion, beforeSplit, remakeBatches=0;
@@ -4119,8 +4133,21 @@ async function run(){
  await ready('!groupRun.active && motionTail.versions.length===1','all animation frames complete',350);
  evaluate('renderWiz()');
  assert.equal(evaluate('$("#wzBody [data-go=videos]").disabled'),false);
+ evaluate(`const middleTime=$('[data-middle-time="0"]');
+   middleTime.value="2.25";middleTime.dispatchEvent(new Event("change"));`);
+ equal(evaluate('Object.values(plan(node(motionPairs[0].vid)).times)'),[0,2.25,5]);
+ const beforeFailedVideoFetch=w.fetch;
+ w.fetch=async(url,options)=>String(url)==="/api/generate"
+   ? {ok:false,status:503,text:async()=>JSON.stringify({error:"视频服务暂不可用"})}
+   : beforeFailedVideoFetch(url,options);
+ await evaluate('goStep(4);batchVideos(motionScript)');
+ evaluate('renderWiz()');
+ assert.match(evaluate('$("#toast").textContent'),/2 段未提交/);
+ assert.equal(evaluate('$$(".wz-shot-error",$("#wzBody")).length'),2);
+ w.fetch=beforeFailedVideoFetch;
  await evaluate('batchVideos(motionScript)');
  assert.equal(submittedBatches[motionStart+5].req.images.length,3);
+ assert.equal(submittedBatches[motionStart+5].req.images[1].time,2.25);
  assert.equal(submittedBatches[motionStart+6].req.images[0].ref,submittedBatches[motionStart+5].req.images[2].ref);
  finishBatch(motionStart+5,1);finishBatch(motionStart+6,1);
  await ready('motionPairs.every(pair=>!node(pair.vid).job && curV(node(pair.vid)))','the wizard generates separate videos from their keyframes',350);
@@ -4133,6 +4160,18 @@ async function run(){
  equal(evaluate(`[imageInputs(node(motionPairs[1].vid)).find(input=>input.edge.role==="first").version.ref,
                   curV(motionTail).ref,node(motionPairs[0].vid).versions.length]`),
    ["input:h3studio/actual-motion-tail.png",`output:h3studio/layout-job-${motionStart+2}-0.png`,1]);
+ evaluate(`goStep(1);
+   const editWizard=(selector,value)=>{
+     const field=$('#wzBody .sh[data-i="0"] '+selector);
+     field.value=value;field.dispatchEvent(new Event("change"));
+   };
+   editWizard("[data-f=action]","0–1 秒 向右走");
+   editWizard("[data-f=duration]","8");
+   editWizard("[data-motion-frame=middle]","她站在门外");
+   const wizardVideo=node(motionPairs[0].vid);`);
+ equal(evaluate(`[videoReq(wizardVideo,fullPrompt(wizardVideo)).fields.action,videoReq(wizardVideo,fullPrompt(wizardVideo)).duration,
+   motionMiddle.data.caption,storyboardFrameReady(motionMiddle),storyboardFrameReady(motionTail),node(motionPairs[0].vid).versions.length]`),
+   ["0–1 秒 向右走",8,"她站在门外",false,false,1]);
  evaluate('$("#groupRunProgress [data-dismiss]").click();restore(beforeMotionWizard);W=oldMotionWizard');
  console.log('Wizard animation passed: dependent keyframes, a shared boundary, and the actual rendered tail for reruns.');
  w.fetch=generationFetch;

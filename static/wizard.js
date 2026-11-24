@@ -26,7 +26,7 @@ function wizSave() { B.wiz = W; save(); }
 // ---- open / close
 async function openWizard() {
   fetch("/api/samples").then(r => r.json()).then(x => { SAMPLES = x || []; if (W && W.step === 0) { wizSig = ""; renderWiz(); } }).catch(() => {});
-  if (B.wiz && B.wiz.script && node(B.wiz.script)) W = B.wiz;
+  if (B.wiz && (!B.wiz.script || node(B.wiz.script))) W = B.wiz;
   else {
     if (B.nodes.length) {   // a guided project gets its own board
       const id = "b" + Date.now().toString(36);
@@ -41,7 +41,7 @@ async function openWizard() {
 function closeWizard() { $("#wiz").classList.remove("on"); updateWizBtn(); }
 function updateWizBtn() {
   const b = $("#wizBtn"); if (!b || !B) return;
-  b.innerHTML = B.wiz && B.wiz.script && node(B.wiz.script) ? `${ico("script")}<span>继续向导 · ${WSTEPS[B.wiz.step]}</span>` : `${ico("script")}<span>一句话成片</span>`;
+  b.innerHTML = B.wiz && (B.wiz.idea || node(B.wiz.script)) ? `${ico("script")}<span>继续向导 · ${WSTEPS[B.wiz.step]}</span>` : `${ico("script")}<span>一句话成片</span>`;
 }
 function goStep(k) { W.step = k; wizSave(); wizSig = ""; renderWiz(); }
 
@@ -60,6 +60,15 @@ function wizardShotFrames(pair) {
     {node:node(pair.record.motion_frames?.middle),phase:"middle",label:`中帧 · ${seconds(timing.times[middle]??0)} 秒`},
     {node:node(pair.record.motion_frames?.end),phase:"end",label:`尾帧 · ${seconds(timing.end)} 秒`},
   ].filter(frame=>frame.node);
+}
+function wizardMiddleTiming(pair) {
+  const {vid,record}=pair;
+  if(isRemote(vid)||hasMediaReferences(vid))return null;
+  const timing=plan(vid);
+  const index=timing.inputs.findIndex(({source,edge})=>source.id===record.motion_frames?.middle&&edge.role==="keyframe");
+  if(index<0)return null;
+  return {edge:timing.es[index],time:timing.times[index],maxFrame:Math.round(timing.end*24)-1,
+    editable:canvasCanEdit()&&!nodeLocked(vid)&&!vid.job&&!prepping.has(vid.id)};
 }
 function jobText(n) {
   if (!n?.job) return "";
@@ -87,7 +96,7 @@ function renderWiz() {
 function maxStep() {
   const s = wizScript(); if (!s) return 0;
   if (!(s.data.shots || []).length) return 0;
-  if (!storyFilmSelection(s).missing.length) return 5;
+  if (!wizardMissingVideos(s).length) return 5;
   const pairs = shotPairs();
   if (!pairs.length) return 2;
   if (pairs.length!==s.data.shots.length||!pairs.every(p => !missingMotionFrames(s.data.shots[p.index],p.record) &&
@@ -97,7 +106,7 @@ function maxStep() {
 function sigOf() {
   const s = wizScript(); if (!s) return "";
   const ns = [s, ...shotPairs().flatMap(p => [...wizardShotFrames(p).map(frame=>frame.node),p.vid]), ...castNodes(), ...B.nodes.filter(n => n.data.film)];
-  return JSON.stringify(ns.map(n => [n.id, n.versions.length, n.cur, n.job ? jobText(n) : 0, toolBusy.has(n.id)])) + W.step + (s.data.shots || []).length;
+  return JSON.stringify(ns.map(n => [n.id, n.versions.length, n.cur, n.job ? jobText(n) : 0, toolBusy.has(n.id), canvasGenerationError(n)])) + W.step + (s.data.shots || []).length;
 }
 setInterval(() => {
   if (!W || !$("#wiz").classList.contains("on")) return;
@@ -140,7 +149,7 @@ function stepScript() {
           <span class="grow"></span><button class="ic" data-m="up" title="上移">↑</button><button class="ic" data-m="down" title="下移">↓</button><button class="ic" data-m="del" title="删除这个镜头">×</button></div>
         <label>首帧画面<textarea data-f="keyframe" rows="2">${esc(x.keyframe)}</textarea></label>
         ${x.motion_frames?["middle","end"].map(phase=>`<label>${phase==="middle"?"中帧画面":"尾帧画面"}<textarea data-motion-frame="${phase}" rows="2">${esc(x.motion_frames[phase])}</textarea></label>`).join(""):""}
-        <label>动作<textarea data-f="action" rows="2" placeholder="一行一个动作">${esc(x.action.join("\n"))}</textarea></label>
+        <label>动作<textarea data-f="action" rows="2" placeholder="一行一个动作，可写 0–0.5 秒 保持站姿">${esc(x.action.join("\n"))}</textarea></label>
         <label>台词<textarea data-f="dialogue" rows="1" placeholder="名字：台词（没有可以空着）">${esc(x.dialogue.join("\n"))}</textarea></label></div>`).join("")}
       <button class="add" data-m="add">＋ 加一个镜头</button></div>
     <div class="nav"><button class="ghost" data-goto="0">← 想法</button><button class="go" data-goto="2">下一步：定角色 →</button></div></div>`;
@@ -151,7 +160,7 @@ const castOf = name => castNodes().find(m => m.name === name);
 function stepCast() {
   const d = wizScript().data, chars = d.characters || [];
   if (!chars.length) return `<div class="wz3"><div class="wait">这个故事里没有固定的角色，可以直接做分镜图。</div>
-    <div class="nav"><button class="ghost" data-goto="1">← 剧本</button><button class="go" data-goto="3">下一步：分镜图 →</button></div></div>`;
+    <div class="nav"><button class="ghost" data-goto="1">← 剧本</button><button class="go" data-go="boards">下一步：分镜图 →</button></div></div>`;
   return `<div class="wz3"><p class="tip">给每个角色定一张形象图，后面每个镜头都会照着它画，人物才不会变脸。声音描述会写进每段台词，让同一个角色的声音前后一致。</p>
     <div class="cast">${chars.map((c, i) => {
       const m = castOf(c.name), busy = m && (m.job || toolBusy.has(m.id));
@@ -174,12 +183,15 @@ function stepBoards() {
   const images=[...new Set(cards.map(frame=>frame.node))];
   const ready=images.filter(storyboardFrameReady).length;
   const missing=pairs.length!==d.shots.length||pairs.some(p=>missingMotionFrames(d.shots[p.index],p.record));
-  return `<div class="wz4"><p class="tip">核对每镜的构图和动作姿态。${ready < images.length ? `已完成 ${ready}/${images.length} 张` : "画面已就绪"}</p>
+  return `<div class="wz4"><p class="tip">核对每镜的构图和动作姿态。${missing?"有镜头还未准备分镜":ready < images.length ? `已完成 ${ready}/${images.length} 张` : "画面已就绪"}</p>
     <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${cards.map(({node:image,phase,label,pair}) => {
       const v=curV(image), busy=image.job, shot=d.shots[pair.index];
       const shared=phase==="first"&&pair.record.shared_first;
+      const middle=phase==="middle"&&wizardMiddleTiming(pair);
       return `<div class="bc"><div class="pic">${v ? `<img src="${esc(v.url)}">` : ""}${busy ? `<div class="pend"><div class="spin"></div>${jobText(image)}</div>` : !v ? `<div class="pend">等待生成</div>` : ""}</div>
-        <div class="cap"><b>镜头 ${pair.index+1} · ${label}</b>${shared?"":verNav(image)}</div><div class="txt">${esc(shared?image.data.caption : phase==="first"?shot.keyframe:shot.motion_frames?.[phase]||image.data.caption)}</div>
+        <div class="cap"><b>镜头 ${pair.index+1} · ${middle?"中帧":label}</b>${shared?"":verNav(image)}</div><div class="txt">${esc(shared?image.data.caption : phase==="first"?shot.keyframe:shot.motion_frames?.[phase]||image.data.caption)}</div>
+        ${middle?`<label class="wz-frame-time">时点 <input type="number" step="any" min="0.04" max="${(middle.maxFrame/24).toFixed(2)}" value="${Number(middle.time.toFixed(2))}" data-middle-time="${pair.index}" aria-label="镜头 ${pair.index+1} 中帧时点（秒）" ${middle.editable?"":"disabled"}> 秒</label>`:""}
+        ${v&&!storyboardFrameReady(image)?'<p class="wz-shot-error" role="status">分镜描述已更新，请重新生成画面。</p>':""}
         ${shared?"":`<div class="fix"><input placeholder="怎么改？例如：人物离镜头近一点" data-fix="${image.id}"><button class="ghost sm" data-redo="${image.id}" ${busy?"disabled":""}>${v ? "重画" : "生成"}</button></div>`}</div>`;
     }).join("")}</div>
     <div class="nav"><button class="ghost" data-goto="2">← 角色</button>
@@ -188,25 +200,29 @@ function stepBoards() {
 }
 // ⑤ 视频
 function stepVideos() {
-  const pairs = shotPairs(), d = wizScript().data, done = pairs.filter(p => curV(p.vid)).length, busy = pairs.filter(p => p.vid.job).length;
-  const {missing} = storyFilmSelection(wizScript());
+  const pairs = shotPairs(), d = wizScript().data, done = pairs.filter(p => storyboardVersionReady(p.vid)).length, busy = pairs.filter(p => p.vid.job).length;
+  const missing = wizardMissingVideos(wizScript());
   const unexpanded = pairs.length < d.shots.length;
   return `<div class="wz5"><p class="tip">${busy ? `正在生成 ${busy} 个镜头，<span id="wzEta"></span>可以关掉网页，回来接着看。` : missing.length ? `镜头 ${missing.join("、")} 还缺少视频。` : "全部生成好了。有多个版本的镜头，用 ‹ › 挑出最好的一版。"}</p>
     <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map(p => {
       const i=p.index;
-      const v = curV(p.vid), s = d.shots[i] || {};
+      const v = curV(p.vid), s = d.shots[i] || {}, error=canvasGenerationError(p.vid);
       return `<div class="bc"><div class="pic">${v ? `<video src="${v.url}" controls playsinline preload="metadata"></video>` : curV(p.img) ? `<img src="${curV(p.img).url}" class="dimg">` : ""}
           ${p.vid.job ? `<div class="pend"><div class="spin"></div>${jobText(p.vid)}</div>` : ""}</div>
         <div class="cap"><b>镜头 ${i + 1}</b>${verNav(p.vid)}<span class="grow"></span>
           ${p.record.shared_first&&curV(node(scriptShotLinks(wizScript())[i-1]?.vid))?`<button class="ghost sm" data-motion-tail="${i}" ${p.vid.job||scriptContinuityPending.has(p.vid)?"disabled":""}>接上一镜成片尾帧</button>`:""}
-          <button class="ghost sm" data-vredo="${p.vid.id}" ${p.vid.job ? "disabled" : ""}>${v ? "再抽一个" : "生成"}</button></div>
-        <div class="txt">${esc((s.dialogue || []).join(" ") || (s.action || []).join("，"))}</div></div>`;
+          <button class="ghost sm" data-vredo="${p.vid.id}" ${p.vid.job ? "disabled" : ""}>${v ? storyboardVersionReady(p.vid)?"再抽一个":"按新剧本生成" : "生成"}</button></div>
+        <div class="txt">${esc((s.dialogue || []).join(" ") || (s.action || []).join("，"))}</div>
+        ${error?`<p class="wz-shot-error" role="status">${esc(error)}</p>`:""}</div>`;
     }).join("")}</div>
     <div class="nav"><button class="ghost" data-goto="3">← 分镜图</button>${unexpanded && missing.length ? '<button class="ghost" data-go="repair-shots">补齐镜头节点</button>' : ""}
       ${done < pairs.length && !busy ? `<button class="go" data-go="genvids">开始生成（${pairs.length - done} 个镜头）</button>` : ""}
       <button class="go" data-goto="5" ${missing.length ? "disabled" : ""}>下一步：成片 →</button></div></div>`;
 }
 // ⑥ 成片
+function wizardMissingVideos(script) {
+  return scriptShotLinks(script).flatMap((pair,index)=>storyboardVersionReady(node(pair?.vid))?[]:[index+1]);
+}
 function wizardFilm(script) {
   if (!script) return null;
   const sources = new Set(scriptShotLinks(script).map(pair => pair?.vid).filter(Boolean));
@@ -222,7 +238,7 @@ function wizardFilm(script) {
 }
 function stepFilm() {
   const script = wizScript(), f = wizardFilm(script), v = f && curV(f);
-  const {missing} = storyFilmSelection(script);
+  const missing = wizardMissingVideos(script);
   return `<div class="wz6">${f ? (f.job ? `<div class="wait"><div class="spin"></div>正在合成成片… ${jobText(f)}</div>` : v ? `<video src="${v.url}" controls playsinline class="final"></video>
       <div class="row"><a class="go" href="${v.url}" download="${esc((wizScript()?.data.title || "成片").replace(/[\\/:*?"<>|]/g, ""))}.mp4">下载成片</a>${v.cover_url ? `<a class="ghost" href="${v.cover_url}" download>下载封面</a>` : ""}
         <button class="ghost" data-go="edit">继续剪辑</button>${!missing.length ? '<button class="ghost" data-go="current-cut">用当前镜头剪辑</button>' : ""}
@@ -248,19 +264,32 @@ function wireStep(body) {
     $("#wzTitle", body).oninput = e => { d.title = e.target.value; save(); };
     $("#wzStyle", body).oninput = e => { d.style = e.target.value; save(); };
     $$(".sh", body).forEach(el => {
-      const x = d.shots[+el.dataset.i];
+      const index=+el.dataset.i, x=d.shots[index];
+      const edited=new WeakSet();
+      $$("input,select,textarea",el).forEach(field=>field.addEventListener("focus",()=>edited.delete(field)));
+      const commit=(field,changes,oldValue)=>{
+        try {
+          const before=Object.fromEntries(Object.keys(changes).map(key=>[key,x[key]]));
+          const first=!edited.has(field);
+          const result=applyScriptShotRevision(s,{shot:index+1,shot_id:x.id,before,changes},{wizard:true,recordUndo:first});
+          if(first&&result.retained.length)toast(`保留了独立修改或共用的节点：${result.retained.join("、")}`,4500);
+          if(!result.already)edited.add(field);
+        }catch(error){
+          field.value=oldValue;
+          toast(error.message,4500);
+        }
+      };
       $$("[data-f]", el).forEach(f => f.oninput = f.onchange = () => {
         const k = f.dataset.f, v = f.value;
-        if (k === "duration") x.duration = +v;
-        else if (k === "cam") { x.shot_size = v; x.camera = ""; }
-        else if (k === "action" || k === "dialogue") x[k] = v.split("\n").map(t => t.trim()).filter(Boolean);
-        else {
-          if(k==="keyframe"&&x[k]!==v)delete x.continues_previous;
-          x[k]=v;
-        }
-        save(); render(s);
+        if (k === "duration") commit(f,{duration:+v},x.duration);
+        else if (k === "cam") commit(f,{shot_size:v,camera:""},[x.shot_size,x.camera].filter(Boolean).join("，"));
+        else if (k === "action" || k === "dialogue") commit(f,{[k]:v.split("\n").map(t=>t.trim()).filter(Boolean)},x[k].join("\n"));
+        else commit(f,{[k]:v,...(k==="keyframe"&&x[k]!==v?{continues_previous:false}:{})},x[k]);
       });
-      $$("[data-motion-frame]",el).forEach(field=>field.oninput=()=>{x.motion_frames[field.dataset.motionFrame]=field.value;save();});
+      $$("[data-motion-frame]",el).forEach(field=>field.oninput=field.onchange=()=>{
+        const phase=field.dataset.motionFrame;
+        commit(field,{motion_frames:{...x.motion_frames,[phase]:field.value}},x.motion_frames[phase]);
+      });
     });
     $$("[data-m]", body).forEach(b => b.onclick = () => {
       const el = b.closest(".sh"), i = el ? +el.dataset.i : -1, m = b.dataset.m;
@@ -273,13 +302,36 @@ function wireStep(body) {
     });
   }
   if (W.step === 2) wireCast(body);
+  $$("[data-middle-time]",body).forEach(input=>input.onchange=()=>{
+    const pair=shotPairs().find(item=>item.index===Number(input.dataset.middleTime));
+    const timing=pair&&wizardMiddleTiming(pair);
+    if(!timing)return;
+    const seconds=input.valueAsNumber;
+    const time=timing.editable&&Number.isFinite(seconds)?
+      Math.min(timing.maxFrame,Math.max(1,Math.round(seconds*24)))/24:timing.time;
+    input.value=String(Number(time.toFixed(2)));
+    if(time===timing.time)return;
+    checkpoint();
+    rememberVideoVersion(pair.vid);
+    timing.edge.time=time;
+    refresh(pair.vid);
+    save();
+  });
   $$("[data-redo]", body).forEach(b => b.onclick = () => {
     const n = node(b.dataset.redo), fix = $(`[data-fix="${n.id}"]`, body).value.trim();
     if (n.data.base_prompt == null) n.data.base_prompt = n.data.prompt;
     n.data.prompt = n.data.base_prompt + (fix ? `。调整：${fix}` : "");
     save(); generate(n); setTimeout(renderWiz, 300);
   });
-  $$("[data-vredo]", body).forEach(b => b.onclick = () => { const n = node(b.dataset.vredo); n.data.count = 1; generate(n); setTimeout(renderWiz, 300); });
+  $$("[data-vredo]", body).forEach(b => b.onclick = () => {
+    const pair=shotPairs().find(item=>item.vid.id===b.dataset.vredo);
+    if(!pair)return;
+    if(missingMotionFrames(wizScript().data.shots[pair.index],pair.record)||
+       wizardShotFrames(pair).some(frame=>!storyboardFrameReady(frame.node)))
+      return toast("请先到分镜图步骤补齐更新后的画面");
+    pair.vid.data.count=1;
+    void generate(pair.vid).then(()=>{if(W&&$("#wiz").classList.contains("on"))renderWiz();});
+  });
   $$("[data-motion-tail]",body).forEach(b=>b.onclick=async()=>{
     b.disabled=true;
     await useRenderedMotionTail(wizScript(),Number(b.dataset.motionTail));
@@ -379,7 +431,7 @@ async function wizGo(what, btn) {
     expandMissingScriptShots(s);
     wizSig = ""; renderWiz();
   } else if (what === "genvids") {
-    const pairs = shotPairs().filter(p => !curV(p.vid) && !p.vid.job);
+    const pairs = shotPairs().filter(p => !storyboardVersionReady(p.vid) && !p.vid.job);
     pairs.forEach(p => { p.vid.data.count = W.takes; p.vid.data.quality = W.quality; });
     save();
     await batchVideos(s); wizSig = ""; renderWiz();
@@ -512,6 +564,9 @@ function initWizard() {
 .bc .pend { border-radius: 0 !important; }
 .bc .cap { display: flex; align-items: center; gap: 8px; padding: 8px 10px 2px; font-size: var(--fs-small); }
 .bc .txt { padding: 0 10px; color: var(--dim); font-size: var(--fs-caption); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 34px; }
+.bc .wz-frame-time { display: flex; align-items: center; gap: 6px; padding: 3px 10px; font-size: var(--fs-caption); color: var(--dim); }
+.bc .wz-frame-time input { width: 72px; padding: 4px 8px !important; font-size: var(--fs-small); }
+.bc .wz-shot-error { margin: 0; padding: 4px 10px 8px; color: #f3a6a6; font-size: var(--fs-small); }
 .bc .fix { display: flex; gap: 6px; padding: 8px 10px 10px; } .bc .fix input { padding: 4px 8px !important; font-size: var(--fs-small); min-width: 0; } .bc button { white-space: nowrap; flex: none; }
 .vn { display: inline-flex; align-items: center; gap: 2px; color: var(--dim); font-size: var(--fs-caption); }
 .vn button { border: none; background: #222; color: #ddd; width: 20px; height: 20px; border-radius: 6px; }

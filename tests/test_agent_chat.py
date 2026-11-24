@@ -33,6 +33,18 @@ def call(name, args, mid="step1"):
         {"id": mid, "type": "function", "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}]}
 
 class VideoDialogueFields(unittest.TestCase):
+    def test_explicit_action_times_preserve_line_order_and_dialogue(self):
+        prompt, _, _ = fields.compose({
+            "scene":"空走廊",
+            "action":"0–0.5 秒 保持站姿\n0.5 至 2.25 秒：乔纳低声问：“谁？”\n2.25-4.6 seconds 回到门口",
+            "people":"乔纳：旧夹克",
+        })
+        self.assertEqual(prompt.splitlines()[-3:], [
+            "0–0.5 s: 保持站姿。",
+            "0.5–2.25 s: 乔纳 (S1)低声问: <d>[Chinese] 谁？</d>.",
+            "2.25–4.6 s: 回到门口。",
+        ])
+
     def test_unique_short_speaker_name_keeps_reference_binding(self):
         prompt, _, _ = fields.compose(
             {"people":"乔纳·里德：旧夹克\n抱画女人：米色外套",
@@ -57,6 +69,23 @@ class VideoDialogueFields(unittest.TestCase):
         self.assertIn("抱画女人 <Subject 2> (S2) says: <d>Je vais bien.</d>",prompt)
         self.assertIn("乔纳·里德 <Subject 1> (S1) says: <d>走吧。</d>",prompt)
         self.assertIn("add the correct language tag",prompt)
+
+
+class VideoTimingTranslation(unittest.IsolatedAsyncioTestCase):
+    async def test_translation_preserves_exact_times_on_separate_lines(self):
+        source = {"prompt":"0–0.5 s: 保持站姿。\n0.5–2.25 s: 走到门口。"}
+        expected = "0–0.5 s: Hold still.\n0.5–2.25 s: Walk to the door."
+        llm = SimpleNamespace(available=lambda:True, chat=AsyncMock())
+        with patch.object(server, "_XLATE_CACHE", {}), tempfile.TemporaryDirectory() as folder, \
+                patch.object(server, "XLATE_FILE", Path(folder)/"timing.json"):
+            for invalid in (expected.replace("2.25", "2.5"), expected.replace("\n", " ")):
+                llm.chat.return_value = json.dumps({"prompt":invalid})
+                rejected = await server.to_english({"llm":llm}, source)
+                self.assertIn("action timing changed", rejected["_xlate_err"])
+                self.assertEqual(rejected["prompt"], source["prompt"])
+            llm.chat.return_value = json.dumps({"prompt":expected})
+            translated = await server.to_english({"llm":llm}, source)
+        self.assertEqual(translated["prompt"], expected)
 
 
 class ChatFixture(unittest.IsolatedAsyncioTestCase):

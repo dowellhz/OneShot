@@ -2743,6 +2743,7 @@ _CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 _DBLOCK = re.compile(r"<d>.*?</d>", re.S)
 _IMAGE_MENTION = re.compile(r"@图(\d+)")
 _MARKS = re.compile(r"<(?:Picture|Subject|Video|Audio) \d+>|\(S\d+(?:,S\d+)*\)|<d>.*?</d>|@图\d+", re.S)
+_TIMED_LINES = re.compile(rf"^[ \t]*({pfields.ACTION_TIME.pattern})", re.M)
 XLATE_FILE = DATA / "xlate_cache.json"
 try:
     _XLATE_CACHE: dict = json.loads(XLATE_FILE.read_text())
@@ -2753,6 +2754,7 @@ Input: a JSON object. Output: ONLY a JSON object with exactly the same keys and 
 Rules:
 - Translate faithfully; do not add, drop or reorder actions, objects, counts, positions or constraints.
 - Copy these verbatim, unchanged: every <d>...</d> block including its content and [Language] tag, every @图N image mention, every <Picture N>, <Subject N>, <Video N>, <Audio N>, and every speaker ID such as (S1).
+- Copy each time range marker such as 0–0.5 s: exactly as written. Keep every line beginning with a time range on its own line and in the original order.
 - Text that appears in double quotation marks as visible on-screen text stays as it is.
 - Write descriptions, not speech. Use plain prose; no markdown, no explanations."""
 
@@ -2782,6 +2784,8 @@ async def to_english(app, p: dict) -> dict:
     key = json.dumps(src, ensure_ascii=False, sort_keys=True)
     if any(_IMAGE_MENTION.search(value) for entry in src.values() for value in (entry if isinstance(entry, list) else [entry])):
         key = "image-mentions:" + key
+    if pfields.ACTION_TIME.search(src.get("prompt", "")):
+        key = "action-timing:" + key
     out = _XLATE_CACHE.get(key)
     if out is None:
         llm = app["llm"]
@@ -2803,6 +2807,9 @@ async def to_english(app, p: dict) -> dict:
                 for a, b in (zip(v, o) if k == "captions" else [(v, o)]):
                     if sorted(_MARKS.findall(a)) != sorted(_MARKS.findall(b)):
                         raise ValueError(f"{k}: markers or <d> blocks changed")
+                    if (pfields.ACTION_TIME.findall(a) != pfields.ACTION_TIME.findall(b)
+                            or _TIMED_LINES.findall(a) != _TIMED_LINES.findall(b)):
+                        raise ValueError(f"{k}: action timing changed")
                     if _needs_english(b):
                         raise ValueError(f"{k}: still Chinese")
         except Exception as e:
@@ -2834,6 +2841,10 @@ async def preview(req):
     raw = await req.json()
     replay_ref = checked_asset_replay(raw)
     payload = apply_video_optics(req.app["creative_memory"].prepare(req["user"],raw,replay_ref=replay_ref))
+    assets = payload.get("memory_used",[])
+    memory_review = {"memory_context":[{key:asset[key] for key in ("name","kind","story_state") if key in asset}
+                                       for asset in assets],
+                     "asset_review_key":creative_memory.generation_asset_key(assets)} if assets else {}
     if payload.get("previs_guide") is not None or payload.get("audio_refs") or payload.get("video_refs"):
         retake = resolve_camera_plan(payload)
         object_plan = resolve_object_edit(payload)
@@ -2848,7 +2859,7 @@ async def preview(req):
             if item.get("role") in ("subject", "frame"):
                 set_video_preview_image_role(item,"image_ref")
         return web.json_response({"prompt": review["prompt"], "mode": mode, "inputs": inputs,
-                                  "duration":review["duration"], "reference_preview":review["key"]})
+                                  "duration":review["duration"], "reference_preview":review["key"], **memory_review})
     inputs = workflow_review.capture_generation(payload)["inputs"]
     route = requested_generation_route(payload, "video")
     if route and route["provider"]["kind"] != "local_h3":
@@ -2870,7 +2881,7 @@ async def preview(req):
         if limit:
             details["reference_preview"] = reference_preview_fingerprint(payload,route,guide_frames=True)
             details["duration"] = seconds
-        return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs, **details})
+        return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs, **details, **memory_review})
     resolution = checked_video_resolution(payload,"local_h3","h3-video")
     p = apply_fields(payload)
     if not clean(p.get("prompt")):
@@ -2887,7 +2898,7 @@ async def preview(req):
     if p.get("_xlate_err"):
         mode += " · 未翻译成英文：" + p["_xlate_err"]
     return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode, "inputs": inputs,
-                              "duration": meta["frames"] / 24})
+                              "duration": meta["frames"] / 24, **memory_review})
 
 
 @routes.post("/api/generate")

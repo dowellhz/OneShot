@@ -1611,7 +1611,7 @@ function setPMode(n, m) {
   if (m === "fields") setTimeout(() => $(`#pfields textarea[data-k="${f.action ? "action" : "scene"}"]`)?.focus(), 30);
 }
 let previewSequence = 0;
-function renderPreviewInputs(items, duration) {
+function renderPreviewInputs(items, duration, memory=[]) {
   const list = $("#pvInputs");
   list.replaceChildren();
   const labels = {
@@ -1645,6 +1645,16 @@ function renderPreviewInputs(items, duration) {
     meta.textContent = [label,...details].join(" · ");
     description.append(name, meta);
     row.append(description);
+    list.append(row);
+  }
+  for(const asset of memory){
+    const row=document.createElement("li"), details=document.createElement("div");
+    const name=document.createElement("strong"), label=document.createElement("small");
+    row.insertAdjacentHTML("afterbegin",ico("script"));
+    name.textContent=asset.name;
+    label.textContent=[KIND_CN[asset.kind]||"创作记忆",asset.story_state].filter(Boolean).join(" · ");
+    details.append(name,label);
+    row.append(details);
     list.append(row);
   }
   list.hidden = !list.childElementCount;
@@ -1730,9 +1740,9 @@ async function previewPrompt(n,{branch=false}={}) {
   const current = () => sequence === previewSequence && B === board && node(n.id) === n && sel.has(n.id);
   const render = r => {
     if (!current()) return;
-    if (r.reference_preview) videoReferencePreviews.set(n,{key:r.reference_preview,signature:videoPreviewSignature(req)});
+    if (r.reference_preview||r.asset_review_key) videoReferencePreviews.set(n,{key:r.reference_preview,assetKey:r.asset_review_key,signature:videoPreviewSignature(req)});
     else videoReferencePreviews.delete(n);
-    renderPreviewInputs(r.inputs || [], r.duration ?? req.duration);
+    renderPreviewInputs(r.inputs || [], r.duration ?? req.duration,r.memory_context||[]);
     $("#pvt").textContent = r.prompt || "";
     $("#pvt").hidden = $("#pvCopy").hidden = !r.prompt;
     $("#pvm").textContent = r.mode || "";

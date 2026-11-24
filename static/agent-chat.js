@@ -1095,6 +1095,8 @@ function acRenderState(){
  resend.disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
  $("#acUndo").hidden=!latest||!!active||!!AC.queue.length;
  $("#acNew").disabled=$("#acSessions").disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
+ $("#acSaveMemory").disabled=!AC.session||AC.loadingSessions||acMemorySaves.has(AC.session)||
+   !AC.events.some(({kind,data})=>["user","assistant"].includes(kind)&&typeof data?.text==="string"&&data.text.trim());
  $("#acExecutionScope").value=AC.executionScope;
  $("#acExecutionScope").disabled=AC.sending||!!AC.loadingSessions;
  $("#acInput").placeholder=AC.executionScope==="brainstorm"?"描述创作目标，输入 @ 引用素材，一起探索不同方向…":"描述你想做什么，输入 @ 引用素材…";
@@ -1140,6 +1142,25 @@ function acSessionDirectory(sessions, selected=AC.session, observedAt){
  const options=AC.sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.title)}</option>`).join("");
  if(select._items!==options){select._items=options;select.innerHTML=options;}
  if(selected)select.value=selected;
+}
+
+const acMemorySaves=new Set();
+async function acSaveConversationMemory(){
+ const sid=AC.session, board=boardId;
+ if(!sid||acMemorySaves.has(sid))return;
+ acMemorySaves.add(sid);
+ acRenderState();
+ try{
+  const result=await acApi(`/api/chat/sessions/${encodeURIComponent(sid)}/memory`,{});
+  cmInvalidate();
+  if(AC.session===sid&&boardId===board)
+   toast(`已收录 ${result.messages} 条消息到个人资产库${result.truncated?"（较早消息已省略）":""}`);
+ }catch(error){
+  if(AC.session===sid&&boardId===board)toast(error.message,4500);
+ }finally{
+  acMemorySaves.delete(sid);
+  if(AC.session===sid&&boardId===board)acRenderState();
+ }
 }
 
 function acRenderParallel(){
@@ -1998,6 +2019,11 @@ function initAgentChat(){
   acOpenNodeSession(id,{attention:true,locate:!!action.dataset.taskLocate,result,queued:action.dataset.taskQueued,history}).catch(error=>toast(error.message));
  };
  const pane=document.createElement("section");pane.id="agentChat";pane.hidden=true;pane.setAttribute("role","region");pane.setAttribute("aria-label","创作助手");pane.innerHTML=`<header class="ac-head"><strong>创作助手</strong><button id="acDock" title="切换停靠 / 浮动" aria-label="切换停靠 / 浮动">${ico("full")}</button><button id="acClose" title="收起，任务继续运行" aria-label="收起助手">×</button></header><div class="ac-subhead"><select id="acSessions" aria-label="对话历史"></select><button id="acNew">新对话</button></div><div id="acModel" class="ac-model">使用平台配置的文本模型</div><div id="acMessages" class="ac-messages" role="log" aria-label="对话与操作记录"></div><div id="acError" class="ac-status" hidden></div><div id="acStatus" class="ac-status" role="status"></div><div class="ac-composer"><div id="acRefs" class="ac-refs"></div><div id="acPicker" class="ac-picker" hidden></div><textarea id="acInput" aria-label="告诉助手要做什么" placeholder="描述你想做什么，输入 @ 引用素材…" maxlength="8000"></textarea><div class="ac-actions"><button id="acReference" title="引用画布节点">@ 引用</button><button id="acUndo" hidden>撤销本轮</button><span class="ac-hint">Enter 发送</span><button id="acStop" hidden>停止</button><button id="acSend" disabled>发送</button></div></div>`;document.body.append(pane);
+ $("#acNew").before(Object.assign(document.createElement("button"),{
+  id:"acSaveMemory",type:"button",textContent:"收录到记忆",disabled:true,
+  title:"把当前对话的文字消息保存到个人资产库，再次收录会更新正文",
+  onclick:acSaveConversationMemory,
+ }));
  $("#acInput").insertAdjacentHTML("beforebegin",'<div id="acDelivery" hidden><span id="acDeliveryStatus" role="status"></span><button type="button" id="acResend" hidden>重新发送</button></div>');
  $("#acInput").insertAdjacentHTML("beforebegin",`<div id="acContinuation" hidden>
   <strong id="acContinuationDrag" draggable="true"></strong>

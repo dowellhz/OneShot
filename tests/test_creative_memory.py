@@ -13,6 +13,102 @@ from test_agent_chat import ChatFixture, call, answer
 
 
 class MemoryIntegration(ChatFixture):
+    async def test_conversation_archive_can_be_searched_updated_and_explicitly_used(self):
+        route = f"/api/chat/sessions/{self.sid}/memory"
+        self.assertEqual((await self.client.post(route,json={})).status,400)
+        for kind,text in (("user","蓝钟镇没有电灯"),("assistant","夜间改用纸灯"),("tool_end","内部执行记录")):
+            self.svc.emit(self.sid,None,kind,{"text":text})
+        denied = await self.client.post(route,json={},headers={"X-Uid":"8"})
+        self.assertEqual(denied.status,404,await denied.text())
+        created = await self.client.post(route,json={})
+        self.assertEqual(created.status,200,await created.text())
+        first = await created.json()
+        self.assertEqual(first["messages"],2)
+        self.svc.emit(self.sid,None,"user",{"text":"纸灯只挂在河边"})
+        second = await (await self.client.post(route,json={})).json()
+        self.assertEqual(second["id"],first["id"])
+        self.assertEqual(second["messages"],3)
+        self.assertEqual(await (await self.client.post(route,json={})).json(),second)
+        asset_route = "/api/memory/"+second["id"]
+        detail = await (await self.client.get(asset_route)).json()
+        self.assertEqual(detail["document"]["format"],"plain")
+        self.assertEqual(detail["document"]["text"],"用户\n蓝钟镇没有电灯\n\n助手\n夜间改用纸灯\n\n用户\n纸灯只挂在河边")
+        self.assertTrue(detail["story_draft"])
+        self.assertEqual((await self.client.get(asset_route,headers={"X-Uid":"8"})).status,404)
+        self.assertEqual((await self.client.post("/api/memory",json={"id":second["id"],"shared":True})).status,400)
+        listed = await (await self.client.get("/api/memory",params={"board":"test","scope":"current","q":"纸灯"})).json()
+        self.assertEqual([item["id"] for item in listed],[second["id"]])
+        store = self.app["creative_memory"]
+        user = {"id":7,"role":"member"}
+        self.assertEqual(store.storyboard_assets(user,"test","纸灯"),[])
+        found, method = await store.search(self.app["llm"],user,"test","纸灯",mode="keyword")
+        self.assertEqual(method,"keyword")
+        self.assertEqual([item["id"] for item in found],[second["id"]])
+        self.assertEqual(store.summary(found[0])["source_type"],"conversation")
+        prepared = store.prepare(user,{"kind":"video","board":"test","prompt":"写纸灯","memory_ids":[second["id"]]})
+        self.assertIn("纸灯只挂在河边",prepared["prompt"])
+
+    async def test_project_world_and_scene_character_are_previewed_and_bound_to_video(self):
+        await self.client.put("/api/board/another",json={"nodes":[]})
+        hero = await self.create(character_view="main")
+        raw = io.BytesIO()
+        Image.new("RGB",(32,32),"blue").save(raw,"PNG")
+        form = FormData()
+        form.add_field("file",raw.getvalue(),filename="costume.png",content_type="image/png")
+        upload = await self.client.post("/api/upload",data=form)
+        self.assertEqual(upload.status,200,await upload.text())
+        costume = (await upload.json())["ref"]
+        hero = await self.create(id=hero["id"],ref=costume,source_board="",node_id=None,
+                                 story_states=[{"scene":"十七号厅","notes":"改穿蓝色风衣","ref":costume}])
+        world = await self.create(kind="world",name="馆内规则",ref="",desc="不能照相",
+                                  story_scenes=["十七号厅"])
+        await self.create(kind="world",name="旧馆内规则",ref="",story_draft=True,desc="允许照相")
+        await self.create(kind="world",name="异项目规则",ref="",board="another",desc="不得穿蓝色")
+        await self.create(name="林森",ref="",board="another",desc="另一项目的同名人物",
+                          story_states=[{"scene":"十七号厅","notes":"改穿红色外套"}])
+        request = {"kind":"video","board":"test","prompt":"","planned":True,"fields":{"scene":"十七号厅","people":"林森"},
+                   "images":[{"asset":hero["id"],"ref":hero["ref"],"index":1,"role":"subject","story_cast":True}]}
+        with patch.object(server,"to_english",side_effect=lambda app,p:p):
+            preview = await self.client.post("/api/preview",json=request)
+        self.assertEqual(preview.status,200,await preview.text())
+        reviewed = await preview.json()
+        self.assertEqual({asset["name"] for asset in reviewed["memory_context"]},{"林森","馆内规则"})
+        self.assertEqual([image["ref"] for image in reviewed["inputs"]],[costume])
+        self.assertIn("改穿蓝色风衣",reviewed["prompt"])
+        self.assertNotIn("改穿红色外套",reviewed["prompt"])
+        with patch.object(server,"_generate_request",new_callable=AsyncMock) as submit:
+            submit.return_value = web.json_response({"ids":[]})
+            initial = await self.client.post("/api/generate",json={**request,"asset_review_key":reviewed["asset_review_key"]})
+            self.assertEqual(initial.status,200,await initial.text())
+            retained = submit.await_args.args[1]
+            self.assertEqual([image["ref"] for image in retained["images"]],[costume])
+            self.assertIn("不能照相",retained["prompt"])
+            await self.create(id=world["id"],kind="world",name=world["name"],ref="",desc="严禁闪光灯")
+            rejected = await self.client.post("/api/generate",json={**request,"asset_review_key":reviewed["asset_review_key"]})
+            self.assertEqual(rejected.status,409,await rejected.text())
+            explicit = await self.client.post("/api/generate",json={**request,"images":[],
+                "prompt":"@{"+hero["id"]+"#main|林森}"})
+            self.assertEqual(explicit.status,200,await explicit.text())
+            self.assertEqual([image["ref"] for image in submit.await_args.args[1]["images"]],[hero["ref"]])
+            next_scene = await self.client.post("/api/generate",json={**request,
+                "fields":{"scene":"门外","people":"林森"},"memory_ids":[hero["id"]]})
+            self.assertEqual(next_scene.status,200,await next_scene.text())
+            self.assertEqual([image["ref"] for image in submit.await_args.args[1]["images"]],[hero["ref"]])
+            self.assertNotIn("严禁闪光灯",submit.await_args.args[1]["prompt"])
+
+    async def test_world_candidates_apply_only_to_matching_storyboard_shots(self):
+        matching = await self.create(kind="world",name="仓库规则",ref="",desc="仓库禁止点火",story_scenes=["夜间仓库"])
+        whole_story = await self.create(kind="world",name="城镇设定",ref="",desc="城镇由河道分成两半")
+        draft = await self.create(kind="world",name="设定草稿",ref="",story_draft=True)
+        store = self.app["creative_memory"]
+        candidates = store.storyboard_assets({"id":7,"role":"member"},"test","从夜间仓库来到河岸")
+        self.assertEqual({asset["id"] for asset in candidates},{matching["id"],whole_story["id"]})
+        shots = [{"scene":"夜间仓库","characters":[]},
+                 {"scene":"河岸","characters":[],"asset_refs":[{"id":matching["id"]},{"id":draft["id"]}]}]
+        server.tools.bind_storyboard_assets(shots,candidates)
+        self.assertEqual({asset["id"] for asset in shots[0]["asset_refs"]},{matching["id"],whole_story["id"]})
+        self.assertEqual([asset["id"] for asset in shots[1]["asset_refs"]],[whole_story["id"]])
+
     async def test_batch_generation_asset_review_is_scoped_and_blocks_changed_references(self):
         hero = await self.create(character_view="main")
         await self.client.put("/api/board/another",json={"nodes":[]})

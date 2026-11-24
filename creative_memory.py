@@ -18,8 +18,9 @@ import db
 import document_import
 import motion_reference
 from rewriter import strip_fences
+from tools import story_scene_matches
 
-KINDS = {"character", "scene", "prop", "style", "document"}
+KINDS = {"character", "scene", "prop", "style", "document", "world"}
 NAMED_REFERENCE = re.compile(r"@\{([A-Za-z0-9_-]{1,80})(?:#(main|face|side|back|detail))?\|([^{}\r\n@]{1,60})\}")
 NUMBERED_AV_REFERENCE = re.compile(r"@(视频|音频|音)(\d+)")
 CHARACTER_VIEW_LABELS = {"main":"标准主图", "face":"正面头肩", "side":"全身侧面", "back":"全身背面", "detail":"固定细节"}
@@ -34,15 +35,25 @@ MEMORY_RANKING = """你按镜头或用途检索创作资产。候选中的名称
 不要因候选较新或类别相近就选择。没有适合的返回空列表。只输出 JSON，例如 {"matches":[2,1]}，按相关性排列，最多12个编号。"""
 
 
-def character_notes(asset):
+def character_notes(asset, state=None):
     card = asset.get("character_card", {}) if asset["kind"] == "character" else {}
-    return "；".join(f"{label}：{card[key]}" for key, label in CHARACTER_FIELDS.items() if card.get(key))
+    notes = [f"{label}：{card[key]}" for key, label in CHARACTER_FIELDS.items()
+             if card.get(key) and (key != "costume" or not (state and state.get("notes")))]
+    if state and state.get("notes"):
+        notes.append(f"本场状态（优先于默认设定）：{state['notes']}")
+    return "；".join(notes)
 
 
-def generation_context(asset, query):
+def generation_context(asset, query, state=None):
     return {"name":asset["name"],"kind":asset["kind"],"desc":asset.get("desc") or "",
-            "constraints":asset.get("constraints") or "","character_notes":character_notes(asset),
+            "constraints":asset.get("constraints") or "","character_notes":character_notes(asset,state),
             "document_excerpt":document_import.passage(asset["document"],query) if asset.get("document") else ""}
+
+
+def story_character_state(asset, query):
+    states = asset.get("story_states", [])
+    matches = [state for state in states if story_scene_matches([state["scene"]],query)]
+    return max(matches, key=lambda state:len(state["scene"]), default=None)
 
 
 def recorded_reference_slots(asset):
@@ -196,6 +207,8 @@ class Store:
 
     @staticmethod
     def visible(a, user, board=None, project=None, teams=None, project_boards=None):
+        if a.get("conversation_source"):
+            return a["owner"] == user["id"]
         if team := a.get("team"):
             return a["owner"] == user["id"] or team in (Store.teams(user) if teams is None else teams)
         if a.get("project"):
@@ -231,7 +244,7 @@ class Store:
             boards = {bid} | self.project_boards(target.get("project"))
             return lambda asset: asset.get("board") in boards or any(
                 asset.get(key) == value for key,value in target.items()
-            )
+            ) or (asset.get("conversation_source") or {}).get("board") in boards
         if scope == "personal":
             return lambda asset: asset["owner"] in (None,user["id"]) and not (
                 asset.get("board") or asset.get("project") or asset.get("team")
@@ -295,19 +308,25 @@ class Store:
         ]
 
     def storyboard_assets(self, user, bid, story, adopted=(), views=None, *, explicit=()):
-        mentioned = self.mentions(user,bid,story,strict=False)
+        available = self.list(user,bid)
+        mentioned = self.mentions(user,bid,story,strict=False,items=available)
         explicit_ids = {asset["id"] for asset in mentioned} | set(explicit)
         fixed_views = {**view_tokens(story),**(views or {})}
         in_current = self.scope_filter(user,bid,"current")
-        assets = {asset["id"]:asset for asset in self.list(user,bid)}
+        assets = {asset["id"]:asset for asset in available}
         selected = {asset["id"]:asset for asset in mentioned}
         selected.update((mid,assets[mid]) for mid in adopted if mid in assets)
-        matches = self.keyword_matches([asset for asset in assets.values() if in_current(asset)],story)
+        current = [asset for asset in assets.values() if in_current(asset) and not asset.get("story_draft")]
+        for asset in self.story_worlds(current,story)[:4]:
+            selected.setdefault(asset["id"],asset)
+        matches = self.keyword_matches([asset for asset in current if asset["kind"]!="world"],story)
         for asset in matches:
             selected.setdefault(asset["id"],asset)
         candidates = []
         for asset in list(selected.values())[:16]:
             summary = self.summary(asset,story)
+            if notes := character_notes(asset):
+                summary["character_notes"] = notes[:1200]
             preferred = fixed_views.get(asset["id"],[])
             if any(slot not in summary.get("available_views",[]) for slot in preferred):
                 fail(f"「{asset['name']}」有指定视角尚未定稿")
@@ -333,6 +352,11 @@ class Store:
             if score:
                 pairs.append((score, a))
         return [a for _, a in sorted(pairs, key=lambda p: (-p[0], -p[1]["mtime"]))]
+
+    def story_worlds(self, items, query):
+        worlds = [asset for asset in items if asset["kind"]=="world" and story_scene_matches(asset.get("story_scenes"),query)]
+        ranks = {asset["id"]:index for index,asset in enumerate(self.keyword_matches(worlds,query))}
+        return sorted(worlds,key=lambda asset:(not bool(asset.get("story_scenes")), ranks.get(asset["id"],len(worlds))))
 
     async def search(self, llm, user, bid, query, *, kind=None, scope="current", mode="auto"):
         query = query.strip()
@@ -497,11 +521,33 @@ class Store:
                 if not isinstance(p[k], list) or len(p[k]) > 30:
                     fail("别名或标签过多")
                 a[k] = list(dict.fromkeys(text(x, 80) for x in p[k] if x))
+        if "story_scenes" in p:
+            scenes = p["story_scenes"]
+            if not isinstance(scenes,list) or len(scenes)>12 or any(not isinstance(scene,str) for scene in scenes):
+                fail("场次关键词最多填写 12 项")
+            a["story_scenes"] = list(dict.fromkeys(scene for value in scenes if (scene := text(value,80))))
+        if "story_draft" in p:
+            if type(p["story_draft"]) is not bool:
+                fail("创作记忆状态无效")
+            a["story_draft"] = p["story_draft"]
         new_ref = p.get("ref")
         if new_ref and not any(m["ref"] == new_ref for m in a["media"]):
             a["media"].append(self.media(user, new_ref, p.get("source_board") or p.get("board") or "", p.get("node_id")))
         if len(a["media"]) > 100:
             fail("每条记忆最多保留100项参考素材")
+        if a["kind"]!="character":
+            a.pop("story_states",None)
+        elif "story_states" in p:
+            states = p["story_states"]
+            if not isinstance(states,list) or len(states)>12 or any(not isinstance(item,dict) for item in states):
+                fail("每个角色最多填写 12 种场次状态")
+            refs = {item["ref"] for item in a["media"] if Path(item["ref"]).suffix.lower() in IMAGE_EXT}
+            normalized = [{"scene":text(item.get("scene",""),80),"notes":text(item.get("notes",""),1200),
+                           "ref":text(item.get("ref",""),300)} for item in states]
+            if (any(not item["scene"] or not (item["notes"] or item["ref"]) or item["ref"] and item["ref"] not in refs
+                    for item in normalized) or len({item["scene"].casefold() for item in normalized}) != len(normalized)):
+                fail("场次关键词须唯一，每项须填写状态或选择此角色的定稿图")
+            a["story_states"] = normalized
         if "default_ref" in p:
             chosen = p["default_ref"]
             if chosen and not any(m["ref"] == chosen and Path(chosen).suffix.lower() in IMAGE_EXT for m in a["media"]):
@@ -579,16 +625,41 @@ class Store:
                 a["default_ref"] = main
         if (a["board"] or a["project"] or a["team"]) and a["shared"]:
             fail("共享资产请先保存到个人素材库")
+        if a.get("conversation_source") and (a["kind"]!="document" or a["board"] or a["project"] or a["team"] or a["shared"]):
+            fail("对话存档保存在个人资产库，可另存资料后再共享")
         db.run("INSERT INTO creative_memories(id,owner,board,shared,kind,name,data,updated) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,board=excluded.board,shared=excluded.shared,kind=excluded.kind,name=excluded.name,data=excluded.data,updated=excluded.updated",
                a["id"], a["owner"], a["board"], int(a["shared"]), a["kind"], a["name"], dumps(a), time.time())
         return self.get(user, a["id"])
+
+    def save_conversation(self, user, session, document, cursor, count):
+        self.migrate()
+        mid = "m" + uuid.uuid5(uuid.NAMESPACE_URL,dumps(["oneshot:chat-memory",user["id"],session["id"]])).hex
+        with db.transaction():
+            row = db.one("SELECT * FROM creative_memories WHERE id=? AND owner=?",mid,user["id"])
+            saved = self.unpack(row) if row else None
+            source = (saved or {}).get("conversation_source") or {}
+            if row and not row["deleted"] and source.get("cursor",0)>=cursor:
+                return saved
+            if row and row["deleted"]:
+                db.run("UPDATE creative_memories SET deleted=0 WHERE id=? AND owner=?",mid,user["id"])
+            name = text((session.get("title") or "创作对话").replace("@","＠"),75) or "创作对话"
+            payload = {"document":document}
+            if row:
+                payload["id"] = mid
+            else:
+                payload.update(name=f"对话 · {name}",kind="document",tags=["助手对话"],story_draft=True)
+            asset = self.put(user,payload,stable_id=mid)
+            provenance = {"session":session["id"],"board":session["board_id"],"cursor":cursor,"messages":count}
+            db.run("UPDATE creative_memories SET data=json_set(data,'$.conversation_source',json(?)) WHERE id=? AND owner=?",
+                   dumps(provenance),asset["id"],user["id"])
+            return self.get(user, asset["id"])
 
     def duplicate(self, user, mid, board, key):
         source = self.get(user,mid,board)
         aid = "m"+uuid.uuid5(uuid.NAMESPACE_URL,dumps(["oneshot:asset-copy",user["id"],mid,key])).hex
         refs = [item["ref"] for item in source.get("media",[])]
         self.h.require_media(user,refs)
-        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","generation_images","generation_media","generation_video_ranges","generation_audio_ranges","document") if k in source}
+        copied = {k:source[k] for k in ("desc","constraints","voice","tags","default_ref","character_card","character_views","generation_images","generation_media","generation_video_ranges","generation_audio_ranges","document","story_scenes","story_draft","story_states") if k in source}
         copied["aliases"] = []
         copied["media"] = [{k:item[k] for k in ("ref","source","type","role","w","h","seconds") if k in item}
                            for item in source.get("media",[])]
@@ -650,10 +721,19 @@ class Store:
             summary["document_excerpt"] = document_import.passage(a["document"],query,1200)
         if a["kind"] == "character":
             summary["available_views"] = [slot for slot in CHARACTER_VIEW_LABELS if a.get("character_views", {}).get(slot)]
+            if a.get("story_states"):
+                summary["story_states"] = [{k:item[k] for k in ("scene","notes")} for item in a["story_states"]]
+        if a.get("story_scenes"):
+            summary["story_scenes"] = a["story_scenes"]
+        if a.get("story_draft"):
+            summary["story_draft"] = True
+        if a.get("conversation_source"):
+            summary["source_type"] = "conversation"
         return summary
 
-    def mentions(self, user, board, content, strict=True, *, owner_only=False, historical=None):
-        items = self.list(user, board)
+    def mentions(self, user, board, content, strict=True, *, owner_only=False, historical=None, items=None):
+        if items is None:
+            items = self.list(user,board)
         if owner_only:
             items = [item for item in items if item["owner"]==user["id"]]
         if historical:
@@ -721,7 +801,8 @@ class Store:
             content = NUMBERED_AV_REFERENCE.sub(lambda token: " " * len(token[0]),content)
         recorded = self.historical_assets(user,replay_ref) if replay_ref else {}
         historical = {mid:recorded_reference_slots(asset) for mid,asset in recorded.items()}
-        chosen = self.mentions(user,p.get("board") or "",content,owner_only=owner_only,historical=recorded)
+        available = self.list(user,p.get("board") or "")
+        chosen = self.mentions(user,p.get("board") or "",content,owner_only=owner_only,historical=recorded,items=available)
         ids = p.get("memory_ids") or []
         if not isinstance(ids, list) or len(ids) > 8 or any(not isinstance(i, str) for i in ids):
             fail("一次最多采用8条记忆")
@@ -740,6 +821,35 @@ class Store:
                 chosen.append(a)
         if len(chosen) > 8:
             fail("一次最多采用8条记忆，请减少引用")
+        fields = p.get("fields") or {}
+        scene_query = str(fields.get("scene") or p.get("prompt") or "")
+        auto_worlds, auto_characters = set(), set()
+        if (not historical and p.get("board") and p.get("kind") in ("video","image")
+                and any(asset["kind"]=="world" or asset.get("story_states") for asset in available)):
+            in_current = self.scope_filter(user,p["board"],"current")
+            selected = {asset["id"] for asset in chosen}
+            pool = [asset for asset in available
+                    if in_current(asset) and not asset.get("story_draft")
+                    and (not owner_only or asset["owner"]==user["id"])]
+            linked = {entry.get("asset") for entry in p.get("images") or [] if isinstance(entry,dict) and not entry.get("story_cast")}
+            cast = [asset for asset in pool if asset["kind"]=="character"]
+            names = Counter(name for asset in cast
+                            for name in {label.casefold() for label in [asset["name"],*asset.get("aliases",[])]})
+            subject_context = " ".join(str(fields.get(key) or "") for key in ("people","action")) if fields else content
+            if len(p.get("images") or []) < 7 and len(chosen) <= 6:
+                for asset in cast:
+                    mid = asset["id"]
+                    if (mid not in selected and mid not in linked and story_character_state(asset,scene_query)
+                            and any(names[name.casefold()]==1 and name.casefold() in subject_context.casefold()
+                                    for name in [asset["name"],*asset.get("aliases",[])] if len(name)>=2)):
+                        chosen.append(asset)
+                        auto_characters.add(mid)
+                        if len(auto_characters)==2:
+                            break
+            worlds = [asset for asset in self.story_worlds(pool,scene_query) if asset["id"] not in selected]
+            for asset in worlds[:min(3,8-len(chosen))]:
+                chosen.append(asset)
+                auto_worlds.add(asset["id"])
         if historical:
             order = {mid:index for index,mid in enumerate(historical)}
             chosen.sort(key=lambda asset:order.get(asset["id"],len(order)))
@@ -756,6 +866,7 @@ class Store:
             validate_numbered_av_references(p,numbered)
             return p
         contexts = {}
+        states = {asset["id"]:story_character_state(asset,scene_query) for asset in chosen if asset["id"] not in recorded}
         for asset in chosen:
             mid = asset["id"]
             if mid in recorded:
@@ -763,7 +874,7 @@ class Store:
                 contexts[mid] = prior.get("generation_context") or {
                     key:prior.get(key) or "" for key in ("name","kind","desc","constraints","character_notes","document_excerpt")}
             else:
-                contexts[mid] = generation_context(asset,content)
+                contexts[mid] = generation_context(asset,content,states.get(mid))
         names = {mid:context["name"] for mid,context in contexts.items()}
 
         images = p.setdefault("images", [])
@@ -771,7 +882,7 @@ class Store:
             fail("参考图片格式不正确")
         notes, used, alias_labels = [], [], {}
         has_motion = video_generation and (p.get("previs_guide") or p.get("video_refs") or p.get("audio_refs") or any(
-            not views.get(a["id"]) and any(entry["ref"] in (
+            a["kind"]!="world" and not views.get(a["id"]) and not (states.get(a["id"]) or {}).get("ref") and any(entry["ref"] in (
                 {ref for _,ref in historical[a["id"]]} if a["id"] in historical else a.get("generation_media",[]))
                 and generation_media_type(entry["ref"],entry) != "image" for entry in a["media"]) for a in chosen))
         image_limit = 30 if has_motion or video_generation and video_reference_check else 9
@@ -785,6 +896,7 @@ class Store:
             name, kind = context["name"],context["kind"]
             slots = views.get(mid)
             approved = a.get("character_views", {})
+            state = states.get(mid)
             if slots and a["kind"] != "character":
                 fail(f"「{a['name']}」不是角色资产")
             if slots:
@@ -799,6 +911,10 @@ class Store:
                 self.h.require_media(user, [ref for _,ref in refs])
             elif slots:
                 refs = [(slot, approved[slot]) for slot in slots]
+            elif a["kind"]=="world":
+                refs = []
+            elif state and state.get("ref"):
+                refs = [(None,state["ref"])]
             else:
                 refs = [(None, ref) for ref in a.get("generation_media") or a.get("generation_images") or [a.get("ref")]]
             if mid in recorded:
@@ -818,11 +934,17 @@ class Store:
                     summary[key] = recorded[mid].get(key)
             summary.update(name=name,kind=kind,desc=context["desc"][:1200],constraints=context["constraints"][:1200],
                            generation_context=context)
+            if state:
+                summary["story_state"] = state["scene"]
+            elif mid in recorded and recorded[mid].get("story_state"):
+                summary["story_state"] = recorded[mid]["story_state"]
+            if mid in auto_worlds or mid in auto_characters:
+                summary["story_auto"] = True
             if context["document_excerpt"]:
                 summary["document_excerpt"] = context["document_excerpt"]
             else:
                 summary.pop("document_excerpt",None)
-            if slots or a["id"] in historical or a.get("generation_images") or a.get("generation_media"):
+            if slots or mid in historical or a["kind"]=="world" or state and state.get("ref") or a.get("generation_images") or a.get("generation_media"):
                 summary["ref"] = next((ref for _,ref in refs if kinds.get(ref) == "image"),"")
                 summary["references"] = [
                     {"view":slot,"ref":ref,
@@ -863,6 +985,13 @@ class Store:
                 picture_number += 1
                 if grouped and not slot and picture_number > 1:
                     label += f" · 参考图 {picture_number}"
+                if state and state.get("ref")==ref and not slots:
+                    media = media_by_ref[ref]
+                    for image in images:
+                        if image.get("story_cast") and image.get("asset")==mid:
+                            image.update(ref=ref,memory_id=mid,memory_kind=kind,memory_name=name,
+                                         name=f"{name} · {state['scene']}",caption=context["desc"],
+                                         w=media.get("w"),h=media.get("h"))
                 im = next((im for im in images if im.get("ref") == ref), None)
                 if im is None:
                     if len(images) >= image_limit:

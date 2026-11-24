@@ -13,6 +13,7 @@ function fullPrompt(n) {
   return parts.join("\n");
 }
 function showErr(n, msg) { const b = $(".errbox", els.get(n.id)); b.textContent = msg || ""; b.classList.toggle("on", !!msg); }
+function canvasGenerationError(n) { return els.get(n.id)?.querySelector(".errbox")?.textContent || ""; }
 const usesFields = n => !!n && n.type === "video" && n.data.pmode === "fields";
 const fieldsFilled = n => FIELDS.some(f => !["sound", "music"].includes(f.k) && (n.data.fields?.[f.k] || "").trim());
 const prepping = new Set();   // nodes whose request is being submitted before it reaches the queue
@@ -149,7 +150,12 @@ function previsComposition(n) {
 
 function storyboardFrameReady(n) {
   const current=curV(n), guide=previsComposition(n);
-  return !!current && !(guide?.enabled && current.ref===guide.ref && current.source==="previs-frame");
+  return storyboardVersionReady(n) &&
+    !(guide?.enabled && current.ref===guide.ref && current.source==="previs-frame");
+}
+function storyboardVersionReady(n) {
+  const version=curV(n);
+  return !!version&&!n.data.storyboard_stale_refs?.includes(version.ref);
 }
 
 function previsCompositionHasRoom(n, guide, refs) {
@@ -185,7 +191,9 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     if ((ins.length || guide?.enabled) && model === "h3video") { toast("以图改图需要 H3-Image 模型"); return; }
     for(const {edge,source,version} of ins){
       if(!version?.ref){showErr(n,edge.ref?`「${source.name}」引用的版本已移除`:`「${source.name}」还没有图片`);return;}
-      images.push({ref:version.ref,node_id:source.id,name:source.name,...(edge.prompt_slot?{prompt_slot:edge.prompt_slot}:{})});
+      images.push({ref:version.ref,node_id:source.id,name:source.name,
+        ...(edge.story_cast&&!edge.ref&&source.data.asset?.id?{story_cast:true,asset:source.data.asset.id}:{}),
+        ...(edge.prompt_slot?{prompt_slot:edge.prompt_slot}:{})});
     }
     let resolved=resolveCanvasPrompt(n,prompt,canvasPromptBindings(ins));
     if(resolved===null)return;
@@ -243,8 +251,9 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
     }
     const preview=videoReferencePreviews.get(n);
     const checked=preview?.signature===videoPreviewSignature(req);
-    const r = await api("/api/generate",{...req,...(checked?{reference_preview:preview.key}:{}),
-      ...(assetReviewKey?{asset_review_key:assetReviewKey}:{})});
+    const rememberedAssetKey=assetReviewKey|| (checked?preview.assetKey:null);
+    const r = await api("/api/generate",{...req,...(checked&&preview.key?{reference_preview:preview.key}:{}),
+      ...(rememberedAssetKey?{asset_review_key:rememberedAssetKey}:{})});
     if (B!==sourceBoard || node(n.id)!==n) return;
     if(history?.video_recipe && r.memory_context)Object.assign(history.video_recipe,r.memory_context);
     if(history?.video_recipe && r.video_model) {
@@ -267,7 +276,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
 }
 function inheritedVideoAssets(n) {
   const assets = curV(n)?.memory_used, ignored = n.data.ignored_memory_ids;
-  return Array.isArray(assets) ? assets.filter(asset=>typeof asset?.id==="string" &&
+  return Array.isArray(assets) ? assets.filter(asset=>typeof asset?.id==="string" && !asset.story_auto &&
     !(Array.isArray(ignored) && ignored.includes(asset.id))) : [];
 }
 function applyVideoMemory(n, request) {
@@ -301,6 +310,7 @@ function videoReq(n, prompt, {silent=false}={}) {
       if(!v?.ref)return missingReference(edge.ref?`「${m.name}」引用的版本已移除`:`「${m.name}」还没有图片`);
       imgs.push({ node_id: m.id, ref: v.ref, name: m.name, caption: m.data.caption || (v.source === "gen" ? v.prompt : "") || "", index: i + 1, asset: m.data.asset?.id,
                   role: p.roles[i] === "subject" ? "subject" : "frame", time: p.times[i] ?? 0, w: v.w, h: v.h,
+                  ...(edge.story_cast&&!edge.ref?{story_cast:true}:{}),
                   ...(edge.prompt_slot?{prompt_slot:edge.prompt_slot}:{}) });
     }
     // the video's shape: chosen, or the first frame's, or a character image's

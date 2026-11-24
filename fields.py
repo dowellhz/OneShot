@@ -14,6 +14,10 @@ _INLINE = re.compile(r"([^，。,.;；“”\"「」]*?)[:：]\s*[“\"「]([^�
 _QUOTES = "“”\"「」"
 _SPEAKER = re.compile(r"^(.{1,24}?)\s*[:：]+\s*(.+)$")          # 名字（语气）：台词 — tolerates "：：" and spaces
 _VERB = re.compile(r"\s*(说|道|问|喊|答|念|叫|低语|回答|说道)$")
+_NUMBER = r"[0-9]+(?:\.[0-9]+)?"
+_ACTION_RANGE = re.compile(rf"^({_NUMBER})\s*[-–—~～至到]\s*({_NUMBER})\s*(?:秒|s(?:ec(?:ond)?s?)?\b)\s*[:：]?\s*",
+                           re.I)
+ACTION_TIME = re.compile(rf"{_NUMBER}–{_NUMBER} s:")
 
 
 def _unquote(s: str) -> str:
@@ -132,7 +136,15 @@ def _dialogue_beats(f: dict, sp: _Speakers) -> list[str]:
 
 
 def _action_beats(f: dict, sp: _Speakers) -> list[str]:
-    return [_INLINE.sub(lambda m: sp.inline(m.group(1), m.group(2)), line) for line in _lines(f.get("action"))]
+    beats = []
+    for line in _lines(f.get("action")):
+        timing = _ACTION_RANGE.match(line)
+        prefix = ""
+        if timing and timing.end() < len(line):
+            start, end = timing.groups()
+            prefix, line = f"{start}–{end} s: ", line[timing.end():]
+        beats.append(prefix + _INLINE.sub(lambda m: sp.inline(m.group(1), m.group(2)), line))
+    return beats
 
 
 def compose(f: dict, extra: str = "", subj: dict | None = None) -> tuple[str, str, str]:
@@ -148,14 +160,17 @@ def compose(f: dict, extra: str = "", subj: dict | None = None) -> tuple[str, st
     if cam:
         out.append(_end("镜头：" + cam if _CJK.search(cam) else "Camera: " + cam))
 
-    beats = [line.rstrip("。.;；，,") for line in _action_beats(f, sp)]
-    beats.extend(_dialogue_beats(f, sp))
-    if beats:
+    actions = [line.rstrip("。.;；，,") for line in _action_beats(f, sp)]
+    dialogue = _dialogue_beats(f, sp)
+    timed = any(ACTION_TIME.match(line) for line in actions)
+    if timed:
+        out.extend(_end(line) for line in [*actions, *dialogue])
+    elif beats := [*actions, *dialogue]:
         joined = beats[0] + "".join(("，然后" if _CJK.search(b[:1]) else ", then ") + b for b in beats[1:])
         out.append(_end(joined))
     if extra and extra.strip():
         out.append(_end(_one(extra)))
-    return " ".join(out), _one(f.get("sound")), _one(f.get("music"))
+    return ("\n" if timed else " ").join(out), _one(f.get("sound")), _one(f.get("music"))
 
 
 def has_content(f) -> bool:

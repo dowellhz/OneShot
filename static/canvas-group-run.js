@@ -175,7 +175,7 @@ const groupGeneratable=n=>!!n&&["image","video","audio"].includes(n.type)&&!n.da
 function groupGenerationNodes(group, includeExisting, affected=null, completed=new Map(), tails=new Map()) {
   const candidates=[...new Set(group.nodes)].map(node).filter(n=>groupGeneratable(n) &&
     (!affected || affected.has(n.id)) &&
-    (includeExisting || (group.previsTiming && n.type==="image" ? !storyboardFrameReady(n) : !curV(n))));
+    (includeExisting || (n.type==="image" && (group.previsTiming || n.data.storyboard_stale_refs) ? !storyboardFrameReady(n) : !curV(n))));
   const ids=new Set(candidates.map(n=>n.id));
   const steps=candidates.map(n=>{
     const media=groupRunInputs(n);

@@ -2,7 +2,7 @@
 // Canvas tools: storyboard script node, "/" image tools, grid split, HD redraw, 反推, 拉片, concat, asset library.
 // Loaded before the main script; only declarations here. The main script calls initTools() before it boots.
 
-const KIND_CN = { character: "角色", scene: "场景", prop: "道具", style: "风格", document: "资料" };
+const KIND_CN = { character: "角色", scene: "场景", prop: "道具", style: "风格", document: "资料", world: "世界观" };
 const toolBusy = new Map();          // node id -> { label, t0 } while a Qwen / media tool runs on it
 
 function setToolBusy(n, label) {
@@ -630,18 +630,23 @@ function missingMotionFrames(shot,pair) {
   return !!shot?.motion_frames&&["middle","end"].some(phase=>!node(pair?.motion_frames?.[phase]));
 }
 
-function makeShotMotionFrame(script,shot,settings,index,phase,prior,x,y) {
+function shotMotionFrameSettings(script,shot,phase) {
   const description=shot.motion_frames[phase]?.trim()||[...(shot.action||[]),
     phase==="end"?"动作已结束，保持最终站位和道具状态":"动作进行到中间时的姿态"].join("，");
   const moment=phase==="end"?"尾帧":"中帧";
-  const assets=(shot.asset_refs||[]).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+  const assets=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
   const prompt=[`参考 @图{1} 延续同一镜头。锁定机位、构图、角色身份、服装、道具位置及光线，只推进动作到本帧状态。`,
     script.data.style,shot.scene,[shot.shot_size,shot.camera].filter(Boolean).join("，"),
     `${moment}画面：${description}`,assets&&"参考资产 "+assets].filter(Boolean).join("\n");
-  const image=addNode("image",x,y,{prompt,caption:description,aspect:script.data.aspect,quality:"4mp",image_ref_seq:1},
+  return {prompt,caption:description,moment};
+}
+
+function makeShotMotionFrame(script,shot,settings,index,phase,prior,x,y) {
+  const {moment,...data}=shotMotionFrameSettings(script,shot,phase);
+  const image=addNode("image",x,y,{...data,aspect:script.data.aspect,quality:"4mp",image_ref_seq:1},
     {name:`镜${index+1} · ${moment}`});
   B.edges.push({from:prior.id,to:image.id,prompt_slot:1});
-  settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:image.id,...(ref.pinned?{ref:ref.ref}:{})}));
+  settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:image.id,story_cast:!ref.pinned,...(ref.pinned?{ref:ref.ref}:{})}));
   return image;
 }
 
@@ -653,7 +658,7 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   const characters=shot.characters||[], cast=data.characters||[];
   const references=[...new Map(characters.map(refOf).filter(Boolean).map(ref=>[ref.node.id,ref])).values()];
   const intro=references.map((ref,i)=>`@图${i+1} 是${ref.name}`).join("，");
-  const assets=(shot.asset_refs||[]).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+  const assets=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
   const assetLine=assets&&"参考资产 "+assets;
   const prompt=[intro&&intro+"。",data.style,shot.scene,shot.keyframe,shot.shot_size&&`${shot.shot_size}镜头`,assetLine]
     .filter(Boolean).join("，").replace(/。，/g,"。");
@@ -669,7 +674,8 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   }};
 }
 
-function applyScriptShotRevision(script,plan) {
+function applyScriptShotRevision(script,plan,{wizard=false,recordUndo=true}={}) {
+  if(!canvasCanEdit())throw new Error("当前画布仅可查看");
   if(node(script.id)!==script || nodeLocked(script) || toolBusy.has(script.id))throw new Error("分镜已锁定或正在改写");
   const shots=script.data.shots||[];
   const index=plan.shot_id?shots.findIndex(shot=>shot.id===plan.shot_id):plan.shot-1;
@@ -679,18 +685,37 @@ function applyScriptShotRevision(script,plan) {
   if(!Object.entries(plan.before).every(([key,value])=>same(shot[key],value)))throw new Error("镜头内容已变化，请重新准备修改方案");
   const next={...shot,...plan.changes}, previous=scriptShotSettings(script,shot), settings=scriptShotSettings(script,next);
   const pair=scriptShotLinks(script)[index], image=node(pair?.img), video=node(pair?.vid);
-  const imagePatch={}, videoPatch={}, fieldPatch={}, retained=new Set();
+  const videoPatch={}, fieldPatch={}, retained=new Set();
   const stage=(n,patch,key,current,before,after)=>{
     if(!n||before===after||current===after)return;
     if(n.job||prepping.has(n.id)||toolBusy.has(n.id))throw new Error("请等本镜的生成任务结束后再应用修改");
     if(nodeLocked(n)||current!==before){retained.add(n.name);return;}
     patch[key]=after;
   };
-  if(image){
-    const before=previous.image.prompt, after=settings.image.prompt, current=image.data.prompt;
+  const imageChanges=new Map();
+  const stageImage=(target,oldSettings,newSettings)=>{
+    if(!target)return;
+    const patch={};
+    const before=oldSettings.prompt, after=newSettings.prompt, current=target.data.prompt;
     const suffix=before&&current?.startsWith(before+"\n")?current.slice(before.length):"";
-    stage(image,imagePatch,"prompt",current,before+suffix,after+suffix);
-    stage(image,imagePatch,"caption",image.data.caption,previous.image.caption,settings.image.caption);
+    const base=target.data.base_prompt;
+    stage(target,patch,"prompt",current,before+suffix,after+suffix);
+    if(base===before&&patch.prompt)patch.base_prompt=after;
+    stage(target,patch,"caption",target.data.caption,oldSettings.caption,newSettings.caption);
+    if(Object.keys(patch).length)imageChanges.set(target,patch);
+  };
+  const detach=wizard&&pair?.shared_first&&image&&previous.image.caption!==settings.image.caption;
+  const middle=node(pair?.motion_frames?.middle);
+  if(detach&&[video,middle].some(target=>target&&(nodeLocked(target)||target.job||prepping.has(target.id))))
+    throw new Error("请先解锁镜头并等待生成完成，再修改共用首帧");
+  if(pair?.shared_first&&!detach){
+    if(previous.image.caption!==settings.image.caption)retained.add(image?.name||"共用首帧");
+  }else if(!detach)stageImage(image,previous.image,settings.image);
+  if(wizard&&shot.motion_frames&&next.motion_frames){
+    for(const phase of ["middle","end"]){
+      stageImage(node(pair?.motion_frames?.[phase]),shotMotionFrameSettings(script,shot,phase),
+        shotMotionFrameSettings(script,next,phase));
+    }
   }
   if(video){
     stage(video,videoPatch,"duration",video.data.duration,previous.video.duration,settings.video.duration);
@@ -700,15 +725,60 @@ function applyScriptShotRevision(script,plan) {
       else retained.add(video.name);
     }
   }
-  checkpoint();ensureScriptShotIds(script);
+  if(recordUndo)checkpoint();
+  ensureScriptShotIds(script);
   Object.assign(shot,plan.changes);
   const updated=[];
-  if(Object.keys(imagePatch).length){Object.assign(image.data,imagePatch);updated.push(image);}
+  const stale=new Set();
+  if(detach){
+    const first=addNode("image",middle?.x??image.x,(middle?.y??image.y)-size(image).h-110,
+      {...settings.image,aspect:script.data.aspect,quality:"4mp"},{name:`镜${index+1} · 分镜图`});
+    settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:first.id,story_cast:!ref.pinned,...(ref.pinned?{ref:ref.ref}:{})}));
+    if(video){
+      rememberVideoVersion(video);
+      const edge=B.edges.find(entry=>entry.to===video.id&&entry.role==="first");
+      if(edge){edge.from=first.id;delete edge.ref;}
+      else B.edges.push({from:first.id,to:video.id,role:"first"});
+    }
+    if(middle){
+      const guide=B.edges.find(entry=>entry.to===middle.id&&entry.prompt_slot===1);
+      if(guide){guide.from=first.id;delete guide.ref;}
+      else B.edges.push({from:first.id,to:middle.id,prompt_slot:1});
+      stale.add(middle);
+    }
+    pair.img=first.id;
+    pair.shared_first=false;
+    updated.push(first);
+  }
+  for(const [target,patch] of imageChanges){
+    Object.assign(target.data,patch);
+    if(wizard&&patch.prompt)stale.add(target);
+    updated.push(target);
+  }
+  const affectedPairs=wizard&&stale.size?scriptShotLinks(script).filter(Boolean):[];
+  if(affectedPairs.length){
+    const motionIds=new Set(affectedPairs.flatMap(item=>Object.values(item.motion_frames||{})));
+    for(const source of stale)
+      for(const edge of B.edges)
+        if(edge.from===source.id&&edge.prompt_slot===1&&!edge.ref&&motionIds.has(edge.to)&&node(edge.to))
+          stale.add(node(edge.to));
+  }
+  for(const target of stale)if(target.versions.length)
+    target.data.storyboard_stale_refs=target.versions.map(version=>version.ref);
   if(Object.keys(videoPatch).length||Object.keys(fieldPatch).length){
     rememberVideoVersion(video);
     Object.assign(video.data,videoPatch);
     if(Object.keys(fieldPatch).length)video.data.fields={...video.data.fields,...fieldPatch};
     updated.push(video);
+  }
+  if(wizard){
+    const staleIds=new Set([...stale].map(target=>target.id));
+    const staleVideos=new Set(affectedPairs.filter(item=>shotFrameIds(item).some(id=>staleIds.has(id))).map(item=>node(item.vid)));
+    if(video&&(updated.includes(video)||stale.size||detach))staleVideos.add(video);
+    for(const target of staleVideos)if(target?.versions.length){
+      rememberVideoVersion(target);
+      target.data.storyboard_stale_refs=target.versions.map(version=>version.ref);
+    }
   }
   render(script);updated.forEach(render);
   if(sel.size===1&&[script,...updated].some(n=>sel.has(n.id)))showPanel();
@@ -750,7 +820,7 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
         img.versions.push({ref,url:"/media?ref="+encodeURIComponent(ref),w,h,source,prompt:""});
         img.cur=0;
       }
-      settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,...(r.pinned?{ref:r.ref}:{})}));
+      settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,story_cast:!r.pinned,...(r.pinned?{ref:r.ref}:{})}));
       created.push(img);
     }
     let nextY=y0+(created.length?Math.max(size(img).h,300)+110:0);
@@ -775,7 +845,7 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
         ...(provider?{provider}:{})},{name:`镜${i+1}`});
       B.edges.push({from:img.id,to:vid.id,role:"first"});
       for(const r of settings.references){
-        if(r.node.id!==img.id)B.edges.push({from:r.node.id,to:vid.id,role:"subject",...(r.pinned?{ref:r.ref}:{})});
+        if(r.node.id!==img.id)B.edges.push({from:r.node.id,to:vid.id,role:"subject",story_cast:!r.pinned,...(r.pinned?{ref:r.ref}:{})});
       }
       created.push(vid);
     }
@@ -819,13 +889,22 @@ async function batchImages(n) {
   toast(`已提交 ${queued} 张分镜图${skipped?`，${skipped} 张未提交，请检查提示词或参考图`:""}`,3000);
 }
 async function batchVideos(n) {
-  const all = madeShots(n), ready = [], wait = [];
-  for (const x of all) { const v = node(x.vid); if (!v || v.job || curV(v)) continue;
+  const board=B, all = madeShots(n), ready = [], wait = [];
+  for (const x of all) { const v = node(x.vid); if (!v || v.job || storyboardVersionReady(v)) continue;
     const shot=n.data.shots.find(item=>item.id===x.shot_id);
     (node(x.img)&&!missingMotionFrames(shot,x)&&shotFrameIds(x).every(id=>node(id)&&storyboardFrameReady(node(id))) ? ready : wait).push(v); }
   if (!ready.length) return toast(wait.length ? "分镜图还没生成好，先点「批量出分镜图」" : "视频都已经生成了；想重做某一镜就选中它单独生成");
-  for (const v of ready) await generate(v);
-  toast(`已排队 ${ready.length} 段视频${wait.length ? `，另有 ${wait.length} 镜等分镜图` : ""}；全部完成后点「拼接成片」`, 4000);
+  let queued=0;
+  for (const v of ready) {
+    if(B!==board||node(n.id)!==n)return;
+    if(node(v.id)!==v)continue;
+    await generate(v);
+    if(v.job)queued++;
+  }
+  if(B!==board||node(n.id)!==n)return;
+  const failed=ready.length-queued;
+  const status=[queued?`已排队 ${queued} 段视频`:"",failed?`${failed} 段未提交，可查看失败原因后重试`:"",wait.length?`${wait.length} 镜等待分镜图`:""];
+  toast(status.filter(Boolean).join("，"),4000);
 }
 
 // ================================================================= asset library (characters / scenes / props)

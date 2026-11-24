@@ -276,7 +276,65 @@ async function cmEdit(a=null, kind='character', options={}) {
   panel.querySelector(".cm-hero").after(character);
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
   let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
+  if(data.conversation_source){
+    const hint=document.createElement("p");
+    hint.className="cm-help";
+    hint.textContent="私人对话存档。助手中再次收录同一对话会更新这里的正文。";
+    field("kind").closest(".cm-row").after(hint);
+    field("kind").disabled=true;
+    field("board").disabled=true;
+  }
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
+  let storyStates=acClone(data.story_states||[]);
+  const storyBox=document.createElement("details");
+  storyBox.innerHTML=`<summary>用于剧本与视频</summary>
+    <label class="cm-check"><input type="checkbox" name="story_draft">草稿，仅在明确引用时采用</label>
+    <label data-world-scenes>适用场次<input name="story_scenes" placeholder="如：画市十七号、夜间仓库。留空适用整个项目"></label>
+    <div data-character-states><p class="cm-help">按场次关键词指定角色的服装或状态，可从参考素材选图。</p>
+    <div data-state-rows></div><button type="button" data-state-add>添加场次状态</button></div>`;
+  field("desc").closest("label").after(storyBox);
+  field("story_draft").checked=!!data.story_draft;
+  field("story_draft").disabled=readonly;
+  field("story_scenes").value=(data.story_scenes||[]).join("，");
+  field("story_scenes").readOnly=readonly;
+  const stateAdd=$("[data-state-add]",storyBox);
+  stateAdd.hidden=readonly;
+  stateAdd.onclick=()=>{
+    if(storyStates.length>=12||busy||readonly)return;
+    storyStates.push({scene:"",notes:"",ref:""});
+    paintStoryStates();
+    $("[data-state-rows]",storyBox).lastElementChild?.querySelector("input").focus();
+  };
+  function paintStoryStates(){
+    const role=field("kind").value;
+    $("[data-world-scenes]",storyBox).hidden=role!=="world";
+    $("[data-character-states]",storyBox).hidden=role!=="character";
+    const options=[...data.media,...(pending&&!data.media.some(item=>item.ref===pending.ref)?[pending]:[])]
+      .filter(item=>cmMediaType(item.ref,item)==="image");
+    const box=$("[data-state-rows]",storyBox); box.replaceChildren();
+    for(const [index,state] of storyStates.entries()){
+      const row=document.createElement("fieldset");
+      row.innerHTML=`<legend>场次状态 ${index+1}</legend>
+        <label>场次关键词<input data-story="scene" maxlength="80"></label>
+        <label>本场状态<textarea data-story="notes" rows="2" maxlength="1200"></textarea></label>
+        <label>本场参考图<select data-story="ref"></select></label><button type="button" data-state-remove>移除此状态</button>`;
+      const select=$("select",row);
+      select.add(new Option("沿用角色默认参考图",""));
+      options.forEach((item,i)=>select.add(new Option(`${i+1}. ${item.ref.split("/").at(-1)}`,item.ref)));
+      for(const input of $$("[data-story]",row)){
+        const key=input.dataset.story;
+        input.value=state[key]||"";
+        input.disabled=readonly;
+        input.oninput=input.onchange=()=>{state[key]=input.value;};
+      }
+      const remove=$("[data-state-remove]",row);
+      remove.hidden=readonly;
+      remove.onclick=()=>{if(!busy&&!readonly){storyStates.splice(index,1);paintStoryStates();}};
+      box.append(row);
+    }
+    stateAdd.disabled=storyStates.length>=12;
+  }
+  field("kind").addEventListener("change",paintStoryStates);
   let generationMedia=[...(data.generation_media || data.generation_images || [])];
   const mediaRanges={
     video:new Map(Object.entries(data.generation_video_ranges || {})),
@@ -524,9 +582,9 @@ async function cmEdit(a=null, kind='character', options={}) {
   for(const team of canvasTeams)field('board').add(new Option('团队 · '+team.name,'team:'+team.id));
   if(data.team && !canvasTeams.some(t=>t.id===data.team))field('board').add(new Option('原团队','team:'+data.team));
   field('board').value=data.team?'team:'+data.team:data.project?'project:'+data.project:data.board||'';
-  const syncSharing=()=>{field('shared').disabled=readonly||!!field('board').value;};
+  const syncSharing=()=>{field('shared').disabled=readonly||!!data.conversation_source||!!field('board').value;};
   field('board').onchange=syncSharing;
-  field('aliases').value=(data.aliases||[]).join('，');field('tags').value=(data.tags||[]).join('，');field('shared').checked=!!data.shared;syncSharing();paint();paintCharacter();
+  field('aliases').value=(data.aliases||[]).join('，');field('tags').value=(data.tags||[]).join('，');field('shared').checked=!!data.shared;syncSharing();paint();paintCharacter();paintStoryStates();
   panel.querySelector('[data-close]').onclick=()=>{
     if(busy)return status('正在保存或上传，请稍等');panel.remove();if(CM.editor===panel)CM.editor=null;
     if(host&&typeof alEmptyDetail==='function'){AL.selected=null;alEmptyDetail();alRender();}
@@ -535,7 +593,7 @@ async function cmEdit(a=null, kind='character', options={}) {
   panel.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Escape')panel.querySelector('[data-close]').click();});
   panel.querySelector('[data-current]').onclick=async()=>{
     if(busy||readonly)return;
-    try{const n=[...sel].map(node).find(n=>['image','video','audio'].includes(n?.type)&&curV(n));if(!n)throw new Error('先在画布选中已完成的图片、视频或音频');await flushSave();if(boardId!==initialBoard)return;const v=curV(n);pending={...v,type:n.type,source_board:initialBoard,node_id:n.id,source:v.source||'generated'};if(!selectedRef&&n.type==='image')selectedRef=v.ref;paint();status('已选用「'+n.name+'」，保存后生效');}catch(e){status(e.message);}
+    try{const n=[...sel].map(node).find(n=>['image','video','audio'].includes(n?.type)&&curV(n));if(!n)throw new Error('先在画布选中已完成的图片、视频或音频');await flushSave();if(boardId!==initialBoard)return;const v=curV(n);pending={...v,type:n.type,source_board:initialBoard,node_id:n.id,source:v.source||'generated'};if(!selectedRef&&n.type==='image')selectedRef=v.ref;paint();paintStoryStates();status('已选用「'+n.name+'」，保存后生效');}catch(e){status(e.message);}
   };
   async function receiveFile(file) {
     if(!file||busy||readonly)return;setBusy(true);status('正在上传…');
@@ -547,12 +605,12 @@ async function cmEdit(a=null, kind='character', options={}) {
       if(!r.ok)throw new Error(v.error||'上传失败');
       if(isDocument){
         documentData=v;documentDirty=true;
-        if(!a)field('kind').value='document';
+        if(!a&&field('kind').value!=='world')field('kind').value='document';
         if(!field('name').value.trim())field('name').value=file.name.replace(CM_DOCUMENT_EXT,'');
-        paintDocument();paintCharacter();docBox.open=true;status('已提取正文，保存后可搜索和引用');
+        paintDocument();paintCharacter();paintStoryStates();docBox.open=true;status('已提取正文，保存后可搜索和引用');
       }else{
         pending={...v,source:'upload'};if(!selectedRef&&file.type.startsWith('image/'))selectedRef=v.ref;
-        paint();status('已上传，保存后加入资产');
+        paint();paintStoryStates();status('已上传，保存后加入资产');
       }
     }catch(e){status(e.message);}finally{setBusy(false);}
   }
@@ -565,10 +623,13 @@ async function cmEdit(a=null, kind='character', options={}) {
       const team=target.startsWith('team:')?target.slice(5):'';
       const p={id:data.id,mtime:data.mtime,name:field('name').value,kind:field('kind').value,board:project||team?'':target,project,team,desc:field('desc').value,constraints:field('constraints').value,aliases:field('aliases').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),tags:field('tags').value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean),shared:!target&&field('shared').checked,default_ref:selectedRef};
       if(documentDirty)p.document=documentData;
+      p.story_draft=field("story_draft").checked;
+      p.story_scenes=p.kind==="world"?field("story_scenes").value.split(/[,，\n]/).map(value=>value.trim()).filter(Boolean):[];
       p.generation_media=generationMedia;
       if(pending)Object.assign(p,{ref:pending.ref,source_board:pending.source_board||'',node_id:pending.node_id});
       if(p.kind === "character") {
         p.character_card = readCard();
+        p.story_states=storyStates.filter(state=>state.scene.trim()||state.notes.trim()||state.ref);
         if(approval) {
           await flushSave();
           if (boardId !== initialBoard) return;
@@ -593,7 +654,8 @@ async function cmEdit(a=null, kind='character', options={}) {
       if (approval?.draftKey && readCharacterDraft(approval.draftKey)?.ref === p.ref) writeCharacterDraft(approval.draftKey, null);
       generationMedia=[...new Set([...(data.generation_media || data.generation_images || []),
         ...(pending && generationMedia.includes(pending.ref) ? [pending.ref] : [])])];
-      selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
+      storyStates=acClone(data.story_states||[]);
+      selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();paintStoryStates();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
       panel.querySelector('header strong').textContent='编辑资产';panel.querySelector('[data-delete]').hidden=false;
       if(typeof alChanged==='function')alChanged(data);if(KIND_CN[afilter])await cmRenderLibrary(afilter);
     }catch(e){status(e.message);}finally{setBusy(false);}
