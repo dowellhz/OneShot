@@ -1,10 +1,14 @@
 # OneShot
 
+[English](README.en.md)
+
 [![MIT License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一句话生成剧本、角色设定和分镜，也可以把已有的图片、视频和文案放到画布上，逐镜生成、修改并剪辑成片。
 
 平台支持本地运行 MiniMax-H3 和 H3-Image，也可以通过 Web 控制台配置第三方模型服务、管理账号和查看任务。
+
+在登录页、画布右上角或控制台可切换中文和英文。语言偏好保存在当前浏览器。
 
 ![OneShot 画布：参考图、分镜图和视频节点，下方是分栏填写的视频提示词面板](docs/screenshot.png)
 
