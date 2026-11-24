@@ -87,7 +87,7 @@
 
 勾选「实时预览」后，每录完约 5 秒就转写一个短片段，识别文字按录音顺序追加。节点和助手共用此设置，预览可能产生额外转写费用。停止录音时仍以完整录音的识别结果为准，取消录音会清除预览。
 
-可在 OneShot 所在主机运行 `scripts/local_asr.py`，使用 Faster Whisper 的本地模型目录。脚本需要安装 `aiohttp` 和 `faster-whisper`，并从 `ONESHOT_ASR_TOKEN` 读取服务密钥。用 `--model-dir` 指定已下载模型的目录后，默认监听 `127.0.0.1:8191`，用 CPU 识别。控制台把「语音转写」路由设为 OpenAI 兼容转写，地址填 `http://127.0.0.1:8191/v1`，模型填 `whisper-1`，API Key 使用相同的密钥。该接口支持普通文字和分段时间码。[Faster Whisper](https://github.com/SYSTRAN/faster-whisper)
+可在 OneShot 所在主机运行 `scripts/local_asr.py`，使用 Faster Whisper 的本地模型目录。脚本需要安装 `aiohttp` 和 `faster-whisper`，并从 `ONESHOT_ASR_TOKEN` 读取服务密钥。用 `--model-dir` 指定已下载模型的目录后，默认监听 `127.0.0.1:8191`，用 CPU 识别。控制台把「语音转写」路由设为 OpenAI 兼容转写，地址填 `http://127.0.0.1:8191/v1`，模型填 `whisper-1`，API Key 使用相同的密钥。该接口支持普通文字和分段时间码，单个输入最多 8 MB 和 10 分钟。[Faster Whisper](https://github.com/SYSTRAN/faster-whisper)
 
 在画布按住说话键可边录音边点选素材，松开后转写并发送。已有草稿时，转写会追加到草稿供编辑。默认按键为 R，可在「按住说话」中选择空格、自定义一个字母或数字，或关闭。录音时按 Esc 可取消。
 

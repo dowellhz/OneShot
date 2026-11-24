@@ -175,7 +175,7 @@ bash engine.sh engine-start
 | 事项 | 当前进度与验收条件 |
 | --- | --- |
 | 多模态元素 | `@资产` 已支持成组参考图、带区间的视频和音频，以及资产文字资料。已用隔离的 H3 V2 接口测试服务验证模型选择、提交前预览、裁剪后的素材传输及历史版本追溯。待用真实服务验证模型输出与限制提示。[元素文档](https://docs.tapnow.ai/en/docs/canvas/create-and-use-elements) |
-| 语音实时转写 | 已在隔离 Chrome 验证麦克风授权与拒绝、录音预览、停止、取消、中断和文件转写，以及助手关闭时释放麦克风并保留草稿。用虚拟麦克风输入中文样本，经独立本地 Whisper 服务核对了预览和完整录音的真实识别结果。正式服务尚无转写路由。[语音文档](https://docs.tapnow.ai/en/docs/new-canvas/talk-with-your-voice) |
+| 语音实时转写 | 已在隔离 Chrome 验证麦克风授权与拒绝、录音预览、停止、取消、中断和文件转写，以及助手关闭时释放麦克风并保留草稿。4090 正式服务已接上本机 Faster Whisper，使用中文样本通过预览、完整转写和分段时间码验收。浏览器麦克风仍需 HTTPS 或本机回环地址。[语音文档](https://docs.tapnow.ai/en/docs/new-canvas/talk-with-your-voice) |
 | 样片与定稿分支 | Seedance 定稿可保留为同节点版本，也可另建相连节点。浏览器回归覆盖画布保存失败时拦住定稿提交。使用隔离的方舟接口测试服务，已验证 Web 进程重启后续查原任务、样片过期后恢复已提交的定稿，以及定稿文件下载。仍待真实 Seedance 服务验收。[视频生成与编辑](https://docs.tapnow.ai/en/docs/canvas/generate-and-edit-video) |
 | 视频模型能力验收 | 已有 Seedance 和云端 MiniMax-H3 全模态路由。云端 H3 的目录、时长和分辨率已按官方接口核对。模拟提交已验证首帧与角色图一起进入参考模式，以及普通首尾帧的原生模式。4090 当前只有本地 H3 视频路由。云端素材限制和输出档位待有配置后实测。[MiniMax H3 接口](https://platform.minimax.io/docs/api-reference/video-generation-v2-create) · [视频生成与编辑](https://docs.tapnow.ai/en/docs/canvas/generate-and-edit-video) |
 
