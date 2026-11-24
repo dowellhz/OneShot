@@ -28,6 +28,7 @@ from aiohttp import web
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import h3engine as E
+import h3_int8
 import editor_tools as EDITOR
 
 PORT = int(os.environ.get("H3_ENGINE_PORT", "8189"))
@@ -108,6 +109,16 @@ def worker():
                 j.update(state="done", took=round(time.time() - t0, 1), finished=time.time(), phase="done")
                 continue
             EDITOR.drop_inpaint()
+            if r.get("kind") == "video_int8":
+                ENGINE._drop_big()
+                t0 = time.time()
+
+                def report(phase, value, maximum):
+                    j.update(phase=phase, value=value, max=maximum)
+
+                h3_int8.run(r["graph"], r["out"], r["media_dir"], r["seed"], report, lambda: bool(j.get("cancel")))
+                j.update(state="done", took=round(time.time() - t0, 1), finished=time.time(), phase="done")
+                continue
             if r.get("kind") == "image":
                 if not ENGINE.image_ready():
                     raise RuntimeError("H3-Image 权重还在下载")
@@ -171,6 +182,8 @@ async def submit(req):
         return web.json_response({"error": "prompt and out are required"}, status=400)
     if STATE.get("error"):
         return web.json_response({"error": STATE["error"]}, status=503)
+    if r.get("kind") == "video_int8" and not h3_int8.installed():
+        return web.json_response({"error": "H3 INT8 ConvRot 尚未安装"}, status=503)
     try:                                   # a bad number must be refused here, not crash the worker later
         for k in ("steps", "seed", "height", "width", "frames"):
             if r.get(k) is not None:
@@ -218,6 +231,7 @@ async def status(_):
     free, total = torch.cuda.mem_get_info() if torch.cuda.is_available() else (0, 0)
     return web.json_response({**{k: STATE[k] for k in ("ready", "loading", "running", "error")},
                               "image_ready": bool(ENGINE and ENGINE.image_ready()),
+                              "int8_ready": h3_int8.installed(),
                               "loaded": ENGINE and {"task": ENGINE.task, "lora": ENGINE.lora},
                               "queue": sum(1 for v in JOBS.values() if v["state"] == "queued"),
                               "vram_used_gb": round((total - free) / 2**30, 1), "editor": EDITOR.capabilities()})

@@ -44,18 +44,19 @@ function canvasNodeModel(n, service, reference = false) {
 }
 
 function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {
-  if (!service || service.local ||
+  const options = service?.models || [];
+  if (!service || (service.local && (n.type !== "video" || (options.length < 2 && !n.data.selected_model))) ||
       (n.data.selected_model && n.data.provider && n.data.provider!==service.id)) return "";
-  const options = service.models || [];
   const model = canvasNodeModel(n,service,reference);
   const fallback = reference || n.data.provider ? service.model : service.default_route_model || service.model;
-  const name = item => item.endpoint_model ? item.id+" · "+item.endpoint_model : item.id;
+  const name = item => item.label || (item.endpoint_model ? item.id+" · "+item.endpoint_model : item.id);
   const title = model?.id ? name(model) : "重新选择模型";
   if (!n.data.selected_model && options.length < 2) return model?.id ? `<span class="pill" title="${esc(title)}">${esc(title)}</span>` : "";
-  const choices = Object.fromEntries([["",esc(fallback ? "默认 · " + fallback : "默认模型")],
-    ...options.map(item => [item.id,esc(name(item))])]);
+  const defaultName = options.find(item=>item.id===fallback);
+  const choices = Object.fromEntries([["",esc(fallback ? "默认 · " + (defaultName ? name(defaultName) : fallback) : "默认模型")],
+    ...options.filter(item => !service.local || item.id !== fallback || item.id === n.data.selected_model).map(item => [item.id,esc(name(item))])]);
   if (n.data.selected_model && !model) choices[n.data.selected_model] = esc(n.data.selected_model + "（不可用）");
-  return pill("selected_model", choices, esc(title)+ico("down"), "model");
+  return pill("selected_model", choices, esc(title)+ico("down"), "model", n.data.selected_model || "");
 }
 
 function initAccount() {

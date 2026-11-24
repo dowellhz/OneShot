@@ -3015,6 +3015,22 @@ async function run(){
  equal(evaluate(`[$("#ctl select[data-k=selected_model]").selectedOptions[0].textContent,
   $("#ctl select[data-k=quality]").value,videoReq(optionsVideo,"测试").duration]`),
   ['ep-example · doubao-seedance-2-5','4k',30]);
+ evaluate(`CAPS_LIST.video.unshift({id:"local_h3",kind:"local_h3",local:true,name:"本地 H3",model:"h3-video",
+  models:[{id:"h3-video",label:"H3 BF16"},{id:"h3-video-ref2va-int8-convrot",label:"H3 Ref2VA INT8 ConvRot"}]});
+  showPanel();
+  $("#ctl select[data-k=provider]").value="local_h3";
+  $("#ctl select[data-k=provider]").dispatchEvent(new Event("change"));
+  $("#ctl select[data-k=selected_model]").value="h3-video-ref2va-int8-convrot";
+  $("#ctl select[data-k=selected_model]").dispatchEvent(new Event("change"));`);
+ equal(evaluate(`[videoPreviewRequest(optionsVideo).provider,videoPreviewRequest(optionsVideo).selected_model,
+   $("#ctl select[data-k=selected_model]").selectedOptions[0].textContent]`),
+  ['local_h3','h3-video-ref2va-int8-convrot','H3 Ref2VA INT8 ConvRot']);
+ equal(evaluate(`(()=>{const data={};vtRestoreVideoModel(data,{video_recipe:videoPreviewRequest(optionsVideo)});return data;})()`),
+  {provider:'local_h3',selected_model:'h3-video-ref2va-int8-convrot'});
+ evaluate(`$("#ctl select[data-k=selected_model]").value="";
+  $("#ctl select[data-k=selected_model]").dispatchEvent(new Event("change"));`);
+ equal(evaluate(`[!!videoPreviewRequest(optionsVideo).selected_model,
+  $("#ctl select[data-k=selected_model]").selectedOptions[0].textContent]`),[false,'默认 · H3 BF16']);
  evaluate('CAPS_LIST.video=previousVideoServices;restore(beforeModelOptions)');
  console.log('Video model settings passed: configured default model, provider-specific durations and single-resolution submission.');
  const checkedPreviewFetch=w.fetch, checkedSubmissions=[], modelChecks=[];

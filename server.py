@@ -48,6 +48,7 @@ import mcp_bridge
 import connector_oauth
 import video_remake
 import video_prompt_adapters
+from engine import h3_int8
 import workflow_presets
 import workflow_review
 from board_store import BOARD_ID as _ID, access_role, board_meta, can_edit, can_see
@@ -94,6 +95,13 @@ def frames_for(seconds: float) -> int:
 
 def engine_video_frames(seconds: float) -> int:
     return min(345, max(124, frames_for(seconds)))
+
+
+def engine_video_size(p):
+    ar = float(p.get("ar") or 16 / 9)
+    short = 768 if p.get("quality", "hd") == "hd" else 480
+    long_side = min(round(short * max(ar, 1 / ar) / 32) * 32, (1032192 // short) // 32 * 32)
+    return (long_side, short) if ar >= 1 else (short, long_side)
 
 
 def keyframe_index(seconds, length):
@@ -291,13 +299,13 @@ def planned_prompt(prompt: str, subj, frames, end: float) -> str:
             + f"\n\ndetailed_description:\n[Shot 1]{start} {prompt}{steps}")
 
 
-def graph_video_planned(p: dict, *, native=False):
+def graph_video_planned(p: dict, *, native=False, int8=False):
     imgs = p.get("images") or []
     seconds = min(15.0, max(2.0, float(p.get("duration") or 5)))
     length = engine_video_frames(seconds) if native else frames_for(seconds)
     end = (length - 4) / 24
     hd = p.get("quality", "hd") == "hd"
-    w, h = size_for(float(p.get("ar") or 16 / 9), 1.0 if hd else 0.4)
+    w, h = engine_video_size(p) if int8 else size_for(float(p.get("ar") or 16 / 9), 1.0 if hd else 0.4)
     turbo = bool(p.get("turbo", True))
     seed = seed_of(p.get("seed"))
     subj = [im for im in imgs if im["role"] == "subject"][:9]
@@ -315,7 +323,7 @@ def graph_video_planned(p: dict, *, native=False):
                 f"\n\nnon_diegetic_music:\n{clean(p.get('music')) or 'N/A'}")
     lora, steps = (M["lora_ref"], 4) if turbo else (None, 20)
     g = {
-        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": M["ref2va"], "weight_dtype": "default"}},
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": h3_int8.WEIGHTS if int8 else M["ref2va"], "weight_dtype": "default"}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": M["clip"], "type": "minimax", "device": "default"}},
         "3": {"class_type": "VAELoader", "inputs": {"vae_name": M["vae"]}},
         "4": {"class_type": "VAELoader", "inputs": {"vae_name": M["avae"]}},
@@ -350,6 +358,8 @@ def graph_video_planned(p: dict, *, native=False):
         "15": {"class_type": "SaveVideo", "inputs": {"video": ["14", 0], "filename_prefix": "h3studio/video", "format": "auto", "codec": "auto"}},
     })
     name = ("人物设定" if subj else "") + (" + " if subj and frames else "") + (f"{len(frames)} 张关键帧" if frames else "")
+    if int8 and not name:
+        name = "文生视频"
     return g, {"seed": seed, "width": w, "height": h, "steps": steps, "frames": length, "mode": "planned", "mode_name": name,
                "full_prompt": full}
 
@@ -385,7 +395,10 @@ def no_speech_guard(full: str) -> str:
 
 
 def graph_video(p: dict, *, native=False):
-    g, meta = _graph_video(p, native=native)
+    if p.get("_int8"):
+        g, meta = graph_int8_video(p)
+    else:
+        g, meta = _graph_video(p, native=native)
     full = meta["full_prompt"]
     if p.get("_preserve_speech_motion") is not True:
         full = no_speech_guard(full)
@@ -393,6 +406,26 @@ def graph_video(p: dict, *, native=False):
         g["5"]["inputs"]["prompt"] = full
     meta["full_prompt"] = full
     return g, meta
+
+
+def int8_video_input(p):
+    if p.get("planned"):
+        return p
+    images = p.get("images") or []
+    mode = p.get("mode") or "auto"
+    if mode == "fl2v" and len(images) > 2:
+        images = [images[0], images[-1]]
+    frames = engine_video_frames(min(15.0, max(2.0, float(p.get("duration") or 5))))
+    end = (frames - 4) / 24
+    role = "subject" if mode == "reference" else "frame"
+    return {**p, "planned": True, "images": [dict(image, index=image.get("index") or i + 1, role=role,
+                                                 time=i * end / max(1, len(images) - 1)) for i, image in enumerate(images)]}
+
+
+def graph_int8_video(p):
+    graph, meta = graph_video_planned(int8_video_input(p), native=True, int8=True)
+    meta.update(provider="本地 H3", model=h3_int8.MODEL, resolution="768P" if p.get("quality", "hd") == "hd" else "480P")
+    return graph, meta
 
 
 def _graph_video(p: dict, *, native=False):
@@ -2882,19 +2915,22 @@ async def preview(req):
             details["reference_preview"] = reference_preview_fingerprint(payload,route,guide_frames=True)
             details["duration"] = seconds
         return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs, **details, **memory_review})
-    resolution = checked_video_resolution(payload,"local_h3","h3-video")
-    p = apply_fields(payload)
+    int8 = bool(route and route["model"] == h3_int8.MODEL)
+    resolution = checked_video_resolution(payload,"local_h3",h3_int8.MODEL if int8 else "h3-video")
+    p = apply_fields(int8_video_input(payload) if int8 else payload)
+    if int8:
+        inputs = workflow_review.capture_generation(p)["inputs"]
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
     p = await to_english(req.app, p)
-    _, meta = graph_video(p, native=await engine_up(req.app))
+    _, meta = graph_video({**p, "_int8": int8}, native=int8 or await engine_up(req.app))
     if meta["mode"] == "planned":
         for item in inputs:
             if item.get("role") == "frame":
                 item["time"] = keyframe_index(item.get("time"), meta["frames"]) / 24
     if meta.get("mode") == "fl2v" and len(inputs) > 1:
         inputs[-1]["role"] = "last_frame"
-    mode = " · ".join(filter(None,(meta.get("mode_name"), "本地 H3", resolution)))
+    mode = " · ".join(filter(None,(meta.get("mode_name"), h3_int8.LABEL if int8 else "本地 H3", resolution)))
     if p.get("_xlate_err"):
         mode += " · 未翻译成英文：" + p["_xlate_err"]
     return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode, "inputs": inputs,
@@ -3266,7 +3302,8 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
     if payload.get("kind")=="video" and route:
         provider_id = route.get("provider") or "local_h3"
         result["video_model"] = {"provider":provider_id}
-        if provider_id!="local_h3" and route.get("model"):
+        if route.get("model") and (provider_id!="local_h3" or route["model"] == h3_int8.MODEL
+                                  or payload.get("selected_model") == "h3-video"):
             result["video_model"]["selected_model"] = route["model"]
     references = {key:payload[key] for key in ("video_refs","audio_refs") if payload.get(key)}
     if references:
@@ -3292,7 +3329,8 @@ def requested_generation_route(raw, cap):
     selected = raw.get("selected_model")
     if selected is not None:
         if (not isinstance(selected, str) or not choice or not choice["enabled"] or
-                choice["kind"].startswith("local_") or cap not in providers.caps_of(choice) or
+                (choice["kind"].startswith("local_") and (choice["kind"], cap) != ("local_h3", "video")) or
+                cap not in providers.caps_of(choice) or
                 selected not in configured_models(choice, cap, providers.routes(cap))):
             raise bad("所选模型已不可用，请重新选择模型")
         return {"provider":choice, "model":selected}
@@ -3456,11 +3494,12 @@ async def _generate_request(req, raw, *, fixed_route=None):
         req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]} if route else {"provider":None,"model":None}
     if route and route["provider"]["kind"] != "local_h3":
         return await generate_remote(req, raw, route, cap)
+    int8 = bool(cap == "video" and route and route["model"] == h3_int8.MODEL)
     if cap=="video":
-        checked_video_resolution(raw,"local_h3","h3-video")
+        checked_video_resolution(raw,"local_h3",h3_int8.MODEL if int8 else "h3-video")
     if raw.get("draft"):
         raise bad("请选择支持原生样片的 Seedance 2.5 服务")
-    p = apply_fields(raw)
+    p = apply_fields({**(int8_video_input(raw) if int8 else raw), "_int8": int8})
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词不能为空"}), content_type="application/json")
     kind = p.get("kind")
@@ -3478,7 +3517,9 @@ async def _generate_request(req, raw, *, fixed_route=None):
             raise web.HTTPBadRequest(text=json.dumps({"error": f"智能扩写失败：{e}"}, ensure_ascii=False), content_type="application/json")
         p = {**p, "prompt": cap, "expand": False}
         meta_extra = {"expanded": cap}
-    if kind != "image" and await engine_up(req.app):
+    if int8 and not await engine_up(req.app, int8=True):
+        raise bad("本地 H3 INT8 ConvRot 引擎暂不可用，请稍后重试")
+    if kind != "image" and (int8 or await engine_up(req.app)):
         return await generate_engine(req, p, count)     # translates in the background, after the job is queued
     if kind != "image":
         p = await to_english(req.app, p)
@@ -3660,11 +3701,16 @@ async def video_frame_preview(req):
 
 @routes.post("/api/rewrite")
 async def rewrite(req):
-    p = apply_fields(await req.json(), for_llm=True)
+    raw = await req.json()
+    int8 = raw.get("provider") == "local_h3" and raw.get("selected_model") == h3_int8.MODEL
+    p = apply_fields(int8_video_input(raw) if int8 else raw, for_llm=True)
     if not clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "先写一段描述"}, ensure_ascii=False), content_type="application/json")
     seconds = min(15.0, max(2.0, float(p.get("duration") or 5)))
-    p["end"] = (frames_for(seconds) - 4) / 24 if p.get("planned") else seconds
+    if p.get("planned"):
+        p["end"] = ((engine_video_frames(seconds) if int8 else frames_for(seconds)) - 4) / 24
+    else:
+        p["end"] = seconds
     t0 = time.time()
     try:
         r = await rewriter.rewrite_video(req.app["llm"], COMFY_DIR, p)
@@ -5043,11 +5089,11 @@ async def sample_open(req):
 ENGINE = os.environ.get("H3_ENGINE_URL", "http://127.0.0.1:8189")
 
 
-async def engine_up(app, image: bool = False) -> bool:
+async def engine_up(app, image: bool = False, *, int8: bool = False) -> bool:
     try:
         async with app["http"].get(ENGINE + "/status", timeout=aiohttp.ClientTimeout(total=2)) as r:
             s = await r.json()
-            return bool(s.get("ready")) and (not image or bool(s.get("image_ready")))
+            return bool(s.get("ready")) and (not image or bool(s.get("image_ready"))) and (not int8 or bool(s.get("int8_ready")))
     except Exception:
         return False
 
@@ -5132,7 +5178,7 @@ async def generate_engine(req, p: dict, count: int):
         m = dict(meta, seed=meta["seed"] + k)
         JOBS[pid] = {"id": pid, "kind": "video", "state": "queued", "prep": True, "created": time.time(), "meta": m}
         db.task_start(id=pid, user_id=u["id"], board_id=m["board"], label=m["label"], capability="video", provider_id="local_h3",
-                      provider_kind="local_h3", model="MiniMax-H3 " + m["mode_name"], state="queued", cost=0)
+                      provider_kind="local_h3", model=h3_int8.LABEL if p.get("_int8") else "MiniMax-H3 " + m["mode_name"], state="queued", cost=0)
         pids.append(pid)
     prev = PREP_TAIL[0]
     PREP_TAIL[0] = asyncio.create_task(prepare_engine(req.app, p, pids, prev))
@@ -5155,7 +5201,11 @@ async def prepare_engine(app, p: dict, pids: list, prev):
         llm = app["llm"]
         if llm.running() and llm.device == "GPU":
             llm.stop()                               # give the GPU back to the engine
-        body, meta = engine_body(q)
+        if q.get("_int8"):
+            graph, meta = graph_video(q, native=True)
+            body = {"kind": "video_int8", "graph": graph, "media_dir": str(COMFY_DIR), "prompt": meta["full_prompt"], "steps": meta["steps"]}
+        else:
+            body, meta = engine_body(q)
         for pid in pids:
             j = JOBS.get(pid)
             if not j or j["state"] != "queued":
@@ -5190,10 +5240,8 @@ async def prepare_engine(app, p: dict, pids: list, prev):
 def engine_body(p: dict):
     """The same request the ComfyUI graph was built from, sent to the engine: prompt, keyframes or references, size."""
     _, meta = graph_video(p, native=True)
-    ar = float(p.get("ar") or 16 / 9)
     short = 768 if p.get("quality", "hd") == "hd" else 480
-    long_ = min(int(round(short * max(ar, 1 / ar) / 32)) * 32, (1032192 // short) // 32 * 32)
-    meta["width"], meta["height"] = (long_, short) if ar >= 1 else (short, long_)
+    meta["width"], meta["height"] = engine_video_size(p)
     meta.update(provider="本地 H3",model="h3-video",resolution=f"{short}P")
     imgs = p.get("images") or []
     paths = [str(tools.ref_path(COMFY_DIR, im["ref"])) for im in imgs]
@@ -5447,6 +5495,8 @@ def configured_models(provider, cap, routes):
     models.extend(route["model"] for route in routes if route["provider"]["id"] == provider["id"])
     if cap == "video" and provider["kind"] == "ark":
         models.extend(provider.get("config",{}).get("video_endpoint_models",{}))
+    if cap == "video" and provider["kind"] == "local_h3" and h3_int8.installed():
+        models.append(h3_int8.MODEL)
     return list(dict.fromkeys(model for model in models if model))
 
 
@@ -6401,7 +6451,8 @@ def canvas_model_choice(provider, cap, model):
     ref_images = motion_reference.image_reference_limit(provider,model)
     model_for_limits = motion_reference.video_model_for_limits(provider,model)
     count, seconds = motion_reference.av_limits(model_for_limits)
-    return {"id":model,"draft":remote.supports_video_draft(provider,model),
+    label = {h3_int8.MODEL: h3_int8.LABEL, "h3-video": "H3 BF16"}.get(model) if kind == "local_h3" else None
+    return {"id":model, **({"label": label} if label else {}), "draft":remote.supports_video_draft(provider,model),
             "durations":[5,8,10,14] if kind == "local_h3" else remote.video_durations(kind,model,provider=provider),
             "qualities":remote.video_resolutions(kind,model,provider=provider),
             **({"endpoint_model":model_for_limits} if model_for_limits != model else {}),

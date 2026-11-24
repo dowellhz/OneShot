@@ -45,8 +45,8 @@ function vtRestoreVideoModel(data,version) {
     : {provider:recorded?.provider,model:recorded?.provider_model};
   if (!saved.provider || (!saved.model && saved.provider!=="local_h3")) return;
   data.provider=saved.provider;
-  if (saved.provider==="local_h3") delete data.selected_model;
-  else data.selected_model=saved.model;
+  if (saved.model) data.selected_model=saved.model;
+  else delete data.selected_model;
 }
 function vtEdgesWithReferenceRanges(edges,recipe) {
   const references={audio_ref:recipe?.audio_refs,video_ref:recipe?.video_refs};

@@ -361,6 +361,7 @@ async function rewritePrompt(n) {
   const prompt = fullPrompt(n);
   if (usesFields(n) ? !fieldsFilled(n) : !prompt) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : "先写一段中文描述"); return; }
   const req = videoReq(n, prompt); if (!req) return;
+  if (n.data.selected_model) Object.assign(req, {provider: n.data.provider, selected_model: n.data.selected_model});
   const btn = $("#rwBtn"); btn.disabled = true; btn.innerHTML = `${ico("clock")}改写中…`;
   const t0 = Date.now(), tick = setInterval(() => { if ($("#rwBtn")) $("#rwBtn").innerHTML = `${ico("clock")}改写中 ${Math.round((Date.now() - t0) / 1000)}s`; }, 1000);
   try {

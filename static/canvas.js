@@ -1490,7 +1490,9 @@ function showPanel() {
     let val = s.value; if (["turbo","expand","draft"].includes(key)) val = val === "true"; else if (["count", "duration"].includes(key)) val = Number(val);
     if (key === "provider") delete d.selected_model;
     if (key === "selected_model" && val && !d.provider) d.provider = nodeProvider(n)?.id;
-    d[key] = val; save(); render(n); refreshDownstream(n); showPanel();
+    if (key === "selected_model" && !val) delete d.selected_model;
+    else d[key] = val;
+    save(); render(n); refreshDownstream(n); showPanel();
   });
   $("#send").onclick = () => n.job ? cancel(n) : generate(n);
   if ($("#moreBtn")) $("#moreBtn").onclick = e => { e.stopPropagation(); $("#more").classList.toggle("on"); };
