@@ -28,6 +28,7 @@ w.fetch=async(url,options={})=>{
  const u=new URL(String(url),'http://oneshot.test'),pathname=u.pathname,method=options.method||'GET';requests.push({url:u.pathname,method});
  let result={};
  if(pathname==='/api/boards')result=[{id:'btest',name:'Test'}];
+ else if(pathname==='/api/samples')result=w.__samples||[];
  else if(pathname==='/api/board/btest/workflow-review'){
   w.__workflowReviewQuery=[u.searchParams.get('node'),u.searchParams.get('version')];
   const version=Number(u.searchParams.get('version'))||1;
@@ -198,6 +199,26 @@ async function run(){
  if(englishSmoke){
   assert.equal(w.document.documentElement.lang,'en');
   assert.equal(evaluate('$("#shareBtn").textContent'),'Share');
+  assert.equal(evaluate('$("#wizBtn span").textContent'),'Idea to Film');
+  assert.equal(evaluate('$("#galBtn span").textContent'),'Examples');
+  w.__samples=[{title:'保留原名',idea:'保留原文',seconds:6}];
+  await evaluate('showGallery()');
+  assert.match(evaluate('$("#wzSample .hd b").textContent'),/Example films/);
+  assert.equal(evaluate('$("#wzSample [data-sample] b").textContent'),'保留原名');
+  evaluate('$("#wzSample [data-x]").click()');
+  evaluate(`B.wiz={idea:"保留这个想法",step:4,style:STYLES[0],aspect:"16:9",dur:15,script:null};
+    updateWizBtn(); W={...B.wiz,step:0}; renderWiz();`);
+  assert.equal(evaluate('$("#wizBtn span").textContent'),'Resume · Video');
+  assert.equal(evaluate(`$('#wzSteps [data-s="4"]').textContent`),'5Video');
+  assert.equal(evaluate('B.wiz.idea'),'保留这个想法');
+  evaluate(`B.name="新画布"; $("#bname").textContent=B.name;
+    boardDirectory=[{id:boardId,name:B.name,project:"project-example"}];
+    canvasProjects=[{id:"project-example",name:"弥赛亚的底稿"}];
+    renderProjectCanvases();`);
+  assert.equal(evaluate('$("#projectCanvases strong").textContent'),'弥赛亚的底稿');
+  assert.equal(evaluate('$("#projectCanvases [aria-current=page]").textContent'),'新画布');
+  assert.equal(evaluate('$("#projectCanvases [data-project-add]").getAttribute("aria-label")'),'New canvas in this project');
+
   evaluate(`node("n1").data.prompt="保存"; sel=new Set(["n1"]); updateSel();`);
   assert.equal(evaluate('$("#prompt").value'),'保存');
   assert.equal(evaluate('$("#send").getAttribute("aria-label")'),'Regenerate');
@@ -208,7 +229,16 @@ async function run(){
   await evaluate('alOpen()');
   assert.equal(evaluate('$("#alNew").textContent'),'New asset');
   assert.equal(evaluate('$("#alCategories [data-kind=world] span").textContent'),'Worldbuilding');
-  console.log('English workspace passed: canvas, generation controls, assistant, asset library and unmodified prompt.');
+  const requestsBeforeCreate = requests.length, savedFetch=w.fetch;
+  let createdName;
+  w.fetch=(url,options)=> {
+    if(String(url).endsWith('?project=project-example')&&options?.method==='PUT')createdName=JSON.parse(options.body).name;
+    return savedFetch(url,options);
+  };
+  await evaluate('createCanvas("project-example")');
+  assert.equal(createdName,'New canvas');
+  assert.ok(requests.length>requestsBeforeCreate);
+  console.log('English workspace passed: wizard and examples, canvas names, generation controls, assistant, and asset library.');
   return;
  }
  evaluate('$("#vp").dispatchEvent(new Event("pointerdown",{bubbles:true}));toggleQueue(true)');

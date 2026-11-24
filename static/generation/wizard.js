@@ -31,7 +31,7 @@ async function openWizard() {
     if (B.nodes.length) {   // a guided project gets its own board
       const id = "b" + Date.now().toString(36);
       await flushSave();
-      await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(emptyBoard("新项目")) });
+      await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(emptyBoard(OneShotI18n.t("新项目"))) });
       await openBoard(id);
     }
     W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: "hd", takes: 1, script: null };
@@ -41,7 +41,11 @@ async function openWizard() {
 function closeWizard() { $("#wiz").classList.remove("on"); updateWizBtn(); }
 function updateWizBtn() {
   const b = $("#wizBtn"); if (!b || !B) return;
-  b.innerHTML = B.wiz && (B.wiz.idea || node(B.wiz.script)) ? `${ico("script")}<span>继续向导 · ${WSTEPS[B.wiz.step]}</span>` : `${ico("script")}<span>一句话成片</span>`;
+  const step = WSTEPS[B.wiz?.step];
+  const resume = step && (B.wiz.idea || node(B.wiz.script));
+  const { t } = OneShotI18n;
+  const label = resume ? t("继续向导 · {step}", {step:t(step)}) : t("一句话成片");
+  $("span", b).textContent = label;
 }
 function goStep(k) { W.step = k; wizSave(); wizSig = ""; renderWiz(); }
 
@@ -85,7 +89,7 @@ const verNav = n => n.versions.length > 1 ? `<span class="vn"><button data-v="pr
 function renderWiz() {
   if (!W) return;
   const st = $("#wzSteps");
-  st.innerHTML = WSTEPS.map((t, i) => `<button class="${i === W.step ? "on" : ""} ${i < W.step ? "done" : ""}" data-s="${i}" ${i > maxStep() ? "disabled" : ""}><b>${i < W.step ? "✓" : i + 1}</b>${t}</button>`).join("<i></i>");
+  st.innerHTML = WSTEPS.map((t, i) => `<button class="${i === W.step ? "on" : ""} ${i < W.step ? "done" : ""}" data-s="${i}" ${i > maxStep() ? "disabled" : ""}><b>${i < W.step ? "✓" : i + 1}</b>${OneShotI18n.t(t)}</button>`).join("<i></i>");
   $$("button", st).forEach(b => b.onclick = () => goStep(+b.dataset.s));
   const body = $("#wzBody");
   body.innerHTML = [stepIdea, stepScript, stepCast, stepBoards, stepVideos, stepFilm][W.step]();
@@ -122,7 +126,7 @@ function stepIdea() {
     <textarea id="wzIdea" rows="5" placeholder="用一两句话说说你的想法，例如：一只橘猫在雨夜给流浪狗送伞">${esc(W.idea)}</textarea>
     <div class="tpl"><span class="lab">没有灵感？试试这些：</span>${TEMPLATES.map((t, i) => `<button class="chip" data-tpl="${i}">${t.t}</button>`).join("")}</div>
     ${SAMPLES.length ? `<div class="gal"><span class="lab">看看做出来是什么样：</span><div class="gl">${SAMPLES.map((x, k) => `<button class="gc" data-sample="${k}" title="${esc(x.idea || "")}">
-        <img src="${x.cover_url || ""}" loading="lazy"><span class="pl">▶</span><b>${esc(x.title)}</b><small>${x.seconds ? x.seconds.toFixed(0) + " 秒 · " : ""}${esc(x.style || "")}</small></button>`).join("")}</div></div>` : ""}
+        <img src="${x.cover_url || ""}" loading="lazy"><span class="pl">▶</span><b>${esc(x.title)}</b><small>${x.seconds ? OneShotI18n.t("{seconds} 秒",{seconds:x.seconds.toFixed(0)}) + " · " : ""}${esc(x.style || "")}</small></button>`).join("")}</div></div>` : ""}
     <div class="opts">
       <div><span class="lab">风格</span>${STYLES.map(s => chip("style", s)).join("")}</div>
       <div><span class="lab">时长</span>${chip("dur", 15, "15 秒")}${chip("dur", 30, "30 秒")}${chip("dur", 60, "1 分钟")}</div>
@@ -448,10 +452,10 @@ async function wizGo(what, btn) {
 // ---- example films: watch, start from the same idea, or open the whole project
 function showSample(x) {
   const m = $("#wzSample");
-  m.innerHTML = OneShotI18n.html`<div class="box"><div class="hd"><b>${esc(x.title)}</b><span class="dim">${esc(x.style || "")} · ${x.seconds?.toFixed(1)} 秒 · 每镜 1 个版本，没有挑选和精修</span>
+  m.innerHTML = OneShotI18n.html`<div class="box"><div class="hd"><b>${esc(x.title)}</b><span class="dim">${esc(x.style || "")} · ${OneShotI18n.t("{seconds} 秒",{seconds:x.seconds?.toFixed(1)})} · ${OneShotI18n.t("每镜 1 个版本，没有挑选和精修")}</span>
       <span style="flex:1"></span><button class="ghost sm" data-x>关闭</button></div>
     <video src="${x.url}" controls autoplay playsinline></video>
-    <div class="idea">想法：${esc(x.idea || "")}</div>
+    <div class="idea">${OneShotI18n.t("想法：{idea}",{idea:esc(x.idea || "")})}</div>
     <div class="row"><button class="go" data-use>用这个想法开始</button><button class="ghost" data-open title="复制一份完整项目：剧本、角色、分镜图、每个镜头的视频都能看、能改">打开完整项目，看每一步</button></div></div>`;
   m.classList.add("on");
   const close = () => { $("video", m).pause(); m.classList.remove("on"); m.innerHTML = ""; };
@@ -472,7 +476,7 @@ function showSample(x) {
 async function newWizardProject() {
   if (B.nodes.length || B.wiz) {
     const id = "b" + Date.now().toString(36);
-    await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(emptyBoard("新项目")) });
+    await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(emptyBoard(OneShotI18n.t("新项目"))) });
     await openBoard(id);
   }
   W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: "hd", takes: 1, script: null };
@@ -480,13 +484,13 @@ async function newWizardProject() {
 }
 async function loadSamples() { try { SAMPLES = await (await fetch("/api/samples")).json() || []; } catch {} return SAMPLES; }
 const sampleCards = () => SAMPLES.map((x, k) => `<button class="gc" data-sample="${k}" title="${esc(x.idea || "")}">
-  <img src="${x.cover_url || ""}" loading="lazy"><span class="pl">▶</span><b>${esc(x.title)}</b><small>${x.seconds ? x.seconds.toFixed(0) + " 秒 · " : ""}${esc(x.style || "")}</small></button>`).join("");
+  <img src="${x.cover_url || ""}" loading="lazy"><span class="pl">▶</span><b>${esc(x.title)}</b><small>${x.seconds ? OneShotI18n.t("{seconds} 秒",{seconds:x.seconds.toFixed(0)}) + " · " : ""}${esc(x.style || "")}</small></button>`).join("");
 async function showGallery() {
   await loadSamples();
   const m = $("#wzSample");
   m.innerHTML = OneShotI18n.html`<div class="box"><div class="hd"><b>🎬 示例成片</b><span class="dim">全部用「一句话成片」自动做出来：一句想法 → 剧本 → 角色 → 分镜图 → 视频 → 成片，每部约 6 分钟</span>
     <span style="flex:1"></span><button class="ghost sm" data-x>关闭</button></div>
-    <div class="gal grid">${sampleCards() || `<div class="dim">还没有示例</div>`}</div></div>`;
+    <div class="gal grid">${sampleCards() || OneShotI18n.html`<div class="dim">还没有示例</div>`}</div></div>`;
   m.classList.add("on");
   $("[data-x]", m).onclick = () => { m.classList.remove("on"); m.innerHTML = ""; };
   m.onpointerdown = e => { if (e.target === m) { m.classList.remove("on"); m.innerHTML = ""; } };
@@ -495,7 +499,7 @@ async function showGallery() {
 async function fillEmptyGallery() {
   const box = $("#emptyGal"); if (!box) return;
   await loadSamples();
-  box.innerHTML = SAMPLES.length ? `<p style="margin:18px 0 8px">看看示例成片：</p><div class="gl">${sampleCards()}</div>` : "";
+  box.innerHTML = SAMPLES.length ? OneShotI18n.html`<p style="margin:18px 0 8px">看看示例成片：</p><div class="gl">${sampleCards()}</div>` : "";
   $$("[data-sample]", box).forEach(b => b.onclick = () => showSample(SAMPLES[+b.dataset.sample]));
 }
 
@@ -593,16 +597,16 @@ function initWizard() {
 #wiz .top > b { display: flex; align-items: center; gap: 6px; }
 #empty .wcta small { display: block; font-weight: 400; font-size: var(--fs-small); opacity: .85; margin-top: 2px; }`;
   document.head.appendChild(css);
-  document.body.insertAdjacentHTML("beforeend", `<div id="wiz"><div class="top"><b>${ico("script")} 一句话成片</b><div id="wzSteps"></div>
+  document.body.insertAdjacentHTML("beforeend", OneShotI18n.html`<div id="wiz"><div class="top"><b>${ico("script")} 一句话成片</b><div id="wzSteps"></div>
     <button class="ghost x" id="wzClose" title="向导的进度会保存，随时可以回来">去画布查看</button></div><div id="wzBody"></div></div><div id="wzSample"></div>`);
   $("#wzClose").onclick = closeWizard;
-  $("#tl").insertAdjacentHTML("beforeend", `<button id="wizBtn" title="AI 帮你从一句话做到成片">${ico("script")}<span>一句话成片</span></button>`);
+  $("#tl").insertAdjacentHTML("beforeend", OneShotI18n.html`<button id="wizBtn" title="AI 帮你从一句话做到成片">${ico("script")}<span>一句话成片</span></button>`);
   $("#wizBtn").onclick = openWizard;
-  $("#wizBtn").insertAdjacentHTML("afterend", `<button id="galBtn" title="看看用一句话做出来的示例成片">${ico("video")}<span>示例</span></button>`);
+  $("#wizBtn").insertAdjacentHTML("afterend", OneShotI18n.html`<button id="galBtn" title="看看用一句话做出来的示例成片">${ico("video")}<span>示例</span></button>`);
   $("#galBtn").onclick = showGallery;
   $("#empty .tiles").insertAdjacentHTML("afterend", `<div class="gal" id="emptyGal"></div>`);
   fillEmptyGallery();
-  $("#empty h1").insertAdjacentHTML("afterend", `<button class="wcta" id="wizCta">一句话成片<small>写下想法，AI 帮你写剧本、定角色、出分镜、生成视频、剪成片</small></button><p style="margin:0 0 8px">或者自己搭：</p>`);
+  $("#empty h1").insertAdjacentHTML("afterend", OneShotI18n.html`<button class="wcta" id="wizCta">一句话成片<small>写下想法，AI 帮你写剧本、定角色、出分镜、生成视频、剪成片</small></button><p style="margin:0 0 8px">或者自己搭：</p>`);
   $("#wizCta").onclick = openWizard;
   setInterval(updateWizBtn, 2000);
 }

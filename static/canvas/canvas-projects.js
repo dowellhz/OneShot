@@ -132,7 +132,9 @@ async function createCanvas(project = null, imported = null, team = null) {
   requireSavedBoard(source);
   const random = crypto.randomUUID?.().slice(0,8) || Math.random().toString(36).slice(2,10);
   const id = "b" + Date.now().toString(36) + random;
-  const board = imported || emptyBoard(project ? "新画布" : "新画布 " + new Date().toLocaleDateString());
+  const { locale, t } = OneShotI18n;
+  const defaultName = t("新画布");
+  const board = imported || emptyBoard(project ? defaultName : defaultName + " " + new Date().toLocaleDateString(locale));
   const suffix = team ? "?team="+encodeURIComponent(team) : project ? "?project=" + encodeURIComponent(project) : "";
   await boardRequest("/api/board/"+id+suffix, "PUT", board);
   boardDirectory.unshift({id,name:board.name,nodes:board.nodes.length,project,team});
@@ -141,7 +143,7 @@ async function createCanvas(project = null, imported = null, team = null) {
 $("#bname").addEventListener("keydown", e => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); e.target.blur(); } });
 $("#bname").addEventListener("blur", e => {
   if (!B || !canvasCanEdit()) return;
-  const t = e.target.textContent.trim() || "未命名画布";
+  const t = e.target.textContent.trim() || OneShotI18n.t("未命名画布");
   e.target.textContent = t;
   if (B.name === t) return;
   B.name = t; save();
