@@ -15,7 +15,7 @@ let compareLength = 0, comparePlaying = false, compareStarted = false, comparePl
 function compareStop() {
   comparePlayback++;
   comparePlaying = compareStarted = false;
-  comparePlay.textContent = "播放";
+  comparePlay.textContent = OneShotI18n.t("播放");
   comparePlayers.forEach(video => video.pause());
 }
 

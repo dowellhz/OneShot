@@ -22,8 +22,8 @@ function acMarkdown(host,text,{images=true}={}){
   for(const table of [...fragment.querySelectorAll("table")]){const wrap=document.createElement("div");wrap.className="ac-table";table.replaceWith(wrap);wrap.append(table);}
   for(const pre of fragment.querySelectorAll("pre")){
     const code=pre.querySelector("code");if(!code)continue;
-    const copy=document.createElement("button");copy.type="button";copy.className="ac-code-copy";copy.textContent="复制";copy.setAttribute("aria-label","复制代码");
-    copy.onclick=async()=>{try{await acCopyText(code.textContent);copy.textContent="已复制";}catch{copy.textContent="复制失败";}setTimeout(()=>copy.textContent="复制",1800);};pre.prepend(copy);
+    const copy=document.createElement("button");copy.type="button";copy.className="ac-code-copy";copy.textContent=OneShotI18n.t("复制");copy.setAttribute("aria-label","复制代码");
+    copy.onclick=async()=>{try{await acCopyText(code.textContent);copy.textContent=OneShotI18n.t("已复制");}catch{copy.textContent=OneShotI18n.t("复制失败");}setTimeout(()=>copy.textContent=OneShotI18n.t("复制"),1800);};pre.prepend(copy);
   }
   host.replaceChildren(fragment);
 }

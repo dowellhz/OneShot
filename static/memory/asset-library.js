@@ -133,10 +133,10 @@ function alFolderEditor(mode) {
   const folder=alFolderList().find(f=>f.id===AL.folder), host=$("#alFolderEditor");
   if (mode!=="create" && !folder) return;
   if (mode==="delete") {
-    host.innerHTML=`<span>删除「${esc(folder.name)}」后，其中的资产会回到未归档。</span><button type="button" data-confirm>删除文件夹</button><button type="button" data-cancel>取消</button>`;
+    host.innerHTML=OneShotI18n.html`<span>删除「${esc(folder.name)}」后，其中的资产会回到未归档。</span><button type="button" data-confirm>删除文件夹</button><button type="button" data-cancel>取消</button>`;
     $("[data-confirm]",host).onclick=()=>alFolderChange(async()=>{await boardRequest(alFolderURL(folder.id),"DELETE");AL.folder="all";host.replaceChildren();});
   } else {
-    host.innerHTML=`<form><input aria-label="文件夹名称" maxlength="60" required value="${esc(mode==="rename"?folder.name:"")}"><button type="submit">保存</button><button type="button" data-cancel>取消</button></form>`;
+    host.innerHTML=OneShotI18n.html`<form><input aria-label="文件夹名称" maxlength="60" required value="${esc(mode==="rename"?folder.name:"")}"><button type="submit">保存</button><button type="button" data-cancel>取消</button></form>`;
     const input=$("input",host);input.focus();input.select();
     $("form",host).onsubmit=e=>{
       e.preventDefault();
@@ -150,21 +150,21 @@ function alFolderEditor(mode) {
 }
 function alEmptyDetail() {
   const host = $('#alDetail'); if (!host) return;
-  host.innerHTML = `<div class="al-detail-empty">${ico('assets')}<strong>资产详情</strong><p>选择一项资产，查看设定、参考素材和生成历史。</p><span>在对话或提示词中输入 @，即可采用资产。</span></div>`;
+  host.innerHTML = OneShotI18n.html`<div class="al-detail-empty">${ico('assets')}<strong>资产详情</strong><p>选择一项资产，查看设定、参考素材和生成历史。</p><span>在对话或提示词中输入 @，即可采用资产。</span></div>`;
 }
 function alRender() {
   if (!AL.open || AL.drag) return;
   alRenderFolders();
-  const currentLabel = "当前资产库 · " + alCurrentName();
+  const currentLabel = OneShotI18n.t("当前资产库") + " · " + alCurrentName();
   $("#alScope option[value=current]").textContent = currentLabel;
-  $("#alTitle").textContent = AL.scope === "current" ? currentLabel : "资产库";
+  $("#alTitle").textContent = AL.scope === "current" ? currentLabel : OneShotI18n.t("资产库");
   const base = alBaseItems(), list = base.filter(a => AL.kind === 'all' || a.kind === AL.kind);
   if(AL.sort!=="relevance")list.sort((a,b) => AL.sort === 'name' ? a.name.localeCompare(b.name,'zh-CN') : (b.mtime||0)-(a.mtime||0));
   $("#alSort option[value=relevance]").hidden = !AL.semantic?.ids;
   $("#alSort").value = AL.sort;
   $("#alSemantic").disabled = !alCanFindByDescription();
   const status = $("#alSemanticStatus");
-  status.textContent = AL.semantic?.pending ? "正在按描述查找…" : AL.semantic?.error || ({
+  status.textContent = AL.semantic?.pending ? OneShotI18n.t("正在按描述查找…") : AL.semantic?.error || ({
     semantic:"按描述匹配", exact:"名称匹配", keyword:"已使用关键词查找",
   })[AL.semantic?.method] || "";
   status.hidden = !status.textContent;
@@ -175,13 +175,13 @@ function alRender() {
   const more = $('#alLoadMore');
   more.hidden = !AL.nextCursor || !!AL.semantic?.ids;
   more.disabled = !!AL.loadingMore;
-  more.textContent = AL.loadingMore ? '正在加载…' : '加载更多资产';
+  more.textContent = AL.loadingMore ? OneShotI18n.t('正在加载…') : OneShotI18n.t('加载更多资产');
   $('#alCount').textContent = `${more.hidden ? '' : '已显示 '}${list.length} 项资产`;
   $('#alHeading').textContent = AL_KINDS[AL.kind];
   $('#alGrid').replaceChildren(); $('#alEmpty').hidden = !!list.length || !$('#alLoading').hidden;
   const filtered = AL.query || AL.scope !== 'current' || AL.source !== 'all';
-  $('#alEmptyTitle').textContent = !more.hidden ? '已加载的资产中没有匹配项' : filtered ? '没有匹配的资产' : AL.folder!=='all' ? '这个文件夹暂无资产' : `还没有${AL.kind === 'all' ? '资产' : AL_KINDS[AL.kind]}`;
-  $('#alEmptyText').textContent = !more.hidden ? '可继续加载这个资产库中的较早素材。' : filtered ? '试试其他关键词，或重置筛选条件。' : AL.folder!=='all' ? '从全部资产选择要归档的素材，再移动到此文件夹。' : '上传素材、从画布收录，或新建一份背景资料。';
+  $('#alEmptyTitle').textContent = !more.hidden ? OneShotI18n.t('已加载的资产中没有匹配项') : filtered ? OneShotI18n.t('没有匹配的资产') : AL.folder!=='all' ? OneShotI18n.t('这个文件夹暂无资产') : `还没有${AL.kind === 'all' ? '资产' : AL_KINDS[AL.kind]}`;
+  $('#alEmptyText').textContent = !more.hidden ? OneShotI18n.t('可继续加载这个资产库中的较早素材。') : filtered ? OneShotI18n.t('试试其他关键词，或重置筛选条件。') : AL.folder!=='all' ? OneShotI18n.t('从全部资产选择要归档的素材，再移动到此文件夹。') : OneShotI18n.t('上传素材、从画布收录，或新建一份背景资料。');
   for (const a of list) {
     const card = document.createElement('article'); card.className = 'al-card' + (AL.selected === a.id ? ' selected' : ''); card.dataset.id = a.id;
     const draftMain = a.kind === 'character' && characterResult(a, 'main', boardId);
@@ -191,7 +191,7 @@ function alRender() {
     const image=video?`<video src="/media?ref=${encodeURIComponent(ref)}#t=0.1" preload="metadata" muted playsinline></video>`
       :type==="image"?`<img src="/media?ref=${encodeURIComponent(ref)}" draggable="false" loading="lazy" alt="${esc(a.name)}">`
       :`<div class="al-text-preview">${ico(type==="audio"?'audio':'script')}<p>${esc((a.desc || a.document?.excerpt || a.document?.text || (type==="audio"?'音频素材':'背景资料')).slice(0,180))}</p></div>`;
-    card.innerHTML = `<button type="button" class="al-card-main" aria-label="查看资产 ${esc(a.name)}" aria-pressed="${AL.selected === a.id}"><div class="al-cover">${image}<span class="al-type">${esc(cmKind(a))}</span>${hasDraft ? '<span class="al-reference">新图待定稿</span>' : a.ref ? '<span class="al-reference">默认参考</span>' : video ? '<span class="al-reference">视频资料</span>' : ''}</div><div class="al-card-info"><strong>${esc(a.name)}</strong><p>${esc(a.desc || '尚未填写设定')}</p><div class="al-card-meta"><span>${esc(alSourceLabel(a))}</span><span>${esc(cmScopeLabel(a))}</span></div><div class="al-tags">${(a.tags||[]).slice(0,3).map(t=>`<span>${esc(t)}</span>`).join('')}</div></div></button><div class="al-card-actions"><button type="button" data-action="canvas" title="放入当前画布">${ico('plus')}放入画布</button><button type="button" data-action="reference" title="在创作助手中引用此资产">@ 引用</button></div>`;
+    card.innerHTML = OneShotI18n.html`<button type="button" class="al-card-main" aria-label="${esc(OneShotI18n.t("查看资产 {name}", {name:a.name}))}" aria-pressed="${AL.selected === a.id}"><div class="al-cover">${image}<span class="al-type">${esc(cmKind(a))}</span>${hasDraft ? '<span class="al-reference">新图待定稿</span>' : a.ref ? OneShotI18n.markup('<span class="al-reference">默认参考</span>') : video ? OneShotI18n.markup('<span class="al-reference">视频资料</span>') : ''}</div><div class="al-card-info"><strong>${esc(a.name)}</strong><p>${esc(a.desc || OneShotI18n.t('尚未填写设定'))}</p><div class="al-card-meta"><span>${esc(OneShotI18n.t(alSourceLabel(a)))}</span><span>${esc(cmScopeLabel(a))}</span></div><div class="al-tags">${(a.tags||[]).slice(0,3).map(t=>`<span>${esc(t)}</span>`).join('')}</div></div></button><div class="al-card-actions"><button type="button" data-action="canvas" title="放入当前画布">${ico('plus')}放入画布</button><button type="button" data-action="reference" title="在创作助手中引用此资产">@ 引用</button></div>`;
     card.querySelector('.al-card-main').onclick = () => alSelect(a);
     card.querySelector('[data-action=canvas]').onclick = () => alPlace(a);
     card.querySelector('[data-action=reference]').onclick = () => alReference(a);
@@ -352,7 +352,7 @@ async function alImportCanvasAssets(host, nodes, onSaved, {onCancel,skipped=0}={
   const project=currentProject();
   const form=document.createElement("form");
   form.className="al-group-import";
-  form.innerHTML=`<strong>收录 ${entries.length} 项资产</strong>
+  form.innerHTML=OneShotI18n.html`<strong>收录 ${entries.length} 项资产</strong>
     <ul class="al-import-selection" aria-label="收录清单">${nodes.map(n=>`<li><span>${esc(n.name)}</span><small>${TYPE_CN[n.type]}${curV(n)?.ref?` · 版本 ${n.cur+1}`:""}</small></li>`).join("")}</ul>
     ${skipped?`<p>另有 ${skipped} 个节点暂不可收录。</p>`:""}
     <label>保存到 <select name="scope">${project?`<option value="project">项目资产库 · ${esc(project.name)}</option>`:alCurrentTeam()?"":`<option value="canvas">当前画布 · ${esc(B.name)}</option>`}<option value="personal">个人资产库</option>${canvasTeams.map(t=>`<option value="team:${esc(t.id)}">团队 · ${esc(t.name)}</option>`).join("")}</select></label>
@@ -371,7 +371,7 @@ async function alImportCanvasAssets(host, nodes, onSaved, {onCancel,skipped=0}={
     const ticket=++folderRequest;
     const team=scope.value.startsWith("team:")?scope.value.slice(5):"";
     folder.replaceChildren(new Option("未归档",""));
-    status.textContent="正在读取文件夹…";
+    status.textContent=OneShotI18n.t("正在读取文件夹…");
     submit.disabled=true;
     try {
       const folders=await boardRequest(alFolderURL("",team));
@@ -396,7 +396,7 @@ async function alImportCanvasAssets(host, nodes, onSaved, {onCancel,skipped=0}={
     }
     busy=true;submit.disabled=scope.disabled=folder.disabled=true;
     form.setAttribute("aria-busy","true");
-    status.textContent="正在收录…";
+    status.textContent=OneShotI18n.t("正在收录…");
     try {
       await flushSave();
       if(bid!==boardId || !form.isConnected)return;
@@ -425,7 +425,7 @@ function alAssetActions(fields, asset, bid) {
   const route = '/api/memory/'+encodeURIComponent(asset.id);
   const actions = document.createElement('div');
   actions.className = 'al-asset-actions';
-  actions.innerHTML = `<button type="button">复制到个人库</button><a download>下载素材包</a>`;
+  actions.innerHTML = OneShotI18n.html`<button type="button">复制到个人库</button><a download>下载素材包</a>`;
   const button = $('button',actions);
   $('a',actions).href = route+'/download?'+new URLSearchParams({board:bid});
   let attempt;
@@ -595,7 +595,7 @@ async function openReferenceLibrary(target, kind) {
     if (busy || !choice || !active() || !available(choice)) return;
     const id=choice.spec.data.asset.id, ref=curV(choice.spec).ref;
     busy=query.disabled=list.disabled=apply.disabled=true;
-    status.textContent="正在核对素材…";
+    status.textContent=OneShotI18n.t("正在核对素材…");
     try {
       const [asset]=await boardRequest("/api/memory/resolve","POST",{board:bid,ids:[id]});
       if (!active()) return;
@@ -631,7 +631,7 @@ async function openReferenceLibrary(target, kind) {
   query.oninput=filter;
   list.onchange=updatePreview;
   list.replaceChildren();
-  status.textContent="正在读取资产库…";
+  status.textContent=OneShotI18n.t("正在读取资产库…");
   updatePreview();
   if(dialog.showModal)dialog.showModal();
   else dialog.setAttribute("open","");
@@ -732,9 +732,9 @@ function alChanged(a, removed=false) {
 function alBoardChanged() { alClose(); alCloseCanvasImport(); AL.board=null; AL.items=[]; AL.selected=null; AL.marked.clear(); AL.filing=false; $("#alFolderEditor").replaceChildren(); CM.editor?.remove(); CM.editor=null; alEmptyDetail(); }
 function initAssetLibrary() {
   const pane=document.createElement('section');pane.id='assetLibrary';pane.hidden=true;pane.setAttribute('role','dialog');pane.setAttribute('aria-modal','false');pane.setAttribute('aria-labelledby','alTitle');
-  pane.innerHTML=`<header class="al-head"><div class="al-title">${ico('assets')}<div><h1 id="alTitle">当前资产库</h1></div></div><button type="button" id="alClose" aria-label="返回画布">${ico('left')}返回画布</button></header><div class="al-body"><nav class="al-sidebar" aria-label="资产分类"><div class="al-nav-label">创作资产</div><div id="alCategories">${Object.entries(AL_KINDS).map(([k,v])=>`<button type="button" data-kind="${k}" aria-pressed="${k==='all'}"><span>${v}</span><small>0</small></button>`).join('')}</div><div class="al-sidebar-note">资产可包含图片、视频、音频和文字设定。<br>输入 @ 自动引用，生成历史持续保留。</div><button type="button" id="alTemplate">工作流模板</button><button type="button" id="alHistory">${ico('clock')}素材历史</button></nav><main class="al-main"><div class="al-toolbar"><label class="al-search">${ico('search')}<input id="alSearch" maxlength="1000" placeholder="输入名称、标签或镜头描述" aria-label="搜索资产"></label><button type="button" id="alSemantic">按描述找</button><button type="button" id="alUpload">${ico('upload')}上传素材</button><button type="button" id="alNew">${ico('plus')}新建资产</button><input id="alFile" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.txt,.md,.markdown,.csv,.json,.docx,.pdf" hidden></div><div class="al-filterbar"><h2 id="alHeading">所有资产</h2><span id="alCount">0 项资产</span><div class="al-filters"><select id="alScope" aria-label="资产范围"><option value="current">当前资产库</option><option value="personal">个人资产库</option><option value="shared">共享素材</option></select><select id="alSource" aria-label="资产来源"><option value="all">所有来源</option><option value="upload">用户上传</option><option value="generated">生成素材</option><option value="mixed">多种来源</option><option value="text">文本资料</option><option value="other">已有素材</option></select><select id="alSort" aria-label="资产排序"><option value="relevance" hidden>按相关性</option><option value="recent">最近更新</option><option value="name">名称排序</option></select><button type="button" id="alReset" title="重置筛选">重置</button><button type="button" id="alRefresh" title="刷新资产库" aria-label="刷新资产库">${ico('redo')}</button></div></div><div class="al-feedback"><span id="alLoading" hidden>正在读取资产…</span><span id="alError" role="alert" hidden></span><span id="alSemanticStatus" role="status" hidden></span></div><div class="al-content"><div id="alGrid" class="al-grid"></div><div id="alEmpty" class="al-empty">${ico('assets')}<h3 id="alEmptyTitle">还没有资产</h3><p id="alEmptyText"></p><div><button type="button" id="alEmptyNew">新建资产</button><button type="button" id="alFromCanvas">从画布收录</button></div></div><button type="button" id="alLoadMore" hidden>加载更多资产</button></div><div class="al-foot"><span>拖动资产卡片可放入画布。</span><button type="button" id="alImportBtn">从画布收录</button></div><div id="alImport" class="al-import" hidden></div></main><aside id="alDetail" class="al-detail" aria-label="资产详情"></aside></div>`;
+  pane.innerHTML=OneShotI18n.html`<header class="al-head"><div class="al-title">${ico('assets')}<div><h1 id="alTitle">当前资产库</h1></div></div><button type="button" id="alClose" aria-label="返回画布">${ico('left')}返回画布</button></header><div class="al-body"><nav class="al-sidebar" aria-label="资产分类"><div class="al-nav-label">创作资产</div><div id="alCategories">${Object.entries(AL_KINDS).map(([k,v])=>`<button type="button" data-kind="${k}" aria-pressed="${k==='all'}"><span>${OneShotI18n.t(v)}</span><small>0</small></button>`).join('')}</div><div class="al-sidebar-note">资产可包含图片、视频、音频和文字设定。<br>输入 @ 自动引用，生成历史持续保留。</div><button type="button" id="alTemplate">工作流模板</button><button type="button" id="alHistory">${ico('clock')}素材历史</button></nav><main class="al-main"><div class="al-toolbar"><label class="al-search">${ico('search')}<input id="alSearch" maxlength="1000" placeholder="输入名称、标签或镜头描述" aria-label="搜索资产"></label><button type="button" id="alSemantic">按描述找</button><button type="button" id="alUpload">${ico('upload')}上传素材</button><button type="button" id="alNew">${ico('plus')}新建资产</button><input id="alFile" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.txt,.md,.markdown,.csv,.json,.docx,.pdf" hidden></div><div class="al-filterbar"><h2 id="alHeading">所有资产</h2><span id="alCount">0 项资产</span><div class="al-filters"><select id="alScope" aria-label="资产范围"><option value="current">当前资产库</option><option value="personal">个人资产库</option><option value="shared">共享素材</option></select><select id="alSource" aria-label="资产来源"><option value="all">所有来源</option><option value="upload">用户上传</option><option value="generated">生成素材</option><option value="mixed">多种来源</option><option value="text">文本资料</option><option value="other">已有素材</option></select><select id="alSort" aria-label="资产排序"><option value="relevance" hidden>按相关性</option><option value="recent">最近更新</option><option value="name">名称排序</option></select><button type="button" id="alReset" title="重置筛选">重置</button><button type="button" id="alRefresh" title="刷新资产库" aria-label="刷新资产库">${ico('redo')}</button></div></div><div class="al-feedback"><span id="alLoading" hidden>正在读取资产…</span><span id="alError" role="alert" hidden></span><span id="alSemanticStatus" role="status" hidden></span></div><div class="al-content"><div id="alGrid" class="al-grid"></div><div id="alEmpty" class="al-empty">${ico('assets')}<h3 id="alEmptyTitle">还没有资产</h3><p id="alEmptyText"></p><div><button type="button" id="alEmptyNew">新建资产</button><button type="button" id="alFromCanvas">从画布收录</button></div></div><button type="button" id="alLoadMore" hidden>加载更多资产</button></div><div class="al-foot"><span>拖动资产卡片可放入画布。</span><button type="button" id="alImportBtn">从画布收录</button></div><div id="alImport" class="al-import" hidden></div></main><aside id="alDetail" class="al-detail" aria-label="资产详情"></aside></div>`;
   document.body.append(pane);alEmptyDetail();
-  pane.insertAdjacentHTML("afterend",`<dialog id="alCanvasImport" aria-labelledby="alCanvasImportTitle"><h2 id="alCanvasImportTitle">收录到资产库</h2><div data-canvas-import-form></div></dialog>`);
+  pane.insertAdjacentHTML("afterend",OneShotI18n.html`<dialog id="alCanvasImport" aria-labelledby="alCanvasImportTitle"><h2 id="alCanvasImportTitle">收录到资产库</h2><div data-canvas-import-form></div></dialog>`);
   const canvasImport=$("#alCanvasImport"), importForm=$("[data-canvas-import-form]",canvasImport);
   canvasImport.addEventListener("cancel",event=>{if($('form[aria-busy="true"]',importForm))event.preventDefault();});
   canvasImport.addEventListener("close",()=>{if(!canvasImport.open)importForm.replaceChildren();});
@@ -753,7 +753,7 @@ function initAssetLibrary() {
     alEndDrag();
     if(valid)void alBatch("place",ids,toW(event.clientX,event.clientY));
   },true);
-  $(".al-toolbar",pane).insertAdjacentHTML("afterend",`<div class="al-folder-bar">
+  $(".al-toolbar",pane).insertAdjacentHTML("afterend",OneShotI18n.html`<div class="al-folder-bar">
     <div id="alFolders" aria-label="素材文件夹"></div><div class="al-folder-actions">
     <button type="button" id="alNewFolder">＋ 文件夹</button><button type="button" id="alRenameFolder" hidden>改名</button>
     <button type="button" id="alDeleteFolder" hidden>删除</button><button type="button" id="alFileMode" aria-pressed="false">多选资产</button></div>

@@ -86,7 +86,7 @@ function renderCanvasCost(n, output) {
   clearTimeout(canvasCostTimer);
   const revision=++canvasCostRevision;
   if (!output) return;
-  output.textContent="正在估算费用…";
+  output.textContent=OneShotI18n.t("正在估算费用…");
   canvasCostTimer = setTimeout(async ()=>{
     if (!output.isConnected || !sel.has(n.id)) return;
     const [amount] = await canvasGenerationCosts([canvasCostRequest(n)]);
@@ -178,7 +178,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   const grid = imageGrid && n.type==="image";
   const d = n.data, prompt = grid ? GRID9_PROMPT : fullPrompt(n); delete n.agent_error; showErr(n, "");
   const hasEditPlan=n.type==="video" && (d.camera_plan || d.object_edit) && videoInputs(n)[0]?.edge.segment_edit;
-  if (!hasEditPlan && (usesFields(n) ? !fieldsFilled(n) : !prompt)) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : "先写提示词，或连入一个文本节点"); if (!usesFields(n)) $("#prompt").focus(); return; }
+  if (!hasEditPlan && (usesFields(n) ? !fieldsFilled(n) : !prompt)) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : OneShotI18n.t("先写提示词，或连入一个文本节点")); if (!usesFields(n)) $("#prompt").focus(); return; }
   let req, gridReference;
   if (n.type === "image") {
     const linked=imageInputs(n), images=[];
@@ -360,7 +360,7 @@ function videoReq(n, prompt, {silent=false}={}) {
 }
 async function rewritePrompt(n) {
   const prompt = fullPrompt(n);
-  if (usesFields(n) ? !fieldsFilled(n) : !prompt) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : "先写一段中文描述"); return; }
+  if (usesFields(n) ? !fieldsFilled(n) : !prompt) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : OneShotI18n.t("先写一段中文描述")); return; }
   const req = videoReq(n, prompt); if (!req) return;
   if (n.data.selected_model) Object.assign(req, {provider: n.data.provider, selected_model: n.data.selected_model});
   const btn = $("#rwBtn"); btn.disabled = true; btn.innerHTML = `${ico("clock")}改写中…`;
@@ -632,7 +632,7 @@ async function captureOnCanvas(sourceId, version, {position, at, before=false, a
   return image;
 }
 async function continueFrom(n, extension) {
-  const v = curV(n); if (!v) return toast("还没有视频");
+  const v = curV(n); if (!v) return toast(OneShotI18n.t("还没有视频"));
   const before=extension.direction==="before";
   try {
     const anchor=await captureOnCanvas(n.id,v,{position:before?"first":"last",before,onCaptured:image=>{
@@ -690,10 +690,10 @@ let assetsCache = [], afilter = "all";
 async function loadAssets() {
   if (!$("#drawer").classList.contains("on")) return;
   if (KIND_CN[afilter]) { $("#drawer .h").textContent = "点击或拖到画布上使用；输入 @ 采用设定与参考图；右上角查看记忆和版本"; return renderLibrary(afilter); }
-  $("#drawer .h").textContent = "点击或拖到画布上使用";
+  $("#drawer .h").textContent = OneShotI18n.t("点击或拖到画布上使用");
   try { assetsCache = await (await fetch("/api/assets")).json(); } catch { return; }
   const g = $("#agrid"), list = assetsCache.filter(a => afilter === "all" || a.type === afilter);
-  g.innerHTML = list.map(a => `<div class="as" draggable="true" data-i="${assetsCache.indexOf(a)}">${a.type === "video" ? `<video src="${a.url}#t=0.5" preload="metadata" muted></video>` : a.type==="audio" ? `<div class="asset-audio">${ico("audio")}</div>` : `<img src="${a.url}" loading="lazy">`}<span class="ty">${a.type === "audio" || a.type==="video" ? TYPE_CN[a.type] : a.source === "upload" ? "上传" : a.source === "frame" ? "截帧" : "生成"}</span></div>`).join("") || `<div class="h">还没有素材</div>`;
+  g.innerHTML = list.map(a => `<div class="as" draggable="true" data-i="${assetsCache.indexOf(a)}">${a.type === "video" ? `<video src="${a.url}#t=0.5" preload="metadata" muted></video>` : a.type==="audio" ? `<div class="asset-audio">${ico("audio")}</div>` : `<img src="${a.url}" loading="lazy">`}<span class="ty">${a.type === "audio" || a.type==="video" ? TYPE_CN[a.type] : a.source === "upload" ? "上传" : a.source === "frame" ? "截帧" : "生成"}</span></div>`).join("") || OneShotI18n.html`<div class="h">还没有素材</div>`;
   $$(".as", g).forEach(d => {
     const a = assetsCache[+d.dataset.i];
     d.addEventListener("dragstart", e => e.dataTransfer.setData("application/x-h3-asset", JSON.stringify(a)));

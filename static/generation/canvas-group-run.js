@@ -249,7 +249,7 @@ function groupRunRecipe(n, deps, media=groupRunInputs(n)) {
 
 function groupRunRows(steps, expanded=null) {
   return steps.map(step=>{
-    const refs=expanded&&step.references?.length?`<details class="group-run-refs" data-step="${esc(step.id)}"${expanded.has(step.id)?" open":""}>
+    const refs=expanded&&step.references?.length?OneShotI18n.html`<details class="group-run-refs" data-step="${esc(step.id)}"${expanded.has(step.id)?" open":""}>
       <summary>参考素材 ${step.references.length} 项</summary>
       ${step.references.map(({name,label,thumbnail})=>`<div>${thumbnail?`<img src="/media?ref=${encodeURIComponent(thumbnail)}" alt="" loading="lazy">`:""}
         <span>${esc(name)}<small>${esc(label)}</small></span></div>`).join("")}</details>`:"";
@@ -374,7 +374,7 @@ function openCanvasRun(origin, {changed=null,retry=null,plan=null,initialMode=nu
     const cost = $("[data-group-cost]",dialog);
     cost.hidden=pending||!ready.length;
     if (!pending&&ready.length) {
-      cost.textContent="正在估算费用…";
+      cost.textContent=OneShotI18n.t("正在估算费用…");
       const snapshot=reviewed;
       void canvasGenerationCosts(ready.map(step=>canvasCostRequest(node(step.id)))).then(amounts=>{
         if (B!==board || reviewed!==snapshot || !dialog.open) return;
@@ -589,7 +589,7 @@ function groupRunJobFinished(n, job, versions, errors) {
 }
 
 function initCanvasGroupRun() {
-  document.body.insertAdjacentHTML("beforeend",`<dialog id="groupRunConfirm" aria-labelledby="groupRunTitle"><form>
+  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="groupRunConfirm" aria-labelledby="groupRunTitle"><form>
     <header><strong id="groupRunTitle" data-title></strong><button type="button" data-close aria-label="关闭">×</button></header>
     <label>运行范围 <select name="mode"><option value="missing">补齐未生成节点</option><option value="all">全部生成节点</option><option value="affected" hidden disabled>重跑受影响的节点</option>
       <option value="missing_frame" data-shot-mode hidden disabled>只补齐分镜图</option><option value="missing_video" data-shot-mode hidden disabled>只补齐视频</option>

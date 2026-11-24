@@ -32,7 +32,7 @@ function retakeControls(form, enabled, existing) {
   mode.value=Object.hasOwn(cameraModeLabel,existing?.mode)?existing.mode:"fixed";
   mode.onchange=()=>{
     $("[data-vs-view=end]",panel).hidden=mode.value==="fixed";
-    $("[data-vs-view=start] legend",panel).textContent=mode.value==="fixed"?"机位":"起始机位";
+    $("[data-vs-view=start] legend",panel).textContent=mode.value==="fixed"?OneShotI18n.t("机位"):"起始机位";
     $("[data-vs-camera-hint]",panel).textContent=mode.value==="cut"?"在区间中点切到结束机位。":
       mode.value==="move"?"从起始机位平滑移到结束机位。":"整个区间使用同一机位和景别。";
   };
@@ -170,10 +170,10 @@ function openSegmentEditor(source,{retake=false,objectAction=null,target=null,in
   if (!services.length) provider.append(new Option("请配置支持片段编辑的 Seedance 2.5",""));
   start.value=input?.edge.start??0;end.value=input?.edge.end??(total?Math.min(total,5):"");
   prompt.value=target?.data.prompt || "";
-  prompt.placeholder=objectAction?"选填，例如说明要保留的遮挡、影子或物体运动":retake?"选填，例如保留人物回头的动作，在换机位后突出表情":"例如把窗外改成雨天，保留人物和镜头节奏";
+  prompt.placeholder=objectAction?"选填，例如说明要保留的遮挡、影子或物体运动":retake?"选填，例如保留人物回头的动作，在换机位后突出表情":OneShotI18n.t("例如把窗外改成雨天，保留人物和镜头节奏");
   provider.value=services.some(service=>service.id===target?.data.provider)?target.data.provider:provider.options[0].value;
-  $("#videoSegmentTitle").textContent=objectAction?OBJECT_EDIT_LABELS[objectAction]:retake?"镜头重拍":"修改视频片段";
-  submit.textContent=target?(objectAction?"保存物体编辑设置":"保存重拍设置"):retake?"创建重拍节点":"创建修改节点";
+  $("#videoSegmentTitle").textContent=objectAction?OBJECT_EDIT_LABELS[objectAction]:retake?"镜头重拍":OneShotI18n.t("修改视频片段");
+  submit.textContent=target?(objectAction?"保存物体编辑设置":"保存重拍设置"):retake?"创建重拍节点":OneShotI18n.t("创建修改节点");
   let readCamera=retakeControls(form,retake,target?.data.camera_plan);
   const read=()=>({start:start.valueAsNumber,end:end.valueAsNumber,prompt:prompt.value.trim(),camera_plan:readCamera()});
   const load=range=>{

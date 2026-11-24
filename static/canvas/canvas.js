@@ -36,14 +36,14 @@ function canvasApplyAccess() {
 }
 
 function emptyBoard(name = "我的画布") { return { name, nodes: [], edges: [], groups: [], view: { x: 0, y: 0, k: 1 }, seq: 1 }; }
-function toast(m, ms = 2400) { const t = $("#toast"); t.textContent = m; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), ms); }
+function toast(m, ms = 2400) { const t = $("#toast"); t.textContent = OneShotI18n.t(m); t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), ms); }
 
 // ================================================================= persistence & history
 let saveT = null, savePending = null;
 const boardSaveRetry = $("#boardSaveRetry");
 function showBoardSaveFailure(message = "") {
   boardSaveRetry.hidden = !message;
-  boardSaveRetry.title = message;
+  boardSaveRetry.title = OneShotI18n.t(message);
 }
 boardSaveRetry.onclick = async () => {
   boardSaveRetry.disabled = true;
@@ -96,7 +96,7 @@ async function sendSave(p, keepalive, sequence) {
         if (isCurrent() && (AC.pending.has(p.id) || savePending !== p)) showBoardSaveFailure();
         return;
       }
-      if (p.id === boardId) { toast("画布已在别处更新（另一个窗口或后台修改），已载入最新版本", 5000); setTimeout(() => openBoard(boardId), 0); }
+      if (p.id === boardId) { toast(OneShotI18n.t("画布已在别处更新（另一个窗口或后台修改），已载入最新版本"), 5000); setTimeout(() => openBoard(boardId), 0); }
       return;
     }
     let reason = r.status === 401 ? "登录已过期" : r.statusText;
@@ -104,6 +104,14 @@ async function sendSave(p, keepalive, sequence) {
     failed(reason || "服务器未能保存画布");
   } catch { failed("连接失败，稍后会自动重试",3000); }
 }
+OneShotI18n.beforeSwitch(async () => {
+  const hasDraft = draft => draft.text || draft.documents?.length || draft.reviews?.length || draft.placement;
+  if (document.querySelector("dialog[open]") || AC.sending || AC.documentUpload ||
+      hasDraft({text: $("#acInput")?.value.trim(), documents: AC.documents, reviews: AC.reviews, placement: AC.placement}) ||
+      [...AC.drafts].some(([id, draft]) => id !== AC.session && hasDraft(draft))) return false;
+  await flushSave();
+  return !savePending && !AC.pending.has(boardId);
+});
 addEventListener("pagehide", () => flushSave(true));
 const undoStack = [], redoStack = [];
 let historyEpoch = 0;
@@ -465,11 +473,13 @@ function plan(n) {
   return { imgs, es, inputs, roles, labels, times, end, useRef, ordered, subj, mode: useRef ? "ref" : "fl2v", name };
 }
 
+function planLabel(p) { return p.name.split(" + ").map(label => OneShotI18n.t(label)).join(" + "); }
+
 // ================================================================= node DOM
 function build(n) {
   const el = document.createElement("div");
   el.className = "node " + n.type; el.dataset.id = n.id;
-  el.innerHTML = `<div class="lbl">${ico(n.type)}<span class="nm"></span><span class="meta"></span><span class="node-pins" hidden></span><span class="node-lock" title="已锁定位置和删除" aria-label="已锁定位置和删除" hidden>${ico("lock")}</span><span class="gr" title="按住拖动">${ico("grip")}</span></div>
+  el.innerHTML = OneShotI18n.html`<div class="lbl">${ico(n.type)}<span class="nm"></span><span class="meta"></span><span class="node-pins" hidden></span><span class="node-lock" title="已锁定位置和删除" aria-label="已锁定位置和删除" hidden>${ico("lock")}</span><span class="gr" title="按住拖动">${ico("grip")}</span></div>
     <div class="card"><div class="grip" title="按住拖动">${ico("grip")}</div><div class="body"></div><div class="gen"><div class="pct"></div><div class="bar"><i></i></div><div class="s"></div></div><div class="errbox"></div></div>
     <div class="plus l" title="添加上游节点">${ico("plus")}</div><div class="plus r" title="拖动连线 / 点击新建下游节点">${ico("plus")}</div>`;
   world.appendChild(el); els.set(n.id, el);
@@ -512,7 +522,7 @@ function render(n) {
     }
   } else if (n.type === "text") {
     if (!body.querySelector("textarea")) {
-      body.innerHTML = `<textarea placeholder="输入文本：脚本、画面描述、风格、镜头语言……&#10;&#10;连到图片或视频节点后，会并入它们的提示词"></textarea>`;
+      body.innerHTML = OneShotI18n.html`<textarea placeholder="输入文本：脚本、画面描述、风格、镜头语言……&#10;&#10;连到图片或视频节点后，会并入它们的提示词"></textarea>`;
       const ta = $("textarea", body); ta.value = n.data.text;
       ta.addEventListener("input", () => { n.data.text = ta.value; save(); B.edges.filter(e => e.from === n.id).forEach(e => refresh(node(e.to))); });
       ta.addEventListener("focus", () => { ta._before = snap(); });
@@ -532,12 +542,12 @@ function render(n) {
         body.innerHTML=audioPreviewMarkup(v);
         bindAudioPreview(body,v);
       }
-    }else body.innerHTML=`<div class="ph">${ico("audio")}<div class="t">输入文案生成配音或音乐<br>也可拖入音频文件</div></div>`;
+    }else body.innerHTML=OneShotI18n.html`<div class="ph">${ico("audio")}<div class="t">输入文案生成配音或音乐<br>也可拖入音频文件</div></div>`;
     meta = v?.seconds ? `${v.seconds.toFixed(1)}s` : "";
   } else if (n.data.playlist && !v) {
     const clips = n.data.film?.clips || [];
     meta = clips.length ? `${clips.length} 段 · ${filmTotal(n.data.film).toFixed(1)}s` : "空播放列表";
-    body.innerHTML = `<div class="ph">${ico("stack")}<button class="pill" type="button" data-open-playlist>打开播放列表</button></div>`;
+    body.innerHTML = OneShotI18n.html`<div class="ph">${ico("stack")}<button class="pill" type="button" data-open-playlist>打开播放列表</button></div>`;
     $("[data-open-playlist]",body).onclick = event => { event.stopPropagation(); openFilm(n); };
   } else if (v) {
     body.innerHTML = n.type === "image" ? `<img class="m" src="${v.url}" draggable="false">` : `<video class="m" src="${v.url}" controls playsinline preload="metadata"></video>`;
@@ -545,20 +555,30 @@ function render(n) {
     const badge=v.draft_final?.resolution ? `${String(v.draft_final.resolution).toUpperCase()} 定稿` : v.draft_expires ? "480p 样片" : v.mode;
     if (n.type === "video" && badge) body.insertAdjacentHTML("beforeend", `<span class="badge">${esc(badge)}</span>`);
   } else {
-    const hint = n.data.previs ? "双击编辑白模场景<br>设置机位与走位，渲染预演视频" :
-      n.type === "image" ? (imgInputs(n).length ? `以图改图 · ${imgInputs(n).length} 张参考图<br>选中后写下修改要求，用 @图1 指代原图` : "选中后在下方输入提示词生成<br>或把图片拖到这里") : (() => { const p = plan(n); return p.imgs.length ? `${p.name} · ${p.imgs.length} 张图<br>点连线上的标签可设为人物设定 / 首帧 / 尾帧` : "选中后输入提示词生成<br>或把视频拖到这里"; })();
+    const tr = OneShotI18n.t;
+    let hint;
+    if (n.data.previs) hint = tr("双击编辑白模场景") + "<br>" + tr("设置机位与走位，渲染预演视频");
+    else if (n.type === "image") {
+      const count = imgInputs(n).length;
+      hint = count ? tr("以图改图 · {count} 张参考图", {count}) + "<br>" + tr("选中后写下修改要求，用 @图1 指代原图") :
+        tr("选中后在下方输入提示词生成") + "<br>" + tr("或把图片拖到这里");
+    } else {
+      const p = plan(n);
+      hint = p.imgs.length ? tr("{plan} · {count} 张图", {plan: planLabel(p), count:p.imgs.length}) + "<br>" + tr("点连线上的标签可设为人物设定 / 首帧 / 尾帧") :
+        tr("选中后输入提示词生成") + "<br>" + tr("或把视频拖到这里");
+    }
     body.innerHTML = `<div class="ph">${ico(n.type)}<div class="t">${hint}</div></div>`;
   }
   if(!v&&canvasCanEdit()&&canvasMediaUploadTarget(n)&&!n.job){
     const placeholder=$(".ph",body);
-    placeholder.insertAdjacentHTML("beforeend",`<div class="node-start-actions">
+    placeholder.insertAdjacentHTML("beforeend",OneShotI18n.html`<div class="node-start-actions">
       <button type="button" class="pill" data-node-start="agent">交给助手</button>
       <button type="button" class="pill" data-node-start="prompt">填写提示词</button>
     </div>`);
   }
   const promptAction = $("[data-node-prompt]",body);
   if (v && canvasCanEdit() && canvasMediaUploadTarget(n)) {
-    if (!promptAction) body.insertAdjacentHTML("beforeend",'<button type="button" class="pill node-prompt-action" data-node-prompt>提示词</button>');
+    if (!promptAction) body.insertAdjacentHTML("beforeend",OneShotI18n.markup('<button type="button" class="pill node-prompt-action" data-node-prompt>提示词</button>'));
   } else {
     promptAction?.remove();
   }
@@ -567,7 +587,7 @@ function render(n) {
   el.classList.toggle("sel", sel.has(n.id));
   renderJob(n);
   if(n.agent_error)showErr(n,n.agent_error);
-  if (n.type==="video") $(".plus.r",el).title=v&&v.source!=="previs"?"拖动连线用作视频参考 · 点击续拍":"续拍：取最后一帧接着生成";
+  if (n.type==="video") $(".plus.r",el).title=v&&v.source!=="previs"?OneShotI18n.t("拖动连线用作视频参考 · 点击续拍"):OneShotI18n.t("续拍：取最后一帧接着生成");
 }
 // put several videos in the generation queue, in name order (视频 2 before 视频 10); each one is sent like a click on 生成
 let queueing = false;
@@ -604,7 +624,7 @@ function validVideoInput(edge) {
 }
 function switchVersion(n, i, {recordUndo = true} = {}) {
   if (!Number.isInteger(i) || !n.versions[i] || i === n.cur) return false;
-  if (n.job || prepping.has(n.id) || (IMAGE_EDITOR?.n === n && (IMAGE_EDITOR.busy || IMAGE_EDITOR.agentSelection))) { toast("请等待当前任务完成后再切换版本"); return false; }
+  if (n.job || prepping.has(n.id) || (IMAGE_EDITOR?.n === n && (IMAGE_EDITOR.busy || IMAGE_EDITOR.agentSelection))) { toast(OneShotI18n.t("请等待当前任务完成后再切换版本")); return false; }
   if (recordUndo) checkpoint();
   rememberVideoVersion(n);
   const v = n.versions[i];
@@ -633,7 +653,7 @@ function renderVTabs(n, el) {
   if (!["image", "video", "audio"].includes(n.type) || n.versions.length < 2) { t?.remove(); return; }
   if (!t) {
     t = document.createElement("div"); t.className = "vtabs"; el.appendChild(t);
-    t.setAttribute("role", "tablist"); t.setAttribute("aria-label", "历史版本"); t.setAttribute("aria-orientation", "vertical");
+    t.setAttribute("role", "tablist"); t.setAttribute("aria-label", OneShotI18n.t("历史版本")); t.setAttribute("aria-orientation", "vertical");
     t.addEventListener("pointerdown", e => e.stopPropagation());
     t.addEventListener("dblclick", e => e.stopPropagation());
   }
@@ -943,7 +963,7 @@ function edgeInspector(edge,description,a,b) {
   panel.innerHTML=`<span>${esc(description)}</span>`;
   world.appendChild(panel);
   if(!canvasCanEdit())return panel;
-  panel.insertAdjacentHTML("beforeend",`<button type="button" data-edge-cut title="点击或向下拖动以断开连线" aria-label="断开所选连线">${ico("scissors")}</button>`);
+  panel.insertAdjacentHTML("beforeend",OneShotI18n.html`<button type="button" data-edge-cut title="点击或向下拖动以断开连线" aria-label="断开所选连线">${ico("scissors")}</button>`);
   const scissors=$("[data-edge-cut]",panel);
   let drag, moved=false;
   panel.onpointerdown=event=>event.stopPropagation();
@@ -1013,7 +1033,7 @@ function drawEdges() {
       const pa = port(a, "out"), pb = port(b, "in"), lb = document.createElement("div");
       lb.className = "elabel" + (p.roles[k] === "subject" ? " subj" : "");
       lb.style.left = (pa.x + pb.x) / 2 + "px"; lb.style.top = (pa.y + pb.y) / 2 + "px";
-      lb.innerHTML = esc(p.labels[k] || "未使用") + ` ▾${roleSelect(e)}`;
+      lb.innerHTML = esc(OneShotI18n.t(p.labels[k] || "未使用")) + ` ▾${roleSelect(e)}`;
       relation=p.labels[k]||"未使用";
       world.appendChild(lb); wireRoleSelects(lb);
     }
@@ -1270,8 +1290,8 @@ function showPanel() {
     if(composition){
       const label=composition.enabled?"使用中":"已关闭";
       const picture=composition.version ? `<img src="/media?ref=${encodeURIComponent(composition.ref)}" alt="">` : "";
-      const button=canvasCanEdit()&&!nodeLocked(n) ? `<button type="button" data-previs-composition aria-label="使用白模构图参考" aria-pressed="${composition.enabled}">${composition.enabled?"关闭":"启用"}</button>` : "";
-      items.push(`<span class="ref">${picture}白模构图<span class="role">${composition.version?label:composition.enabled?"版本已移除":label}</span>${button}</span>`);
+      const button=canvasCanEdit()&&!nodeLocked(n) ? OneShotI18n.html`<button type="button" data-previs-composition aria-label="使用白模构图参考" aria-pressed="${composition.enabled}">${composition.enabled?"关闭":"启用"}</button>` : "";
+      items.push(OneShotI18n.html`<span class="ref">${picture}白模构图<span class="role">${composition.version?label:composition.enabled?"版本已移除":label}</span>${button}</span>`);
     }
   }
   if (n.type === "video") {
@@ -1285,7 +1305,7 @@ function showPanel() {
       const latest = curV(guide.source);
       const update = pvGuideAvailable(latest) && latest.ref !== guide.edge.ref;
       const span=guide.version?.previs_span;
-      items.push(`<span class="ref" data-tok="@视频${extension||segment?2:1}" title="${esc(guide.source?.name || "白模预演")}"><span class="tx">${ico("video")}</span>白模动作参考<span class="role">${guide.version ? `版本 ${guide.index + 1}${Array.isArray(span)?" · "+pvSpanLabel(span):""}` : "版本已移除"}</span>${update ? '<button type="button" data-previs-update>改用当前版本</button>' : ""}</span>`);
+      items.push(OneShotI18n.html`<span class="ref" data-tok="@视频${extension||segment?2:1}" title="${esc(guide.source?.name || "白模预演")}"><span class="tx">${ico("video")}</span>白模动作参考<span class="role">${guide.version ? `版本 ${guide.index + 1}${Array.isArray(span)?" · "+pvSpanLabel(span):""}` : "版本已移除"}</span>${update ? '<button type="button" data-previs-update>改用当前版本</button>' : ""}</span>`);
     }
     clips.forEach(({edge,source,version,index},i)=>{
       const number=promptVideoIndex(i,guide,extension||segment);
@@ -1308,7 +1328,7 @@ function showPanel() {
       // keyframes get a seconds box: where in the video this picture should be reached
       const tbox = p.useRef && r !== "subject" && r !== "first" && r !== "last" && p.times[i] != null
         ? `<input class="tsec" type="number" min="0" max="${p.end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
-      const label = `<span class="role rsel">${p.labels[i]} ▾${roleSelect(p.es[i])}</span>`;
+      const label = `<span class="role rsel">${OneShotI18n.t(p.labels[i])} ▾${roleSelect(p.es[i])}</span>`;
       items.push(imagePromptChip(input,i,label+tbox)); });
   }
   inputs(n, "text").forEach(t => items.push(`<span class="ref" title="${esc(t.data.text.slice(0, 200))}"><span class="tx">${ico("text")}</span>${esc(t.name)}<span class="role">已并入</span></span>`));
@@ -1393,25 +1413,31 @@ function showPanel() {
   // ---- prompt
   const ta = $("#prompt");
   ta.removeAttribute("maxlength");
-  ta.placeholder = n.type === "script" ? "写剧情，例如：深夜书房，裴照在灯下写字，突然有人敲门。河神抱着一碗汤进来，衣摆滴水，把碗放在桌上。裴照低头察看，碗里映出河神的脸……\n\n可以连入角色 / 场景图片，Qwen 会按图里的样子安排人物" : n.type === "image" ? (imgInputs(n).length ? "写修改要求，例如：把 @图1 里的橘猫换成穿校服的样子，背景改成樱花校园，保持猫的长相不变" : "描述你想生成的画面，例如：秋日校园里，一只背着书包的橘猫站在红砖教学楼前，电影感，暖色逆光") :
-    (imgInputs(n).length ? "描述视频中的动作、镜头和声音；点上方的图可以用 @图1 引用它" : "描述视频内容、动作、镜头运动和声音，例如：雪地森林里一只红狐狸小跑后回头看向镜头，镜头缓慢推近；风声和踩雪声");
-  if (segment) ta.placeholder = n.data.camera_plan ? "选填补充要求。机位和景别可在「重拍设置」修改。" :
-    n.data.object_edit ? "选填补充要求。目标选区可在「物体编辑设置」修改。" : "描述这段视频要改的内容，例如把窗外改成雨天，保留人物和镜头节奏。";
-  else if (extension) ta.placeholder = extension==="before"?"描述原视频开头之前发生的事。":"描述原视频结尾之后发生的事。";
-  else if (guide) ta.placeholder = "描述正式画面的人物、环境和风格。已连接的白模负责参考运镜和走位。";
-  else if (clips.length) ta.placeholder = "描述新画面。用 @视频1 指定要复用的动作、运镜或构图。";
-  else if (sounds.length) ta.placeholder = "描述画面和声音，点击上方音频可引用它的节奏、语调或环境声。";
-  if (n.type === "image" || n.type === "video") ta.placeholder = "输入 @ 搜索并引用素材。\n" + ta.placeholder;
+  ta.placeholder = n.type === "script" ? OneShotI18n.t("写剧情，例如：深夜书房，裴照在灯下写字，突然有人敲门。河神抱着一碗汤进来，衣摆滴水，把碗放在桌上。裴照低头察看，碗里映出河神的脸……\n\n可以连入角色 / 场景图片，Qwen 会按图里的样子安排人物") : n.type === "image" ? (imgInputs(n).length ? OneShotI18n.t("写修改要求，例如：把 @图1 里的橘猫换成穿校服的样子，背景改成樱花校园，保持猫的长相不变") : OneShotI18n.t("描述你想生成的画面，例如：秋日校园里，一只背着书包的橘猫站在红砖教学楼前，电影感，暖色逆光")) :
+    (imgInputs(n).length ? OneShotI18n.t("描述视频中的动作、镜头和声音；点上方的图可以用 @图1 引用它") : OneShotI18n.t("描述视频内容、动作、镜头运动和声音，例如：雪地森林里一只红狐狸小跑后回头看向镜头，镜头缓慢推近；风声和踩雪声"));
+  if (segment) ta.placeholder = n.data.camera_plan ? OneShotI18n.t("选填补充要求。机位和景别可在「重拍设置」修改。") :
+    n.data.object_edit ? OneShotI18n.t("选填补充要求。目标选区可在「物体编辑设置」修改。") : OneShotI18n.t("描述这段视频要改的内容，例如把窗外改成雨天，保留人物和镜头节奏。");
+  else if (extension) ta.placeholder = extension==="before"?OneShotI18n.t("描述原视频开头之前发生的事。"):OneShotI18n.t("描述原视频结尾之后发生的事。");
+  else if (guide) ta.placeholder = OneShotI18n.t("描述正式画面的人物、环境和风格。已连接的白模负责参考运镜和走位。");
+  else if (clips.length) ta.placeholder = OneShotI18n.t("描述新画面。用 @视频1 指定要复用的动作、运镜或构图。");
+  else if (sounds.length) ta.placeholder = OneShotI18n.t("描述画面和声音，点击上方音频可引用它的节奏、语调或环境声。");
+  if (n.type === "image" || n.type === "video") ta.placeholder = OneShotI18n.t("输入 @ 搜索并引用素材。") + "\n" + ta.placeholder;
   if (ta._node !== n.id) { ta.value = n.data.prompt; ta._node = n.id; }
   const fm = n.type === "video" && n.data.pmode === "fields";
-  $("#pmode").innerHTML = n.type === "video" ? `<button data-m="free" class="${fm ? "" : "on"}" title="一段话自由描述">自由描述</button><button data-m="fields" class="${fm ? "on" : ""}" title="按场景 / 人物 / 动作 / 对话分开填写，系统合成官方格式">分栏填写</button>` : "";
+  $("#pmode").innerHTML = n.type === "video" ? OneShotI18n.html`<button data-m="free" class="${fm ? "" : "on"}" title="一段话自由描述">自由描述</button><button data-m="fields" class="${fm ? "on" : ""}" title="按场景 / 人物 / 动作 / 对话分开填写，系统合成官方格式">分栏填写</button>` : "";
   $$("#pmode button").forEach(b => b.onclick = () => setPMode(n, b.dataset.m));
   ta.style.display = fm ? "none" : ""; $("#pp").classList.toggle("wide", fm);
   renderFields(n, fm);
   if (!fm) autoGrow(ta);
   // ---- controls
   const d = n.data, ctl = $("#ctl");
-  const pill = (k, opts, label, extra = "", current=d[k]) => `<span class="pill ${extra}">${label}<select data-k="${k}"${k==="selected_model"?' aria-label="生成模型"':""}>${Object.entries(opts).map(([a, t]) => `<option value="${esc(a)}" ${String(a) === String(current) ? "selected" : ""}>${t}</option>`).join("")}</select></span>`;
+  const pill = (k, opts, label, extra = "", current=d[k]) => {
+    const service = k === "provider" || k === "selected_model";
+    const name = k === "selected_model" ? ` aria-label="${esc(OneShotI18n.t("生成模型"))}"` : "";
+    const options = Object.entries(opts).map(([value, text]) =>
+      `<option value="${esc(value)}" ${String(value) === String(current) ? "selected" : ""}>${service ? text : OneShotI18n.t(text)}</option>`).join("");
+    return `<span class="pill ${extra}">${service ? label : OneShotI18n.t(label)}<select data-k="${k}"${name}>${options}</select></span>`;
+  };
   const arIcon = a => { const r = AR[a] || 1.6; const w = r >= 1 ? 13 : Math.round(13 * r), h = r >= 1 ? Math.round(13 / r) : 13; return `<span class="ar" style="width:${w}px;height:${h}px"></span>`; };
   let h;
   if (n.type === "script") h = scriptCtl(n);
@@ -1419,14 +1445,14 @@ function showPanel() {
     const rem = isRemote(n), hi = rem || d.model !== "h3video", ins = imgInputs(n).length || previsComposition(n)?.enabled, fa = d.aspect === "auto";
     h = provPill(n, pill) + nodeModelPill(n,pill);
     if (!rem) {
-      h += pill("model", { h3img: "H3-Image（推荐，支持以图改图）", h3video: "H3 视频模型 · 快速出图" }, `<span class="dot"></span>${hi ? "H3-Image" : "H3 快速"}${ico("down")}`, "model");
+      h += pill("model", { h3img: "H3-Image（推荐，支持以图改图）", h3video: "H3 视频模型 · 快速出图" }, `<span class="dot"></span>${hi ? "H3-Image" : OneShotI18n.t("H3 快速")}${ico("down")}`, "model");
       if (hi) h += pill("expand", { false: "智能扩写：关", true: "智能扩写：开（按官方格式扩写，理解更准）" }, d.expand ? "扩写 开" : "扩写 关");
       else h += pill("turbo", { true: "极速 8 步", false: "高质量 30 步" }, d.turbo ? "极速" : "高质量");
     }
-    h += pill("aspect", { ...(ins ? { auto: "跟随原图" } : {}), "1:1": "1:1", "3:4": "3:4", "4:3": "4:3", "9:16": "9:16", "16:9": "16:9", "21:9": "21:9" }, fa ? `${arIcon(ins ? "4:3" : "1:1")}${ins ? "原图比例" : "1:1"}` : `${arIcon(d.aspect)}${d.aspect}`);
+    h += pill("aspect", { ...(ins ? { auto: "跟随原图" } : {}), "1:1": "1:1", "3:4": "3:4", "4:3": "4:3", "9:16": "9:16", "16:9": "16:9", "21:9": "21:9" }, fa ? `${arIcon(ins ? "4:3" : "1:1")}${ins ? OneShotI18n.t("原图比例") : "1:1"}` : `${arIcon(d.aspect)}${d.aspect}`);
     h += pill("quality", hi ? { "4mp": "4MP（约 2K）", "16mp": "16MP（约 4K，最佳画质，慢）" } : { "4mp": "1K", "16mp": "2K" }, hi ? (d.quality === "16mp" ? "16MP" : "4MP") : (d.quality === "16mp" ? "2K" : "1K"));
     h += pill("count", { 1: "1 张", 2: "2 张", 4: "4 张" }, `${ico("stack")}${d.count}`);
-    if (hi) h += `<button class="pill" id="slashBtn" title="三视图、九宫格、换角度、打光……（也可以在提示词里输入 /）">/ 工具</button>`;
+    if (hi) h += OneShotI18n.html`<button class="pill" id="slashBtn" title="三视图、九宫格、换角度、打光……（也可以在提示词里输入 /）">/ 工具</button>`;
   } else {
     const rem = isRemote(n);
     if (reference) {
@@ -1435,16 +1461,16 @@ function showPanel() {
       const opts = {"":"自动选择参考服务", ...Object.fromEntries(services.map(s => [s.id, esc(s.name)]))};
       if (unavailable) opts[d.provider]=esc(d.provider+"（不可用）");
       h = services.length || unavailable ? pill("provider", opts, `${esc(selected?.name || (unavailable?"重新选择参考服务":"自动选择参考服务"))}${ico("down")}`, "model")
-        : `<span class="pill" title="在控制台配置视频生成服务">待配置${guide || clips.length ? "视频参考" : "音频参考"}服务</span>`;
+        : OneShotI18n.html`<span class="pill" title="在控制台配置视频生成服务">待配置${guide || clips.length ? "视频参考" : "音频参考"}服务</span>`;
       if (selected) h += nodeModelPill(n,pill,selected,true);
     } else {
       h = provPill(n, pill) + nodeModelPill(n,pill);
-      if (!rem) h += pill("turbo", { true: "MiniMax H3 · 极速", false: "MiniMax H3 · 高质量" }, `<span class="dot"></span>${d.turbo ? "H3 极速" : "H3 高质量"}${ico("down")}`, "model");
+      if (!rem) h += pill("turbo", { true: "MiniMax H3 · 极速", false: "MiniMax H3 · 高质量" }, `<span class="dot"></span>${OneShotI18n.t(d.turbo ? "H3 极速" : "H3 高质量")}${ico("down")}`, "model");
     }
     const fa = d.aspect === "auto";
     const followSource=extension && /(?:seedance-2-5|^ep-)/.test(canvasNodeModel(n,referenceService(n),true)?.id || "");
-    h += followSource || segment ? '<span class="pill">跟随原视频画幅</span>' :
-      pill("aspect", { auto: extension ? "跟随原视频" : guide ? "跟随白模" : "跟随首图", "16:9": "16:9", "9:16": "9:16", "1:1": "1:1", "4:3": "4:3", "3:4": "3:4" }, `${arIcon(fa ? "16:9" : d.aspect)}${fa ? "自动" : d.aspect}`);
+    h += followSource || segment ? OneShotI18n.markup('<span class="pill">跟随原视频画幅</span>') :
+      pill("aspect", { auto: extension ? "跟随原视频" : guide ? "跟随白模" : "跟随首图", "16:9": "16:9", "9:16": "9:16", "1:1": "1:1", "4:3": "4:3", "3:4": "3:4" }, `${arIcon(fa ? "16:9" : d.aspect)}${fa ? OneShotI18n.t("自动") : d.aspect}`);
     const canDraft=videoDraftAvailable(n);
     if (canDraft) h += pill("draft",{false:"正式生成",true:"480p 样片"},d.draft?"480p 样片":"正式生成");
     if (!(canDraft && d.draft)) {
@@ -1459,28 +1485,28 @@ function showPanel() {
     }
     const durationChoices=canvasVideoDurationChoices(n);
     const durations=Object.fromEntries(durationChoices.map(seconds=>
-      [seconds,`${seconds} 秒${!reference && seconds===durationChoices.at(-1)?"（最长）":""}`]));
+      [seconds,OneShotI18n.t(!reference && seconds===durationChoices.at(-1)?"{seconds} 秒（最长）":"{seconds} 秒",{seconds})]));
     const max=durationChoices.at(-1), seconds=canvasVideoDuration(n);
     const range=segment ? videoReferenceRange(clips[0].edge,clips[0].version,referenceDuration(n)) : null;
-    h += segment ? `<span class="pill">${range.end>range.start?`${(range.end-range.start).toFixed(2)} 秒`:"跟随修改区间"}</span>`
+    h += segment ? `<span class="pill">${range.end>range.start?OneShotI18n.t("{seconds} 秒",{seconds:(range.end-range.start).toFixed(2)}):OneShotI18n.t("跟随修改区间")}</span>`
       : pill("duration",durations,`${ico("clock")}${Math.min(max,Math.max(durationChoices[0],seconds))}s`,"",seconds);
-    if (!reference && imgInputs(n).length) h += pill("mode", { auto: "按每张图的设置", keyframes: "全部当关键帧", reference: "全部当人物设定" }, plan(n).name);
-    if (reference) h += '<span class="pill">全模态参考</span>';
-    if(!d.film&&!d.previs)h += `<button type="button" class="pill" id="videoOpticsBtn"${n.job||nodeLocked(n)?" disabled":""}>镜头参数${Number.isFinite(d.video_optics?.lens)?` · ${d.video_optics.lens} mm`:d.video_optics?" · 已设置":""}</button>`;
-    if (segment && d.camera_plan) h += `<button type="button" class="pill" id="retakeSettings" title="重拍设置">重拍设置 · ${esc(cameraModeLabel[d.camera_plan.mode] || "机位")}</button>`;
-    if (segment && d.object_edit) h += '<button type="button" class="pill" id="objectSettings">物体编辑设置</button>';
-    if (!d.film) h += pill("count", { 1: "出 1 个", 2: "抽 2 个版本，挑最好的", 3: "抽 3 个版本，挑最好的" }, `${ico("stack")}${d.count > 1 ? "抽 " + d.count : "1 个"}`);
+    if (!reference && imgInputs(n).length) h += pill("mode", { auto: "按每张图的设置", keyframes: "全部当关键帧", reference: "全部当人物设定" }, planLabel(plan(n)));
+    if (reference) h += OneShotI18n.html`<span class="pill">全模态参考</span>`;
+    if(!d.film&&!d.previs)h += OneShotI18n.html`<button type="button" class="pill" id="videoOpticsBtn"${n.job||nodeLocked(n)?" disabled":""}>镜头参数${Number.isFinite(d.video_optics?.lens)?` · ${d.video_optics.lens} mm`:d.video_optics?" · 已设置":""}</button>`;
+    if (segment && d.camera_plan) h += OneShotI18n.html`<button type="button" class="pill" id="retakeSettings" title="重拍设置">重拍设置 · ${esc(cameraModeLabel[d.camera_plan.mode] || "机位")}</button>`;
+    if (segment && d.object_edit) h += OneShotI18n.html`<button type="button" class="pill" id="objectSettings">物体编辑设置</button>`;
+    if (!d.film) h += pill("count", { 1: "出 1 个", 2: "抽 2 个版本，挑最好的", 3: "抽 3 个版本，挑最好的" }, `${ico("stack")}${d.count > 1 ? OneShotI18n.t("抽 {count}",{count:d.count}) : OneShotI18n.t("1 个")}`);
   }
-  if (n.type !== "script") h += `<button class="pill" id="moreBtn" title="更多设置">${ico("more")}</button>`;
-  if (n.type === "video" && d.pmode === "fields") h += `<button class="pill" id="fillBtn" title="Qwen 看连入的首帧 / 人物图，填写风格、场景、人物、镜头（只填空着的栏）">看图填写</button>`;
+  if (n.type !== "script") h += OneShotI18n.html`<button class="pill" id="moreBtn" title="更多设置">${ico("more")}</button>`;
+  if (n.type === "video" && d.pmode === "fields") h += OneShotI18n.html`<button class="pill" id="fillBtn" title="Qwen 看连入的首帧 / 人物图，填写风格、场景、人物、镜头（只填空着的栏）">看图填写</button>`;
   if (n.type === "video") {
-    h += '<button class="pill" id="pvBtn" title="核对生成用的提示词和参考素材">预览</button>';
-    if (!reference) h += `<button class="pill" id="rwBtn" title="用本地 Qwen3.5 把描述改写成 H3 官方英文结构化提示词（可看到连入的图片）">✨ 改写</button>`;
-    if (d.prompt_src) h += `<button class="pill" id="rsBtn" title="还原改写前的原文">还原原文</button>`;
+    h += OneShotI18n.html`<button class="pill" id="pvBtn" title="核对生成用的提示词和参考素材">预览</button>`;
+    if (!reference) h += OneShotI18n.html`<button class="pill" id="rwBtn" title="用本地 Qwen3.5 把描述改写成 H3 官方英文结构化提示词（可看到连入的图片）">✨ 改写</button>`;
+    if (d.prompt_src) h += OneShotI18n.html`<button class="pill" id="rsBtn" title="还原改写前的原文">还原原文</button>`;
   }
   h += `<span class="grow"></span>${reference ? "" : `<span class="est">${estimate(n)}</span>`}`;
-  if (!n.job && n.type !== "script" && !d.film) h += '<span class="est" data-generation-cost title="仅估算生成服务费用，实际费用以服务账单为准">正在估算费用…</span>';
-  const sendLabel = n.job ? "取消" : draftFinalEdge(n) ? "重试定稿" : curV(n) && n.type!=="script" ? "重新生成" : "生成";
+  if (!n.job && n.type !== "script" && !d.film) h += OneShotI18n.html`<span class="est" data-generation-cost title="仅估算生成服务费用，实际费用以服务账单为准">正在估算费用…</span>`;
+  const sendLabel = OneShotI18n.t(n.job ? "取消" : draftFinalEdge(n) ? "重试定稿" : curV(n) && n.type!=="script" ? "重新生成" : "生成");
   h += `<button id="send" class="${n.job ? "stop" : ""}" aria-label="${sendLabel}" title="${sendLabel}${n.job?"":" (⌘↩)"}">${ico(n.job ? "stop" : "send")}</button>`;
   ctl.innerHTML = h;
   renderCanvasCost(n,$("[data-generation-cost]",ctl));
@@ -1511,11 +1537,11 @@ function showPanel() {
   };
   // ---- more
   const more = $("#more");
-  more.innerHTML = (canBranchGeneration(n)?'<button type="button" class="pill" id="generationBranch">生成到新节点（1 个）</button>':"") +
-    `<label>随机种子<input type="number" id="mSeed" value="${d.seed}"></label><div class="h">-1 为每次随机；固定数字可复现同一结果</div>` +
-    (n.type === "image" ? `<label>画面描述<input type="text" id="mCap" value="${esc(d.caption)}" placeholder="供多图视频使用"></label><div class="h">上传的图片建议填写；生成的图片自动使用提示词</div>` :
-      (d.pmode === "fields" ? `<div class="h">分栏模式：声音、配乐在上方填写。<br>极速：4~8 步，约 1~2.5 分钟；高质量 20 步，慢约 4 倍</div>` :
-      `<label>声音<input type="text" id="mSound" value="${esc(d.sound)}" placeholder="环境音、动作音效"></label>
+  more.innerHTML = (canBranchGeneration(n)?OneShotI18n.markup('<button type="button" class="pill" id="generationBranch">生成到新节点（1 个）</button>'):"") +
+    OneShotI18n.html`<label>随机种子<input type="number" id="mSeed" value="${d.seed}"></label><div class="h">-1 为每次随机；固定数字可复现同一结果</div>` +
+    (n.type === "image" ? OneShotI18n.html`<label>画面描述<input type="text" id="mCap" value="${esc(d.caption)}" placeholder="供多图视频使用"></label><div class="h">上传的图片建议填写；生成的图片自动使用提示词</div>` :
+      (d.pmode === "fields" ? OneShotI18n.html`<div class="h">分栏模式：声音、配乐在上方填写。<br>极速：4~8 步，约 1~2.5 分钟；高质量 20 步，慢约 4 倍</div>` :
+      OneShotI18n.html`<label>声音<input type="text" id="mSound" value="${esc(d.sound)}" placeholder="环境音、动作音效"></label>
        <label>配乐<input type="text" id="mMusic" value="${esc(d.music)}" placeholder="留空 = 无配乐"></label>
        <div class="h">会写进官方格式的 overall_soundscape / non_diegetic_music。台词直接写进提示词，如：裴照低声问："谁？"<br>极速：4~8 步，约 1~2.5 分钟；高质量 20 步，慢约 4 倍</div>`));
   $("#mSeed").onchange = e => { n.data.seed = Number(e.target.value); save(); };
@@ -1539,7 +1565,7 @@ function imagePromptChip({edge,source,version,index},i,role) {
 }
 function roleSelect(e) {
   const i = B.edges.indexOf(e);
-  return `<select data-edge="${i}" title="这张图在视频里的作用">${Object.entries(ROLE_CN).map(([k, t]) => `<option value="${k}" ${(e.role || "auto") === k ? "selected" : ""}>${t}</option>`).join("")}</select>`;
+  return OneShotI18n.html`<select data-edge="${i}" title="这张图在视频里的作用">${Object.entries(ROLE_CN).map(([k, t]) => `<option value="${k}" ${(e.role || "auto") === k ? "selected" : ""}>${OneShotI18n.t(t)}</option>`).join("")}</select>`;
 }
 function wireRoleSelects(root) {
   $$("select[data-edge]", root).forEach(sl => {
@@ -1550,7 +1576,7 @@ function wireRoleSelects(root) {
       const e = B.edges[+sl.dataset.edge]; if (!e || !canvasCanEdit()) return;
       checkpoint(); e.role = sl.value === "auto" ? undefined : sl.value; save();
       const v = node(e.to); render(v); drawEdges(); if (sel.has(v.id)) showPanel();
-      if (sl.value === "subject") toast("这张图将用于参考人物的长相和服装", 2600);
+      if (sl.value === "subject") toast(OneShotI18n.t("这张图将用于参考人物的长相和服装"), 2600);
     };
   });
 }
@@ -1567,7 +1593,7 @@ function estimate(n) {
   return "≈ " + fmtT(s);
 }
 const IMG_T = { mp4: 30, mp16: 50, pe: 25 };   // seconds, measured on the 4090
-const fmtT = s => s >= 90 ? (Math.round(s / 30) / 2) + " 分钟" : Math.round(s) + " 秒";
+const fmtT = s => s >= 90 ? OneShotI18n.t("{count} 分钟", {count:Math.round(s / 30) / 2}) : OneShotI18n.t("{seconds} 秒", {seconds:Math.round(s)});
 function autoGrow(ta) { ta.style.height = "auto"; ta.style.height = Math.min(320, Math.max(70, ta.scrollHeight)) + "px"; }
 // ---- field-by-field video prompt
 const FIELDS = [
@@ -1586,7 +1612,7 @@ function renderFields(n, on) {
   if (!on) { box._node = null; return; }
   if (box._node === n.id) return;          // keep focus / caret while typing
   box._node = n.id; const f = n.data.fields || (n.data.fields = {});
-  box.innerHTML = FIELDS.map(x => `<label class="f"><span>${x.t}${x.sub ? `<small>${x.sub}</small>` : ""}</span><textarea rows="1" data-k="${x.k}" placeholder="${esc(x.k === "action" ? "输入 @ 引用素材。"+x.ph : x.ph)}"></textarea></label>`).join("");
+  box.innerHTML = FIELDS.map(x => `<label class="f"><span>${OneShotI18n.t(x.t)}${x.sub ? `<small>${OneShotI18n.t(x.sub)}</small>` : ""}</span><textarea rows="1" data-k="${x.k}" placeholder="${esc((x.k === "action" ? OneShotI18n.t("输入 @ 引用素材。") : "")+OneShotI18n.t(x.ph))}"></textarea></label>`).join("");
   $$("textarea", box).forEach(t => {
     t.value = f[t.dataset.k] || ""; fieldGrow(t);
     t.addEventListener("input", () => {
@@ -1689,7 +1715,7 @@ async function checkVideoModels(n, request, current, {branch=false}={}) {
   panel.hidden=false;
   button.disabled=true;
   list.replaceChildren();
-  status.textContent="正在检查素材与模型…";
+  status.textContent=OneShotI18n.t("正在检查素材与模型…");
   try {
     const result=await api("/api/video/reference-models",candidate);
     if (!current()) return;
@@ -1708,13 +1734,13 @@ async function checkVideoModels(n, request, current, {branch=false}={}) {
       details.append(title,info);entry.append(details);
       if (!model.error) {
         const use=document.createElement("button");use.type="button";use.className="pill";
-        use.textContent="采用";
+        use.textContent=OneShotI18n.t("采用");
         use.onclick=()=>{
           const latest=videoPreviewRequest(n,true);
           if (latest && branch) latest.count=1;
           if (!current() || !latest || videoPreviewSignature(latest)!==signature || n.job || prepping.has(n.id) ||
               !canvasCanEdit() || nodeLocked(n)) {
-            status.textContent="生成设置已变化，请重新预览后再选择。";
+            status.textContent=OneShotI18n.t("生成设置已变化，请重新预览后再选择。");
             return;
           }
           checkpoint();rememberVideoVersion(n);
@@ -1758,7 +1784,7 @@ async function previewPrompt(n,{branch=false}={}) {
       const latest=videoPreviewRequest(n,true);
       if (latest) latest.count=1;
       if (!current() || !latest || videoPreviewSignature(latest)!==videoPreviewSignature(req) || !canBranchGeneration(n)) {
-        toast("生成设置已变化，请重新预览");
+        toast(OneShotI18n.t("生成设置已变化，请重新预览"));
         return;
       }
       closePromptPreview();
@@ -1787,7 +1813,7 @@ $("#pv").addEventListener("click", e => { if (e.target.id === "pv") closePromptP
 $("#pv").addEventListener("keydown", e => {
   if (e.key === "Escape") { e.stopPropagation(); closePromptPreview(); }
 });
-$("#pvCopy").onclick = () => { navigator.clipboard?.writeText($("#pvt").textContent).then(() => toast("已复制", 1000), () => toast("复制失败")); };
+$("#pvCopy").onclick = () => { navigator.clipboard?.writeText($("#pvt").textContent).then(() => toast(OneShotI18n.t("已复制"), 1000), () => toast(OneShotI18n.t("复制失败"))); };
 function insertTok(tok) {
   const ta = (usesFields(node($("#prompt")._node)) && lastField && document.contains(lastField)) ? lastField : $("#prompt"), s = ta.selectionStart ?? ta.value.length;
   ta.value = ta.value.slice(0, s) + tok + " " + ta.value.slice(ta.selectionEnd ?? s); ta.focus(); ta.selectionStart = ta.selectionEnd = s + tok.length + 1;
@@ -2013,16 +2039,16 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
   function tile({v,i}) {
     const thumb = type === "image" ? `<img src="${esc(v.url)}" alt="" loading="lazy">` :
       type === "video" ? `<video src="${esc(v.url)}#t=0.001" preload="metadata" loading="lazy" muted playsinline aria-hidden="true"></video>` : ico("audio");
-    return `<button type="button" data-light-tile="${i}" ${i===index?'aria-current="true"':""}>
+    return OneShotI18n.html`<button type="button" data-light-tile="${i}" ${i===index?'aria-current="true"':""}>
       <span class="light-tile-media">${thumb}</span>
       <strong>版本 ${i+1}${i===source.cur?" · 画布当前":""}</strong>
       ${v.label?`<small>${esc(v.label)}</small>`:""}
-      ${v.seconds>0?`<small>${Number(v.seconds).toFixed(1)} 秒</small>`:""}</button>`;
+      ${v.seconds>0?OneShotI18n.html`<small>${Number(v.seconds).toFixed(1)} 秒</small>`:""}</button>`;
   }
   pausePreviewMedia(overlay);
   overlay._peekPrevious=null;
   if (type !== "image") pausePreviewMedia($("#world"));
-  overlay.innerHTML = `
+  overlay.innerHTML = OneShotI18n.html`
     <header class="light-header">
       <div class="light-navigation">
         <button type="button" data-light-prev title="上一个素材" aria-label="上一个素材" ${lightNeighbor(-1) ? "" : "disabled"}>${ico("left")}</button>
@@ -2032,20 +2058,20 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
       <button type="button" data-light-close title="关闭预览" aria-label="关闭预览">×</button>
     </header>
     <div class="light-body">
-      ${overview ? `<section class="light-version-grid" aria-label="所有版本">${choices.map(tile).join("")}</section>` :
+      ${overview ? OneShotI18n.html`<section class="light-version-grid" aria-label="所有版本">${choices.map(tile).join("")}</section>` :
         `<div class="light-stage">
         ${comparing && comparison ? `<figure><figcaption>${comparison.i===source.cur?"画布当前版本":"版本 "+(comparison.i+1)}</figcaption>
           ${media(comparison.v,"版本 " + (comparison.i+1))}</figure>
           <figure><figcaption>预览版本 ${index + 1}</figcaption>${media(version,"预览版本 " + (index + 1))}</figure>` : media(version,title)}
         </div>`}
-      ${!overview && hasDetails ? `<aside id="lightDetails" aria-label="版本信息" hidden>
+      ${!overview && hasDetails ? OneShotI18n.html`<aside id="lightDetails" aria-label="版本信息" hidden>
         ${origin ? `<h3>公开素材来源</h3><a href="${esc(origin)}" target="_blank" rel="noopener noreferrer">${esc(webSource.title || "查看原始来源")}</a>
           ${webSource.credit ? `<p>作者 · ${esc(webSource.credit)}</p>` : ""}
           ${license ? `<a href="${esc(license)}" target="_blank" rel="noopener noreferrer">${esc(webSource.license || "查看许可")}</a>` : esc(webSource.license || "")}` : ""}
-        ${prompt ? `<h3>提示词</h3><pre>${esc(prompt)}</pre>` : ""}
-        ${hasEffectivePrompt ? `<details ${prompt ? "" : "open"}><summary>生成时使用的提示词</summary><pre>${esc(effective)}</pre></details>` : ""}
-        ${prompt || hasEffectivePrompt ? '<button type="button" data-light-copy-prompt>复制提示词</button>' : ""}
-        ${usedAssets.length ? `<h3>生成时使用的资产</h3><ul>${usedAssets.map(asset => {
+        ${prompt ? OneShotI18n.html`<h3>提示词</h3><pre>${esc(prompt)}</pre>` : ""}
+        ${hasEffectivePrompt ? OneShotI18n.html`<details ${prompt ? "" : "open"}><summary>生成时使用的提示词</summary><pre>${esc(effective)}</pre></details>` : ""}
+        ${prompt || hasEffectivePrompt ? OneShotI18n.markup('<button type="button" data-light-copy-prompt>复制提示词</button>') : ""}
+        ${usedAssets.length ? OneShotI18n.html`<h3>生成时使用的资产</h3><ul>${usedAssets.map(asset => {
           const refs = Array.isArray(asset.references) ? asset.references :
             asset.ref ? [{ref:asset.ref}] : [];
           const links = refs.filter(item=>item?.ref).map(item=>{
@@ -2063,23 +2089,23 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
       </aside>` : ""}
     </div>
     <footer class="light-actions">
-      ${overview ? '<button type="button" data-light-overview aria-pressed="true">返回单个版本</button>' : `
-      ${choices.length > 1 ? `<select data-light-version aria-label="预览版本">${choices.map(({v,i}) =>
-        `<option value="${i}" ${i === index ? "selected" : ""}>版本 ${i + 1}${i === source.cur ? " · 当前" : ""}${v.label ? " · " + esc(v.label) : ""}</option>`).join("")}</select>` : ""}
-      ${choices.length > 1 ? '<button type="button" data-light-overview aria-pressed="false">所有版本</button>' : ""}
+      ${overview ? '<button type="button" data-light-overview aria-pressed="true">返回单个版本</button>' : OneShotI18n.html`
+      ${choices.length > 1 ? OneShotI18n.html`<select data-light-version aria-label="预览版本">${choices.map(({v,i}) =>
+        OneShotI18n.html`<option value="${i}" ${i === index ? "selected" : ""}>版本 ${i + 1}${i === source.cur ? " · 当前" : ""}${v.label ? " · " + esc(v.label) : ""}</option>`).join("")}</select>` : ""}
+      ${choices.length > 1 ? OneShotI18n.markup('<button type="button" data-light-overview aria-pressed="false">所有版本</button>') : ""}
       ${imageCompare || videoCompareAvailable ? `<button type="button" data-light-compare>${comparing ? "结束对比" : "对比版本"}</button>` : ""}
       ${draftCompareAvailable ? '<button type="button" data-light-compare-draft>对比样片与定稿</button>' : ""}
       ${editable && type==="video" && version.draft_expires ? '<button type="button" data-light-draft-final>从此样片生成定稿</button>' : ""}
       ${type==="image" && previous && !comparing ? '<button type="button" data-light-peek title="按住反斜杠键或此按钮">按住看上一版</button>' : ""}
-      ${hasDetails ? '<button type="button" data-light-details aria-controls="lightDetails" aria-expanded="false">版本信息</button>' : ""}
+      ${hasDetails ? OneShotI18n.markup('<button type="button" data-light-details aria-controls="lightDetails" aria-expanded="false">版本信息</button>') : ""}
       ${index>=0 && hasGenerationDraft(source,version) ? '<button type="button" data-light-generation-draft>用此版本改稿</button>' : ""}
       ${index>=0 && canReuseGenerationAssets(source,version) ? '<button type="button" data-light-replay-assets>沿用原资产改稿</button>' : ""}
       ${index >= 0 && version.ref && canvasCanEdit() ? '<button type="button" data-light-agent aria-controls="agentChat" aria-keyshortcuts="Meta+J Control+J /">和助手讨论此版本</button>' : ""}
-      ${index >= 0 && vtCanCopyVersion(source,index) ? '<button type="button" data-light-copy>放入画布</button>' : ""}
+      ${index >= 0 && vtCanCopyVersion(source,index) ? OneShotI18n.markup('<button type="button" data-light-copy>放入画布</button>') : ""}
       ${index >= 0 && version.ref ? `<button type="button" data-light-comment>${type === "image" ? "批注此版本" : "批注当前时间"}</button>` : ""}
       ${index >= 0 && version.ref && type === "image" && !comparing ? '<button type="button" data-light-mark-region>框选批注</button><button type="button" data-light-save-region hidden>填写区域批注</button><button type="button" data-light-cancel-region hidden>取消框选</button>' : ""}
       ${index >= 0 && version.ref && ["video","audio"].includes(type) ? '<button type="button" data-light-range>标记片段</button><button type="button" data-light-cancel-range hidden>取消标记</button>' : ""}
-      ${index >= 0 && version.ref && canvasCanEdit() && ["video","audio"].includes(type) ? '<button type="button" data-light-separate>人声分离</button>' : ""}
+      ${index >= 0 && version.ref && canvasCanEdit() && ["video","audio"].includes(type) ? OneShotI18n.markup('<button type="button" data-light-separate>人声分离</button>') : ""}
       ${editable ? `<button type="button" data-light-edit title="${esc(editLabel)}（E）">${editLabel}</button>` : ""}
       <a href="${esc(version.url)}" download="${esc(version.ref?.split("/").pop())}">下载</a>
       <span class="light-status" role="status"></span>
@@ -2169,8 +2195,8 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
   });
   bind("copy-prompt",async () => {
     const status = $(".light-details-status",overlay);
-    try { await acCopyText(prompt || effective); status.textContent = "已复制提示词"; }
-    catch { status.textContent = "复制失败，可选中文字后复制"; }
+    try { await acCopyText(prompt || effective); status.textContent = OneShotI18n.t("已复制提示词"); }
+    catch { status.textContent = OneShotI18n.t("复制失败，可选中文字后复制"); }
   });
   const reuseDraft = reuseAssets => {
     const current=currentSource(index);
@@ -2192,7 +2218,7 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
     const current = currentSource(index);
     const copy = current && vtCopyVersion(current,index);
     if (!copy) return;
-    $(".light-status",overlay).textContent = "已放入画布";
+    $(".light-status",overlay).textContent = OneShotI18n.t("已放入画布");
     const locate = $("[data-light-locate]",overlay);
     locate.hidden = false;
     locate.onclick = () => {
@@ -2272,7 +2298,7 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
     const current = currentSource(index);
     if (!current || !canvasCanEdit()) return;
     if (current.job || prepping.has(current.id) || type === "image" && (IMAGE_EDITOR?.busy || IMAGE_EDITOR?.agentSelection)) {
-      $(".light-status",overlay).textContent = "请等待当前任务完成后再编辑";
+      $(".light-status",overlay).textContent = OneShotI18n.t("请等待当前任务完成后再编辑");
       return;
     }
     if (type === "image" && index !== current.cur && !switchVersion(current,index)) return;
@@ -2375,7 +2401,7 @@ vp.addEventListener("contextmenu", e => e.preventDefault());
 
 // ---- right-click menu
 function nodePinPalette(nodes) {
-  return `<div class="node-pin-menu" role="group" aria-label="节点颜色标记">
+  return OneShotI18n.html`<div class="node-pin-menu" role="group" aria-label="节点颜色标记">
     ${[...NODE_PINS].map(([key,label]) => `<button type="button" data-a="pin:${key}" title="${label}标记" aria-label="${label}标记" aria-pressed="${nodes.every(n=>nodePins(n).includes(key))}"><span class="node-pin" data-color="${key}"></span></button>`).join("")}
     <button type="button" data-a="pin:" title="清除标记" aria-label="清除标记" ${nodes.some(n=>nodePins(n).length) ? "" : "disabled"}>${ico("minus")}</button>
   </div>`;
@@ -2611,7 +2637,7 @@ function openAddMenu(x, y, ctx) {
     if (sources.length) {
       const list = document.createElement("div");
       list.dataset.previsMenu = "";
-      list.innerHTML = '<div class="sep"></div><div class="mt">选用白模动作参考</div>';
+      list.innerHTML = OneShotI18n.html`<div class="sep"></div><div class="mt">选用白模动作参考</div>`;
       for (const source of sources) {
         const b = document.createElement("button");
         b.innerHTML = ico("video");
@@ -2648,13 +2674,13 @@ function openAddMenu(x, y, ctx) {
       const button=document.createElement("button");
       button.dataset.libraryReference=kind;
       button.innerHTML=ico(kind);
-      button.append("从资产库选用"+TYPE_CN[kind]);
+      button.append(OneShotI18n.t("从资产库选用{kind}", {kind:OneShotI18n.t(TYPE_CN[kind])}));
       button.onclick=()=>{closeMenus();openReferenceLibrary(ctx.to,kind);};
       library.append(button);
     }
     m.append(library);
   }
-  $(".mt", m).textContent = ctx.from ? "连接到新节点" : ctx.to ? "添加上游输入" : "添加到画布";
+  $(".mt", m).textContent = ctx.from ? OneShotI18n.t("连接到新节点") : ctx.to ? OneShotI18n.t("添加上游输入") : OneShotI18n.t("添加到画布");
   m.classList.add("on");
   m.style.left = Math.max(8, Math.min(x, innerWidth - m.offsetWidth - 8)) + "px"; m.style.top = Math.max(8, Math.min(y, innerHeight - m.offsetHeight - 8)) + "px";
 }

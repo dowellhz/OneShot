@@ -155,7 +155,7 @@ function ccBoardChanged() {
 }
 
 function initCanvasComments() {
-  document.body.insertAdjacentHTML("beforeend", `<section id="canvasComments" aria-labelledby="ccTitle" hidden>
+  document.body.insertAdjacentHTML("beforeend", OneShotI18n.html`<section id="canvasComments" aria-labelledby="ccTitle" hidden>
     <header><strong id="ccTitle">评论</strong><select id="ccFilter" aria-label="过滤评论"><option value="open">待处理</option><option value="resolved">已解决</option><option value="all">全部</option></select>
       <button type="button" id="ccClose" aria-label="收起评论">×</button></header>
     <div id="ccBatch" hidden><button type="button" data-cc-batch-send>带到助手</button><button type="button" data-cc-batch-clear>取消选择</button></div>

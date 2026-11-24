@@ -95,7 +95,7 @@ async function submitStems(state,form) {
  }
  state.submitting=true;
  stemJobControls(state,true);
- status.textContent="正在提交…";
+ status.textContent=OneShotI18n.t("正在提交…");
  const key="h3.stems."+JSON.stringify(state.binding), fingerprint=JSON.stringify([start,end]);
  let attempt;
  try{
@@ -184,9 +184,9 @@ function renderStems(state) {
   player.setAttribute("aria-label",label);
   download.href=output.url;
   download.download=label+".wav";
-  download.textContent="下载";
+  download.textContent=OneShotI18n.t("下载");
   button.type="button";
-  button.textContent="放入画布";
+  button.textContent=OneShotI18n.t("放入画布");
   button.onclick=()=>placeStems(state,[output]);
   row.append(title,player,download,button);
   host.append(row);

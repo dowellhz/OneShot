@@ -28,7 +28,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
   const panel = document.createElement("dialog");
   panel.id = "videoRemake";
   panel.setAttribute("aria-labelledby", "rmTitle");
-  panel.innerHTML = `<div class="rm-top"><header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)} · 版本 ${video.versions.indexOf(source)+1}</span></div><div class="rm-actions"><button type="button" data-review-next hidden></button><button type="button" data-send-film disabled>送入剪辑</button><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
+  panel.innerHTML = OneShotI18n.html`<div class="rm-top"><header class="rm-heading"><div><h2 id="rmTitle">视频重制 · 替换角色</h2><span>${esc(video.name)} · 版本 ${video.versions.indexOf(source)+1}</span></div><div class="rm-actions"><button type="button" data-review-next hidden></button><button type="button" data-send-film disabled>送入剪辑</button><button type="button" data-export hidden>合成并保留原声</button><a data-watch target="_blank" rel="noopener" hidden>预览成片</a><a data-download hidden>下载成片</a><button type="button" data-insert-export hidden>成片放入画布</button><button type="button" data-close>返回画布</button></div></header>
     ${brief?`<details class="rm-tasks rm-launch-brief"><summary>创作需求</summary><p>${esc(brief)}</p></details>`:""}
     <details class="rm-tasks" hidden><summary data-task-summary></summary><ul data-task-list></ul></details></div>
     <div class="rm-body">
@@ -674,7 +674,7 @@ async function openVideoRemake(video, {shotStart: initialShotStart, frame: initi
     review.replaceChildren();
     if (previews.length) {
       const select = document.createElement("select");
-      select.setAttribute("aria-label", "预览版本");
+      select.setAttribute("aria-label", OneShotI18n.t("预览版本"));
       previews.forEach((item, i) => {
         const asset = assets.find(asset => asset.id === item.asset?.id);
         const oldReference = asset && item.asset?.ref && item.asset.ref !== roleReference(asset, item.asset.view || "main");

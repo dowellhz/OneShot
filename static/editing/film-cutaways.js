@@ -22,7 +22,7 @@ function addFilmCutaway(F, node) {
 
 function renderFilmCutaways() {
   const F = FILM, host = $("#fmCutawaySettings"), items = F.spec.cutaways || [];
-  host.innerHTML = items.map((item,i) => `<div class="nar fm-cutaway-edit" data-cutaway-index="${i}">
+  host.innerHTML = items.map((item,i) => OneShotI18n.html`<div class="nar fm-cutaway-edit" data-cutaway-index="${i}">
     <div class="nr"><b>${esc(item.name || "补画面")}${item.version ? ` · 版本 ${esc(item.version)}` : ""}</b></div>
     <div class="nr"><label>开始（秒）<input type="number" min="0" step="any" data-cutaway-key="start" value="${esc(item.start)}"></label>
       <label>时长（秒）<input type="number" min="0" step="any" data-cutaway-key="duration" value="${esc(item.duration)}"></label></div>

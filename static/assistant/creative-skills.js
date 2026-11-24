@@ -170,7 +170,7 @@ function initCreativeSkills() {
   <button type="button" id="acSkills" aria-haspopup="dialog">技能</button>
   <button type="button" id="acSkillClear" aria-label="取消本轮技能" title="取消本轮技能" hidden>×</button>
  </span>`);
- document.body.insertAdjacentHTML("beforeend", `<dialog id="creativeSkills" aria-labelledby="csTitle">
+ document.body.insertAdjacentHTML("beforeend", OneShotI18n.html`<dialog id="creativeSkills" aria-labelledby="csTitle">
   <header><strong id="csTitle">创作技能</strong><button type="button" id="csClose">关闭</button></header>
   <section id="csLibrary">
    <div class="cs-top">

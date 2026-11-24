@@ -638,7 +638,7 @@ function renderFilm() {
   const set = $("#fmSet");
   const opt = (k, map, cur) => `<select data-k="${k}">${Object.entries(map).map(([a, t]) => `<option value="${a}" ${a === String(cur) ? "selected" : ""}>${t}</option>`).join("")}</select>`;
   const bg = s.bgm;
-  set.innerHTML = `
+  set.innerHTML = OneShotI18n.html`
     <h4>画面</h4>
     <label>画幅${opt("aspect", ASPECT_CN, s.aspect)}</label>
     ${s.aspect !== "source" ? `<label>比例不同时${opt("fit", FIT_CN, s.fit)}</label>` : ""}
@@ -653,7 +653,7 @@ function renderFilm() {
     <label class="ck"><input type="checkbox" data-k="subtitles" ${s.subtitles ? "checked" : ""}>导出时烧录字幕</label>
     ${s.subtitles ? `<label>字号${opt("sub_size", { 0.8: "小", 1: "中", 1.25: "大" }, s.sub_size)}</label>` : ""}
     <h4>背景音乐</h4>
-    ${bg ? `<div class="bgm"><span title="${esc(bg.name || "")}">♪ ${esc(bg.name || "音乐")}</span><button class="pill" data-b="play">试听</button><button class="pill" data-b="rm">移除</button></div>
+    ${bg ? OneShotI18n.html`<div class="bgm"><span title="${esc(bg.name || "")}">♪ ${esc(bg.name || "音乐")}</span><button class="pill" data-b="play">试听</button><button class="pill" data-b="rm">移除</button></div>
       <label>音量<input type="range" min="0.05" max="1" step="0.05" value="${bg.volume}" data-bk="volume"><span>${Math.round(bg.volume * 100)}%</span></label>
       <label class="ck"><input type="checkbox" data-bk="duck" ${bg.duck !== false ? "checked" : ""}>有台词和旁白时自动压低音乐</label>`
       : `<button class="pill" data-b="up">上传音乐（mp3 / wav / m4a）</button><div class="h">没有配乐模型，可以用自己的音乐；会自动循环并在结尾淡出</div>`}
@@ -750,13 +750,13 @@ function renderFilmAudio() {
   box.innerHTML = tracks.map((clip, i) => {
     const choices = filmAudioTranscripts(clip);
     const saved = clip.captions?.length ? `<option value=":saved" selected>已采用的字幕 · ${clip.captions.length} 条</option>` : "";
-    return `<div class="nar" data-audio-index="${i}">
+    return OneShotI18n.html`<div class="nar" data-audio-index="${i}">
     <div class="nr"><b title="${esc(clip.name)}">${esc(clip.name)}</b><button class="pill" type="button" data-audio-locate>定位</button><button class="pill" type="button" data-audio-remove>移除</button></div>
     <div class="nr">${[["start","起点",null],["in","入点",clip.seconds],["out","出点",clip.seconds]].map(([key,label,max]) =>
-      `<label>${label}<input type="number" data-audio-key="${key}" min="0" ${max === null ? "" : `max="${max}"`} step="0.01" value="${clip[key]}">秒</label>`).join("")}</div>
+      OneShotI18n.html`<label>${label}<input type="number" data-audio-key="${key}" min="0" ${max === null ? "" : `max="${max}"`} step="0.01" value="${clip[key]}">秒</label>`).join("")}</div>
     <label>音量<input type="range" data-audio-key="volume" min="0" max="1" step="0.01" value="${clip.volume}"><output>${Math.round(clip.volume * 100)}%</output></label>
     ${saved || choices.length ? `<label>旁白字幕<select data-audio-transcript aria-label="${esc(clip.name)}的旁白字幕" ${canvasCanEdit() ? "" : "disabled"}>
-      <option value="">不使用旁白字幕</option>${saved}${choices.map(n=>`<option value="${esc(n.id)}">采用 ${esc(n.name)}</option>`).join("")}</select></label>` : ""}
+      <option value="">不使用旁白字幕</option>${saved}${choices.map(n=>OneShotI18n.html`<option value="${esc(n.id)}">采用 ${esc(n.name)}</option>`).join("")}</select></label>` : ""}
   </div>`;
   }).join("");
   $$("[data-audio-index]", box).forEach(row => {
@@ -840,7 +840,7 @@ function renderNarr() {
   if (!voiceList) { fetch("/api/voices").then(r => r.json()).then(v => { voiceList = v; if (FILM) renderNarr(); }).catch(() => {}); }
   if (voiceList && !voiceList.available) { box.innerHTML = `<div class="h">配音模型还没装好</div>`; return; }
   const vs = voiceList?.voices || [];
-  box.innerHTML = s.narration.map((x, i) => `<div class="nar" data-i="${i}">
+  box.innerHTML = s.narration.map((x, i) => OneShotI18n.html`<div class="nar" data-i="${i}">
       <textarea rows="2" placeholder="写旁白，例如：那天夜里，雨下得很大……">${esc(x.text)}</textarea>
       <div class="nr"><select data-n="voice">${vs.map(v => `<option value="${v.id}" ${v.id === x.voice ? "selected" : ""}>${v.name}</option>`).join("")}</select>
         <button class="pill" data-a="sample" title="试听这个声音">▶</button>
@@ -926,7 +926,7 @@ function selectClip(i, offset = 0, autoplay = false, ready = null) {
     image.onload = sizeFilmTitleLayer;
     const seek = $("#fmStillSeek");
     seek.max = c.duration; seek.value = F.still.offset;
-    $("#fmStillPlay").textContent = "播放";
+    $("#fmStillPlay").textContent = OneShotI18n.t("播放");
     renderClipBox();
     if (autoplay) playFilmClip();
     return;
@@ -1131,10 +1131,10 @@ function renderClipBox() {
     : `<label>手写字幕（一行一句）<textarea data-film-lines rows="2" placeholder="这段没有字幕">${esc(c.subs.join("\n"))}</textarea></label>`;
   box.innerHTML = `<div class="row"><b>第 ${F.sel + 1} 段 · ${esc(c.name || node(c.node)?.name || "")}</b>
       <span class="grow"></span>${c.ref && (c.remake_shot || alternative) ? `<button class="pill" data-update-version ${c.remake_shot?"":'aria-expanded="false"'}>${c.remake_shot ? "更新这一镜" : "更换素材版本"}</button>` : ""}${trimControls}</div>
-    ${isStill ? `<label class="still-duration">停留时长 <input type="number" min="0.5" max="60" step="0.1" value="${c.duration}"> 秒</label>` : `
+    ${isStill ? OneShotI18n.html`<label class="still-duration">停留时长 <input type="number" min="0.5" max="60" step="0.1" value="${c.duration}"> 秒</label>` : OneShotI18n.html`
     <div class="trim"><span>入点 <b>${(c.in || 0).toFixed(1)}s</b></span><input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${c.in || 0}" data-t="in">
       <input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${out}" data-t="out"><span>出点 <b>${out.toFixed(1)}s</b></span><span class="dim">保留 ${(out - (c.in || 0)).toFixed(1)}s / 原长 ${(baseOut - baseIn).toFixed(1)}s</span></div>`}
-    ${planLength ? `<div class="row"><span class="dim">分镜计划 ${planLength.toFixed(2)} 秒 · 当前片段 ${displayClipSeconds(c)} 秒${pendingPlan?" · 待核实素材时长":""}${shortPlan?` · 素材时长不足，缺 ${(planLength-sourcePlayLength).toFixed(2)} 秒`:""}${beyondSlowdown?"（0.5 倍速仍不足）":""}</span>
+    ${planLength ? OneShotI18n.html`<div class="row"><span class="dim">分镜计划 ${planLength.toFixed(2)} 秒 · 当前片段 ${displayClipSeconds(c)} 秒${pendingPlan?" · 待核实素材时长":""}${shortPlan?` · 素材时长不足，缺 ${(planLength-sourcePlayLength).toFixed(2)} 秒`:""}${beyondSlowdown?"（0.5 倍速仍不足）":""}</span>
       ${canvasCanEdit()&&!pendingPlan?'<button class="pill" type="button" data-a="story-length">按分镜时长</button>':""}
       ${slowdown&&canvasCanEdit()?'<button class="pill" type="button" data-story-slowdown>预览减速补齐</button>':""}</div>` : ""}
     <div class="row2">${captions}
@@ -1442,7 +1442,7 @@ function previewTick() {
     if (playAll && F.sel + 1 < F.spec.clips.length) { selectClip(F.sel + 1, 0, true); return; }
     if (isStill) {
       F.still.offset = c.duration; F.still.started = null;
-      $("#fmStillPlay").textContent = "播放";
+      $("#fmStillPlay").textContent = OneShotI18n.t("播放");
     } else vid.pause();
     playAll = false;
   }
@@ -1700,7 +1700,7 @@ async function renderQueue() {
   box.innerHTML = `<div class="mt">任务队列${q.jobs.length ? ` · 全部完成约 ${fmtT(q.total)}（${clock(q.total)}）` : ""}</div>` +
     (q.jobs.map(j => {
       const n = byJob.get(j.id), pct = j.max ? Math.round((j.value || 0) / j.max * 100) : 0;
-      return `<div class="qj ${j.state}"><span class="ty">${{ image: "图片", video: "视频", render: "成片" }[j.kind] || ""}</span>
+      return OneShotI18n.html`<div class="qj ${j.state}"><span class="ty">${{ image: "图片", video: "视频", render: "成片" }[j.kind] || ""}</span>
         <span class="nm" ${n ? `data-n="${n.id}" title="在画布上定位"` : ""}>${esc(n?.name || j.label)}</span>
         <span class="st">${j.state === "running" ? (pct ? `${pct}%` : "进行中") : "排队"} · ${j.state === "running" ? "还要" : ""}约 ${fmtT(j.eta)}</span>
         <button class="x" data-id="${j.id}" title="取消">×</button></div>`;
@@ -1872,7 +1872,7 @@ function initFilm() {
 #qp [data-enable-notifications] { align-self: flex-end; }
 #tr { cursor: pointer; }`;
   document.head.appendChild(css);
-  document.body.insertAdjacentHTML("beforeend", `
+  document.body.insertAdjacentHTML("beforeend", OneShotI18n.html`
 <div id="film">
   <div class="hd"><b id="fmHeading">成片编辑</b><span class="dim" id="fmTotal"></span><span class="dim" id="fmDraftState" role="status"></span><span style="flex:1"></span>
     <button class="pill" id="fmTiming" type="button" hidden>核对镜长</button>
@@ -1954,7 +1954,7 @@ function initFilm() {
     else {
       FILM.still.offset = filmClipOffset(FILM); FILM.still.started = null; playAll = false;
       syncFilmAudio(FILM);
-      $("#fmStillPlay").textContent = "播放";
+      $("#fmStillPlay").textContent = OneShotI18n.t("播放");
     }
   };
   $("#fmStillSeek").oninput = e => {

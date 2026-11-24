@@ -35,7 +35,7 @@ async function pgProjects() {
     ME.role==="admin"?api("/api/admin/users").catch(()=>[]):[]]);
   if(!active())return;
   state.users=new Map(users.map(user=>[user.id,user.name||user.username]));
-  $("#main").innerHTML=`<h1>项目和画布</h1>
+  $("#main").innerHTML=OneShotI18n.html`<h1>项目和画布</h1>
     <div class="grid newcards">
       <button class="nc grad" type="button" data-directory-new="wiz"><b>一句话成片</b><small>从一句想法开始制作短片</small></button>
       <button class="nc" type="button" data-directory-new="blank"><b>＋ 空白画布</b><small>自由搭建工作流</small></button>
@@ -297,7 +297,7 @@ function renderDirectoryStatus(state) {
 }
 
 function directoryDialog(title,content,button,action) {
-  const box=modal(`<h3>${esc(title)}</h3><form class="directory-dialog">
+  const box=modal(OneShotI18n.html`<h3>${esc(title)}</h3><form class="directory-dialog">
     ${content}<p class="directory-error" role="status"></p><div class="row"><span class="grow"></span>
     <button class="btn" type="button" data-directory-cancel>取消</button><button class="btn pri" type="submit">${button}</button></div></form>`);
   $("[data-directory-cancel]",box).onclick=closeModal;
@@ -316,7 +316,7 @@ function directoryDialog(title,content,button,action) {
 }
 
 function directoryNameDialog(title,current,action) {
-  directoryDialog(title,`<label>名称<input class="in" name="name" value="${esc(current)}" maxlength="60" required></label>`,"保存",
+  directoryDialog(title,OneShotI18n.html`<label>名称<input class="in" name="name" value="${esc(current)}" maxlength="60" required></label>`,"保存",
     fields=>{
       const name=fields.get("name").trim();
       if(!name)throw new Error("请输入名称");
@@ -336,7 +336,7 @@ function openDirectoryMove(state,ids,refresh,newOnly=false) {
   if(!ids.length)return;
   const options=state.projects.map(project=>`<option value="${esc(project.id)}">${esc(project.name)}</option>`).join("");
   const form=directoryDialog("将 "+ids.length+" 张画布移到项目",
-    `<label ${newOnly?"hidden":""}>目标项目<select class="in" name="target"><option value="new">新建项目</option><option value="">移出项目</option>${options}</select></label>
+    OneShotI18n.html`<label ${newOnly?"hidden":""}>目标项目<select class="in" name="target"><option value="new">新建项目</option><option value="">移出项目</option>${options}</select></label>
     <label>新项目名称<input class="in" name="name" maxlength="60" required></label>`,"移动",async fields=>{
     const target=fields.get("target");
     await moveDirectoryBoards(ids,target==="new"?{name:fields.get("name")}:{project:target||null});

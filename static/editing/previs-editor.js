@@ -452,7 +452,7 @@ function pvPause(E) {
   if (!E.playing) return;
   E.playing=false;
   cancelAnimationFrame(E.animation);
-  pvElement("[data-pv-play]").textContent="播放";
+  pvElement("[data-pv-play]").textContent=OneShotI18n.t("播放");
   pvRefreshFields(E);
 }
 
@@ -964,7 +964,7 @@ function initPrevis() {
   })).join("");
   const lightControls=Object.entries(PV_LIGHT_LIMITS).map(([key,[min,max]])=>
     `<label>${PV_LIGHT_LABELS[key]}<input type="number" min="${min}" max="${max}" step="${max>2?1:.05}" data-pv-light-value="${key}"></label>`).join("");
-  document.body.insertAdjacentHTML("beforeend",`<dialog id="previsEditor" aria-labelledby="pvTitle">
+  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="previsEditor" aria-labelledby="pvTitle">
     <header class="pv-head"><div><strong id="pvTitle">3D 白模预演</strong><span data-pv-heading></span></div>
       <button type="button" data-pv-render>渲染预演</button><button type="button" data-pv-use hidden>用作动作参考</button>
       <button type="button" data-pv-batch-stop hidden>停止后续渲染</button><button type="button" data-pv-close>保存并关闭</button></header>

@@ -405,7 +405,7 @@ function ctOpenGroupGallery(group) {
 
 function initCanvasGroups() {
   initCanvasGroupRun();
-  document.body.insertAdjacentHTML("beforeend",`<dialog id="groupGallery" aria-labelledby="groupGalleryTitle">
+  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="groupGallery" aria-labelledby="groupGalleryTitle">
     <header><strong id="groupGalleryTitle"></strong><button type="button" data-group-close aria-label="关闭">×</button></header>
     <div id="groupGalleryItems"></div><div id="groupGalleryImport"></div>
     <span class="cg-member-drag-label" data-group-drag-label hidden></span>

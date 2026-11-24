@@ -27,11 +27,13 @@ function provPill(n, pill) {
   const def = list.find(x => x.default), cur = nodeProvider(n);
   const unavailable = n.data.provider && !list.some(item=>item.id===n.data.provider) &&
     (n.data.selected_model || n.type==="video" && n.data.provider==="local_h3");
-  const opts = { "": `默认：${def ? def.name : "本地"}` };
-  list.forEach(x => opts[x.id] = esc(`${x.name}${x.local ? "（本地，免费）" : ""}`));
-  if (unavailable) opts[n.data.provider] = esc(n.data.provider+"（不可用）");
+  const tr = OneShotI18n.t;
+  const providerName = p => p?.id === "local_h3" && p.name === "本地 H3" ? tr(p.name) : p?.name;
+  const opts = { "": tr("默认：{name}", {name:providerName(def) || tr("本地")}) };
+  list.forEach(x => opts[x.id] = esc(x.local ? tr("{name}（本地，免费）", {name:providerName(x)}) : x.name));
+  if (unavailable) opts[n.data.provider] = esc(tr("{name}（不可用）", {name:n.data.provider}));
   opts[""] = esc(opts[""]);
-  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "#b9b9c2" : "#d6d6dc"}"></span>${esc(unavailable?"重新选择服务":cur?.name || "服务")}${ico("down")}`, "model");
+  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "#b9b9c2" : "#d6d6dc"}"></span>${esc(unavailable?tr("重新选择服务"):providerName(cur) || tr("服务"))}${ico("down")}`, "model");
 }
 
 function canvasNodeModel(n, service, reference = false) {
@@ -50,12 +52,13 @@ function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {
   const model = canvasNodeModel(n,service,reference);
   const fallback = reference || n.data.provider ? service.model : service.default_route_model || service.model;
   const name = item => item.label || (item.endpoint_model ? item.id+" · "+item.endpoint_model : item.id);
-  const title = model?.id ? name(model) : "重新选择模型";
+  const tr = OneShotI18n.t;
+  const title = model?.id ? name(model) : tr("重新选择模型");
   if (!n.data.selected_model && options.length < 2) return model?.id ? `<span class="pill" title="${esc(title)}">${esc(title)}</span>` : "";
   const defaultName = options.find(item=>item.id===fallback);
-  const choices = Object.fromEntries([["",esc(fallback ? "默认 · " + (defaultName ? name(defaultName) : fallback) : "默认模型")],
+  const choices = Object.fromEntries([["",esc(fallback ? tr("默认 · {name}", {name:defaultName ? name(defaultName) : fallback}) : tr("默认模型"))],
     ...options.filter(item => !service.local || item.id !== fallback || item.id === n.data.selected_model).map(item => [item.id,esc(name(item))])]);
-  if (n.data.selected_model && !model) choices[n.data.selected_model] = esc(n.data.selected_model + "（不可用）");
+  if (n.data.selected_model && !model) choices[n.data.selected_model] = esc(tr("{name}（不可用）", {name:n.data.selected_model}));
   return pill("selected_model", choices, esc(title)+ico("down"), "model", n.data.selected_model || "");
 }
 
@@ -63,9 +66,9 @@ function initAccount() {
   fetch("/api/me").then(r => r.ok ? r.json() : null).then(u => {
     if (!u) return;
     ME_USER = u;
-    $("#tr").insertAdjacentHTML("afterbegin", `<a href="/console" id="consoleLink" title="控制台" aria-label="控制台">${ico("console")}<span>控制台</span></a><span style="color:var(--dim);font-size:var(--fs-small)">${esc(u.name || u.username)}</span>`);
+    $("#tr").insertAdjacentHTML("afterbegin", OneShotI18n.html`<a href="/console" id="consoleLink" title="控制台" aria-label="控制台">${ico("console")}<span>控制台</span></a><span style="color:var(--dim);font-size:var(--fs-small)">${esc(u.name || u.username)}</span>`);
     $("#consoleLink").addEventListener("click", e => e.stopPropagation());
-    const sb = $("#setBtn"); if (sb) { sb.title = u.role === "admin" ? "模型与服务（控制台）" : "控制台"; sb.onclick = () => location.href = u.role === "admin" ? "/console#services" : "/console"; }
+    const sb = $("#setBtn"); if (sb) { sb.title = u.role === "admin" ? OneShotI18n.t("模型与服务（控制台）") : OneShotI18n.t("控制台"); sb.onclick = () => location.href = u.role === "admin" ? "/console#services" : "/console"; }
   });
   loadCaps();
   setInterval(loadCaps, 60000);

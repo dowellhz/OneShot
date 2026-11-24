@@ -445,7 +445,7 @@ function vtOpenReferenceUpdate(source,index,group=null,preset=null){
   if(!choosing&&!vtCanCopyVersion(source,index))return;
   let dialog=$("#versionRefUpdate");
   if(!dialog){
-    document.body.insertAdjacentHTML("beforeend",`<dialog id="versionRefUpdate" aria-labelledby="versionRefTitle"><form>
+    document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="versionRefUpdate" aria-labelledby="versionRefTitle"><form>
       <header><strong id="versionRefTitle">更新下游引用</strong></header>
       <div data-choose-source hidden>
         <label data-original hidden>原素材<select name="original"></select></label>
@@ -532,7 +532,7 @@ function vtOpenReferenceUpdate(source,index,group=null,preset=null){
       replacement=candidates.find(n=>n.id===sources.value);
       versions.disabled=!replacement;
       versions.innerHTML=(replacement?.versions||[]).map((v,i)=>v.ref&&v.source!=="previs"?
-        `<option value="${i}">版本 ${i+1}${i===replacement.cur?"（当前）":""}</option>`:"").join("");
+        OneShotI18n.html`<option value="${i}">版本 ${i+1}${i===replacement.cur?"（当前）":""}</option>`:"").join("");
       if(!replacement){version=null;preview();showMedia();return;}
       if([...versions.options].some(option=>Number(option.value)===replacement.cur))versions.value=String(replacement.cur);
       versions.onchange();
@@ -569,7 +569,7 @@ function vtOpenReferenceUpdate(source,index,group=null,preset=null){
       }
       const empty=libraryChoices.options.length===1;
       libraryChoices.disabled=empty;
-      libraryStatus.textContent=empty?(choices.length?"没有匹配的素材":"资产库中没有同类型的素材"):"";
+      libraryStatus.textContent=empty?(choices.length?OneShotI18n.t("没有匹配的素材"):"资产库中没有同类型的素材"):"";
     };
     query.oninput=drawLibrary;
     libraryChoices.onchange=()=>{
@@ -585,7 +585,7 @@ function vtOpenReferenceUpdate(source,index,group=null,preset=null){
       query.value="";
       query.disabled=libraryChoices.disabled=true;
       libraryChoices.replaceChildren();
-      libraryStatus.textContent="正在读取资产库…";
+      libraryStatus.textContent=OneShotI18n.t("正在读取资产库…");
       const token=++request;
       const active=()=>dialog.open && isCurrent() && libraryButton.onclick===openLibrary && request===token;
       try{
@@ -688,7 +688,7 @@ function vtOpenReferenceUpdate(source,index,group=null,preset=null){
 
 function vtTabMenu(n,index,x,y){
   closeMenus();let m=$("#videoTabMenu");if(!m){m=document.createElement("div");m.id="videoTabMenu";m.className="menu";document.body.append(m);}
-  m.innerHTML=`<div class="mt">${TYPE_CN[n.type]}版本 ${index+1}</div><button data-version-copy>${ico("copy")}复制此版本为独立节点</button>`+
+  m.innerHTML=OneShotI18n.html`<div class="mt">${TYPE_CN[n.type]}版本 ${index+1}</div><button data-version-copy>${ico("copy")}复制此版本为独立节点</button>`+
     (hasGenerationDraft(n,n.versions[index])?`<button data-version-draft>${ico("edit")}用此版本改稿</button>`:"")+
     (canReuseGenerationAssets(n,n.versions[index])?`<button data-version-replay-assets>${ico("assets")}沿用原资产改稿</button>`:"")+
     (canvasCanEdit()&&n.versions[index]?.ref?`<button data-version-reference>${ico("script")}引用此版本到创作助手</button>

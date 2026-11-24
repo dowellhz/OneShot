@@ -27,7 +27,7 @@ function openGifExport(source, version = curV(source)) {
   form.reset();
   video.hidden = $("[data-gif-video-controls]",form).hidden = grid;
   gridPreview.hidden = $("[data-gif-grid-controls]",form).hidden = !grid;
-  $("#videoGifTitle").textContent = grid ? "宫格生成 GIF" : "导出循环 GIF";
+  $("#videoGifTitle").textContent = grid ? "宫格生成 GIF" : OneShotI18n.t("导出循环 GIF");
   if (grid) fps.value = "8";
   start.value = "0";
   end.value = duration ? String(Math.min(3,duration)) : "";

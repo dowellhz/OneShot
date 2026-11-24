@@ -22,7 +22,7 @@ async function loadBoardDirectory() {
 }
 function boardAction(action) {
   return async event => {
-    try { await action(event); } catch (error) { toast(error.message || "画布操作失败", 4500); }
+    try { await action(event); } catch (error) { toast(error.message || OneShotI18n.t("画布操作失败"), 4500); }
   };
 }
 function renderProjectCanvases() {
@@ -30,7 +30,7 @@ function renderProjectCanvases() {
   nav.hidden = !project;
   if (!project) { nav.replaceChildren(); return; }
   const siblings = boardDirectory.filter(b => b.project === project.id && !b.team).sort((a,b) => a.id.localeCompare(b.id));
-  nav.innerHTML = `<strong title="${esc(project.name)}">${esc(project.name)}</strong><div class="project-links">${siblings.map(b =>
+  nav.innerHTML = OneShotI18n.html`<strong title="${esc(project.name)}">${esc(project.name)}</strong><div class="project-links">${siblings.map(b =>
     `<button type="button" data-project-board="${esc(b.id)}" title="${esc(b.name)}" ${b.id === boardId ? 'aria-current="page"' : ""}>${esc(b.name)}</button>`).join("")}</div>
     <button type="button" data-project-add title="在此项目新建画布" aria-label="在此项目新建画布">${ico("plus")}</button>`;
   $$("[data-project-board]",nav).forEach(b => b.onclick = boardAction(() => b.dataset.projectBoard !== boardId && openBoard(b.dataset.projectBoard)));
@@ -111,7 +111,7 @@ async function openBoard(id, savedConflictDraft) {
   restoreCanvasGroupRun();
   historyEpoch++;
   undoStack.length = redoStack.length = 0; sel.clear(); selEdge = null;
-  $("#bname").textContent = B.name || "我的画布";
+  $("#bname").textContent = B.name || OneShotI18n.t("我的画布");
   rebuild();
   applyView();
   poll(); schedulePrewarm(3000);
@@ -163,25 +163,25 @@ function renderBoardMenu() {
   const teamSection = [...teamGroups.entries()].map(([id,team])=>`
     <details class="bp-group" ${team.boards.some(b=>b.id===boardId)?"open":""}>
       <summary>团队 · ${esc(team.name)}<span class="k">${team.boards.length} 个画布</span></summary>${boardButtons(team.boards)}
-      ${canvasTeams.some(member=>member.id===id)?`<button type="button" data-new-team="${esc(id)}">${ico("plus")}新建团队画布</button>`:""}
+      ${canvasTeams.some(member=>member.id===id)?OneShotI18n.html`<button type="button" data-new-team="${esc(id)}">${ico("plus")}新建团队画布</button>`:""}
     </details>`).join("");
-  m.innerHTML = `<label class="bp-search">${ico("search")}<input type="search" aria-label="搜索当前空间的画布" placeholder="搜索当前空间的画布" autocomplete="off"></label>
+  m.innerHTML = OneShotI18n.html`<label class="bp-search">${ico("search")}<input type="search" aria-label="搜索当前空间的画布" placeholder="搜索当前空间的画布" autocomplete="off"></label>
     <div class="bp-results" hidden></div><div class="bp-directory">` + teamSection + canvasProjects.map(p => {
     const entries = boardDirectory.filter(b => b.project === p.id && !b.team);
-    return `<details class="bp-group" ${p.id === project?.id ? "open" : ""}>
+    return OneShotI18n.html`<details class="bp-group" ${p.id === project?.id ? "open" : ""}>
       <summary>${esc(p.name)}<span class="k">${entries.length} 个画布</span></summary>
       ${boardButtons(entries)}
       <div class="bp-actions"><button type="button" data-new-in="${esc(p.id)}">${ico("plus")}新建画布</button>
       <button type="button" data-rename-project="${esc(p.id)}">改名</button>
       <button type="button" data-dissolve-project="${esc(p.id)}">解散</button></div>
     </details>`;
-  }).join("") + `<div class="mt">独立画布</div>` + boardButtons(boardDirectory.filter(b => !b.project && !b.team)) +
-    `${teamId ? `<button type="button" data-new-personal>${ico("plus")}新建独立画布</button>` : ""}<button type="button" data-new-project>${ico("assets")}新建项目</button>` +
-    (B.owner === ME_USER?.id && canvasProjects.length ? `<form class="bp-move"><select aria-label="目标项目" required>
+  }).join("") + OneShotI18n.html`<div class="mt">独立画布</div>` + boardButtons(boardDirectory.filter(b => !b.project && !b.team)) +
+    OneShotI18n.html`${teamId ? OneShotI18n.html`<button type="button" data-new-personal>${ico("plus")}新建独立画布</button>` : ""}<button type="button" data-new-project>${ico("assets")}新建项目</button>` +
+    (B.owner === ME_USER?.id && canvasProjects.length ? OneShotI18n.html`<form class="bp-move"><select aria-label="目标项目" required>
        <option value="" disabled selected>选择目标项目</option><option value="-">独立画布</option>
        ${canvasProjects.map(p => `<option value="${esc(p.id)}" ${p.id === entry?.project ? "disabled" : ""}>${esc(p.name)}</option>`).join("")}
      </select><button type="submit">移动当前画布</button></form>` : "") +
-    `<div id="bpForm"></div><div class="sep"></div><label class="bp-batch">批量结果排布<select data-batch-layout ${canvasCanEdit()?"":"disabled"}>
+    OneShotI18n.html`<div id="bpForm"></div><div class="sep"></div><label class="bp-batch">批量结果排布<select data-batch-layout ${canvasCanEdit()?"":"disabled"}>
      ${Object.entries(BATCH_LAYOUTS).map(([value,label])=>`<option value="${value}" ${canvasBatchLayout()===value?"selected":""}>${label}</option>`).join("")}</select></label>
      <label class="bp-batch" title="此设置适用于该账号之后提交的图片和视频生成任务">AI 生成水印<select data-ai-watermark ${ME_USER?"":"disabled"}>
      <option value="off" ${ME_USER?.ai_watermark?"":"selected"}>关闭</option><option value="on" ${ME_USER?.ai_watermark?"selected":""}>开启</option></select></label>
@@ -203,7 +203,7 @@ function renderBoardMenu() {
     const matches = boardDirectory.filter(board => (board.team || null) === teamId && String(board.name).toLocaleLowerCase().includes(query));
     const actionable = matches.filter(board => board.id !== boardId);
     const active = matches.filter(board => board.id === boardId);
-    results.innerHTML = boardButtons([...actionable, ...active]) || '<div class="mt" role="status">当前空间没有匹配的画布</div>';
+    results.innerHTML = boardButtons([...actionable, ...active]) || OneShotI18n.markup('<div class="mt" role="status">当前空间没有匹配的画布</div>');
     wireBoards(results);
   };
   search.onkeydown = e => {
@@ -277,8 +277,8 @@ function renderBoardMenu() {
 }
 function editProject(project) {
   const host = $("#bpForm");
-  host.innerHTML = `<form class="bp-editor"><label>项目名称<input name="name" value="${esc(project?.name || "")}" maxlength="60" required></label>
-    ${!project && B.owner === ME_USER?.id ? '<label class="bp-check"><input name="attach" type="checkbox">将当前画布移入项目</label>' : ""}
+  host.innerHTML = OneShotI18n.html`<form class="bp-editor"><label>项目名称<input name="name" value="${esc(project?.name || "")}" maxlength="60" required></label>
+    ${!project && B.owner === ME_USER?.id ? OneShotI18n.markup('<label class="bp-check"><input name="attach" type="checkbox">将当前画布移入项目</label>') : ""}
     <div class="bp-actions"><button type="submit">${project ? "保存名称" : "创建项目"}</button><button type="button" data-cancel>取消</button></div></form>`;
   const form = $("form",host), input = $("input[name=name]",form), id = boardId;
   $("[data-cancel]",form).onclick = () => host.replaceChildren();
@@ -293,7 +293,7 @@ function editProject(project) {
 }
 function dissolveProject(project) {
   const host = $("#bpForm");
-  host.innerHTML = `<div class="bp-editor"><span>解散「${esc(project.name)}」后，画布移回独立列表，项目素材移入个人素材库。</span>
+  host.innerHTML = OneShotI18n.html`<div class="bp-editor"><span>解散「${esc(project.name)}」后，画布移回独立列表，项目素材移入个人素材库。</span>
     <div class="bp-actions"><button type="button" data-confirm>解散项目</button><button type="button" data-cancel>取消</button></div></div>`;
   $("[data-cancel]",host).onclick = () => host.replaceChildren();
   $("[data-confirm]",host).onclick = boardAction(async () => {
@@ -305,7 +305,7 @@ function dissolveProject(project) {
 $("#bmenuBtn").onclick = boardAction(async e => {
   e.stopPropagation(); const m = $("#boards"), epoch = ++boardMenuEpoch;
   if (m.classList.contains("on")) { m.classList.remove("on"); return; }
-  closeMenus(); m.innerHTML = '<div class="mt">正在读取项目和画布…</div>'; m.classList.add("on");
+  closeMenus(); m.innerHTML = OneShotI18n.markup('<div class="mt">正在读取项目和画布…</div>'); m.classList.add("on");
   await loadBoardDirectory();
   if (epoch === boardMenuEpoch && m.classList.contains("on")) renderBoardMenu();
 });
@@ -318,8 +318,12 @@ async function status() {
     $("#sd").className = "sd " + (!s.comfy ? "bad" : q ? "busy" : "ok");
     let qt = "";
     if (q || B?.nodes.some(n => n.job)) { try { const Q = await (await fetch("/api/queue")).json(); if (Q.jobs.length) qt = `${Q.jobs.length} 个任务 · 约 ${fmtT(Q.total)}`; } catch {} }
-    $("#stt").textContent = (!s.comfy ? (s.loading ? "H3 引擎启动中…" : "生成引擎未启动") : qt ? `生成中 · ${qt}` : q ? `生成中 · 队列 ${q}` : "H3 引擎就绪") + (s.llm_running ? ` · 改写模型(${s.llm_device})` : "") + (s.remote ? ` · 文本：${s.remote}` : "") + (qt || q ? " ▾" : "");
-  } catch { $("#sd").className = "sd bad"; $("#stt").textContent = "画布服务断开"; }
+    const label = !s.comfy ? (s.loading ? "H3 引擎启动中…" : "生成引擎未启动") : qt ? "生成中 · {active}" : q ? "生成中 · 队列 {queued}" : "H3 引擎就绪";
+    const online = OneShotI18n.t(label,{active:qt,queued:q});
+    const rewriter = s.llm_running ? OneShotI18n.t(" · 改写模型({device})",{device:s.llm_device}) : "";
+    const remote = s.remote ? OneShotI18n.t(" · 文本：{provider}",{provider:s.remote}) : "";
+    $("#stt").textContent = online + rewriter + remote + (qt || q ? " ▾" : "");
+  } catch { $("#sd").className = "sd bad"; $("#stt").textContent = OneShotI18n.t("画布服务断开"); }
 }
 function updateEmpty() { $("#empty").classList.toggle("on", !B.nodes.length); }
 addEventListener("resize", placeOverlays);
@@ -354,7 +358,7 @@ initAssetLibrary();
   }
   await loadCaps();
   await openBoard(boardId);
-  if (requested && boardId !== requested) toast("画布链接不可用，或当前账号尚未获得访问权限",5000);
+  if (requested && boardId !== requested) toast(OneShotI18n.t("画布链接不可用，或当前账号尚未获得访问权限"),5000);
   const session = qs.get("session");
   if (requested === boardId && canvasCanEdit() && /^s[a-f0-9]{20}$/.test(session || "")) {
     localStorage.setItem("h3.chat.session."+boardId,session);
@@ -365,4 +369,4 @@ initAssetLibrary();
   const template = qs.get("template");
   if (/^t[a-f0-9]{20}$/.test(template || "")) await openWorkflowTemplates(false,null,{id:template,scope:"catalog"});
   status(); setInterval(status, 4000);
-})().catch(error => toast(error.message || "无法读取画布", 5000));
+})().catch(error => toast(error.message || OneShotI18n.t("无法读取画布"), 5000));

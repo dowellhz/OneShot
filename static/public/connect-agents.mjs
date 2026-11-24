@@ -26,15 +26,15 @@ async function loadTokens() {
   const rows=await request(endpoint);
   byId("connectorList").replaceChildren(...rows.map(row=>{
     const item=document.createElement("li"), label=document.createElement("span"), revoke=document.createElement("button");
-    label.textContent=row.label+(row.oauth?" · 浏览器授权":"")+" · "+new Date(row.expires*1000).toLocaleDateString()+" 到期";
-    revoke.textContent="撤销";
+    label.textContent=row.label+(row.oauth?" · 浏览器授权":"")+" · "+OneShotI18n.t("{date} 到期",{date:new Date(row.expires*1000).toLocaleDateString(OneShotI18n.locale)});
+    revoke.textContent=OneShotI18n.t("撤销");
     revoke.setAttribute("aria-label","撤销 "+row.label);
     revoke.onclick=async ()=>{
       revoke.disabled=true;
       try {
         await request(endpoint+"/"+row.id,"DELETE");
         if(token.dataset.id===row.id) { token.value=""; secret.hidden=true; }
-        statusLine.textContent="连接已撤销";
+        statusLine.textContent=OneShotI18n.t("连接已撤销");
         await loadTokens();
       } catch(error) { statusLine.textContent=error.message; }
       finally { revoke.disabled=false; }
@@ -58,15 +58,15 @@ form.onsubmit=async event=>{
     form.reset();
     token.focus();
     token.select();
-    statusLine.textContent="连接令牌已生成";
+    statusLine.textContent=OneShotI18n.t("连接令牌已生成");
     await loadTokens();
   } catch(error) { statusLine.textContent=error.message; }
   finally { submit.disabled=false; }
 };
 for(const [id,input] of [["connectorCopyUrl",url],["connectorCopyToken",token],["connectorCopyHandoff",handoff]]){
   byId(id).onclick=async ()=>{
-    try { await navigator.clipboard.writeText(input.value); statusLine.textContent="已复制"; }
-    catch { input.focus(); input.select(); statusLine.textContent="已选中内容，可以手动复制"; }
+    try { await navigator.clipboard.writeText(input.value); statusLine.textContent=OneShotI18n.t("已复制"); }
+    catch { input.focus(); input.select(); statusLine.textContent=OneShotI18n.t("已选中内容，可以手动复制"); }
   };
 }
 loadTokens().catch(error=>{statusLine.textContent=error.message;});

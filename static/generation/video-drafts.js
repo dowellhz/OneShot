@@ -32,7 +32,7 @@ function openVideoDraftFinal(n, selectedVersion = null) {
   const saved=n.draft_finalize_attempt?.ref===version.ref?n.draft_finalize_attempt:null;
   status.textContent=expired?(saved?"可恢复已提交的定稿任务。":"样片已过定稿有效期，请重新生成样片。"):"";
   send.disabled=expired&&!saved;
-  send.textContent=expired&&saved?"恢复定稿":"生成定稿";
+  send.textContent=expired&&saved?"恢复定稿":OneShotI18n.t("生成定稿");
   $("[data-draft-guidance]",form).textContent=saved?"使用原请求查看定稿任务。":"沿用所选样片的提示词与参考素材，提交一项新的定稿任务。";
   form.elements.resolution.value=saved?.resolution || (edge && n.data.quality==="4k"?"4k":"1080p");
   form.elements.placement.value=edge?"branch":saved?.placement || "tab";

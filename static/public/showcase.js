@@ -100,7 +100,7 @@ async function list(reset) {
   if (reset) content.replaceChildren();
   content.className = "showcase-grid";
   more.hidden = true;
-  statusLine.textContent = "正在读取作品…";
+  statusLine.textContent = OneShotI18n.t("正在读取作品…");
   try {
     const endpoint = mine ? "/api/showcase/me" : creator ? "/api/showcase/creator/"+creator : "/api/showcase";
     const response = await loadJSON(endpoint+"?" + new URLSearchParams({page:target,q,kind}));
@@ -117,7 +117,7 @@ async function list(reset) {
     page = target;
     content.append(...response.items.map(mine ? ownCard : card));
     more.hidden = !response.more;
-    statusLine.textContent = content.childElementCount ? "" : q || kind ? "没有匹配的作品" : "还没有发布的作品";
+    statusLine.textContent = content.childElementCount ? "" : q || kind ? OneShotI18n.t("没有匹配的作品") : OneShotI18n.t("还没有发布的作品");
   } catch (error) {
     if (id !== request) return;
     more.hidden = reset;
@@ -154,7 +154,7 @@ function showcasePrompt(item) {
   text.readOnly = true;
   text.value = item.prompt;
   text.rows = 6;
-  text.setAttribute("aria-label","公开提示词");
+  text.setAttribute("aria-label",OneShotI18n.t("公开提示词"));
   const actions = element("div",null,"showcase-entry-actions");
   const copy = element("button","复制提示词"), use = element("button","用提示词新建画布");
   const status = element("span");
@@ -162,10 +162,10 @@ function showcasePrompt(item) {
   copy.onclick = async () => {
     try {
       await navigator.clipboard.writeText(item.prompt);
-      status.textContent = "已复制提示词";
+      status.textContent = OneShotI18n.t("已复制提示词");
     } catch {
       text.focus(); text.select();
-      status.textContent = "提示词已选中，可以手动复制";
+      status.textContent = OneShotI18n.t("提示词已选中，可以手动复制");
     }
   };
   let key;
@@ -196,8 +196,8 @@ function reviewCard(item) {
   const copy = element("div",null,"showcase-copy");
   const form = element("form"), actions = element("div");
   const reason = element("textarea");
-  reason.placeholder = "退回原因";
-  reason.setAttribute("aria-label","退回原因");
+  reason.placeholder = OneShotI18n.t("退回原因");
+  reason.setAttribute("aria-label",OneShotI18n.t("退回原因"));
   reason.maxLength = 500;
   reason.rows = 2;
   const accept = element("button","通过"), reject = element("button","退回");
@@ -210,7 +210,7 @@ function reviewCard(item) {
     if (!state) return;
     const comment = reason.value.trim();
     if (state === "rejected" && !comment) {
-      statusLine.textContent = "退回时请填写原因";
+      statusLine.textContent = OneShotI18n.t("退回时请填写原因");
       reason.focus();
       return;
     }
@@ -220,7 +220,7 @@ function reviewCard(item) {
         method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({state,reason:comment})
       });
       article.remove();
-      statusLine.textContent = content.childElementCount ? "审核结果已保存" : "没有待审核的作品";
+      statusLine.textContent = content.childElementCount ? OneShotI18n.t("审核结果已保存") : OneShotI18n.t("没有待审核的作品");
     } catch (error) { statusLine.textContent = error.message; }
     finally { accept.disabled = reject.disabled = false; }
   };
@@ -243,12 +243,12 @@ function reviewCard(item) {
 }
 
 async function review() {
-  title.textContent = "审核作品";
+  title.textContent = OneShotI18n.t("审核作品");
   search.hidden = true;
   const items = await loadJSON("/api/admin/showcase");
   content.className = "showcase-grid";
   content.append(...items.map(reviewCard));
-  statusLine.textContent = items.length ? "" : "没有待审核的作品";
+  statusLine.textContent = items.length ? "" : OneShotI18n.t("没有待审核的作品");
 }
 
 search.onsubmit = event=>{ event.preventDefault(); list(true); };
@@ -256,7 +256,7 @@ search.elements.kind.onchange = ()=>list(true);
 more.onclick = ()=>list(false);
 const renderPage = reviewMode ? review : token ? watch : ()=>list(true);
 if (mine) {
-  title.textContent = "我的作品";
+  title.textContent = OneShotI18n.t("我的作品");
   search.hidden = true;
 }
 renderPage().catch(error=>{ statusLine.textContent = error.message; });

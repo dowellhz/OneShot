@@ -23,7 +23,7 @@ function initNodeSearch() {
   const panel = document.createElement("dialog");
   panel.id = "nodeSearch";
   panel.setAttribute("aria-labelledby", "nodeSearchTitle");
-  panel.innerHTML = `<header><h2 id="nodeSearchTitle">搜索画布节点</h2><button type="button" class="pill" data-close>关闭</button></header>
+  panel.innerHTML = OneShotI18n.html`<header><h2 id="nodeSearchTitle">搜索画布节点</h2><button type="button" class="pill" data-close>关闭</button></header>
     <input type="search" aria-label="搜索节点名称和内容" placeholder="搜索节点名称、内容或提示词">
     <select class="pill ns-status" aria-label="按节点状态筛选">
       <option value="">全部状态</option><option value="marked">已标记</option><option value="locked">已锁定</option>

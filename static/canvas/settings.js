@@ -7,7 +7,7 @@ async function openSettings() {
   let LC;
   try { LC = await (await fetch("/api/llm")).json(); } catch { return toast("连不上画布服务"); }
   const box = $("#setBox");
-  box.innerHTML = `<div class="hd">文本模型<span style="flex:1"></span><button class="pill" id="setClose">关闭</button></div>
+  box.innerHTML = OneShotI18n.html`<div class="hd">文本模型<span style="flex:1"></span><button class="pill" id="setClose">关闭</button></div>
     <div class="h">用于<b>把提示词翻译成英文</b>、写剧本、拆分镜、改写、反推看图。选中的排第一，出错时自动换下一个。</div>
     <div class="ml">${LC.choices.map(c => `<button data-pid="${c.id}" class="${c.id === LC.current ? "on" : ""}"><b>${esc(c.name)}</b>
       <span>${esc(c.model || "")}${c.local ? " · 本机，不花钱；显卡在生成视频时用 CPU，较慢" : " · 云端，快，不占显卡，按用量计费"}${c.vision ? "" : " · 不能看图（看图仍用其他模型）"}</span></button>`).join("")}</div>
@@ -30,14 +30,14 @@ async function openSettings() {
 }
 function renderSettings(L) {
   const box = $("#setBox"), custom = L.provider === "custom";
-  box.innerHTML = `<div class="hd">AI 设置<span style="flex:1"></span><button class="pill" id="setClose">关闭</button></div>
+  box.innerHTML = OneShotI18n.html`<div class="hd">AI 设置<span style="flex:1"></span><button class="pill" id="setClose">关闭</button></div>
     <label class="ck big"><input type="checkbox" id="sEn" ${L.enabled ? "checked" : ""}>文本任务使用云端大模型</label>
     <div class="h">开启后，<b>写剧本、拆分镜、改写提示词、扩写</b>这些纯文字的工作交给下面的模型：更快、写得更好，而且不占用显卡，生成视频时也不用等。<br>
       需要看图的工作（反推、看图填写、拉片、带参考图的改写）仍然用本机的 Qwen3.5，因为 DeepSeek 接口不能看图。</div>
     <div class="f"><span>服务</span><div class="seg">${[["deepseek", "DeepSeek 官方"], ["local", "本机 DeepSeek"], ["custom", "自定义（OpenAI 兼容）"]]
       .map(([k, t]) => `<button data-p="${k}" class="${L.provider === k ? "on" : ""}">${t}</button>`).join("")}</div></div>
     ${L.provider === "local" ? `<div class="h warn">本机 DeepSeek 和视频生成共用这块 4090，通常不能同时开着；它没启动时这些任务会报错。</div>` : ""}
-    ${custom ? `<div class="f"><span>名称</span><input id="sName" value="${esc(L.name || "")}" placeholder="显示在提示里，如 Kimi"></div>` : ""}
+    ${custom ? OneShotI18n.html`<div class="f"><span>名称</span><input id="sName" value="${esc(L.name || "")}" placeholder="显示在提示里，如 Kimi"></div>` : ""}
     <div class="f"><span>接口地址</span><input id="sUrl" value="${esc(L.base_url || "")}" placeholder="https://api.deepseek.com" ${custom ? "" : "readonly"}></div>
     <div class="f"><span>API Key</span><input id="sKey" type="password" autocomplete="off" placeholder="${L.api_key_masked ? "已保存（" + esc(L.api_key_masked) + "），留空不修改" : L.provider === "local" ? "本机服务不需要" : "sk-…，在 platform.deepseek.com 创建"}"></div>
     <div class="f"><span>模型</span><input id="sModel" list="sModels" value="${esc(L.model || "")}" placeholder="deepseek-flash"><datalist id="sModels"></datalist></div>
@@ -54,7 +54,7 @@ function renderSettings(L) {
     renderSettings(L);
   });
   $("#sTest").onclick = async () => {
-    const msg = $("#sMsg"); msg.textContent = "测试中…"; msg.style.color = "";
+    const msg = $("#sMsg"); msg.textContent = OneShotI18n.t("测试中…"); msg.style.color = "";
     try {
       const r = await api("/api/settings/test", { llm: read() });
       msg.textContent = `连接成功，${r.seconds}s 回复「${r.reply}」`; msg.style.color = "var(--green)";

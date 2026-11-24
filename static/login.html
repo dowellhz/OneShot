@@ -22,9 +22,15 @@ button:disabled { opacity: .5; }
 .err { color: #ff6b6b; font-size: var(--fs-small); min-height: 18px; margin-top: 10px; }
 .tip { color: #5d5d65; font-size: var(--fs-small); margin-top: 14px; line-height: 1.6; }
 </style>
+<link rel="stylesheet" href="/static/shared/i18n.css?v=1">
+<script src="/static/shared/locales/en-workspace.js?v=1"></script>
+<script src="/static/shared/locales/en-pages.js?v=1"></script>
+<script src="/static/shared/locales/en-workflows.js?v=1"></script>
+<script src="/static/shared/locales/en-canvas-actions.js?v=1"></script>
 </head>
 <body>
 <div class="wrap"><form class="box" id="f" autocomplete="on">
+  <div class="interface-language interface-language--login"><select data-interface-language aria-label="界面语言"><option value="zh-CN" lang="zh-CN">中文</option><option value="en" lang="en">English</option></select><span data-language-status role="status"></span></div>
   <div class="logo"><span><svg viewBox="0 0 32 32" width="100%" height="100%" aria-hidden="true"><rect x=".5" y=".5" width="31" height="31" rx="7.5" fill="#242429" stroke="#4a4a52"/><circle cx="16" cy="16" r="9" fill="none" stroke="#ededf0" stroke-width="2"/><path d="M14 11.6v8.8l6.8-4.4z" fill="#ededf0"/></svg></span>OneShot</div>
   <p class="sub" id="sub">登录</p>
   <div id="extra"></div>
@@ -35,8 +41,10 @@ button:disabled { opacity: .5; }
   <div class="err" id="err"></div>
   <div class="tip" id="tip">没有账号？请联系管理员在控制台「成员」里添加。</div>
 </form></div>
+<script src="/static/shared/i18n.js?v=1"></script>
 <script>
 const $ = s => document.querySelector(s);
+OneShotI18n.beforeSwitch(() => !$("#p").value && !$("#p2")?.value);
 const nextParam = new URLSearchParams(location.search).get("next") || "";
 let next = "/console";
 try {
@@ -48,18 +56,18 @@ fetch("/api/auth/state").then(r => r.json()).then(s => {
   if (s.user) { location.href = next; return; }
   if (s.needs_setup) {
     setup = true;
-    $("#sub").textContent = "第一次使用：创建管理员账号。之前在画布上做的项目和素材都会归到这个账号下。";
-    $("#extra").innerHTML = `<label>显示名称</label><input id="n" placeholder="例如：小明">`;
-    $("#extra2").innerHTML = `<label>再输入一次密码</label><input id="p2" type="password" autocomplete="new-password" required>`;
-    $("#p").autocomplete = "new-password"; $("#p").placeholder = "至少 8 位";
-    $("#go").textContent = "创建管理员并进入"; $("#tip").textContent = "管理员可以添加成员、配置模型和 API Key、管理本地显卡上的服务。";
+    $("#sub").textContent = OneShotI18n.t("第一次使用：创建管理员账号。之前在画布上做的项目和素材都会归到这个账号下。");
+    $("#extra").innerHTML = OneShotI18n.html`<label>显示名称</label><input id="n" placeholder="例如：小明">`;
+    $("#extra2").innerHTML = OneShotI18n.html`<label>再输入一次密码</label><input id="p2" type="password" autocomplete="new-password" required>`;
+    $("#p").autocomplete = "new-password"; $("#p").placeholder = OneShotI18n.t("至少 8 位");
+    $("#go").textContent = OneShotI18n.t("创建管理员并进入"); $("#tip").textContent = OneShotI18n.t("管理员可以添加成员、配置模型和 API Key、管理本地显卡上的服务。");
   }
 });
 $("#f").onsubmit = async e => {
   e.preventDefault(); $("#err").textContent = "";
   const body = { username: $("#u").value.trim(), password: $("#p").value };
   if (setup) {
-    if ($("#p").value !== $("#p2").value) { $("#err").textContent = "两次输入的密码不一样"; return; }
+    if ($("#p").value !== $("#p2").value) { $("#err").textContent = OneShotI18n.t("两次输入的密码不一样"); return; }
     body.name = $("#n").value.trim();
   }
   $("#go").disabled = true;
@@ -68,7 +76,7 @@ $("#f").onsubmit = async e => {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || "登录失败");
     location.href = next;
-  } catch (er) { $("#err").textContent = er.message; $("#go").disabled = false; }
+  } catch (er) { $("#err").textContent = OneShotI18n.t(er.message); $("#go").disabled = false; }
 };
 </script>
 </body>

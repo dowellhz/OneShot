@@ -100,7 +100,7 @@ async function openWorkflowReview(nodeId = null, version = null) {
     if (panel.showModal) panel.showModal();
     else panel.setAttribute("open", "");
   }
-  $("#wrContext").textContent = nodeId ? node(nodeId)?.name || "节点" : B.name || "画布";
+  $("#wrContext").textContent = nodeId ? node(nodeId)?.name || OneShotI18n.t("节点") : B.name || "画布";
   $("#wrAll").hidden = !nodeId;
   $("#wrDownload").disabled = true;
   $("#wrSteps").replaceChildren();
@@ -126,7 +126,7 @@ async function openWorkflowReview(nodeId = null, version = null) {
 }
 
 function initWorkflowReview() {
-  document.body.insertAdjacentHTML("beforeend", `<dialog id="workflowReview" aria-labelledby="wrTitle">
+  document.body.insertAdjacentHTML("beforeend", OneShotI18n.html`<dialog id="workflowReview" aria-labelledby="wrTitle">
     <header class="wr-head"><div><strong id="wrTitle">制作复盘</strong><div id="wrContext"></div></div>
       <button type="button" id="wrAll" hidden>整张画布</button><button type="button" id="wrRefresh">刷新</button>
       <button type="button" id="wrDownload" disabled>导出 Markdown</button><button type="button" id="wrClose">关闭</button></header>

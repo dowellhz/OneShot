@@ -73,7 +73,7 @@ function shareItemOpen(editable) {
     if(!alive())return;
     state.conversations=response.conversations;
     const list=$("#shareItemLinks");
-    list.innerHTML=response.items.map(item=>`<li><a href="/shared-item/${encodeURIComponent(item.token)}" target="_blank" rel="noopener">${esc(item.title)}</a>
+    list.innerHTML=response.items.map(item=>OneShotI18n.html`<li><a href="/shared-item/${encodeURIComponent(item.token)}" target="_blank" rel="noopener">${esc(item.title)}</a>
       <button type="button" data-revoke-item="${esc(item.token)}">撤销</button></li>`).join("");
   }
   $("#shareItemDetails").ontoggle=async event=>{
@@ -130,7 +130,7 @@ function shareItemOpen(editable) {
   $("#shareItemLinks").onclick=async event=>{
     const control=event.target.closest("[data-revoke-item]");
     if(!control)return;
-    if(control.textContent==="撤销"){control.textContent="确认撤销";return;}
+    if(!control.dataset.confirmed){control.dataset.confirmed="true";control.textContent=OneShotI18n.t("确认撤销");return;}
     control.disabled=true;
     try {
       await boardRequest(state.endpoint+"/"+encodeURIComponent(control.dataset.revokeItem),"DELETE");
@@ -145,7 +145,7 @@ function shareItemOpen(editable) {
 
 function drawShowcase(entries) {
   const states = {pending:"待审核",approved:"已发布",rejected:"已退回"};
-  $("#shareShowcaseEntries").innerHTML = entries.map(entry=>`<li>
+  $("#shareShowcaseEntries").innerHTML = entries.map(entry=>OneShotI18n.html`<li>
     <span>${esc(entry.title)} · ${states[entry.state] || ""}</span>
     ${entry.reason ? `<p>${esc(entry.reason)}</p>` : ""}
     ${entry.state === "approved" ? `<a href="/showcase/${encodeURIComponent(entry.token)}" target="_blank" rel="noopener">查看作品</a>` : ""}
@@ -351,7 +351,7 @@ function drawSharePermissions(data) {
   destination.value = data.team || "";
   destination.disabled = $("#shareTeamMove button").disabled = B.owner !== ME_USER?.id;
   const list = $("#sharePeople");
-  list.innerHTML = data.collaborators.map(a=>`<div class="share-account" data-username="${esc(a.username)}">
+  list.innerHTML = data.collaborators.map(a=>OneShotI18n.html`<div class="share-account" data-username="${esc(a.username)}">
     <span title="${esc(a.username)}">${esc(a.name || a.username)}${a.disabled ? " · 已停用" : ""}</span>
     <select aria-label="${esc(a.username)}的权限">${Object.entries(SHARE_ROLES).map(([role,label])=>
       `<option value="${role}" ${a.role===role?"selected":""}>${label}</option>`).join("")}</select>
@@ -374,7 +374,7 @@ async function showShareTeamMembers() {
     const members=await boardRequest(url);
     if (bid!==boardId || select.value!==team.id) return;
     list.innerHTML=members.map(member=>`<li><span>${esc(member.name || member.username)}${member.manager?" · 管理员":""}</span>
-      ${team.managed && !member.manager ? `<button type="button" data-team-remove="${esc(member.username)}">移除</button>`:""}</li>`).join("");
+      ${team.managed && !member.manager ? OneShotI18n.html`<button type="button" data-team-remove="${esc(member.username)}">移除</button>`:""}</li>`).join("");
     invite.hidden=!team.managed;
   } catch(error) { if(bid===boardId)$("#shareStatus").textContent=error.message; }
 }
@@ -497,7 +497,7 @@ async function copyShareURL(link) {
 }
 
 function initCanvasShare() {
-  document.body.insertAdjacentHTML("beforeend",`<section id="canvasShare" aria-labelledby="shareTitle" hidden>
+  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<section id="canvasShare" aria-labelledby="shareTitle" hidden>
     <header><strong id="shareTitle">分享画布</strong><a href="/showcase" target="_blank" rel="noopener">成片展映</a><a href="/connect-agents" id="shareConnector" target="_blank" rel="noopener" hidden>连接外部助手</a><button type="button" id="shareClose" aria-label="收起分享">×</button></header>
     <div id="shareMode"></div>
     <div class="share-link"><input id="shareURL" aria-label="画布链接" readonly><button type="button" id="shareCopy">复制链接</button></div>
@@ -577,7 +577,7 @@ function initCanvasShare() {
   $("#shareShowcaseEntries").onclick = e=>{
     const button=e.target.closest("[data-withdraw]");
     if(!button)return;
-    if(button.textContent === "撤回") { button.textContent="确认撤回"; return; }
+    if(!button.dataset.confirmed) { button.dataset.confirmed="true";button.textContent=OneShotI18n.t("确认撤回"); return; }
     changeShowcase("DELETE",button.dataset.withdraw);
   };
   $("#shareTeam").onchange = e=>changeSharePermissions({shared:e.target.checked});

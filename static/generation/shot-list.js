@@ -262,7 +262,7 @@ function editShotAssets(dialog, notify) {
     refs.forEach((asset,index)=>{
       const row=document.createElement("li"), name=document.createElement("span"), remove=document.createElement("button");
       name.textContent=label(asset);
-      remove.type="button";remove.textContent="移除";remove.dataset.removeShotAsset="";
+      remove.type="button";remove.textContent=OneShotI18n.t("移除");remove.dataset.removeShotAsset="";
       remove.setAttribute("aria-label","移除 "+label(asset));
       remove.onclick=()=>{refs.splice(index,1);status.textContent="";draw();notify();search.focus();};
       row.append(name,remove);selected.append(row);
@@ -292,7 +292,7 @@ function editShotAssets(dialog, notify) {
             view.append(new Option("默认参考",""),...slots.map(slot=>new Option(CHARACTER_VIEWS[slot][0],slot)));
             row.append(view);
           }
-          add.type="button";add.textContent="添加";add.dataset.addShotAsset=asset.id;
+          add.type="button";add.textContent=OneShotI18n.t("添加");add.dataset.addShotAsset=asset.id;
           add.setAttribute("aria-label","添加 "+asset.name);
           add.onclick=()=>{
             const slot=view?.value||"", related=refs.filter(ref=>ref.id===asset.id);
@@ -484,14 +484,14 @@ function initShotList() {
   panel.id = "shotList";
   panel.hidden = true;
   panel.setAttribute("aria-labelledby","shotListTitle");
-  panel.innerHTML = `<header><h2 id="shotListTitle">镜头清单</h2><button class="pill" data-close>收起</button></header>
+  panel.innerHTML = OneShotI18n.html`<header><h2 id="shotListTitle">镜头清单</h2><button class="pill" data-close>收起</button></header>
     <div class="sl-controls"><select data-source aria-label="镜头来源"></select><button class="pill" data-reload>刷新</button>
     <button class="pill" data-add-shot hidden>新增镜头</button><button class="pill" data-sort-shots hidden aria-pressed="false">排序</button><button class="pill" data-run-range hidden>批量生成</button><button class="pill" data-film disabled>送入剪辑</button><button class="pill" data-draft>恢复剪辑</button></div>
     <div class="sl-film-range" hidden><label>从<select data-film-from aria-label="剪辑起始镜头"></select></label>
       <label>到<select data-film-to aria-label="剪辑结束镜头"></select></label><span role="status" data-film-count></span></div>
     <output aria-live="polite"></output><ol></ol>`;
   document.body.append(panel);
-  document.body.insertAdjacentHTML("beforeend",`<dialog id="shotContinuityReview" aria-labelledby="shotContinuityTitle">
+  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="shotContinuityReview" aria-labelledby="shotContinuityTitle">
     <header><h2 id="shotContinuityTitle"></h2><button type="button" data-close>关闭</button></header>
     <div class="shot-continuity-frames">
       <figure data-left-frame><figcaption>前一镜尾帧</figcaption><select aria-label="前一镜版本"></select>
@@ -758,7 +758,7 @@ function initShotList() {
         if(!sorting&&canvasCanEdit()&&!nodeLocked(target)){
           const edit=document.createElement("button");
           edit.type="button";edit.className="pill sl-edit-shot";edit.dataset.editShot=String(i);
-          edit.textContent="编辑";edit.setAttribute("aria-label",`编辑第 ${i+1} 镜`);
+          edit.textContent=OneShotI18n.t("编辑");edit.setAttribute("aria-label",`编辑第 ${i+1} 镜`);
           edit.onclick=()=>openShotEditor(target,target.data.shots.indexOf(shot),refresh);
           const media=document.createElement("button");
           media.type="button";media.className="pill sl-edit-shot";media.dataset.shotMedia=String(i);

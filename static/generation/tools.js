@@ -275,7 +275,7 @@ async function saveAsset(n, kind) {
 
 // ================================================================= video tools: 拉片, 看图填写, 拼接
 async function analyzeVideo(n) {
-  const v = curV(n); if (!v) return toast("还没有视频");
+  const v = curV(n); if (!v) return toast(OneShotI18n.t("还没有视频"));
   await withBusy(n, "拉片中：切镜头 + Qwen 分析", async () => {
     const r = await api("/api/analyze", { ref: v.ref });
     checkpoint();
@@ -537,7 +537,7 @@ async function useRenderedMotionTail(script,index) {
 function renderScript(n, body) {
   const d = n.data, shots = d.shots || [];
   if (!shots.length) {
-    body.innerHTML = `<div class="ph">${ico("script")}<div class="t">分镜脚本<br>选中后写剧情，连入角色 / 场景图片<br>由 Qwen 拆成一组镜头，再一键生成分镜图和视频</div></div>`;
+    body.innerHTML = OneShotI18n.html`<div class="ph">${ico("script")}<div class="t">分镜脚本<br>选中后写剧情，连入角色 / 场景图片<br>由 Qwen 拆成一组镜头，再一键生成分镜图和视频</div></div>`;
     return;
   }
   const total = shots.reduce((a, s) => a + (s.duration || 0), 0);
@@ -551,7 +551,7 @@ function renderScript(n, body) {
       ${s.dialogue.length ? `<div class="sd">${s.dialogue.map(esc).join("<br>")}</div>` : ""}
       ${links[i]?.img?`<span class="story-tail-status" data-script-tail-status="${i}" hidden></span>`:""}
       ${links[i]?`<div class="script-shot-actions">
-        ${canvasCanEdit()&&!nodeLocked(n)?`${i>0&&links[i].img?`<button type="button" data-script-tail="${i}" aria-label="第 ${i+1} 镜参考上一镜尾帧">参考上一镜尾帧</button>`:""}
+        ${canvasCanEdit()&&!nodeLocked(n)?`${i>0&&links[i].img?OneShotI18n.html`<button type="button" data-script-tail="${i}" aria-label="第 ${i+1} 镜参考上一镜尾帧">参考上一镜尾帧</button>`:""}
           <button type="button" data-script-run="${i}" aria-label="第 ${i+1} 镜生成计划">生成计划</button>`:""}
         ${i>0&&links[i-1]?`<button type="button" data-script-review="${i}" aria-label="对比镜头 ${i} 与镜头 ${i+1}">对比衔接</button>`:""}</div>`:""}</div>`).join("")}</div>`;
   $$("[data-script-shot],[data-script-tail],[data-script-run],[data-script-review]",body).forEach(button=>{

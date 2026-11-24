@@ -38,7 +38,7 @@ function media(parent, kind, id, name) {
 function showSnapshot(snapshot) {
   document.title = snapshot.name + " · OneShot";
   document.querySelector("h1").textContent = snapshot.name;
-  select("published").textContent = new Date(snapshot.created * 1000).toLocaleDateString();
+  select("published").textContent = new Date(snapshot.created * 1000).toLocaleDateString(OneShotI18n.locale);
   edges = snapshot.edges;
   for (const n of snapshot.nodes) {
     const card = document.createElement("article");
@@ -70,7 +70,7 @@ function showSnapshot(snapshot) {
   }
   const empty = select("emptyView");
   empty.hidden = !!snapshot.nodes.length;
-  if (!empty.hidden) empty.textContent = "发布时画布为空";
+  if (!empty.hidden) empty.textContent = OneShotI18n.t("发布时画布为空");
   select("copyBoard").disabled = moderation;
   select("explainBoard").disabled = moderation || !snapshot.nodes.length;
   fitView();
@@ -159,7 +159,7 @@ async function adoptSnapshot(explain) {
     const params=new URLSearchParams({board:board.id});
     if(board.session)params.set("session",board.session);
     location.assign("/?"+params);
-  } catch (error) { feedback.textContent=error.message; feedback.hidden=false; }
+  } catch (error) { feedback.textContent=OneShotI18n.t(error.message); feedback.hidden=false; }
   finally { copyButton.disabled=false; explainButton.disabled=wasDisabled; }
 }
 copyButton.onclick=()=>adoptSnapshot(false);
@@ -168,4 +168,4 @@ explainButton.onclick=()=>adoptSnapshot(true);
 fetch(source).then(async r=>{
   if(!r.ok)throw new Error(r.status===404?"分享链接已撤销或不存在":"暂时无法读取此画布");
   showSnapshot(await r.json());
-}).catch(error=>{select("emptyView").textContent=error.message;});
+}).catch(error=>{select("emptyView").textContent=OneShotI18n.t(error.message);});

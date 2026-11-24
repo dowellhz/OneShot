@@ -33,7 +33,7 @@ function setupTemplateForm(row=null, replace=false) {
 }
 
 function templateUseButtons() {
-  return `${canvasCanEdit() ? '<button type="button" data-template-action="insert">插入画布</button>' : ""}
+  return OneShotI18n.html`${canvasCanEdit() ? '<button type="button" data-template-action="insert">插入画布</button>' : ""}
     <button type="button" data-template-action="open">新建画布</button>`;
 }
 
@@ -54,7 +54,7 @@ function renderTemplateRows() {
       <button type="button" data-template-action="preview">预览</button>
       ${templateFavoriteButton(row)}
       ${WT.scope === "favorites" ? templateUseButtons() : ""}
-      ${WT.scope === "private" ? `${templateUseButtons()}
+      ${WT.scope === "private" ? OneShotI18n.html`${templateUseButtons()}
         <button type="button" data-template-action="rename">改名</button>
         ${templateCanSave()?'<button type="button" data-template-action="replace">更新内容</button>':""}
         <button type="button" data-template-action="history">版本历史</button>
@@ -136,7 +136,7 @@ async function showTemplateHistory(row) {
   const epoch=++WT.previewEpoch, panel=$("#templatePreview");
   const url=TEMPLATE_API+"/"+encodeURIComponent(row.id)+"/history";
   panel.hidden=false;
-  panel.innerHTML=`<header><strong>版本历史 · ${esc(row.name)}</strong><button type="button" data-template-action="back">关闭</button></header>
+  panel.innerHTML=OneShotI18n.html`<header><strong>版本历史 · ${esc(row.name)}</strong><button type="button" data-template-action="back">关闭</button></header>
     <div class="template-history" role="status">正在读取版本…</div>`;
   const history=$(".template-history",panel);
   try {
@@ -224,7 +224,7 @@ async function showTemplatePreview(row, inputs=null, prefill=null) {
       ["trim","裁剪自原片"],["capture","截帧"],["transcript","转写来源"],["audio_cut","音频剪辑来源"]]);
     const canPublish = !row.builtin && (WT.scope === "private" || row.owned);
     const canPlan = canvasCanEdit() && preview.nodes.some(n=>["image","video","audio"].includes(n.type));
-    panel.innerHTML = `
+    panel.innerHTML = OneShotI18n.html`
       <header><strong>${esc(preview.name)}</strong><button type="button" data-template-action="back">关闭预览</button></header>
       <div data-template="${esc(row.id)}">
         ${preview.description ? `<p class="template-description">${esc(preview.description)}</p>` : ""}
@@ -264,7 +264,7 @@ async function showTemplatePreview(row, inputs=null, prefill=null) {
     panel.querySelector("header button").focus();
   } catch (error) {
     if (epoch === WT.previewEpoch) {
-      panel.innerHTML = '<header><p role="status"></p><button type="button" data-template-action="back">关闭预览</button></header>';
+      panel.innerHTML = OneShotI18n.markup('<header><p role="status"></p><button type="button" data-template-action="back">关闭预览</button></header>');
       panel.querySelector("p").textContent = error.message;
     }
   }
@@ -303,7 +303,7 @@ async function templateChange(action) {
 }
 
 function initWorkflowTemplates() {
-  document.body.insertAdjacentHTML("beforeend",`<section id="workflowTemplates" aria-labelledby="templateHeading" hidden>
+  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<section id="workflowTemplates" aria-labelledby="templateHeading" hidden>
     <header><strong id="templateHeading">工作流模板</strong><button type="button" id="templateClose" aria-label="收起工作流模板">×</button></header>
     <div id="templateScopes" role="group" aria-label="模板范围">
       <button type="button" data-scope="presets" aria-pressed="true">内置工作流</button>
@@ -382,7 +382,7 @@ function initWorkflowTemplates() {
       $("#templateStatus").textContent="选好当前画布的保存范围，再更新原模板。";
       $("#templateName").focus();return;
     }
-    if(action==="delete" && button.textContent!=="确认删除"){button.textContent="确认删除";return;}
+    if(action==="delete" && !button.dataset.confirmed){button.dataset.confirmed="true";button.textContent=OneShotI18n.t("确认删除");return;}
     templateChange(async bid=>{
       if(action==="favorite"){
         const result=await boardRequest(url+"/favorite",row.favorite?"DELETE":"PUT");

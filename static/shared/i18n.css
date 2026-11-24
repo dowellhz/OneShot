@@ -1,0 +1,52 @@
+.interface-language {
+  align-items: center;
+  display: inline-flex;
+  gap: .5rem;
+  position: relative;
+}
+.interface-language select {
+  background: #222227;
+  border: 1px solid #494952;
+  border-radius: .5rem;
+  color: #ededf0;
+  color-scheme: dark;
+  font: inherit;
+  max-width: 100%;
+  padding: .4em .55em;
+}
+.interface-language--login {
+  float: right;
+  margin-left: .5rem;
+}
+.interface-language--public {
+  margin-inline-start: auto;
+}
+.interface-language [role="status"]:empty {
+  display: none;
+}
+.interface-language [role="status"] {
+  background: #222227;
+  border: 1px solid #494952;
+  border-radius: .5rem;
+  color: #ededf0;
+  font-size: .85rem;
+  inline-size: min(17rem, 65vw);
+  inset-block-start: calc(100% + .4rem);
+  inset-inline-end: 0;
+  padding: .6rem;
+  position: absolute;
+  white-space: normal;
+  z-index: 100;
+}
+
+@media (max-width: 800px) {
+  #tr:has([data-interface-language]) {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: calc(100vw - 28px);
+    top: 58px;
+  }
+  #projectCanvases {
+    top: 104px;
+  }
+}

@@ -85,7 +85,7 @@ function initImageEditor() {
   const host = document.createElement("section");
   host.id = "imageEditor";
   host.setAttribute("role", "dialog"); host.setAttribute("aria-modal", "false"); host.setAttribute("aria-label", "图像编辑浮动窗口");
-  host.innerHTML = `<header class="ie-top" title="拖动标题栏移动窗口，双击最大化或还原"><strong>图像编辑</strong><span class="ie-name"></span><span class="ie-meta"></span><span class="ie-spacer"></span>
+  host.innerHTML = OneShotI18n.html`<header class="ie-top" title="拖动标题栏移动窗口，双击最大化或还原"><strong>图像编辑</strong><span class="ie-name"></span><span class="ie-meta"></span><span class="ie-spacer"></span>
     <select id="ieDock" aria-label="窗口停靠"><option value="">浮动</option><option value="left">靠左</option><option value="right">靠右</option></select><button id="ieCompare" title="按住查看打开编辑器时的原图">对比原图</button><button id="ieCollapse" aria-expanded="true">收起</button><button id="ieMaximize" aria-pressed="false">最大化</button><button id="ieClose" aria-label="关闭图像编辑窗口" title="关闭窗口，生成任务会继续">关闭</button></header>
     <div class="ie-statusbar" hidden><div class="ie-status" role="status" aria-live="polite"><span id="ieStatusText"></span>
       <div id="ieProgress" class="ie-progress" role="progressbar" aria-label="图像编辑进度" aria-valuemin="0" aria-valuemax="100" hidden><i></i></div></div>

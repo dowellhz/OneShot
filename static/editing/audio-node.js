@@ -81,7 +81,7 @@ function renderSeedAudioRefs(n,prompt) {
     return `<span class="ref" title="${esc(title)}">${ico(ref.kind==="image"?"image":"audio")}
       ${ref.kind==="audio"?`<button type="button" data-seed-token="${index+1}" title="插入参考编号">@音频${index+1}</button>`:"参考图"}
       <span>${esc(title)}</span><button type="button" data-seed-remove="${index}" aria-label="移除${esc(title)}">×</button></span>`;
-  }).join("")+`<span class="pill">添加参考<select data-seed-pick aria-label="添加参考音频或图片" ${choices.length?"":"disabled"}>
+  }).join("")+OneShotI18n.html`<span class="pill">添加参考<select data-seed-pick aria-label="添加参考音频或图片" ${choices.length?"":"disabled"}>
     <option value="">选择画布版本</option>${choices.map(({source,index},i)=>
       `<option value="${i}">${esc(source.name)} · ${source.type==="audio"?"音频":"图片"} · 版本 ${index+1}</option>`).join("")}</select></span>
     <button type="button" data-seed-library ${canvasCanEdit()&&refs.length<3&&refs.every(ref=>ref.kind==="audio")?"":"disabled"}>从资产库添加音频</button>`;
@@ -238,7 +238,7 @@ function renderAudioPanel(n) {
     ${rates.length?`<span class="pill">${rate/1000} kHz<select data-audio-field="sample_rate" aria-label="音频采样率">
       ${options(rates.map(id=>({id,name:id/1000+" kHz"})),rate)}</select></span>`:""}
     ${CAPS_LIST.audio_effects?`<button type="button" class="pill" id="moreBtn" aria-controls="more">音高和音量</button>`:""}
-    <span class="grow"></span>${n.job?"":'<span class="est" data-generation-cost title="仅估算生成服务费用，实际费用以服务账单为准">正在估算费用…</span>'}<button id="send" class="${n.job?"stop":""}" title="${n.job?"取消音频任务":curV(n)?"重新生成":"生成音频"}" aria-label="${n.job?"取消音频任务":curV(n)?"重新生成":"生成音频"}" ${!available&&!n.job?"disabled":""}>${ico(n.job?"stop":"send")}</button>`;
+    <span class="grow"></span>${n.job?"":OneShotI18n.markup('<span class="est" data-generation-cost title="仅估算生成服务费用，实际费用以服务账单为准">正在估算费用…</span>')}<button id="send" class="${n.job?"stop":""}" title="${n.job?"取消音频任务":curV(n)?"重新生成":"生成音频"}" aria-label="${n.job?"取消音频任务":curV(n)?"重新生成":"生成音频"}" ${!available&&!n.job?"disabled":""}>${ico(n.job?"stop":"send")}</button>`;
   renderCanvasCost(n,$("[data-generation-cost]",panel));
   $$("[data-audio-mode]",panel).forEach(button=>button.onclick=()=>{
     if (button.dataset.audioMode===mode) return;

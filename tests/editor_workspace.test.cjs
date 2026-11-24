@@ -8,6 +8,8 @@ const drafts=new Map(),requests=[],jobs=new Map(),recipes=[];let serial=0,revisi
 const html=fs.readFileSync(path.join(root,'static/index.html'),'utf8');
 const dom=new JSDOM(html,{url:'http://oneshot.test/?board=btest',runScripts:'outside-only',pretendToBeVisual:true});
 const w=dom.window;
+const englishSmoke=process.argv.includes('--english');
+if(englishSmoke)w.localStorage.setItem('oneshot.language','en');
 w.structuredClone=structuredClone;
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const ctx=()=>({save(){},restore(){},translate(){},scale(){},clearRect(){},fillRect(){},fillText(){},strokeRect(){},roundRect(){},setLineDash(){},drawImage(){},beginPath(){},moveTo(){},lineTo(){},stroke(){},fill(){},arc(){},rect(){},clip(){},closePath(){},putImageData(){},getImageData(x,y,width,height){return{data:new Uint8ClampedArray(width*height*4).fill(255)};}});
@@ -193,6 +195,22 @@ async function run(){
   evaluate(script.src ? fs.readFileSync(staticFile(script.src), 'utf8') : script.textContent);
  }
  await ready('B?.nodes.length===3','board boot');
+ if(englishSmoke){
+  assert.equal(w.document.documentElement.lang,'en');
+  assert.equal(evaluate('$("#shareBtn").textContent'),'Share');
+  evaluate(`node("n1").data.prompt="保存"; sel=new Set(["n1"]); updateSel();`);
+  assert.equal(evaluate('$("#prompt").value'),'保存');
+  assert.equal(evaluate('$("#send").getAttribute("aria-label")'),'Regenerate');
+  assert.equal(evaluate('$("#ctl select[data-k=expand] option[value=false]").textContent'),'Prompt expansion off');
+  await evaluate('acOpen()');
+  assert.equal(evaluate('$("#agentChat .ac-head strong").textContent'),'Creative assistant');
+  assert.equal(evaluate('$("#acSend").textContent'),'Send');
+  await evaluate('alOpen()');
+  assert.equal(evaluate('$("#alNew").textContent'),'New asset');
+  assert.equal(evaluate('$("#alCategories [data-kind=world] span").textContent'),'Worldbuilding');
+  console.log('English workspace passed: canvas, generation controls, assistant, asset library and unmodified prompt.');
+  return;
+ }
  evaluate('$("#vp").dispatchEvent(new Event("pointerdown",{bubbles:true}));toggleQueue(true)');
  assert.equal(notificationRequests,0,'canvas interactions do not request browser notification permission');
  const enableNotifications=evaluate('$("#qp [data-enable-notifications]")');
@@ -1971,7 +1989,9 @@ async function run(){
    return {ok:true,json:async()=>url.endsWith('/auth/state')?{user:null}:
      {token:publicToken,title:"公开动图",author:"创作者",creator:"visitor",prompt:publicPrompt,media_kind:"gif"}};
   };
-  vm.runInContext(fs.readFileSync(path.join(root,'static/public/showcase.js'),'utf8'),watchDOM.getInternalVMContext());
+  const showcaseScripts=[...watch.document.querySelectorAll('script[src]')];
+  for(const script of showcaseScripts.filter(script=>!script.defer).concat(showcaseScripts.filter(script=>script.defer)))
+   vm.runInContext(fs.readFileSync(staticFile(script.src),'utf8'),watchDOM.getInternalVMContext());
   for(let i=0;i<30&&!watch.document.querySelector('.showcase-prompt');i++) await pause(10);
   const card=watch.document.querySelector('.showcase-prompt');
   assert.equal(watch.document.querySelector('.showcase-watch > img').getAttribute('src'),'/api/showcase/'+publicToken+'/gif');

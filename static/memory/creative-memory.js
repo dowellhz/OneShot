@@ -16,7 +16,7 @@ async function cmList(force=false) {
  return CM.items;
 }
 function cmInvalidate(){CM.board=null;CM.epoch++;libCache=null;cmFolderCache=null;}
-function cmKind(a){return KIND_CN[a.kind]||'资料';}
+function cmKind(a){return OneShotI18n.t(KIND_CN[a.kind]||'资料');}
 const CM_DOCUMENT_EXT = /\.(txt|md|markdown|csv|json|docx|pdf)$/i;
 function cmMediaType(ref, media) {
   if(media?.type==="audio" || /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i.test(ref))return "audio";
@@ -78,7 +78,7 @@ async function cmFolderOpen(ta,folder,start,end) {
  $('[data-cf-query]',dialog).value='';
  $('[data-cf-items]',dialog).replaceChildren();
  apply.disabled=true;
- status.textContent='正在读取文件夹…';
+ status.textContent=OneShotI18n.t('正在读取文件夹…');
  if(dialog.showModal)dialog.showModal();else dialog.setAttribute('open','');
  try{
   const response=await boardRequest('/api/asset-folders/references?'+new URLSearchParams({board:selection.bid,folder:folder.id}));
@@ -113,7 +113,7 @@ function cmFolderDraw() {
   const kind=document.createElement('small');kind.textContent=cmKind(item);
   label.append(name,kind);list.append(label);
  }
- if(!list.childElementCount&&S.items.length){const empty=document.createElement('p');empty.textContent='没有匹配的素材';list.append(empty);}
+ if(!list.childElementCount&&S.items.length){const empty=document.createElement('p');empty.textContent=OneShotI18n.t('没有匹配的素材');list.append(empty);}
  update();
 }
 
@@ -256,7 +256,7 @@ function cmInit(){
 async function cmRenderLibrary(kind){
  const bid=boardId,g=$('#agrid');try{const list=(await cmList(true)).filter(a=>a.kind===kind&&[a.name,a.desc,...(a.aliases||[]),...(a.tags||[])].join(' ').toLocaleLowerCase().includes(($('#memorySearch')?.value||'').toLocaleLowerCase()));if(bid!==boardId||afilter!==kind)return;
  g.replaceChildren();if(!list.length){g.innerHTML='<div class="h" style="grid-column:1/-1">暂无匹配记忆。新建记忆可添加设定、上传素材，或采用画布上的图片和视频。</div>';return;}
- for(const a of list){const card=document.createElement('div');card.className='as lib';card.draggable=!!a.ref;card.dataset.id=a.id;card.innerHTML=(a.ref?`<img src="/media?ref=${encodeURIComponent(a.ref)}" loading="lazy" alt="">`:'<div class="cm-doc">'+ico('script')+'</div>')+`<span class="ty">${esc(cmKind(a))}</span><button class="cm-detail" title="查看设定与参考版本" aria-label="查看${esc(a.name)}的记忆">${ico('more')}</button><div class="nm">${esc(a.name)}</div>`;card.ondragstart=e=>e.dataTransfer.setData('application/x-h3-lib',JSON.stringify(a));card.onclick=e=>{if(e.target.closest('.cm-detail')){cmEdit(a);return;}placeLibraryAsset(a,toW(innerWidth/2-150,innerHeight/2-180));};g.append(card);}
+ for(const a of list){const card=document.createElement('div');card.className='as lib';card.draggable=!!a.ref;card.dataset.id=a.id;card.innerHTML=(a.ref?`<img src="/media?ref=${encodeURIComponent(a.ref)}" loading="lazy" alt="">`:'<div class="cm-doc">'+ico('script')+'</div>')+OneShotI18n.html`<span class="ty">${esc(cmKind(a))}</span><button class="cm-detail" title="查看设定与参考版本" aria-label="查看${esc(a.name)}的记忆">${ico('more')}</button><div class="nm">${esc(a.name)}</div>`;card.ondragstart=e=>e.dataTransfer.setData('application/x-h3-lib',JSON.stringify(a));card.onclick=e=>{if(e.target.closest('.cm-detail')){cmEdit(a);return;}placeLibraryAsset(a,toW(innerWidth/2-150,innerHeight/2-180));};g.append(card);}
  }catch(e){g.textContent=e.message;}
 }
 
@@ -267,12 +267,12 @@ async function cmEdit(a=null, kind='character', options={}) {
   const projectOptions = [project, a?.project && canvasProjects.find(p => p.id === a.project && p.id !== project?.id)].filter(Boolean);
   cmClose(); CM.editor?.remove();
   const panel=document.createElement('section'); panel.id='memoryEditor'; panel.className='cm-editor'; panel.role='dialog';
-  panel.setAttribute('aria-modal','false'); panel.setAttribute('aria-label','资产详情');
-  panel.innerHTML=`<header><strong>${a?'编辑资产':'新建资产'}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>保存到<select name="board">${projectOptions.map(p=>`<option value="project:${esc(p.id)}">项目 · ${esc(p.name)}</option>`).join("")}<option value="">个人资产库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享给所有平台账号（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片、视频、音频或文档<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.txt,.md,.markdown,.csv,.json,.docx,.pdf"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
+  panel.setAttribute('aria-modal','false'); panel.setAttribute('aria-label',OneShotI18n.t('资产详情'));
+  panel.innerHTML=OneShotI18n.html`<header><strong>${OneShotI18n.t(a?'编辑资产':'新建资产')}</strong><button type="button" data-close aria-label="关闭资产详情">×</button></header><form><div class="cm-fields"><div class="cm-hero" hidden></div><label>名称<input name="name" required maxlength="80"></label><div class="cm-row"><label>分类<select name="kind">${Object.entries(KIND_CN).map(([k,v])=>`<option value="${k}">${OneShotI18n.t(v)}</option>`).join('')}</select></label><label>保存到<select name="board">${projectOptions.map(p=>`<option value="project:${esc(p.id)}">项目 · ${esc(p.name)}</option>`).join("")}<option value="">个人资产库</option></select></label></div><label>别名<input name="aliases" placeholder="用逗号分隔，支持 @别名"></label><label>标签<input name="tags" placeholder="如：主角、森林、夜景"></label><label>设定 / 背景资料<textarea name="desc" rows="5" maxlength="6000" placeholder="人物外观、场景背景、故事设定等"></textarea></label><label>使用约束<textarea name="constraints" rows="2" maxlength="6000" placeholder="如：眼镜和服装保持一致"></textarea></label><label class="cm-check"><input name="shared" type="checkbox">共享给所有平台账号（个人素材库范围）</label><div class="cm-row"><label class="cm-upload">上传图片、视频、音频或文档<input name="upload" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,.mp3,.wav,.m4a,.aac,.flac,.ogg,.txt,.md,.markdown,.csv,.json,.docx,.pdf"></label><button type="button" data-current>采用当前选中素材</button></div><div class="cm-help">参考素材保留多个版本；点击图片可指定默认参考。生成历史不会自动替换默认图。</div><div class="cm-media"></div><details class="cm-history"><summary>生成历史</summary><div></div></details><div class="cm-error" role="status"></div></div><footer><button type="button" data-delete ${a?'':'hidden'}>删除资产</button><button type="button" data-canvas>放入画布</button><button type="submit">保存资产</button></footer></form>`;
   if(host)host.replaceChildren(panel); else document.body.append(panel); CM.editor=panel;
   const character = document.createElement("section");
   character.className = "cm-character";
-  character.innerHTML = `<strong>标准角色图</strong><p>先生成并定稿主图，再补其他角度。</p><div class="cm-character-views"></div><details><summary>角色卡</summary><div class="cm-character-fields">${Object.entries(CHARACTER_FIELDS).map(([key,label]) => `<label>${label}<input name="character_${key}" maxlength="800"></label>`).join("")}</div></details>`;
+  character.innerHTML = OneShotI18n.html`<strong>标准角色图</strong><p>先生成并定稿主图，再补其他角度。</p><div class="cm-character-views"></div><details><summary>角色卡</summary><div class="cm-character-fields">${Object.entries(CHARACTER_FIELDS).map(([key,label]) => `<label>${label}<input name="character_${key}" maxlength="800"></label>`).join("")}</div></details>`;
   panel.querySelector(".cm-hero").after(character);
   const form=panel.querySelector('form'), field=name=>form.elements.namedItem(name);
   let data=a?acClone(a):{kind:options.kind||kind,...cmNewScope(),name:'',desc:'',constraints:'',aliases:[],tags:[],shared:false,media:[],default_ref:''};
@@ -287,7 +287,7 @@ async function cmEdit(a=null, kind='character', options={}) {
   let pending=options.preset?.pending||null, selectedRef=data.default_ref||data.ref||'', busy=false;
   let storyStates=acClone(data.story_states||[]);
   const storyBox=document.createElement("details");
-  storyBox.innerHTML=`<summary>用于剧本与视频</summary>
+  storyBox.innerHTML=OneShotI18n.html`<summary>用于剧本与视频</summary>
     <label class="cm-check"><input type="checkbox" name="story_draft">草稿，仅在明确引用时采用</label>
     <label data-world-scenes>适用场次<input name="story_scenes" placeholder="如：画市十七号、夜间仓库。留空适用整个项目"></label>
     <div data-character-states><p class="cm-help">按场次关键词指定角色的服装或状态，可从参考素材选图。</p>
@@ -314,7 +314,7 @@ async function cmEdit(a=null, kind='character', options={}) {
     const box=$("[data-state-rows]",storyBox); box.replaceChildren();
     for(const [index,state] of storyStates.entries()){
       const row=document.createElement("fieldset");
-      row.innerHTML=`<legend>场次状态 ${index+1}</legend>
+      row.innerHTML=OneShotI18n.html`<legend>场次状态 ${index+1}</legend>
         <label>场次关键词<input data-story="scene" maxlength="80"></label>
         <label>本场状态<textarea data-story="notes" rows="2" maxlength="1200"></textarea></label>
         <label>本场参考图<select data-story="ref"></select></label><button type="button" data-state-remove>移除此状态</button>`;
@@ -342,12 +342,12 @@ async function cmEdit(a=null, kind='character', options={}) {
   };
   const generationBox=document.createElement("details");
   generationBox.className="cm-generation-images";
-  generationBox.innerHTML='<summary>生成参考素材</summary><p class="cm-help">@资产 会采用选中的素材和资产正文。图片生成采用图片和文字。视频和音频参考需要支持全模态的视频服务。留空采用默认参考图。</p><ol></ol>';
+  generationBox.innerHTML=OneShotI18n.markup('<summary>生成参考素材</summary><p class="cm-help">@资产 会采用选中的素材和资产正文。图片生成采用图片和文字。视频和音频参考需要支持全模态的视频服务。留空采用默认参考图。</p><ol></ol>');
   $(".cm-media",panel).after(generationBox);
  let documentData=options.preset?.document||data.document||null, documentDirty=!!options.preset?.document;
   const docBox=document.createElement("details");
   docBox.className="cm-document";docBox.hidden=true;
-  docBox.innerHTML='<summary>文档正文</summary><pre></pre><button type="button">移除文档</button>';
+  docBox.innerHTML=OneShotI18n.markup('<summary>文档正文</summary><pre></pre><button type="button">移除文档</button>');
   field('desc').closest("label").after(docBox);
   function paintDocument(){
     docBox.hidden=!documentData;
@@ -386,7 +386,7 @@ async function cmEdit(a=null, kind='character', options={}) {
         const download = document.createElement("a");
         download.href = "/media?ref=" + encodeURIComponent(views[slot]);
         download.download = /\.jpe?g$/i.test(views[slot]) ? filename.replace(/\.png$/, ".jpg") : /\.webp$/i.test(views[slot]) ? filename.replace(/\.png$/, ".webp") : filename;
-        download.textContent = "下载";
+        download.textContent = OneShotI18n.t("下载");
         const preview = characterPreview(views[slot], label + "已定稿");
         row.append(preview, download, action("放入画布", () => {
           placeCharacterReference(data, media.ref);
@@ -454,7 +454,7 @@ async function cmEdit(a=null, kind='character', options={}) {
           candidate.className = "cm-character-candidate";
           const tag = document.createElement("small");
           tag.className = "cm-character-status";
-          tag.textContent = "待定稿";
+          tag.textContent = OneShotI18n.t("待定稿");
           candidate.append(characterPreview(candidateRef, label + "草稿"), tag, action("定稿", () => {
             if (busy) return;
             approvingView = {slot, version: {ref:candidateRef}, nodeId: draft?.ref === candidateRef ? undefined : legacy?.id, draftKey:key};
@@ -472,7 +472,7 @@ async function cmEdit(a=null, kind='character', options={}) {
     link.href = "/media?ref=" + encodeURIComponent(ref);
     link.target = "_blank";
     link.rel = "noopener";
-    link.title = "查看原图";
+    link.title = OneShotI18n.t("查看原图");
     const image = document.createElement("img");
     image.src = link.href;
     image.alt = label + "，点击查看原图";
@@ -563,13 +563,13 @@ async function cmEdit(a=null, kind='character', options={}) {
       const type=cmMediaType(lead,media.find(m=>m.ref===lead)), image=type==="image";
       const el=document.createElement(image?'img':type==="audio"?'audio':'video');
       el.src='/media?ref='+encodeURIComponent(lead);if(image)el.alt=data.name||'资产预览';else {el.controls=true;el.playsInline=true;el.preload='metadata';}
-      hero.append(el);if(image){const link=document.createElement('a');link.href=el.src;link.target='_blank';link.rel='noopener';link.textContent='查看原图';hero.append(link);}
+      hero.append(el);if(image){const link=document.createElement('a');link.href=el.src;link.target='_blank';link.rel='noopener';link.textContent=OneShotI18n.t('查看原图');hero.append(link);}
     }
     for(const m of media){
       const type=cmMediaType(m.ref,m), image=type==="image", b=document.createElement(image?'button':'div');if(image)b.type='button';
       b.className='cm-media-item'+(m.ref===selectedRef?' on':'');
       const url="/media?ref="+encodeURIComponent(m.ref);
-      b.innerHTML=image?`<img src="${url}" alt="参考图">`:type==="audio"?`<audio src="${url}" preload="none" controls></audio>`:`<video src="${url}" preload="metadata" controls playsinline></video>`;
+      b.innerHTML=image?OneShotI18n.html`<img src="${url}" alt="参考图">`:type==="audio"?`<audio src="${url}" preload="none" controls></audio>`:`<video src="${url}" preload="metadata" controls playsinline></video>`;
       const label=document.createElement('small');label.textContent=(m.ref===selectedRef?'默认参考 · ':'')+({upload:'用户上传',gen:'生成素材',generated:'生成素材',legacy:'原有素材'}[m.source]||'参考素材');b.append(label);
       if(image){b.setAttribute('aria-pressed',String(m.ref===selectedRef));b.onclick=()=>{if(!readonly&&!busy){selectedRef=m.ref;paint();}};}
       grid.append(b);
@@ -656,13 +656,13 @@ async function cmEdit(a=null, kind='character', options={}) {
         ...(pending && generationMedia.includes(pending.ref) ? [pending.ref] : [])])];
       storyStates=acClone(data.story_states||[]);
       selectedRef=data.default_ref||data.ref||"";cmInvalidate();paint();paintCharacter();paintStoryStates();status('已保存。可在提示词或对话中输入 @'+data.name+' 使用');
-      panel.querySelector('header strong').textContent='编辑资产';panel.querySelector('[data-delete]').hidden=false;
+      panel.querySelector('header strong').textContent=OneShotI18n.t('编辑资产');panel.querySelector('[data-delete]').hidden=false;
       if(typeof alChanged==='function')alChanged(data);if(KIND_CN[afilter])await cmRenderLibrary(afilter);
     }catch(e){status(e.message);}finally{setBusy(false);}
   };
   panel.querySelector('[data-delete]').onclick=async()=>{
     if(busy||readonly)return;const b=panel.querySelector('[data-delete]');
-    if(!b.dataset.armed){b.dataset.armed='1';b.textContent='再次点击删除';setTimeout(()=>{delete b.dataset.armed;b.textContent='删除资产';},3000);return;}
+    if(!b.dataset.armed){b.dataset.armed='1';b.textContent=OneShotI18n.t('再次点击删除');setTimeout(()=>{delete b.dataset.armed;b.textContent=OneShotI18n.t('删除资产');},3000);return;}
     setBusy(true);
     try{const r=await fetch('/api/memory/'+encodeURIComponent(data.id),{method:'DELETE'});if(!r.ok)throw new Error((await r.json()).error||'删除失败');unlinkDeletedAsset(data.id);cmInvalidate();panel.remove();if(CM.editor===panel)CM.editor=null;if(typeof alChanged==='function')alChanged(data,true);await loadAssets();}catch(e){status(e.message);}finally{setBusy(false);}
   };
@@ -672,7 +672,7 @@ async function cmEdit(a=null, kind='character', options={}) {
   };
   if(readonly){for(const el of panel.querySelectorAll('input,textarea,select'))el.disabled=true;panel.querySelector('[type=submit]').hidden=true;panel.querySelector('[data-delete]').hidden=true;panel.querySelector('[data-current]').hidden=true;status('共享资产可查看和引用，修改请由资产所有者操作');}else field('name').focus();
   if(a){
-    const history=panel.querySelector('.cm-history>div');history.textContent='正在读取生成历史…';
+    const history=panel.querySelector('.cm-history>div');history.textContent=OneShotI18n.t('正在读取生成历史…');
     try{
       const r=await fetch('/api/memory/'+encodeURIComponent(a.id)+'?board='+encodeURIComponent(initialBoard));if(!r.ok)throw new Error('读取生成历史失败');const detail=await r.json();if(!panel.isConnected)return;history.replaceChildren();
       if(!documentDirty && typeof detail.document?.text === "string"){data.document=documentData=detail.document;paintDocument();}
@@ -680,8 +680,8 @@ async function cmEdit(a=null, kind='character', options={}) {
       paintCharacter();
       for(const v of detail.history||[]){
         const tile=document.createElement('div');tile.className='cm-media-item';
-        tile.innerHTML=/\.(png|jpe?g|webp)$/i.test(v.ref)?`<img src="/media?ref=${encodeURIComponent(v.ref)}" alt="生成历史">`:`<video src="/media?ref=${encodeURIComponent(v.ref)}" preload="metadata" controls playsinline></video>`;
-        if(!readonly){const button=document.createElement('button');button.type='button';button.textContent='加入参考素材';button.onclick=()=>{if(busy)return;pending={ref:v.ref,source:'generated',source_board:v.board};paint();status('已选择生成历史，保存后加入参考；默认图保持不变');};tile.append(button);}history.append(tile);
+        tile.innerHTML=/\.(png|jpe?g|webp)$/i.test(v.ref)?OneShotI18n.html`<img src="/media?ref=${encodeURIComponent(v.ref)}" alt="生成历史">`:`<video src="/media?ref=${encodeURIComponent(v.ref)}" preload="metadata" controls playsinline></video>`;
+        if(!readonly){const button=document.createElement('button');button.type='button';button.textContent=OneShotI18n.t('加入参考素材');button.onclick=()=>{if(busy)return;pending={ref:v.ref,source:'generated',source_board:v.board};paint();status('已选择生成历史，保存后加入参考；默认图保持不变');};tile.append(button);}history.append(tile);
       }
       if(!history.children.length)history.textContent='还没有采用此资产的生成记录';
     }catch(e){history.textContent=e.message;}

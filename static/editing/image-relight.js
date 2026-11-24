@@ -12,7 +12,7 @@ const relightKelvin = temperature => 5600-temperature*(temperature>=0?31:39);
 const relightDepthLabel = depth => depth ? (depth>0?"前方 ":"后方 ")+Math.abs(depth)+"%" : "侧向";
 
 function relightHTML() {
-  return `<div class="ie-section" data-section="relight"><p class="ie-note">拖动图上的光源，调整方向和强度，再预览照片的明暗变化。</p>
+  return OneShotI18n.html`<div class="ie-section" data-section="relight"><p class="ie-note">拖动图上的光源，调整方向和强度，再预览照片的明暗变化。</p>
     ${relightControls.map(([id,label,min,max,value])=>`<label class="ie-label" for="ie${id}">${label}<output id="ie${id}Value">${value}</output></label>
       <input id="ie${id}" type="range" min="${min}" max="${max}" value="${value}">`).join("")}
     <div class="ie-row"><button type="button" id="ieResetLight">重置</button><button type="button" id="ieRelightAI">交给模型重打光</button></div>

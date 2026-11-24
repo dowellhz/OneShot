@@ -221,7 +221,7 @@ function ctRenderSelectionTools(){const box=$("#selectionTools");if(!box || !B)r
     if(generate)box.insertAdjacentHTML("afterbegin",`<button data-action="generate" aria-label="批量生成选中节点" data-tip="批量生成选中节点">${ico("motion")}</button>`);
     if(edit)box.insertAdjacentHTML("beforeend",`<button data-action="fold" aria-label="收起为一组" data-tip="收起为一组">${ico("stack")}</button>`);
     if(edit)box.insertAdjacentHTML("beforeend",`<button data-action="pin" aria-label="颜色标记" data-tip="颜色标记">${ico("tag")}</button>`);
-    if(collect)box.insertAdjacentHTML("beforeend",`<button data-action="collect" aria-label="收录到资产库" data-tip="收录到资产库">${ico("assets")}</button>`);
+    if(collect)box.insertAdjacentHTML("beforeend",OneShotI18n.html`<button data-action="collect" aria-label="收录到资产库" data-tip="收录到资产库">${ico("assets")}</button>`);
     if(playlist)box.insertAdjacentHTML("beforeend",`<button data-action="playlist" aria-label="创建播放列表" data-tip="创建播放列表">${ico("stack")}</button>`);
     $$("button",box).forEach(button=>{
       button.onclick=()=>{

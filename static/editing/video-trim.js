@@ -41,7 +41,7 @@ function openVideoTrim(source) {
       button.onclick=()=>{cuts=cuts.filter(point=>point!==cut);update();};
       return button;
     }));
-    submit.textContent=cuts.length?"生成 "+(cuts.length+1)+" 段视频":"生成裁剪视频";
+    submit.textContent=cuts.length?"生成 "+(cuts.length+1)+" 段视频":OneShotI18n.t("生成裁剪视频");
     status.textContent=message || (valid?seconds(last-first)+" 秒 · "+(cuts.length+1)+" 段":
       total?"请选择至少一帧且在原片范围内的区间。":"正在读取视频时长…");
   };

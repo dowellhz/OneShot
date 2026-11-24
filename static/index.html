@@ -7,6 +7,11 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
 <link rel="stylesheet" href="/static/shared/type.css?v=1">
 <link rel="stylesheet" href="/static/canvas/canvas.css?v=78">
+<link rel="stylesheet" href="/static/shared/i18n.css?v=1">
+<script src="/static/shared/locales/en-workspace.js?v=1"></script>
+<script src="/static/shared/locales/en-pages.js?v=1"></script>
+<script src="/static/shared/locales/en-workflows.js?v=1"></script>
+<script src="/static/shared/locales/en-canvas-actions.js?v=1"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
@@ -73,7 +78,7 @@
 </div>
 <nav class="float" id="projectCanvases" aria-label="项目画布" hidden></nav>
 <div class="menu" id="boards"></div>
-<div class="float" id="tr"><button id="shareBtn" type="button" aria-controls="canvasShare" aria-expanded="false">分享</button><button type="button" id="commentBtn" aria-controls="canvasComments" aria-expanded="false"><svg class="i"><use href="#i-comment"/></svg><span>评论</span></button><button id="shotListBtn" aria-controls="shotList" aria-expanded="false"><svg class="i"><use href="#i-script"/></svg><span>镜头</span></button><button id="assetLibraryBtn" aria-controls="assetLibrary" aria-expanded="false"><svg class="i"><use href="#i-assets"/></svg><span>资产库</span></button><span class="st"><span class="sd" id="sd"></span><span id="stt">连接中…</span></span></div>
+<div class="float" id="tr"><div class="interface-language"><select data-interface-language aria-label="界面语言"><option value="zh-CN" lang="zh-CN">中文</option><option value="en" lang="en">English</option></select><span data-language-status role="status"></span></div><button id="shareBtn" type="button" aria-controls="canvasShare" aria-expanded="false">分享</button><button type="button" id="commentBtn" aria-controls="canvasComments" aria-expanded="false"><svg class="i"><use href="#i-comment"/></svg><span>评论</span></button><button id="shotListBtn" aria-controls="shotList" aria-expanded="false"><svg class="i"><use href="#i-script"/></svg><span>镜头</span></button><button id="assetLibraryBtn" aria-controls="assetLibrary" aria-expanded="false"><svg class="i"><use href="#i-assets"/></svg><span>资产库</span></button><span class="st"><span class="sd" id="sd"></span><span id="stt">连接中…</span></span></div>
 
 <div class="float" id="lt">
   <button class="ib" id="toolPan" data-tip="抓手 H：拖空白处移动画布"><svg class="i"><use href="#i-hand"/></svg></button>
@@ -498,85 +503,86 @@
 </dialog>
 <input type="file" id="file" accept="image/*,video/*,audio/*,.ora,.mp4,.mov,.webm,.m4v,.mkv,.wav,.mp3,.m4a,.aac,.flac,.ogg,.txt,.md,.markdown,.csv,.json,.docx,.pdf" multiple hidden>
 
-<link rel="stylesheet" href="/static/editing/image-editor.css?v=10">
-<script src="/static/editing/image-relight.js?v=4"></script>
-<script src="/static/editing/image-camera.js?v=4"></script>
-<script src="/static/editing/image-pixel-size.js?v=1"></script>
-<script src="/static/editing/image-editor.js?v=19"></script>
-<script src="/static/editing/editor-workspace.js?v=18"></script>
-<script src="/static/canvas/canvas-alignment.js?v=1"></script>
 <section id="assetTransferPanel" aria-label="素材下载进度" hidden>
   <div><strong data-transfer-state role="status"></strong><button type="button" data-transfer-close aria-label="关闭下载进度">×</button></div>
   <p data-transfer-name></p>
   <progress aria-label="文件传输进度"></progress>
 </section>
 <iframe name="assetTransferDownload" title="素材下载" hidden></iframe>
-<script src="/static/canvas/canvas-groups.js?v=14"></script>
-<script src="/static/canvas/canvas-tools.js?v=14"></script>
-<script src="/static/canvas/video-tabs.js?v=47"></script>
+<link rel="stylesheet" href="/static/editing/image-editor.css?v=10">
+<script src="/static/shared/i18n.js?v=1"></script>
+<script src="/static/editing/image-relight.js?v=5"></script>
+<script src="/static/editing/image-camera.js?v=5"></script>
+<script src="/static/editing/image-pixel-size.js?v=1"></script>
+<script src="/static/editing/image-editor.js?v=20"></script>
+<script src="/static/editing/editor-workspace.js?v=19"></script>
+<script src="/static/canvas/canvas-alignment.js?v=1"></script>
+<script src="/static/canvas/canvas-groups.js?v=15"></script>
+<script src="/static/canvas/canvas-tools.js?v=15"></script>
+<script src="/static/canvas/video-tabs.js?v=48"></script>
 <link rel="stylesheet" href="/static/assistant/agent-chat.css?v=42">
 <link rel="stylesheet" href="/static/assistant/creative-skills.css?v=1">
 <script src="/static/vendor/marked.js?v=18.2.1"></script>
 <script src="/static/vendor/purify.min.js?v=3.4.18"></script>
-<script src="/static/assistant/agent-markdown.js?v=3"></script>
-<script src="/static/assistant/agent-voice.js?v=9"></script>
-<script src="/static/assistant/creative-skills.js?v=2"></script>
+<script src="/static/assistant/agent-markdown.js?v=4"></script>
+<script src="/static/assistant/agent-voice.js?v=10"></script>
+<script src="/static/assistant/creative-skills.js?v=3"></script>
 <script src="/static/assistant/creative-profile.js?v=1"></script>
-<script src="/static/assistant/agent-chat.js?v=127"></script>
+<script src="/static/assistant/agent-chat.js?v=128"></script>
 <script src="/static/canvas/canvas-conflicts.js?v=3"></script>
 <link rel="stylesheet" href="/static/canvas/canvas-document.css?v=3">
 <script src="/static/canvas/canvas-document.js?v=4"></script>
 <script src="/static/assistant/agent-editing.js?v=4"></script>
-<script src="/static/generation/tools.js?v=39"></script>
+<script src="/static/generation/tools.js?v=40"></script>
 <link rel="stylesheet" href="/static/memory/creative-memory.css?v=10">
 <script src="/static/memory/character-views.js?v=3"></script>
-<script src="/static/memory/creative-memory.js?v=34"></script>
+<script src="/static/memory/creative-memory.js?v=35"></script>
 <link rel="stylesheet" href="/static/memory/asset-library.css?v=8">
-<script src="/static/memory/asset-library.js?v=27"></script>
-<script src="/static/editing/film-titles.js?v=3"></script>
-<script src="/static/editing/film-cutaways.js?v=1"></script>
-<script src="/static/editing/film-playlists.js?v=4"></script>
-<script src="/static/editing/film.js?v=42"></script>
-<script src="/static/generation/wizard.js?v=14"></script>
-<script src="/static/canvas/settings.js?v=3t"></script>
-<script src="/static/console/account.js?v=10"></script>
+<script src="/static/memory/asset-library.js?v=28"></script>
+<script src="/static/editing/film-titles.js?v=4"></script>
+<script src="/static/editing/film-cutaways.js?v=2"></script>
+<script src="/static/editing/film-playlists.js?v=5"></script>
+<script src="/static/editing/film.js?v=43"></script>
+<script src="/static/generation/wizard.js?v=15"></script>
+<script src="/static/canvas/settings.js?v=4t"></script>
+<script src="/static/console/account.js?v=11"></script>
 <link rel="stylesheet" href="/static/editing/video-remake.css?v=11">
-<script src="/static/editing/video-remake.js?v=39"></script>
+<script src="/static/editing/video-remake.js?v=40"></script>
 <link rel="stylesheet" href="/static/generation/shot-list.css?v=12">
-<script src="/static/generation/shot-list.js?v=21"></script>
+<script src="/static/generation/shot-list.js?v=22"></script>
 <link rel="stylesheet" href="/static/canvas/node-search.css?v=3">
-<script src="/static/canvas/node-search.js?v=4"></script>
+<script src="/static/canvas/node-search.js?v=5"></script>
 <link rel="stylesheet" href="/static/canvas/canvas-comments.css?v=3">
-<script src="/static/canvas/canvas-comments.js?v=8"></script>
+<script src="/static/canvas/canvas-comments.js?v=9"></script>
 <link rel="stylesheet" href="/static/canvas/canvas-share.css?v=12">
-<script src="/static/canvas/canvas-share.js?v=12"></script>
+<script src="/static/canvas/canvas-share.js?v=13"></script>
 <script src="/static/canvas/canvas-live.js?v=3"></script>
 <script src="/static/canvas/canvas-review-region.js?v=1"></script>
 <link rel="stylesheet" href="/static/editing/image-panorama.css?v=1">
-<script src="/static/canvas/canvas.js?v=148"></script>
+<script src="/static/canvas/canvas.js?v=149"></script>
 <script src="/static/editing/image-panorama.js?v=1"></script>
-<script src="/static/generation/canvas-generation.js?v=59"></script>
-<script src="/static/generation/canvas-group-run.js?v=28"></script>
+<script src="/static/generation/canvas-generation.js?v=60"></script>
+<script src="/static/generation/canvas-group-run.js?v=29"></script>
 <script src="/static/generation/video-extension.js?v=5"></script>
-<script src="/static/editing/video-object.js?v=2"></script>
-<script src="/static/generation/video-drafts.js?v=9"></script>
-<script src="/static/editing/video-compare.js?v=3"></script>
-<script src="/static/editing/video-segment.js?v=7"></script>
-<script src="/static/editing/video-trim.js?v=1"></script>
-<script src="/static/editing/video-gif.js?v=3"></script>
-<script src="/static/editing/audio-node.js?v=14"></script>
+<script src="/static/editing/video-object.js?v=3"></script>
+<script src="/static/generation/video-drafts.js?v=10"></script>
+<script src="/static/editing/video-compare.js?v=4"></script>
+<script src="/static/editing/video-segment.js?v=8"></script>
+<script src="/static/editing/video-trim.js?v=2"></script>
+<script src="/static/editing/video-gif.js?v=4"></script>
+<script src="/static/editing/audio-node.js?v=15"></script>
 <script src="/static/editing/audio-transcript.js?v=4"></script>
-<script src="/static/editing/audio-separation.js?v=2"></script>
+<script src="/static/editing/audio-separation.js?v=3"></script>
 <link rel="stylesheet" href="/static/canvas/workflow-templates.css?v=8">
-<script src="/static/canvas/workflow-templates.js?v=14"></script>
+<script src="/static/canvas/workflow-templates.js?v=15"></script>
 <link rel="stylesheet" href="/static/canvas/workflow-review.css?v=1">
-<script src="/static/canvas/workflow-review.js?v=4"></script>
+<script src="/static/canvas/workflow-review.js?v=5"></script>
 <link rel="stylesheet" href="/static/editing/previs-editor.css?v=8">
 <script src="/static/editing/previs-render.js?v=6"></script>
 <script src="/static/editing/previs-glb.js?v=5"></script>
-<script src="/static/editing/previs-editor.js?v=15"></script>
-<script src="/static/canvas/canvas-projects.js?v=44"></script>
-<script src="/static/generation/generation-history.js?v=8"></script>
+<script src="/static/editing/previs-editor.js?v=16"></script>
+<script src="/static/canvas/canvas-projects.js?v=45"></script>
+<script src="/static/generation/generation-history.js?v=9"></script>
 <script src="/static/editing/broll.js?v=2"></script>
 <script src="/static/canvas/creative-apps.js?v=4"></script>
 </body>

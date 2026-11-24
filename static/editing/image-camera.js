@@ -41,7 +41,7 @@ function imageCameraFieldsHTML(prefix) {
   const sliders=[["Yaw","水平环绕",-180,180,1,45],["Pitch","俯仰",-60,60,1,0],["Distance","拍摄距离",-100,100,1,0]];
   return sliders.map(([id,label,min,max,step,value])=>`<label class="ie-label" for="${prefix+id}">${label}<output id="${prefix+id}V"></output></label>
     <input type="range" id="${prefix+id}" min="${min}" max="${max}" step="${step}" value="${value}">`).join("") +
-    `<div class="ie-padding"><label>景别<select id="${prefix}Framing"><option value="">保持不变</option>${["面部特写","近景","中景","全景","远景"].map(label=>`<option>${label}</option>`).join("")}</select></label>
+    OneShotI18n.html`<div class="ie-padding"><label>景别<select id="${prefix}Framing"><option value="">保持不变</option>${["面部特写","近景","中景","全景","远景"].map(label=>`<option>${label}</option>`).join("")}</select></label>
       <label>焦段<select id="${prefix}Lens">${cameraLensOptions.map(([mm,label])=>`<option value="${mm}"${mm===50?" selected":""}>${mm} mm · ${label}</option>`).join("")}</select></label></div>`;
 }
 
@@ -61,7 +61,7 @@ function openVideoOptics(n) {
   if(n.type!=="video"||!canvasCanEdit()||nodeLocked(n)||n.job||prepping.has(n.id)||node(n.id)!==n)return;
   const options={lens:{label:"焦段",options:cameraLensOptions.map(([mm,label])=>[mm,`${mm} mm · ${label}`])},...imageCameraOpticalFields};
   if(!$("#videoOptics")){
-    document.body.insertAdjacentHTML("beforeend",`<dialog id="videoOptics" aria-labelledby="videoOpticsTitle"><form>
+    document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="videoOptics" aria-labelledby="videoOpticsTitle"><form>
       <header><h2 id="videoOpticsTitle">视频镜头参数</h2><button type="button" data-close>关闭</button></header>
       <div class="ie-row">${videoOpticPresets.map(([name],i)=>`<button type="button" data-video-optics-preset="${i}">${name}</button>`).join("")}</div>
       <div class="ie-padding">${Object.entries(options).map(([key,{label,options:pairs}])=>`<label>${label}<select name="${key}">

@@ -368,7 +368,7 @@ function nodeVoiceRender(message) {
  const active = acVoiceActive;
  const recording = active?.target && active.phase === "recording";
  box.hidden = !acVoiceAvailable || !canvasCanEdit() || !nodeVoiceTarget(source);
- button.textContent = recording ? "停止录音" : "语音输入";
+ button.textContent = recording ? "停止录音" : OneShotI18n.t("语音输入");
  button.setAttribute("aria-pressed", String(!!recording));
  const busy = !!source?.job || !!source && prepping.has(source.id);
  button.disabled = busy || !!active && !recording;
@@ -551,7 +551,7 @@ function acVoiceInit() {
  const box = document.createElement("div");
  box.id = "acVoice";
  box.hidden = true;
- box.innerHTML = `<button type="button" id="acVoiceRecord" aria-pressed="false">录音</button>
+ box.innerHTML = OneShotI18n.html`<button type="button" id="acVoiceRecord" aria-pressed="false">录音</button>
   <button type="button" id="acVoiceUpload" title="将音频转写为草稿">音频</button>
   <label class="ac-voice-key">按住说话 <select id="acVoiceKey" aria-label="按住说话快捷键"></select></label>
   <button type="button" id="acVoiceCancel" title="取消录音或转写" hidden>取消</button>

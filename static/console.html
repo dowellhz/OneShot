@@ -121,6 +121,11 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 
 </style>
 <link rel="stylesheet" href="/static/console/console-projects.css?v=1">
+<link rel="stylesheet" href="/static/shared/i18n.css?v=1">
+<script src="/static/shared/locales/en-workspace.js?v=1"></script>
+<script src="/static/shared/locales/en-pages.js?v=1"></script>
+<script src="/static/shared/locales/en-workflows.js?v=1"></script>
+<script src="/static/shared/locales/en-canvas-actions.js?v=1"></script>
 </head>
 <body>
 <div class="app">
@@ -134,26 +139,37 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
     <a href="#members" data-p="members" class="admin"><svg class="i" viewBox="0 0 24 24"><circle cx="9" cy="9" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0M16 6.2a3 3 0 0 1 0 5.6M17.5 14.5a5 5 0 0 1 3 4.5"/></svg>成员</a>
     <div class="grow"></div>
     <a href="#account" data-p="account"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>我的账号</a>
+    <div class="interface-language"><select data-interface-language aria-label="界面语言"><option value="zh-CN" lang="zh-CN">中文</option><option value="en" lang="en">English</option></select><span data-language-status role="status"></span></div>
     <div class="me" id="me"></div>
   </nav>
   <main id="main"></main>
 </div>
 <div class="modal" id="modal"><div class="box" id="mbox"></div></div>
 <div class="toast" id="toast"></div>
-<script src="/static/console/console-projects.js?v=2"></script>
+<script src="/static/shared/i18n.js?v=1"></script>
+<script src="/static/console/console-projects.js?v=3"></script>
 <script>
 "use strict";
+const tr = OneShotI18n.t;
+OneShotI18n.beforeSwitch(() => !document.querySelector("#modal.on, .cap [data-save][style='']") && !document.querySelector("#o")?.value && !document.querySelector("#n")?.value);
 const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const toast = (m, ms = 2600) => { const t = $("#toast"); t.textContent = m; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), ms); };
+const toast = (m, ms = 2600) => { const t = $("#toast"); t.textContent = tr(m); t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), ms); };
 async function api(path, body, method) {
   const r = await fetch(path, { method: method || (body ? "POST" : "GET"), headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
   if (r.status === 401) { location.href = "/login?next=" + encodeURIComponent(location.pathname + location.hash); throw new Error("请先登录"); }
   const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = { error: t }; }
   if (!r.ok) throw new Error(j.error || r.statusText); return j;
 }
-const ago = t => { if (!t) return ""; const s = Date.now() / 1000 - t; return s < 60 ? "刚刚" : s < 3600 ? Math.round(s / 60) + " 分钟前" : s < 86400 ? Math.round(s / 3600) + " 小时前" : new Date(t * 1000).toLocaleDateString(); };
-const fmtS = s => s == null ? "" : s >= 90 ? (s / 60).toFixed(1) + " 分钟" : Math.round(s) + " 秒";
+const ago = t => {
+  if (!t) return "";
+  const seconds = Date.now() / 1000 - t;
+  if (seconds < 60) return tr("刚刚");
+  if (seconds < 3600) return tr("{count} 分钟前", {count:Math.round(seconds / 60)});
+  if (seconds < 86400) return tr("{count} 小时前", {count:Math.round(seconds / 3600)});
+  return new Date(t * 1000).toLocaleDateString(OneShotI18n.locale);
+};
+const fmtS = s => s == null ? "" : s >= 90 ? tr("{count} 分钟",{count:(s / 60).toFixed(1)}) : tr("{seconds} 秒",{seconds:Math.round(s)});
 const gb = b => (b / 1e9).toFixed(b > 1e11 ? 0 : 1) + " GB";
 const CAPN = { text: "文本", vision: "看图", image: "生图", video: "视频", tts: "配音", music: "配乐", sfx: "音效", seed_audio: "参考音频生成", asr: "语音转写", audio_separation: "人声分离", search: "网页搜索" };
 const modal = html => { $("#mbox").innerHTML = html; $("#modal").classList.add("on"); return $("#mbox"); };
@@ -166,26 +182,26 @@ async function pgTasks() {
   const all = ME.role === "admin" && localStorage.getItem("c.allt") === "1";
   const days = +(localStorage.getItem("c.days") || 7);
   const r = await api(`/api/tasks?days=${days}${all ? "&all=1" : ""}`);
-  const st = s => s === "done" ? `<span class="tag ok">完成</span>` : s === "error" ? `<span class="tag bad">失败</span>` : s === "running" ? `<span class="tag run">进行中</span>` : `<span class="tag">排队</span>`;
+  const st = s => s === "done" ? OneShotI18n.html`<span class="tag ok">完成</span>` : s === "error" ? OneShotI18n.html`<span class="tag bad">失败</span>` : s === "running" ? OneShotI18n.html`<span class="tag run">进行中</span>` : OneShotI18n.html`<span class="tag">排队</span>`;
   const n = r.tasks.length, ok = r.tasks.filter(t => t.state === "done").length, bad = r.tasks.filter(t => t.state === "error").length;
   const cost = r.totals.reduce((a, t) => a + (t.cost || 0), 0);
-  $("#main").innerHTML = `<h1>任务中心</h1><p class="lead">所有生成任务：用了哪个模型、花了多久、为什么失败。</p>
+  $("#main").innerHTML = OneShotI18n.html`<h1>任务中心</h1><p class="lead">所有生成任务：用了哪个模型、花了多久、为什么失败。</p>
     <div class="row" style="margin-bottom:14px">
-      <select class="in" id="days" style="width:auto">${[1, 7, 30, 90].map(d => `<option value="${d}" ${d === days ? "selected" : ""}>最近 ${d} 天</option>`).join("")}</select>
-      ${ME.role === "admin" ? `<label class="dim"><input type="checkbox" id="allt" ${all ? "checked" : ""}> 全部成员</label>` : ""}
+      <select class="in" id="days" style="width:auto">${[1, 7, 30, 90].map(d => `<option value="${d}" ${d === days ? "selected" : ""}>${tr("最近 {days} 天",{days:d})}</option>`).join("")}</select>
+      ${ME.role === "admin" ? OneShotI18n.html`<label class="dim"><input type="checkbox" id="allt" ${all ? "checked" : ""}> 全部成员</label>` : ""}
       <span class="grow"></span><button class="btn" id="rf">刷新</button></div>
     <div class="grid stats" style="margin-bottom:16px">
       <div class="card"><div class="dim">任务</div><div class="big">${n}</div></div>
       <div class="card"><div class="dim">成功 / 失败</div><div class="big"><span style="color:var(--success)">${ok}</span> / <span style="color:#ff8a8a">${bad}</span></div></div>
-      <div class="card"><div class="dim">按服务</div>${r.totals.slice(0, 5).map(t => `<div class="row" style="font-size:var(--fs-small)"><span>${esc(t.provider)} · ${CAPN[t.capability] || t.capability}</span><span class="grow"></span><span class="dim">${t.n} 次 · ${fmtS(t.secs)}</span></div>`).join("") || `<div class="faint">—</div>`}</div>
+      <div class="card"><div class="dim">按服务</div>${r.totals.slice(0, 5).map(t => `<div class="row" style="font-size:var(--fs-small)"><span>${esc(t.provider)} · ${tr(CAPN[t.capability] || t.capability)}</span><span class="grow"></span><span class="dim">${tr("{count} 次",{count:t.n})} · ${fmtS(t.secs)}</span></div>`).join("") || `<div class="faint">—</div>`}</div>
       <div class="card"><div class="dim">第三方费用（已记录的）</div><div class="big">${cost ? "¥" + cost.toFixed(2) : "—"}</div><div class="faint">本地 GPU 不计费</div></div>
     </div>
-    <div class="card" style="padding:4px 6px"><table><thead><tr><th>时间</th>${all ? "<th>成员</th>" : ""}<th>内容</th><th>类型</th><th>服务 / 模型</th><th>状态</th><th>耗时</th></tr></thead><tbody>
-    ${r.tasks.map(t => `<tr><td class="dim" title="${new Date(t.created * 1000).toLocaleString()}">${ago(t.created)}</td>${all ? `<td>${esc(t.user || "")}</td>` : ""}
-      <td>${t.board_id ? `<a href="/?board=${esc(t.board_id)}">${esc(t.label || "")}</a>` : esc(t.label || "")}${t.outputs?.length ? ` <a class="faint" href="/media?ref=${encodeURIComponent(t.outputs[0])}" target="_blank">查看</a>` : ""}</td>
-      <td>${CAPN[t.capability] || t.capability || ""}</td><td>${esc(t.provider || "")}<div class="faint">${esc(t.model || "")}</div></td>
-      <td>${st(t.state)}${t.error ? `<div class="faint" style="color:#ff9a9a;max-width:320px">${esc(t.error)}</div>` : ""}${t.eta ? `<div class="faint">还要约 ${fmtS(t.eta)}</div>` : ""}</td>
-      <td class="dim">${fmtS(t.seconds)}</td></tr>`).join("") || `<tr><td colspan="7" class="dim">这段时间没有任务</td></tr>`}</tbody></table></div>`;
+    <div class="card" style="padding:4px 6px"><table><thead><tr><th>时间</th>${all ? OneShotI18n.markup("<th>成员</th>") : ""}<th>内容</th><th>类型</th><th>服务 / 模型</th><th>状态</th><th>耗时</th></tr></thead><tbody>
+    ${r.tasks.map(t => `<tr><td class="dim" title="${new Date(t.created * 1000).toLocaleString(OneShotI18n.locale)}">${ago(t.created)}</td>${all ? `<td>${esc(t.user || "")}</td>` : ""}
+      <td>${t.board_id ? `<a href="/?board=${esc(t.board_id)}">${esc(t.label || "")}</a>` : esc(t.label || "")}${t.outputs?.length ? OneShotI18n.html` <a class="faint" href="/media?ref=${encodeURIComponent(t.outputs[0])}" target="_blank">查看</a>` : ""}</td>
+      <td>${tr(CAPN[t.capability] || t.capability || "")}</td><td>${esc(t.provider || "")}<div class="faint">${esc(t.model || "")}</div></td>
+      <td>${st(t.state)}${t.error ? `<div class="faint" style="color:#ff9a9a;max-width:320px">${esc(t.error)}</div>` : ""}${t.eta ? OneShotI18n.html`<div class="faint">还要约 ${fmtS(t.eta)}</div>` : ""}</td>
+      <td class="dim">${fmtS(t.seconds)}</td></tr>`).join("") || OneShotI18n.html`<tr><td colspan="7" class="dim">这段时间没有任务</td></tr>`}</tbody></table></div>`;
   $("#days").onchange = e => { localStorage.setItem("c.days", e.target.value); pgTasks(); };
   $("#allt")?.addEventListener("change", e => { localStorage.setItem("c.allt", e.target.checked ? "1" : "0"); pgTasks(); });
   $("#rf").onclick = pgTasks;
@@ -199,19 +215,19 @@ async function pgServices() {
   const P = Object.fromEntries(SV.providers.map(p => [p.id, p]));
   const capCards = Object.entries(SV.caps).map(([cap, label]) => {
     const rts = SV.routes[cap] || [], opts = SV.providers.filter(p => p.enabled && p.caps.includes(cap));
-    return `<div class="card cap" data-cap="${cap}"><div class="hd"><b>${CAPN[cap]}</b><span class="dim" style="font-size:var(--fs-small)">${esc(label.replace(/^[^（]+/, ""))}</span></div>
-      ${rts.map((r, i) => `<div class="rt" data-i="${i}"><span class="no">${i ? "备" + i : "默认"}</span>
+    return OneShotI18n.html`<div class="card cap" data-cap="${cap}"><div class="hd"><b>${tr(CAPN[cap])}</b><span class="dim" style="font-size:var(--fs-small)">${esc(label.replace(/^[^（]+/, ""))}</span></div>
+      ${rts.map((r, i) => OneShotI18n.html`<div class="rt" data-i="${i}"><span class="no">${i ? "备" + i : "默认"}</span>
           <select class="in" data-k="provider_id">${opts.map(p => `<option value="${p.id}" ${p.id === r.provider_id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
           <input class="in" data-k="model" value="${esc(r.model || "")}" placeholder="模型" list="m_${cap}_${i}"><datalist id="m_${cap}_${i}">${(SV.catalog[P[r.provider_id]?.kind]?.models?.[cap] || []).map(m => `<option value="${m}">`).join("")}</datalist>
-          <button class="x" data-x="${i}" title="移除">×</button></div>`).join("") || `<div class="faint">还没有设置，用到这项功能时会报错</div>`}
+          <button class="x" data-x="${i}" title="移除">×</button></div>`).join("") || OneShotI18n.html`<div class="faint">还没有设置，用到这项功能时会报错</div>`}
       <div class="row" style="margin-top:6px">${opts.length > rts.length ? `<button class="btn sm" data-add>${rts.length ? "＋ 备用" : "＋ 设置默认"}</button>` : ""}<span class="faint">${rts.length > 1 && ["text","vision","asr"].includes(cap) ? "默认失败时依次尝试备用" : ""}</span><span class="grow"></span><button class="btn sm pri" data-save style="display:none">保存</button></div></div>`;
   }).join("");
-  const provCards = SV.providers.map(p => `<div class="card prov"><div><b>${esc(p.name)}</b> ${p.group === "local" ? `<span class="tag loc">本地</span>` : ""}${!p.enabled ? `<span class="tag bad">已停用</span>` : ""}
+  const provCards = SV.providers.map(p => `<div class="card prov"><div><b>${esc(p.name)}</b> ${p.group === "local" ? OneShotI18n.html`<span class="tag loc">本地</span>` : ""}${!p.enabled ? OneShotI18n.html`<span class="tag bad">已停用</span>` : ""}
       <div class="faint">${esc(p.label || "")}${p.config.base_url ? " · " + esc(p.config.base_url) : ""}${p.config.region ? " · " + esc(p.config.region) : ""}${Object.entries(p.secrets).map(([k, v]) => ` · ${k}: ${esc(v)}`).join("")}</div>
-      <div class="caps2">${p.caps.map(c => `<span class="tag">${CAPN[c]}</span>`).join("")}</div></div>
-      <div class="row">${!p.enabled || !p.caps.includes("text") ? "" : (SV.routes.text || [])[0]?.provider_id === p.id ? `<span class="tag" style="background:#242429;color:#d6d6dc">✓ 正在用作文本模型</span>` : `<button class="btn sm pri" data-uselm="${p.id}">设为文本模型</button>`}
-      ${p.group === "local" ? `<span class="faint">在「本地部署」里管理</span>` : `<button class="btn sm" data-test="${p.id}">测试</button><button class="btn sm" data-edit="${p.id}">编辑</button>`}</div></div>`).join("");
-  $("#main").innerHTML = `<h1>模型与服务</h1><p class="lead">每项能力用哪个模型：本地 4090，或者第三方 API。画布上的每个节点也可以单独选。</p>
+      <div class="caps2">${p.caps.map(c => `<span class="tag">${tr(CAPN[c])}</span>`).join("")}</div></div>
+      <div class="row">${!p.enabled || !p.caps.includes("text") ? "" : (SV.routes.text || [])[0]?.provider_id === p.id ? OneShotI18n.html`<span class="tag" style="background:#242429;color:#d6d6dc">✓ 正在用作文本模型</span>` : OneShotI18n.html`<button class="btn sm pri" data-uselm="${p.id}">设为文本模型</button>`}
+      ${p.group === "local" ? OneShotI18n.html`<span class="faint">在「本地部署」里管理</span>` : OneShotI18n.html`<button class="btn sm" data-test="${p.id}">测试</button><button class="btn sm" data-edit="${p.id}">编辑</button>`}</div></div>`).join("");
+  $("#main").innerHTML = OneShotI18n.html`<h1>模型与服务</h1><p class="lead">每项能力用哪个模型：本地 4090，或者第三方 API。画布上的每个节点也可以单独选。</p>
     <h2>能力路由</h2><div class="grid caps">${capCards}</div>
     <div class="row" style="margin:26px 0 10px"><h2 style="margin:0">已接入的服务</h2><span class="grow"></span><button class="btn grad" id="addp">＋ 接入第三方 API</button></div>
     <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(420px,1fr))">${provCards}</div>`;
@@ -228,13 +244,13 @@ async function pgServices() {
       it.push({ provider_id: pr.id, model: (pr.config.models || {})[cap] || SV.catalog[pr.kind]?.models?.[cap]?.[0] || "" });
       await api("/api/admin/routes/" + cap, { items: it }, "PUT"); pgServices();
     });
-    $("[data-save]", card).onclick = async () => { await api("/api/admin/routes/" + cap, { items: items() }, "PUT"); toast(`已保存「${CAPN[cap]}」`); pgServices(); };
+    $("[data-save]", card).onclick = async () => { await api("/api/admin/routes/" + cap, { items: items() }, "PUT"); toast(`已保存「${tr(CAPN[cap])}」`); pgServices(); };
   });
   $$("[data-test]").forEach(b => b.onclick = async () => {
-    b.disabled = true; b.textContent = "测试中…";
+    b.disabled = true; b.textContent = OneShotI18n.t("测试中…");
     try { const r = await api(`/api/admin/providers/${b.dataset.test}/test`, {}); toast("✓ " + r.detail, 4000); }
     catch (e) { toast("✗ " + e.message, 6000); }
-    b.disabled = false; b.textContent = "测试";
+    b.disabled = false; b.textContent = OneShotI18n.t("测试");
   });
   $$("[data-edit]").forEach(b => b.onclick = () => editProvider(P[b.dataset.edit]));
   $$("[data-uselm]").forEach(b => b.onclick = async () => {
@@ -242,28 +258,28 @@ async function pgServices() {
     catch (e) { toast("✗ " + e.message, 6000); }
   });
   $("#addp").onclick = () => {
-    const box = modal(`<h3>接入第三方 API</h3><div class="grid catalog">${Object.entries(SV.catalog).filter(([, c]) => c.group !== "local").map(([k, c]) => `<div class="ci" data-k="${k}"><b>${esc(c.label)}</b>
-        <div class="row" style="margin:4px 0">${c.caps.map(x => `<span class="tag">${CAPN[x]}</span>`).join("")}</div><div class="faint">${esc(c.desc || "")}</div></div>`).join("")}</div>
+    const box = modal(OneShotI18n.html`<h3>接入第三方 API</h3><div class="grid catalog">${Object.entries(SV.catalog).filter(([, c]) => c.group !== "local").map(([k, c]) => `<div class="ci" data-k="${k}"><b>${esc(c.label)}</b>
+        <div class="row" style="margin:4px 0">${c.caps.map(x => `<span class="tag">${tr(CAPN[x])}</span>`).join("")}</div><div class="faint">${esc(c.desc || "")}</div></div>`).join("")}</div>
       <div class="row" style="margin-top:14px"><span class="grow"></span><button class="btn" onclick="closeModal()">取消</button></div>`);
     $$(".ci", box).forEach(c => c.onclick = () => editProvider({ kind: c.dataset.k, name: SV.catalog[c.dataset.k].label.replace(/（.*/, ""), config: {}, secrets: {}, enabled: true }));
   };
 }
 function editProvider(p) {
   const cat = SV.catalog[p.kind], isNew = !p.id;
-  const box = modal(`<h3>${isNew ? "接入" : "编辑"} · ${esc(cat.label)}</h3><p class="faint" style="margin-top:-6px">${esc(cat.desc || "")}</p>
+  const box = modal(OneShotI18n.html`<h3>${isNew ? "接入" : "编辑"} · ${esc(cat.label)}</h3><p class="faint" style="margin-top:-6px">${esc(cat.desc || "")}</p>
     <label class="f">名称<input class="in" id="pn" value="${esc(p.name || "")}"></label>
     ${cat.fields.map(f => `<label class="f">${esc(f.t)}${f.options ? `<select class="in" data-f="${f.k}">${Object.entries(f.options).map(([a, t]) => `<option value="${a}" ${(p.config[f.k] ?? f.default) === a ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>`
       : `<input class="in" data-f="${f.k}" ${f.secret ? `type="password" autocomplete="off" data-secret="1" placeholder="${p.secrets?.[f.k] ? "已保存（" + esc(p.secrets[f.k]) + "），留空不修改" : esc(f.hint || "")}"` : `value="${esc(p.config[f.k] ?? f.default ?? "")}" placeholder="${esc(f.hint || "")}"`}>`}</label>`).join("")}
     <div class="faint" style="margin:12px 0 4px">每项能力默认用的模型（可以填官方的新模型名）</div>
-    ${cat.caps.map(c => `<label class="f">${CAPN[c]}<input class="in" data-m="${c}" list="pm_${c}" value="${esc((p.config.models || {})[c] || cat.models[c]?.[0] || "")}"><datalist id="pm_${c}">${(cat.models[c] || []).map(m => `<option value="${m}">`).join("")}</datalist></label>`).join("")}
+    ${cat.caps.map(c => `<label class="f">${tr(CAPN[c])}<input class="in" data-m="${c}" list="pm_${c}" value="${esc((p.config.models || {})[c] || cat.models[c]?.[0] || "")}"><datalist id="pm_${c}">${(cat.models[c] || []).map(m => `<option value="${m}">`).join("")}</datalist></label>`).join("")}
     ${p.kind==="ark"?`<label class="f">Seedance 接入点对应型号
       <textarea class="in" id="videoEndpointModels" rows="3" maxlength="8000" placeholder="ep-example seedance-2.5">${esc(Object.entries(p.config.video_endpoint_models || {}).map(([id,model])=>id+" "+model).join("\n"))}</textarea>
       <span class="faint">使用接入点 ID 时，每行填一组 ID 和型号，例如 ep-example seedance-2.5。可填 seedance-2.0、seedance-2.0-fast、seedance-2.0-mini、seedance-2.5、seedance-2.5-flash。</span></label>`:""}
-    ${cat.caps.some(c=>["image","video"].includes(c))?`<label class="f">生成费用参考（人民币）
+    ${cat.caps.some(c=>["image","video"].includes(c))?OneShotI18n.html`<label class="f">生成费用参考（人民币）
       <textarea class="in" id="generationRates" rows="3" maxlength="8000">${esc(Object.entries(p.config.generation_rates || {}).map(([key,value])=>key+" "+value).join("\n"))}</textarea>
       <span class="faint">每行一项。图片填 image 模型名 每张费用。视频填 video 模型名 档位 每秒费用，档位为 std、hd、480p 或 4k。${p.kind==="minimax"?" 云端 H3 可用相同格式增填 video-input（每秒参考视频）、video-image（每张超额参考图）和 video-ref（MG 参考模式每秒成片）。":""} 单价未知时留空。</span></label>`:""}
     <label class="f">状态<select class="in" id="pe"><option value="1" ${p.enabled ? "selected" : ""}>启用</option><option value="0" ${!p.enabled ? "selected" : ""}>停用</option></select></label>
-    <div class="row" style="margin-top:16px">${isNew ? "" : `<button class="btn danger" id="pdel">删除</button>`}<span class="grow"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn pri" id="psave">保存并测试</button></div>
+    <div class="row" style="margin-top:16px">${isNew ? "" : OneShotI18n.html`<button class="btn danger" id="pdel">删除</button>`}<span class="grow"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn pri" id="psave">保存并测试</button></div>
     <div class="faint" id="pmsg" style="margin-top:8px"></div>`);
   $("#psave", box).onclick = async () => {
     const config = { models: {} }, secrets = {};
@@ -275,59 +291,59 @@ function editProvider(p) {
     $$("[data-m]", box).forEach(i => i.value.trim() && (config.models[i.dataset.m] = i.value.trim()));
     try {
       const r = await api("/api/admin/providers", { id: p.id, kind: p.kind, name: $("#pn", box).value, config, secrets, enabled: $("#pe", box).value === "1" });
-      $("#pmsg", box).textContent = "已保存，测试中…";
+      $("#pmsg", box).textContent = OneShotI18n.t("已保存，测试中…");
       try { const t = await api(`/api/admin/providers/${r.id}/test`, {}); toast("✓ 已保存 · " + t.detail, 4500); closeModal(); }
-      catch (e) { $("#pmsg", box).innerHTML = `<span style="color:#ff8a8a">已保存，但测试失败：${esc(e.message)}</span>`; p.id = r.id; }
+      catch (e) { $("#pmsg", box).innerHTML = OneShotI18n.html`<span style="color:#ff8a8a">已保存，但测试失败：${esc(e.message)}</span>`; p.id = r.id; }
       pgServices();
     } catch (e) { $("#pmsg", box).innerHTML = `<span style="color:#ff8a8a">${esc(e.message)}</span>`; }
   };
   $("#pdel", box)?.addEventListener("click", async e => {
-    if (!e.target.classList.contains("arm")) { e.target.classList.add("arm"); e.target.textContent = "确定删除？"; return; }
-    await api("/api/admin/providers/" + p.id, null, "DELETE"); closeModal(); toast("已删除"); pgServices();
+    if (!e.target.classList.contains("arm")) { e.target.classList.add("arm"); e.target.textContent = OneShotI18n.t("确定删除？"); return; }
+    await api("/api/admin/providers/" + p.id, null, "DELETE"); closeModal(); toast(OneShotI18n.t("已删除")); pgServices();
   });
 }
 
 // ============================================================ local deployment
 async function pgLocal() {
   const L = await api("/api/admin/local"), g = L.gpu, s = L.services;
-  const svc = (name, desc, state, acts) => `<div class="svc"><div><b>${name}</b> ${state}<div class="faint">${desc}</div></div><div class="row">${acts || ""}</div></div>`;
+  const svc = (name, desc, state, acts) => `<div class="svc"><div><b>${tr(name)}</b> ${state}<div class="faint">${desc}</div></div><div class="row">${acts || ""}</div></div>`;
   const mode = s.engine.running ? "h3" : s.deepseek.running ? "ds" : "none";
-  $("#main").innerHTML = `<h1>本地部署</h1><p class="lead">这台 RTX 4090 上运行的模型和服务。</p>
+  $("#main").innerHTML = OneShotI18n.html`<h1>本地部署</h1><p class="lead">这台 RTX 4090 上运行的模型和服务。</p>
     <div class="grid stats">
       <div class="card"><div class="dim">${esc(g.name || "GPU")}</div><div class="big">${g.mem_used != null ? (g.mem_used / 1024).toFixed(1) + " / " + (g.mem_total / 1024).toFixed(0) + " GB" : "—"}</div>
         <div class="meter"><i style="width:${g.mem_total ? g.mem_used / g.mem_total * 100 : 0}%"></i></div><div class="faint" style="margin-top:6px">利用率 ${g.util ?? "—"}% · ${g.temp ?? "—"}°C · ${g.power ?? "—"} W</div></div>
       <div class="card"><div class="dim">内存</div><div class="big">${((L.mem.total - L.mem.available) / 1024).toFixed(0)} / ${(L.mem.total / 1024).toFixed(0)} GB</div>
         <div class="meter"><i style="width:${(1 - L.mem.available / L.mem.total) * 100}%"></i></div><div class="faint" style="margin-top:6px">H3 的权重在内存和显存之间流式加载</div></div>
-      ${L.disks.map(d => `<div class="card"><div class="dim">磁盘 ${d.path}</div><div class="big">${gb(d.free)} 可用</div><div class="meter"><i style="width:${(1 - d.free / d.total) * 100}%;background:${d.free / d.total < .1 ? "var(--red)" : "var(--blue)"}"></i></div><div class="faint" style="margin-top:6px">共 ${gb(d.total)}</div></div>`).join("")}
+      ${L.disks.map(d => OneShotI18n.html`<div class="card"><div class="dim">磁盘 ${d.path}</div><div class="big">${gb(d.free)} 可用</div><div class="meter"><i style="width:${(1 - d.free / d.total) * 100}%;background:${d.free / d.total < .1 ? "var(--red)" : "var(--blue)"}"></i></div><div class="faint" style="margin-top:6px">共 ${gb(d.total)}</div></div>`).join("")}
     </div>
     ${g.procs?.length ? `<div class="faint" style="margin-top:8px">占用显存：${g.procs.map(p => `${esc(p.what)} ${(p.mem / 1024).toFixed(1)} GB`).join(" · ")}</div>` : ""}
     <h2>显卡用途</h2>
-    <div class="card"><div class="row"><div class="grow"><b>${mode === "h3" ? "H3 创作（当前）" : mode === "ds" ? "DeepSeek 网页（当前）" : "空闲"}</b>
+    <div class="card"><div class="row"><div class="grow"><b>${tr(mode === "h3" ? "H3 创作（当前）" : mode === "ds" ? "DeepSeek 网页（当前）" : "空闲")}</b>
       <div class="faint">H3 视频引擎和 DeepSeek 网页都要占满这块 4090 和大部分内存，只能二选一。切换时正在跑的任务会被中断。</div></div>
-      ${mode !== "h3" ? `<button class="btn pri" data-act="engine-start">切换到 H3 创作</button>` : ""}${mode !== "ds" ? `<button class="btn" data-act="to-deepseek">切换到 DeepSeek 网页</button>` : ""}</div>
+      ${mode !== "h3" ? OneShotI18n.html`<button class="btn pri" data-act="engine-start">切换到 H3 创作</button>` : ""}${mode !== "ds" ? OneShotI18n.html`<button class="btn" data-act="to-deepseek">切换到 DeepSeek 网页</button>` : ""}</div>
       ${L.busy.action ? `<div class="faint" style="margin-top:8px;color:var(--yellow)">⏳ ${esc(L.busy.action)}…（${Math.round(Date.now() / 1000 - L.busy.since)} 秒）</div>` : L.busy.log ? `<pre class="faint" style="white-space:pre-wrap;margin:8px 0 0">${esc(L.busy.log.slice(-400))}</pre>` : ""}</div>
     <h2>服务</h2>
     <div class="card">
-      ${svc("H3 引擎", `完整 MiniMax-H3（31B）视频 + H3-Image 生图，自研引擎（Diffusers），只在本机 127.0.0.1 上监听${s.engine.loaded?.task ? ` · 已加载：${s.engine.loaded.task === "image" ? "H3-Image" : s.engine.loaded.task === "ref2va" ? "参考图视频模型" : "首帧 / 文生视频模型"}` : ""}${s.engine.image_ready === false ? " · H3-Image 权重下载中" : ""}`,
-        s.engine.running ? (s.engine.ready ? `<span class="tag ok">运行中</span>${s.engine.busy ? ` <span class="tag run">生成中</span>` : ""}${s.engine.queue ? ` <span class="tag run">队列 ${s.engine.queue}</span>` : ""}` : `<span class="tag run">${esc(s.engine.loading || "启动中")}</span>`) + (s.engine.error ? ` <span class="tag bad">${esc(s.engine.error)}</span>` : "") : `<span class="tag bad">未运行</span>`,
-        s.engine.running ? `<button class="btn sm" data-act="free-vram" title="卸载已加载的大模型，释放约 62 GB 内存（下次生成会重新加载，约 1 分钟）">卸载模型</button><button class="btn sm danger" data-act="engine-stop">停止</button>` : `<button class="btn sm pri" data-act="engine-start">启动</button>`)}
-      ${L.services.comfy_old ? svc("旧 ComfyUI", "已不再需要；启动 H3 引擎时会自动停掉它", `<span class="tag">运行中</span>`, `<button class="btn sm" data-act="comfy-stop">停止</button>`) : ""}
-      ${svc("Qwen3.5-9B 提示词模型", "改写、写剧本、看图（文本和看图路由到本地时使用）。按需启动，5 分钟没用自动停止", s.qwen.running ? `<span class="tag ok">运行中 · ${esc(s.qwen.device)}</span>` : s.qwen.installed ? `<span class="tag">待命</span>` : `<span class="tag bad">未安装</span>`,
-        s.qwen.running ? `<button class="btn sm" data-act="qwen-stop">停止</button>` : "")}
-      ${svc("Kokoro 配音", "CPU 运行，不占显卡。10 分钟没用自动停止", s.kokoro.running ? `<span class="tag ok">运行中</span>` : s.kokoro.installed ? `<span class="tag">待命</span>` : `<span class="tag bad">未安装</span>`,
-        s.kokoro.running ? `<button class="btn sm" data-act="kokoro-stop">停止</button>` : "")}
-      ${svc("DeepSeek 网页", esc(s.deepseek.model || "") + (s.deepseek.url ? " · " + esc(s.deepseek.url) : ""), s.deepseek.running ? `<span class="tag ok">运行中</span>` : `<span class="tag">已停止</span>`, "")}
+      ${svc("H3 引擎", `${tr("完整 MiniMax-H3（31B）视频 + H3-Image 生图，自研引擎（Diffusers），只在本机 127.0.0.1 上监听")}${s.engine.loaded?.task ? tr(" · 已加载：{model}",{model:tr(s.engine.loaded.task === "image" ? "H3-Image" : s.engine.loaded.task === "ref2va" ? "参考图视频模型" : "首帧 / 文生视频模型")}) : ""}${s.engine.image_ready === false ? tr(" · H3-Image 权重下载中") : ""}`,
+        s.engine.running ? (s.engine.ready ? OneShotI18n.html`<span class="tag ok">运行中</span>${s.engine.busy ? OneShotI18n.html` <span class="tag run">生成中</span>` : ""}${s.engine.queue ? OneShotI18n.html` <span class="tag run">队列 ${s.engine.queue}</span>` : ""}` : `<span class="tag run">${esc(tr(s.engine.loading || "启动中"))}</span>`) + (s.engine.error ? ` <span class="tag bad">${esc(s.engine.error)}</span>` : "") : OneShotI18n.html`<span class="tag bad">未运行</span>`,
+        s.engine.running ? OneShotI18n.html`<button class="btn sm" data-act="free-vram" title="卸载已加载的大模型，释放约 62 GB 内存（下次生成会重新加载，约 1 分钟）">卸载模型</button><button class="btn sm danger" data-act="engine-stop">停止</button>` : OneShotI18n.html`<button class="btn sm pri" data-act="engine-start">启动</button>`)}
+      ${L.services.comfy_old ? svc("旧 ComfyUI", tr("已不再需要；启动 H3 引擎时会自动停掉它"), OneShotI18n.html`<span class="tag">运行中</span>`, OneShotI18n.html`<button class="btn sm" data-act="comfy-stop">停止</button>`) : ""}
+      ${svc("Qwen3.5-9B 提示词模型", tr("改写、写剧本、看图（文本和看图路由到本地时使用）。按需启动，5 分钟没用自动停止"), s.qwen.running ? `<span class="tag ok">运行中 · ${esc(s.qwen.device)}</span>` : s.qwen.installed ? OneShotI18n.html`<span class="tag">待命</span>` : OneShotI18n.html`<span class="tag bad">未安装</span>`,
+        s.qwen.running ? OneShotI18n.html`<button class="btn sm" data-act="qwen-stop">停止</button>` : "")}
+      ${svc("Kokoro 配音", tr("CPU 运行，不占显卡。10 分钟没用自动停止"), s.kokoro.running ? OneShotI18n.html`<span class="tag ok">运行中</span>` : s.kokoro.installed ? OneShotI18n.html`<span class="tag">待命</span>` : OneShotI18n.html`<span class="tag bad">未安装</span>`,
+        s.kokoro.running ? OneShotI18n.html`<button class="btn sm" data-act="kokoro-stop">停止</button>` : "")}
+      ${svc("DeepSeek 网页", esc(s.deepseek.model || "") + (s.deepseek.url ? " · " + esc(s.deepseek.url) : ""), s.deepseek.running ? OneShotI18n.html`<span class="tag ok">运行中</span>` : OneShotI18n.html`<span class="tag">已停止</span>`, "")}
     </div>
     <h2>模型文件</h2>
     <div class="card" style="padding:4px 6px"><table><thead><tr><th>文件</th><th>目录</th><th>大小</th><th>状态</th></tr></thead><tbody>
       ${L.models.map(m => `<tr><td>${esc(m.name.replace(/\.part$/, ""))}</td><td class="dim">${esc(m.dir)}</td><td class="dim">${gb(m.size)}</td>
-        <td>${m.name.endsWith(".part") ? (m.downloading ? `<span class="tag run">下载中</span>` : `<span class="tag bad">下载中断</span>`) : `<span class="tag ok">就绪</span>`}</td></tr>`).join("")}</tbody></table></div>`;
+        <td>${m.name.endsWith(".part") ? (m.downloading ? OneShotI18n.html`<span class="tag run">下载中</span>` : OneShotI18n.html`<span class="tag bad">下载中断</span>`) : OneShotI18n.html`<span class="tag ok">就绪</span>`}</td></tr>`).join("")}</tbody></table></div>`;
   $$("[data-act]").forEach(b => b.onclick = async () => {
     const a = b.dataset.act;
     if (["engine-start", "engine-stop", "to-deepseek"].includes(a) && !b.classList.contains("arm")) {
-      b.classList.add("arm"); b.textContent = a === "engine-start" ? "确定？会停掉 DeepSeek 网页" : a === "to-deepseek" ? "确定？会停掉 H3 引擎" : "确定停止？"; return;
+      b.classList.add("arm"); b.textContent = a === "engine-start" ? OneShotI18n.t("确定？会停掉 DeepSeek 网页") : a === "to-deepseek" ? OneShotI18n.t("确定？会停掉 H3 引擎") : OneShotI18n.t("确定停止？"); return;
     }
-    try { await api("/api/admin/local/" + a, {}); toast("已执行"); } catch (e) { toast(e.message, 4000); }
+    try { await api("/api/admin/local/" + a, {}); toast(OneShotI18n.t("已执行")); } catch (e) { toast(e.message, 4000); }
     setTimeout(pgLocal, 800);
   });
   timer = setTimeout(() => location.hash === "#local" && pgLocal(), L.busy.action || L.models.some(m => m.downloading) ? 3000 : 10000);
@@ -336,22 +352,22 @@ async function pgLocal() {
 // ============================================================ members
 async function pgMembers() {
   const us = await api("/api/admin/users");
-  $("#main").innerHTML = `<h1>成员</h1><p class="lead">每人一个账号，项目默认只有自己看得到，可以共享给团队。管理员负责接入模型、配置 Key 和管理本地显卡。</p>
+  $("#main").innerHTML = OneShotI18n.html`<h1>成员</h1><p class="lead">每人一个账号，项目默认只有自己看得到，可以共享给团队。管理员负责接入模型、配置 Key 和管理本地显卡。</p>
     <div class="row" style="margin-bottom:12px"><span class="grow"></span><button class="btn grad" id="addu">＋ 添加成员</button></div>
     <div class="card" style="padding:4px 6px"><table><thead><tr><th>成员</th><th>角色</th><th>任务</th><th>最近登录</th><th></th></tr></thead><tbody>
     ${us.map(u => `<tr data-id="${u.id}"><td><b>${esc(u.name || u.username)}</b><div class="faint">${esc(u.username)}</div></td>
-      <td>${u.role === "admin" ? `<span class="tag loc">管理员</span>` : `<span class="tag">成员</span>`}${u.disabled ? ` <span class="tag bad">已停用</span>` : ""}</td>
-      <td class="dim">${u.tasks}${u.cost ? ` · ¥${u.cost}` : ""}</td><td class="dim">${ago(u.last_login) || "从未"}</td>
-      <td style="text-align:right">${u.id === ME.id ? `<span class="faint">你自己</span>` : `<button class="btn sm" data-a="pw">重置密码</button>
+      <td>${u.role === "admin" ? OneShotI18n.html`<span class="tag loc">管理员</span>` : OneShotI18n.html`<span class="tag">成员</span>`}${u.disabled ? OneShotI18n.html` <span class="tag bad">已停用</span>` : ""}</td>
+      <td class="dim">${u.tasks}${u.cost ? ` · ¥${u.cost}` : ""}</td><td class="dim">${ago(u.last_login) || tr("从未")}</td>
+      <td style="text-align:right">${u.id === ME.id ? OneShotI18n.html`<span class="faint">你自己</span>` : OneShotI18n.html`<button class="btn sm" data-a="pw">重置密码</button>
         <button class="btn sm" data-a="role">${u.role === "admin" ? "设为成员" : "设为管理员"}</button><button class="btn sm ${u.disabled ? "" : "danger"}" data-a="dis">${u.disabled ? "启用" : "停用"}</button>`}</td></tr>`).join("")}</tbody></table></div>`;
   $("#addu").onclick = () => {
-    const box = modal(`<h3>添加成员</h3><label class="f">用户名<input class="in" id="nu" placeholder="登录用，字母数字"></label><label class="f">显示名称<input class="in" id="nn"></label>
+    const box = modal(OneShotI18n.html`<h3>添加成员</h3><label class="f">用户名<input class="in" id="nu" placeholder="登录用，字母数字"></label><label class="f">显示名称<input class="in" id="nn"></label>
       <label class="f">初始密码<input class="in" id="np" placeholder="至少 8 位，告诉对方后让他自己改"></label>
       <label class="f">角色<select class="in" id="nr"><option value="member">成员</option><option value="admin">管理员</option></select></label>
       <div class="row" style="margin-top:14px"><span class="faint" id="nm"></span><span class="grow"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn pri" id="ok">添加</button></div>`);
     $("#np", box).value = Math.random().toString(36).slice(2, 6) + Math.random().toString(36).slice(2, 8);
     $("#ok", box).onclick = async () => {
-      try { await api("/api/admin/users", { username: $("#nu", box).value, name: $("#nn", box).value, password: $("#np", box).value, role: $("#nr", box).value }); closeModal(); toast("已添加"); pgMembers(); }
+      try { await api("/api/admin/users", { username: $("#nu", box).value, name: $("#nn", box).value, password: $("#np", box).value, role: $("#nr", box).value }); closeModal(); toast(OneShotI18n.t("已添加")); pgMembers(); }
       catch (e) { $("#nm", box).innerHTML = `<span style="color:#ff8a8a">${esc(e.message)}</span>`; }
     };
   };
@@ -359,9 +375,9 @@ async function pgMembers() {
     const id = b.closest("tr").dataset.id, u = us.find(x => x.id == id), a = b.dataset.a;
     if (a === "pw") {
       const pw = Math.random().toString(36).slice(2, 6) + Math.random().toString(36).slice(2, 8);
-      const box = modal(`<h3>重置 ${esc(u.name || u.username)} 的密码</h3><label class="f">新密码<input class="in" id="pw" value="${pw}"></label><div class="faint">对方会被退出登录，用新密码重新登录。</div>
+      const box = modal(OneShotI18n.html`<h3>重置 ${esc(u.name || u.username)} 的密码</h3><label class="f">新密码<input class="in" id="pw" value="${pw}"></label><div class="faint">对方会被退出登录，用新密码重新登录。</div>
         <div class="row" style="margin-top:14px"><span class="grow"></span><button class="btn" onclick="closeModal()">取消</button><button class="btn pri" id="ok">重置</button></div>`);
-      return $("#ok", box).onclick = async () => { try { await api("/api/admin/users/" + id, { password: $("#pw", box).value }, "PUT"); closeModal(); toast("密码已重置"); } catch (e) { toast(e.message); } };
+      return $("#ok", box).onclick = async () => { try { await api("/api/admin/users/" + id, { password: $("#pw", box).value }, "PUT"); closeModal(); toast(OneShotI18n.t("密码已重置")); } catch (e) { toast(e.message); } };
     }
     try { await api("/api/admin/users/" + id, a === "role" ? { role: u.role === "admin" ? "member" : "admin" } : { disabled: !u.disabled }, "PUT"); pgMembers(); } catch (e) { toast(e.message); }
   });
@@ -369,13 +385,13 @@ async function pgMembers() {
 
 // ============================================================ account
 function pgAccount() {
-  $("#main").innerHTML = `<h1>我的账号</h1><p class="lead">${esc(ME.name || ME.username)} · ${ME.role === "admin" ? "管理员" : "成员"}</p>
+  $("#main").innerHTML = OneShotI18n.html`<h1>我的账号</h1><p class="lead">${esc(ME.name || ME.username)} · ${tr(ME.role === "admin" ? "管理员" : "成员")}</p>
     <div class="card" style="max-width:460px"><b>修改密码</b>
       <label class="f">原密码<input class="in" type="password" id="o" autocomplete="current-password"></label>
       <label class="f">新密码<input class="in" type="password" id="n" autocomplete="new-password" placeholder="至少 8 位"></label>
       <div class="row"><span class="faint" id="m"></span><span class="grow"></span><button class="btn pri" id="ok">修改</button></div></div>
     <div style="margin-top:20px"><button class="btn danger" id="out">退出登录</button></div>`;
-  $("#ok").onclick = async () => { try { await api("/api/me/password", { old: $("#o").value, new: $("#n").value }); toast("密码已修改"); $("#o").value = $("#n").value = ""; } catch (e) { $("#m").innerHTML = `<span style="color:#ff8a8a">${esc(e.message)}</span>`; } };
+  $("#ok").onclick = async () => { try { await api("/api/me/password", { old: $("#o").value, new: $("#n").value }); toast(OneShotI18n.t("密码已修改")); $("#o").value = $("#n").value = ""; } catch (e) { $("#m").innerHTML = `<span style="color:#ff8a8a">${esc(e.message)}</span>`; } };
   $("#out").onclick = async () => { await api("/api/auth/logout", {}); location.href = "/login"; };
 }
 
@@ -388,12 +404,12 @@ async function route() {
   if (!PAGES[p] || (["services", "local", "members"].includes(p) && ME.role !== "admin")) p = "projects";
   if (p !== "projects") consoleCanvasDirectory = null;
   $$("nav a").forEach(a => a.classList.toggle("on", a.dataset.p === p));
-  try { await PAGES[p](); } catch (e) { $("#main").innerHTML = `<h1>出错了</h1><p class="dim">${esc(e.message)}</p>`; }
+  try { await PAGES[p](); } catch (e) { $("#main").innerHTML = OneShotI18n.html`<h1>出错了</h1><p class="dim">${esc(e.message)}</p>`; }
 }
 (async () => {
   ME = await api("/api/me");
   $$(".admin").forEach(el => el.style.display = ME.role === "admin" ? "" : "none");
-  $("#me").innerHTML = `<b>${esc(ME.name || ME.username)}</b>${ME.role === "admin" ? "管理员" : "成员"} · <a href="/" style="color:var(--dim)">打开画布</a>`;
+  $("#me").innerHTML = OneShotI18n.html`<b>${esc(ME.name || ME.username)}</b>${tr(ME.role === "admin" ? "管理员" : "成员")} · <a href="/" style="color:var(--dim)">打开画布</a>`;
   addEventListener("hashchange", route); route();
 })();
 </script>

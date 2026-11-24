@@ -117,7 +117,7 @@ setInterval(() => {
 // ① 想法
 function stepIdea() {
   const chip = (k, v, label = v) => `<button class="chip ${String(W[k]) === String(v) ? "on" : ""}" data-set="${k}" data-val="${v}">${label}</button>`;
-  return `<div class="wz1">
+  return OneShotI18n.html`<div class="wz1">
     <h2>你想拍一个什么样的视频？</h2>
     <textarea id="wzIdea" rows="5" placeholder="用一两句话说说你的想法，例如：一只橘猫在雨夜给流浪狗送伞">${esc(W.idea)}</textarea>
     <div class="tpl"><span class="lab">没有灵感？试试这些：</span>${TEMPLATES.map((t, i) => `<button class="chip" data-tpl="${i}">${t.t}</button>`).join("")}</div>
@@ -137,14 +137,14 @@ function stepIdea() {
 function stepScript() {
   const s = wizScript(), d = s?.data;
   if (!s || toolBusy.has(s.id)) return `<div class="wait"><div class="spin"></div>AI 正在写剧本、拆镜头…（GPU 空闲时约 10~30 秒）</div>`;
-  if (!(d.shots || []).length) return `<div class="wait">还没有剧本。<button class="go" data-go="script">重新生成</button><button class="ghost" data-goto="0">← 改一下想法</button></div>`;
+  if (!(d.shots || []).length) return OneShotI18n.html`<div class="wait">还没有剧本。<button class="go" data-go="script">重新生成</button><button class="ghost" data-goto="0">← 改一下想法</button></div>`;
   const total = d.shots.reduce((a, x) => a + (x.duration || 0), 0);
-  return `<div class="wz2">
+  return OneShotI18n.html`<div class="wz2">
     <div class="row"><input id="wzTitle" class="title" value="${esc(d.title)}" placeholder="片名"><span class="dim">${d.shots.length} 个镜头 · 约 ${total} 秒</span>
       <span class="grow"></span><button class="ghost" data-go="script">不满意，重新写</button></div>
     <label class="sty">画面风格<input id="wzStyle" value="${esc(d.style)}"></label>
-    <div class="shots">${d.shots.map((x, i) => `<div class="sh" data-i="${i}">
-        <div class="h"><b>镜头 ${i + 1}</b><select data-f="duration">${SCRIPT_VIDEO_DURATIONS.map(t => `<option value="${t}" ${t === scriptVideoDuration(x.duration) ? "selected" : ""}>${t} 秒</option>`).join("")}</select>
+    <div class="shots">${d.shots.map((x, i) => OneShotI18n.html`<div class="sh" data-i="${i}">
+        <div class="h"><b>镜头 ${i + 1}</b><select data-f="duration">${SCRIPT_VIDEO_DURATIONS.map(t => OneShotI18n.html`<option value="${t}" ${t === scriptVideoDuration(x.duration) ? "selected" : ""}>${t} 秒</option>`).join("")}</select>
           <input data-f="cam" value="${esc([x.shot_size, x.camera].filter(Boolean).join("，"))}" placeholder="景别和运镜，如：中景，缓慢推近">
           <span class="grow"></span><button class="ic" data-m="up" title="上移">↑</button><button class="ic" data-m="down" title="下移">↓</button><button class="ic" data-m="del" title="删除这个镜头">×</button></div>
         <label>首帧画面<textarea data-f="keyframe" rows="2">${esc(x.keyframe)}</textarea></label>
@@ -164,7 +164,7 @@ function stepCast() {
   return `<div class="wz3"><p class="tip">给每个角色定一张形象图，后面每个镜头都会照着它画，人物才不会变脸。声音描述会写进每段台词，让同一个角色的声音前后一致。</p>
     <div class="cast">${chars.map((c, i) => {
       const m = castOf(c.name), busy = m && (m.job || toolBusy.has(m.id));
-      return `<div class="cc" data-i="${i}"><div class="pics">${m && m.versions.length ? m.versions.map((v, k) => `<img src="${v.url}" class="${k === m.cur ? "on" : ""}" data-pick="${k}" data-n="${m.id}" title="点击选用这张">`).join("") : ""}
+      return OneShotI18n.html`<div class="cc" data-i="${i}"><div class="pics">${m && m.versions.length ? m.versions.map((v, k) => `<img src="${v.url}" class="${k === m.cur ? "on" : ""}" data-pick="${k}" data-n="${m.id}" title="点击选用这张">`).join("") : ""}
           ${busy ? `<div class="pend"><div class="spin"></div>${jobText(m) || "处理中…"}</div>` : ""}${!m || (!m.versions.length && !busy) ? `<div class="pend">还没有形象图</div>` : ""}</div>
         <div class="info"><input class="nm" data-c="name" value="${esc(c.name)}" title="角色名（改名会同步到剧本）">
           <label>外貌<textarea data-c="look" rows="3">${esc(c.look)}</textarea></label>
@@ -188,9 +188,9 @@ function stepBoards() {
       const v=curV(image), busy=image.job, shot=d.shots[pair.index];
       const shared=phase==="first"&&pair.record.shared_first;
       const middle=phase==="middle"&&wizardMiddleTiming(pair);
-      return `<div class="bc"><div class="pic">${v ? `<img src="${esc(v.url)}">` : ""}${busy ? `<div class="pend"><div class="spin"></div>${jobText(image)}</div>` : !v ? `<div class="pend">等待生成</div>` : ""}</div>
+      return OneShotI18n.html`<div class="bc"><div class="pic">${v ? `<img src="${esc(v.url)}">` : ""}${busy ? `<div class="pend"><div class="spin"></div>${jobText(image)}</div>` : !v ? `<div class="pend">等待生成</div>` : ""}</div>
         <div class="cap"><b>镜头 ${pair.index+1} · ${middle?"中帧":label}</b>${shared?"":verNav(image)}</div><div class="txt">${esc(shared?image.data.caption : phase==="first"?shot.keyframe:shot.motion_frames?.[phase]||image.data.caption)}</div>
-        ${middle?`<label class="wz-frame-time">时点 <input type="number" step="any" min="0.04" max="${(middle.maxFrame/24).toFixed(2)}" value="${Number(middle.time.toFixed(2))}" data-middle-time="${pair.index}" aria-label="镜头 ${pair.index+1} 中帧时点（秒）" ${middle.editable?"":"disabled"}> 秒</label>`:""}
+        ${middle?OneShotI18n.html`<label class="wz-frame-time">时点 <input type="number" step="any" min="0.04" max="${(middle.maxFrame/24).toFixed(2)}" value="${Number(middle.time.toFixed(2))}" data-middle-time="${pair.index}" aria-label="镜头 ${pair.index+1} 中帧时点（秒）" ${middle.editable?"":"disabled"}> 秒</label>`:""}
         ${v&&!storyboardFrameReady(image)?'<p class="wz-shot-error" role="status">分镜描述已更新，请重新生成画面。</p>':""}
         ${shared?"":`<div class="fix"><input placeholder="怎么改？例如：人物离镜头近一点" data-fix="${image.id}"><button class="ghost sm" data-redo="${image.id}" ${busy?"disabled":""}>${v ? "重画" : "生成"}</button></div>`}</div>`;
     }).join("")}</div>
@@ -207,7 +207,7 @@ function stepVideos() {
     <div class="grid ${d.aspect === "9:16" ? "tall" : ""}">${pairs.map(p => {
       const i=p.index;
       const v = curV(p.vid), s = d.shots[i] || {}, error=canvasGenerationError(p.vid);
-      return `<div class="bc"><div class="pic">${v ? `<video src="${v.url}" controls playsinline preload="metadata"></video>` : curV(p.img) ? `<img src="${curV(p.img).url}" class="dimg">` : ""}
+      return OneShotI18n.html`<div class="bc"><div class="pic">${v ? `<video src="${v.url}" controls playsinline preload="metadata"></video>` : curV(p.img) ? `<img src="${curV(p.img).url}" class="dimg">` : ""}
           ${p.vid.job ? `<div class="pend"><div class="spin"></div>${jobText(p.vid)}</div>` : ""}</div>
         <div class="cap"><b>镜头 ${i + 1}</b>${verNav(p.vid)}<span class="grow"></span>
           ${p.record.shared_first&&curV(node(scriptShotLinks(wizScript())[i-1]?.vid))?`<button class="ghost sm" data-motion-tail="${i}" ${p.vid.job||scriptContinuityPending.has(p.vid)?"disabled":""}>接上一镜成片尾帧</button>`:""}
@@ -239,11 +239,11 @@ function wizardFilm(script) {
 function stepFilm() {
   const script = wizScript(), f = wizardFilm(script), v = f && curV(f);
   const missing = wizardMissingVideos(script);
-  return `<div class="wz6">${f ? (f.job ? `<div class="wait"><div class="spin"></div>正在合成成片… ${jobText(f)}</div>` : v ? `<video src="${v.url}" controls playsinline class="final"></video>
+  return `<div class="wz6">${f ? (f.job ? `<div class="wait"><div class="spin"></div>正在合成成片… ${jobText(f)}</div>` : v ? OneShotI18n.html`<video src="${v.url}" controls playsinline class="final"></video>
       <div class="row"><a class="go" href="${v.url}" download="${esc((wizScript()?.data.title || "成片").replace(/[\\/:*?"<>|]/g, ""))}.mp4">下载成片</a>${v.cover_url ? `<a class="ghost" href="${v.cover_url}" download>下载封面</a>` : ""}
         <button class="ghost" data-go="edit">继续剪辑</button>${!missing.length ? '<button class="ghost" data-go="current-cut">用当前镜头剪辑</button>' : ""}
         <button class="ghost" data-go="canvas">去画布精修</button></div>` : `<div class="wait">上次合成没有成功。<button class="go" data-go="edit">重新打开剪辑台</button></div>`)
-    : missing.length ? `<p class="tip" role="status">镜头 ${missing.join("、")} 还缺少视频。补齐后可导出完整成片。</p>`
+    : missing.length ? OneShotI18n.html`<p class="tip" role="status">镜头 ${missing.join("、")} 还缺少视频。补齐后可导出完整成片。</p>`
     : `<p class="tip">在剪辑台里调整顺序、裁剪片段、加字幕和背景音乐。台词会自动作为字幕带入。</p>
        <div class="row"><button class="go" data-go="edit">打开剪辑台</button><button class="ghost" data-go="quick">导出成片</button></div>`}
     <div class="nav"><button class="ghost" data-goto="4">← 视频</button><span></span></div></div>`;
@@ -448,7 +448,7 @@ async function wizGo(what, btn) {
 // ---- example films: watch, start from the same idea, or open the whole project
 function showSample(x) {
   const m = $("#wzSample");
-  m.innerHTML = `<div class="box"><div class="hd"><b>${esc(x.title)}</b><span class="dim">${esc(x.style || "")} · ${x.seconds?.toFixed(1)} 秒 · 每镜 1 个版本，没有挑选和精修</span>
+  m.innerHTML = OneShotI18n.html`<div class="box"><div class="hd"><b>${esc(x.title)}</b><span class="dim">${esc(x.style || "")} · ${x.seconds?.toFixed(1)} 秒 · 每镜 1 个版本，没有挑选和精修</span>
       <span style="flex:1"></span><button class="ghost sm" data-x>关闭</button></div>
     <video src="${x.url}" controls autoplay playsinline></video>
     <div class="idea">想法：${esc(x.idea || "")}</div>
@@ -484,7 +484,7 @@ const sampleCards = () => SAMPLES.map((x, k) => `<button class="gc" data-sample=
 async function showGallery() {
   await loadSamples();
   const m = $("#wzSample");
-  m.innerHTML = `<div class="box"><div class="hd"><b>🎬 示例成片</b><span class="dim">全部用「一句话成片」自动做出来：一句想法 → 剧本 → 角色 → 分镜图 → 视频 → 成片，每部约 6 分钟</span>
+  m.innerHTML = OneShotI18n.html`<div class="box"><div class="hd"><b>🎬 示例成片</b><span class="dim">全部用「一句话成片」自动做出来：一句想法 → 剧本 → 角色 → 分镜图 → 视频 → 成片，每部约 6 分钟</span>
     <span style="flex:1"></span><button class="ghost sm" data-x>关闭</button></div>
     <div class="gal grid">${sampleCards() || `<div class="dim">还没有示例</div>`}</div></div>`;
   m.classList.add("on");

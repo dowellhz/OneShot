@@ -113,7 +113,7 @@ function objectEditControls(form, player, version, action, existing, update) {
   };
   const setMarking=value=>{
     marking=value;overlay.classList.toggle("marking",value);
-    mark.textContent=value?"取消框选":"在当前帧框选";
+    mark.textContent=value?"取消框选":OneShotI18n.t("在当前帧框选");
     status.textContent=value?"拖动鼠标框住目标":box?("已标注 "+at.toFixed(2)+" 秒"):"拖到目标清晰的一帧后框选";
     locate.hidden=value || !box;
   };

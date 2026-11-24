@@ -21,7 +21,7 @@ function renderFilmTitles() {
   const F = FILM, host = $("#fmTitleSettings"), titles = F.spec.titles || [];
   const choices = (values, selected) => Object.entries(values).map(([value,label]) =>
     `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
-  host.innerHTML = titles.map((title,i) => `<div class="nar fm-title-edit" data-title-index="${i}">
+  host.innerHTML = titles.map((title,i) => OneShotI18n.html`<div class="nar fm-title-edit" data-title-index="${i}">
     <label>文字<input type="text" maxlength="120" data-title-key="text" value="${esc(title.text)}" aria-label="第 ${i+1} 条标题文字"></label>
     <div class="nr"><label>开始（秒）<input type="number" min="0" step="any" data-title-key="start" value="${esc(title.start)}"></label>
       <label>结束（秒）<input type="number" min="0" step="any" data-title-key="end" value="${esc(title.end)}"></label></div>

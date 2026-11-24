@@ -271,13 +271,13 @@ function acNodeReferenceMarkup(n,selection,reviews){
   : ico(n.type);
  const label=AC.emptyMediaNode===n.id?"接收生成结果":index>=0?"版本 "+(index+1)+(pin||fixedRef?" · 已指定":""):ref?"版本已移除":TYPE_CN[n.type];
  const options=n.versions.map((entry,i)=>entry.ref
-  ? `<option value="${i}" ${pin&&version===entry?"selected":""}>版本 ${i+1}${pin&&version===entry?" · 已指定":""}</option>`:"").join("");
+  ? OneShotI18n.html`<option value="${i}" ${pin&&version===entry?"selected":""}>版本 ${i+1}${pin&&version===entry?" · 已指定":""}</option>`:"").join("");
  const choices=!fixedRef&&options&&(n.versions.length>1||pin&&!version)
   ? `<select data-reference-version="${esc(n.id)}" aria-label="${esc(n.name)}的引用版本" ${AC.sending?"disabled":""}>
     <option value="" ${!pin?"selected":""}>${n.cur>=0?`跟随画布 · 版本 ${n.cur+1}`:"跟随画布"}</option>
-    ${pin&&!version?'<option value="missing" disabled selected>版本已移除</option>':""}${options}</select>`
+    ${pin&&!version?OneShotI18n.markup('<option value="missing" disabled selected>版本已移除</option>'):""}${options}</select>`
   : `<span class="ac-reference-version">${esc(label)}</span>`;
- return `<span class="ac-ref ac-node-ref" title="${esc(n.name)} · ${esc(label)}">${preview}<span class="ac-reference-name">${esc(n.name)}</span>${choices}<button type="button" data-remove="${esc(n.id)}" aria-label="移除引用">×</button></span>`;
+ return OneShotI18n.html`<span class="ac-ref ac-node-ref" title="${esc(n.name)} · ${esc(label)}">${preview}<span class="ac-reference-name">${esc(n.name)}</span>${choices}<button type="button" data-remove="${esc(n.id)}" aria-label="移除引用">×</button></span>`;
 }
 function acRenderRefs(){
  const box=$("#acRefs");if(!box||!B)return;
@@ -287,10 +287,10 @@ function acRenderRefs(){
  const refs=acRefs();
  const refsMarkup=refs.map(n=>acNodeReferenceMarkup(n,selection,reviews)).join("");
  const missing=[...AC.referencePins].filter(([id])=>AC.refs?.includes(id)&&!node(id)).map(([id,pin])=>
-  `<span class="ac-ref">${esc(pin.name)} · 节点已移除<button type="button" data-remove="${esc(id)}" aria-label="移除已失效引用">×</button></span>`).join("");
- const selectionMarkup=selection?`<span class="ac-ref ac-ref-selection"><a href="${esc(ewRefUrl(selection.preview_ref))}" target="_blank" rel="noopener" aria-label="查看选区预览"><img src="${esc(ewRefUrl(selection.preview_ref))}" alt=""></a>${refs.some(n=>n.id===selection.node_id&&n.versions.some(v=>v.ref===selection.source_ref))?"已圈选区域":"选区源图已失效"}<button type="button" data-remove-selection aria-label="移除圈选区域">×</button></span>`:"";
- const reviewMarkup=reviews.map(review=>`<span class="ac-ref ac-review-ref"><button type="button" data-open-review="${esc(review.id)}" title="${esc(review.body)}">${review.anchor?.node&&!acReviewTarget(review)?"审阅素材已失效":"审阅评论 · "+esc(review.body.slice(0,24))}</button><button type="button" data-remove-review="${esc(review.id)}" aria-label="移除审阅评论">×</button></span>`).join("");
- const placementMarkup=AC.board===boardId&&AC.placement?'<span class="ac-ref"><button type="button" data-locate-placement title="定位到标记">已指定放置位置</button><button type="button" data-remove-placement aria-label="清除放置位置">×</button></span>':"";
+  OneShotI18n.html`<span class="ac-ref">${esc(pin.name)} · 节点已移除<button type="button" data-remove="${esc(id)}" aria-label="移除已失效引用">×</button></span>`).join("");
+ const selectionMarkup=selection?OneShotI18n.html`<span class="ac-ref ac-ref-selection"><a href="${esc(ewRefUrl(selection.preview_ref))}" target="_blank" rel="noopener" aria-label="查看选区预览"><img src="${esc(ewRefUrl(selection.preview_ref))}" alt=""></a>${refs.some(n=>n.id===selection.node_id&&n.versions.some(v=>v.ref===selection.source_ref))?"已圈选区域":"选区源图已失效"}<button type="button" data-remove-selection aria-label="移除圈选区域">×</button></span>`:"";
+ const reviewMarkup=reviews.map(review=>OneShotI18n.html`<span class="ac-ref ac-review-ref"><button type="button" data-open-review="${esc(review.id)}" title="${esc(review.body)}">${review.anchor?.node&&!acReviewTarget(review)?"审阅素材已失效":"审阅评论 · "+esc(review.body.slice(0,24))}</button><button type="button" data-remove-review="${esc(review.id)}" aria-label="移除审阅评论">×</button></span>`).join("");
+ const placementMarkup=AC.board===boardId&&AC.placement?OneShotI18n.markup('<span class="ac-ref"><button type="button" data-locate-placement title="定位到标记">已指定放置位置</button><button type="button" data-remove-placement aria-label="清除放置位置">×</button></span>'):"";
  const markup=refsMarkup+missing+selectionMarkup+reviewMarkup+placementMarkup;
  if(box._refMarkup===markup)return;
  const focus=box.contains(document.activeElement)?document.activeElement.dataset.referenceVersion:null;
@@ -411,7 +411,7 @@ async function acPick(){
  if(bid!==boardId||epoch!==AC.epoch||box.hidden)return;
  box.innerHTML=folders.map(folder=>`<button type="button" data-asset-folder="${esc(folder.id)}">${esc(folder.name)} · 文件夹 · ${folder.count} 项</button>`).join("")+
   memories.map(a=>`<button type="button" data-memory="${esc(a.id)}">@${esc(a.name)} · ${esc(cmKind(a))}</button>`).join("")+
-  B.nodes.slice(0,200).map(n=>`<button type="button" data-node="${esc(n.id)}">${esc(n.name)} · ${TYPE_CN[n.type]}</button>`).join("")||"画布还没有节点";
+  B.nodes.slice(0,200).map(n=>`<button type="button" data-node="${esc(n.id)}">${esc(n.name)} · ${TYPE_CN[n.type]}</button>`).join("")||OneShotI18n.t("画布还没有节点");
  $$("[data-memory]",box).forEach(b=>b.onclick=()=>{const a=memories.find(a=>a.id===b.dataset.memory);if(a)cmInsert($("#acInput"),a);box.hidden=true;});
  $$("[data-asset-folder]",box).forEach(b=>b.onclick=()=>{
   box.hidden=true;
@@ -440,13 +440,13 @@ function acShotAssetNames(assets){
 function acResultCards(result){
  if(result.gif?.ref && /^output:h3studio\/gif_[\w-]+\.gif$/.test(result.gif.ref)){
   const gif=result.gif,url="/media?ref="+encodeURIComponent(gif.ref);
-  return `<div class="ac-gif-result"><img src="${url}" loading="lazy" alt="GIF 动图预览">
+  return OneShotI18n.html`<div class="ac-gif-result"><img src="${url}" loading="lazy" alt="GIF 动图预览">
     <div>${esc(gif.width)}×${esc(gif.height)} · ${esc(gif.seconds)} 秒</div>
     <a href="${url}" download="${esc(gif.ref.split("/").pop())}">下载 GIF</a>
-    ${showcaseCanPublish()?`<button type="button" data-gif-showcase="${esc(gif.ref)}">发布到展映</button>`:""}</div>`;
+    ${showcaseCanPublish()?OneShotI18n.html`<button type="button" data-gif-showcase="${esc(gif.ref)}">发布到展映</button>`:""}</div>`;
  }
  if(result.creative_directions?.length){
-  return result.creative_directions.map(direction=>`<section class="ac-storyboard-plan ac-direction" data-creative-direction="${esc(JSON.stringify(direction))}">
+  return result.creative_directions.map(direction=>OneShotI18n.html`<section class="ac-storyboard-plan ac-direction" data-creative-direction="${esc(JSON.stringify(direction))}">
     <strong>${esc(direction.title)}</strong><p>${esc(direction.premise)}</p>
     <dl><dt>执行方法</dt><dd>${esc(direction.approach)}</dd><dt>取舍</dt><dd>${esc(direction.tradeoff)}</dd>
     <dt>第一步</dt><dd>${esc(direction.first_step)}</dd></dl>
@@ -456,10 +456,10 @@ function acResultCards(result){
  if(result.previs_storyboard_plan){
   const p=result.previs_storyboard_plan;
   const time=tick=>Number((tick/p.fps).toFixed(2));
-  return `<section class="ac-storyboard-plan"><strong>${esc(p.name)} · ${p.boundaries.length-1} 镜 · ${esc(p.aspect)}</strong>
+  return OneShotI18n.html`<section class="ac-storyboard-plan"><strong>${esc(p.name)} · ${p.boundaries.length-1} 镜 · ${esc(p.aspect)}</strong>
    <details><summary>查看切点与镜长</summary><ol>${p.boundaries.slice(0,-1).map((start,i)=>{
     const end=p.boundaries[i+1];
-    return `<li>${time(start)}–${time(end)} 秒 · ${time(end-start)} 秒</li>`;
+    return OneShotI18n.html`<li>${time(start)}–${time(end)} 秒 · ${time(end-start)} 秒</li>`;
    }).join("")}</ol></details>
    <button type="button" data-open-previs-storyboard="${esc(JSON.stringify(p))}">打开白模核对</button></section>`;
  }
@@ -468,19 +468,19 @@ function acResultCards(result){
   const modes={missing:"补齐未生成镜头",all:"运行所有选中的节点",missing_frame:"只补齐分镜图",missing_video:"只补齐视频",frame:"重生成分镜图",video:"重生成视频"};
   const tails={connect:"连接缺失的上一镜尾帧",refresh:"刷新已有的上一镜尾帧",connect_and_refresh:"连接缺失并刷新已有的上一镜尾帧"};
   const details=[modes[plan.mode],tails[plan.tail_mode]].filter(Boolean).join(" · ");
-  return `<section class="ac-storyboard-plan"><strong>${esc(plan.name)} · 第 ${esc(plan.first)}${plan.first===plan.last?"":"–"+esc(plan.last)} 镜</strong>
+  return OneShotI18n.html`<section class="ac-storyboard-plan"><strong>${esc(plan.name)} · 第 ${esc(plan.first)}${plan.first===plan.last?"":"–"+esc(plan.last)} 镜</strong>
     <p>${esc(details)}</p><button type="button" data-open-shot-range="${esc(JSON.stringify(plan))}">核对生成范围</button></section>`;
  }
  if(result.template_fill_plan){
   const plan=result.template_fill_plan;
-  return `<div class="ac-template-results"><article><strong>${esc(plan.name)}</strong>
+  return OneShotI18n.html`<div class="ac-template-results"><article><strong>${esc(plan.name)}</strong>
     <small>已填写 ${esc(plan.inputs.length)} 项</small>
     <button type="button" data-template-fill-plan="${esc(JSON.stringify(plan))}">核对填写草稿</button>
   </article></div>`;
  }
  if(result.workflow_templates?.length){
   const source={private:"我的模板",catalog:"共享模板",presets:"内置工作流",favorites:"收藏模板"};
-  return `<div class="ac-template-results">${result.workflow_templates.map(row=>`<article>
+  return `<div class="ac-template-results">${result.workflow_templates.map(row=>OneShotI18n.html`<article>
    <strong>${esc(row.name)}</strong><small>${esc([source[row.scope],row.category,row.author].filter(Boolean).join(" · "))} · ${esc(row.nodes)} 个节点</small>
    ${row.description?`<p>${esc(row.description)}</p>`:""}
    <button type="button" data-open-workflow-template="${esc(row.id)}" data-template-scope="${esc(row.scope)}" aria-label="预览与使用 ${esc(row.name)}">预览与使用</button>
@@ -491,9 +491,9 @@ function acResultCards(result){
   const labels={duration:"时长",shot_size:"景别",camera:"机位",scene:"场景",action:"动作",dialogue:"台词",sound:"声音",keyframe:"首帧",
    asset_refs:"参考资产"};
   const display=(key,value)=>esc(key==="asset_refs"?acShotAssetNames(value):Array.isArray(value)?value.join("\n"):value??"");
-  return `<section class="ac-storyboard-plan" data-shot-revision="${esc(JSON.stringify(p))}">
+  return OneShotI18n.html`<section class="ac-storyboard-plan" data-shot-revision="${esc(JSON.stringify(p))}">
    <strong>${esc(p.name)} · 第 ${p.shot} 镜</strong>
-   <dl>${Object.entries(p.changes).map(([key,value])=>`<dt>${esc(labels[key])}</dt><dd>
+   <dl>${Object.entries(p.changes).map(([key,value])=>OneShotI18n.html`<dt>${esc(labels[key])}</dt><dd>
      <span class="ac-revision-before">${display(key,p.before[key])||"未填写"}</span><span aria-label="改为"> → </span>${display(key,value)||"清空"}</dd>`).join("")}</dl>
    <div class="ac-storyboard-actions"><button type="button" data-apply-shot-revision>应用到原镜头</button>
     <button type="button" data-run-shot-revision hidden>查看重生成计划</button></div><span role="status"></span></section>`;
@@ -502,11 +502,11 @@ function acResultCards(result){
   const p=result.shot_review;
   return `<div class="ac-results" data-shot-review-card="${esc(JSON.stringify(p))}"><span>第 ${p.shot-1} 镜尾帧（版本 ${p.left.version}） · 第 ${p.shot} 镜${p.right.kind==="image"?"分镜图":"首帧"}（版本 ${p.right.version}）</span>
    <div class="ac-storyboard-actions"><button type="button" data-shot-review>${p.samples?"查看切点与取样":"打开双帧对比"}</button>
-    ${canvasCanEdit()?'<button type="button" data-plan-review-revision>为当前镜头拟修改</button>':""}</div><span role="status"></span></div>`;
+    ${canvasCanEdit()?OneShotI18n.markup('<button type="button" data-plan-review-revision>为当前镜头拟修改</button>'):""}</div><span role="status"></span></div>`;
  }
  if(result.storyboard_create){
   const p=result.storyboard_create;
-  return `<section class="ac-storyboard-plan" data-storyboard-create="${esc(JSON.stringify(p))}">
+  return OneShotI18n.html`<section class="ac-storyboard-plan" data-storyboard-create="${esc(JSON.stringify(p))}">
    <strong>${esc(p.title || "分镜脚本")} · ${p.shots.length} 镜 · ${p.planned_seconds} 秒</strong>
    ${p.refs.length?`<p>参考图：${esc(p.refs.map(item=>item.name).join("、"))}</p>`:""}
    <ol>${p.shots.map(s=>`<li><details><summary>${s.duration} 秒 · ${esc(s.shot_size || s.scene || "镜头")}</summary>
@@ -519,7 +519,7 @@ function acResultCards(result){
   const p=result.storyboard_plan,s=p.shot;
   const fields=[["场景",s.scene],["机位",s.camera],["首帧",s.keyframe],["动作",s.action.join("\n")],
     ["角色",s.characters.join("、")],["台词",s.dialogue.join("\n")],["声音",s.sound],["参考资产",acShotAssetNames(s.asset_refs)]];
-  return `<section class="ac-storyboard-plan" data-storyboard-plan="${esc(JSON.stringify(p))}">
+  return OneShotI18n.html`<section class="ac-storyboard-plan" data-storyboard-plan="${esc(JSON.stringify(p))}">
    <strong>${esc(p.name)} · 第 ${p.anchor.count+1} 镜 · ${esc(s.shot_size)} · ${s.duration} 秒</strong>
    <dl>${fields.filter(([,value])=>value).map(([label,value])=>`<dt>${label}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
    <div class="ac-storyboard-actions"><button type="button" data-adopt-storyboard>加入分镜</button>
@@ -529,12 +529,12 @@ function acResultCards(result){
  }
  if(result.group_run_plan){
   const p=result.group_run_plan;
-  return `<div class="ac-results"><span>${esc(p.name)} · ${p.targets.length} 个节点 · ${p.mode==="all"?"运行指定节点":"补齐未生成节点"}</span>
+  return OneShotI18n.html`<div class="ac-results"><span>${esc(p.name)} · ${p.targets.length} 个节点 · ${p.mode==="all"?"运行指定节点":"补齐未生成节点"}</span>
    <button type="button" data-group-run-plan="${esc(JSON.stringify(p))}">查看分组运行计划</button></div>`;
  }
  if(result.reference_plan){
   const p=result.reference_plan;
-  return `<div class="ac-results"><span>${esc(p.source_name)} → ${esc(p.replacement_name)}${p.version?" · 版本 "+esc(p.version):""}${p.group_name?" · "+esc(p.group_name):""}${p.targets?.length?" · "+p.targets.length+" 个指定节点":""}</span>
+  return OneShotI18n.html`<div class="ac-results"><span>${esc(p.source_name)} → ${esc(p.replacement_name)}${p.version?" · 版本 "+esc(p.version):""}${p.group_name?" · "+esc(p.group_name):""}${p.targets?.length?" · "+p.targets.length+" 个指定节点":""}</span>
    <button type="button" data-reference-plan="${esc(JSON.stringify(p))}">预览参考替换</button></div>`;
  }
  if (result.remake) {
@@ -563,17 +563,17 @@ function acResultCards(result){
   } else if (result.review_versions?.length) {
    review = `<div class="ac-results">${result.review_versions.map(version => open(`查看版本 ${version.number}`, version.job)).join("")}</div>`;
   }
-  const download = result.export_ref ? `<a href="/media?ref=${encodeURIComponent(result.export_ref)}" download="${esc(result.export_ref.split("/").at(-1))}">下载成片</a>` : "";
+  const download = result.export_ref ? OneShotI18n.html`<a href="/media?ref=${encodeURIComponent(result.export_ref)}" download="${esc(result.export_ref.split("/").at(-1))}">下载成片</a>` : "";
   const plan = result.remake_plan;
-  const planCard = plan ? `<fieldset class="ac-remake-plan" data-plan="${esc(JSON.stringify({...plan, node_id, source_ref}))}">
+  const planCard = plan ? OneShotI18n.html`<fieldset class="ac-remake-plan" data-plan="${esc(JSON.stringify({...plan, node_id, source_ref}))}">
     <legend>确认换角计划</legend><div><img src="${remakeMedia(plan.reference)}" alt="角色参考图"><strong>${esc(plan.person)} → ${esc(plan.asset_name)}</strong></div>
-    ${plan.shots.map(s => `<label><input type="checkbox" value="${s.shot}" ${s.keep ? "disabled" : "checked"}>镜头 ${s.shot} · ${s.keep ? "保留原片" : s.selection_ready ? "可生成预览" : "需要确认人物选区"}</label>`).join("")}
+    ${plan.shots.map(s => OneShotI18n.html`<label><input type="checkbox" value="${s.shot}" ${s.keep ? "disabled" : "checked"}>镜头 ${s.shot} · ${s.keep ? "保留原片" : s.selection_ready ? "可生成预览" : "需要确认人物选区"}</label>`).join("")}
     <button type="button" data-apply-plan>确认所选镜头</button><output aria-live="polite"></output></fieldset>` : "";
   return `<div class="ac-results">${open(label, video_job)}${download}</div>${review}${planCard}`;
  }
  const made=result.nodes||[];
- const editor=result.previs_node ? `<button type="button" data-previs-open="${esc(result.previs_node)}" data-previs-ref="${esc(made[0]?.ref || "")}">打开白模编辑器</button>`
-  : result.playlist_node ? `<button type="button" data-playlist-open="${esc(result.playlist_node)}" data-playlist-rev="${esc(result.board_rev || 0)}">打开播放列表</button>` : "";
+ const editor=result.previs_node ? OneShotI18n.html`<button type="button" data-previs-open="${esc(result.previs_node)}" data-previs-ref="${esc(made[0]?.ref || "")}">打开白模编辑器</button>`
+  : result.playlist_node ? OneShotI18n.html`<button type="button" data-playlist-open="${esc(result.playlist_node)}" data-playlist-rev="${esc(result.board_rev || 0)}">打开播放列表</button>` : "";
  if(!made.length&&!editor)return "";
  const cards=made.map(item=>{
   const n=vtResolve(item.id,item.ref)?.node,v=acResultVersion(item),kind=item.type||n?.type;
@@ -583,10 +583,10 @@ function acResultCards(result){
    const player=kind==="video"?`<video controls playsinline preload="metadata" src="${media}" aria-label="${editor?"白模预演视频":"生成的视频"}"></video>`
     :`<audio controls preload="metadata" src="${media}" aria-label="生成的音频"></audio>`;
    const cut=kind==="video"&&extensionInput(v)
-    ?`<button type="button" data-extension-clip="${esc(item.id)}" data-version-ref="${esc(v.ref)}">与原片一起剪辑</button>`:"";
+    ?OneShotI18n.html`<button type="button" data-extension-clip="${esc(item.id)}" data-version-ref="${esc(v.ref)}">与原片一起剪辑</button>`:"";
    return `<div class="ac-result ac-${kind}">${player}<button type="button" ${focus}>${kind==="video"?"定位视频":"定位音频"}</button>${cut}</div>`;
   }
-  return `<button type="button" class="ac-result" ${focus}>${media?`<img loading="lazy" alt="生成结果" src="${media}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;
+  return `<button type="button" class="ac-result" ${focus}>${media?OneShotI18n.html`<img loading="lazy" alt="生成结果" src="${media}">`:""}<span>${esc(n?.name||item.name||"查看结果")}</span></button>`;
  });
  return `<div class="ac-results">${cards.join("")}${editor}</div>`;}
 
@@ -681,14 +681,14 @@ async function watchRemakePlan(results, url, plan, targets) {
      line.append(view);
     }
     if (preview?.ref && latest.cut_revision === plan.cut_revision) {
-     const accept = document.createElement("button"); accept.type = "button"; accept.textContent = "采用预览";
+     const accept = document.createElement("button"); accept.type = "button"; accept.textContent = OneShotI18n.t("采用预览");
      accept.disabled = shot.frames[frame].approved === job;
-     if (accept.disabled) accept.textContent = "已采用";
+     if (accept.disabled) accept.textContent = OneShotI18n.t("已采用");
      accept.onclick = async () => {
       accept.disabled = true;
       try {
        await remakeRequest(url, {action:"approve", shot:index, frame, job, cut_revision:plan.cut_revision});
-       accept.textContent = "已采用";
+       accept.textContent = OneShotI18n.t("已采用");
       } catch (e) { accept.disabled = false; toast(e.message); }
      };
      line.append(accept);
@@ -714,7 +714,7 @@ async function acReviewRemake(button) {
  const job = button.dataset.reviewJob;
  card.setAttribute("aria-busy", "true");
  decisions.forEach(control => { control.disabled = true; });
- info.textContent = "正在保存审核决定…";
+ info.textContent = OneShotI18n.t("正在保存审核决定…");
  try {
   if (reviewBoard !== boardId) throw new Error("画布已切换，请重新打开对应对话");
   await flushSave();
@@ -772,9 +772,9 @@ function acAddChoices(message, event) {
  card.className = "ac-choices";
  card.dataset.event = event.id;
  card.setAttribute("role", "group");
- card.setAttribute("aria-label", "请选择一个方案");
+ card.setAttribute("aria-label", OneShotI18n.t("请选择一个方案"));
  const title = document.createElement("strong");
- title.textContent = "请选择一个方案";
+ title.textContent = OneShotI18n.t("请选择一个方案");
  card.append(title);
  options.forEach((label, index) => {
   const button = document.createElement("button");
@@ -799,7 +799,7 @@ function acMarkRetried(card) {
  if(!button)return;
  button.disabled=true;
  button.dataset.attempted="yes";
- button.textContent="已提交重试";
+ button.textContent=OneShotI18n.t("已提交重试");
 }
 
 async function acRetryCall(button) {
@@ -823,7 +823,7 @@ function acAddCallRetry(card, data) {
  const count=data.retry_count;
  row.className="ac-retry";
  button.type="button";button.dataset.retryCall=data.call_id;
- button.textContent=count>1?`按原参数重试 ${count} 个失败结果`:"按原参数重试";
+ button.textContent=count>1?`按原参数重试 ${count} 个失败结果`:OneShotI18n.t("按原参数重试");
  button.onclick=()=>acRetryCall(button);
  const feedback=document.createElement("span");feedback.setAttribute("role","status");
  if(data.result.errors?.length && !data.result.error){
@@ -839,7 +839,7 @@ function acAppendEvent(e,replay=false){
  if(e.kind==="question_answer"){
   acQuestionDrafts.delete(d.call_id);
   el=document.createElement("div");el.className="ac-msg user ac-question-summary";
-  el.innerHTML=`<strong>已提交创作确认</strong><dl>${d.answers.map(item=>`<div><dt>${esc(item.question)}</dt><dd>${esc(item.answer)}</dd></div>`).join("")}</dl>`;
+  el.innerHTML=OneShotI18n.html`<strong>已提交创作确认</strong><dl>${d.answers.map(item=>`<div><dt>${esc(item.question)}</dt><dd>${esc(item.answer)}</dd></div>`).join("")}</dl>`;
   box.append(el);return;
  }
  if(["user","assistant","notice"].includes(e.kind)){
@@ -959,7 +959,7 @@ function acAppendEvent(e,replay=false){
 function acWorkflowResult(target, report){
  const button=document.createElement("button");
  button.type="button";
- button.textContent="打开制作复盘";
+ button.textContent=OneShotI18n.t("打开制作复盘");
  button.onclick=()=>openWorkflowReview(report.node, report.version);
  target.append(button);
 }
@@ -970,9 +970,9 @@ function acDocumentUrl(sid,id) {
 async function acAddDocuments(files) {
  if(!AC.session || AC.board!==boardId || AC.documentUpload || AC.sending || !files.length)return;
  const limit=2-AC.documents.length;
- if(files.length>limit)return toast("每条消息最多添加 2 个文档");
+ if(files.length>limit)return toast(OneShotI18n.t("每条消息最多添加 2 个文档"));
  if(files.some(file=>!CM_DOCUMENT_EXT.test(file.name)))return toast("支持 TXT、Markdown、CSV、JSON、DOCX 和 PDF 文档");
- if(files.some(file=>file.size>8*1024*1024))return toast("每个文档不能超过 8 MB");
+ if(files.some(file=>file.size>8*1024*1024))return toast(OneShotI18n.t("每个文档不能超过 8 MB"));
  const sid=AC.session, epoch=AC.epoch, operation={};
  AC.documentUpload=operation;
  acRenderState();
@@ -992,11 +992,11 @@ async function acAddDocuments(files) {
 }
 function acRenderDocuments(){
  const pane=$("#acDocuments");
- const markup=AC.documents.map(doc=>`<span class="ac-ref" title="${esc(doc.name)}">${ico("script")}<span>${esc(doc.name)}${doc.truncated?" · 已截取":""}</span><button type="button" data-remove-document="${esc(doc.id)}" aria-label="移除附件">×</button></span>`).join("");
+ const markup=AC.documents.map(doc=>OneShotI18n.html`<span class="ac-ref" title="${esc(doc.name)}">${ico("script")}<span>${esc(doc.name)}${doc.truncated?" · 已截取":""}</span><button type="button" data-remove-document="${esc(doc.id)}" aria-label="移除附件">×</button></span>`).join("");
  if(pane._items!==markup){pane._items=markup;pane.innerHTML=markup;}
  pane.hidden=!AC.documents.length;
  $("#acAttachDocs").disabled=!AC.session||AC.sending||!!AC.documentUpload||AC.documents.length>=2;
- $("#acAttachDocs").lastChild.textContent=AC.documentUpload?"读取中…":"文档";
+ $("#acAttachDocs").lastChild.textContent=AC.documentUpload?OneShotI18n.t("读取中…"):OneShotI18n.t("文档");
 }
 function acRenderQuestions(){
  const panel=$("#acQuestions"), card=AC.questionnaires[0];
@@ -1012,16 +1012,16 @@ function acRenderQuestions(){
  panel._step=key;
  const item=card.questions[step], selection=answers[step];
  const options=item?.options||[];
- panel.innerHTML=`<form>
+ panel.innerHTML=OneShotI18n.html`<form>
   <header><strong>需要你的确认</strong><span>${item?`第 ${step+1} 项，共 ${answers.length} 项`:"核对答案"}</span></header>
-  ${item?`<fieldset><legend>${esc(item.prompt)}</legend>
+  ${item?OneShotI18n.html`<fieldset><legend>${esc(item.prompt)}</legend>
     ${options.map((text,i)=>`<label><input type="radio" name="choice" value="${i}" ${selection.pick===i?"checked":""}>${esc(text)}</label>`).join("")}
-    ${options.length?`<label><input type="radio" name="choice" value="-1" ${selection.pick===-1?"checked":""}>自填答案</label>`:""}
+    ${options.length?OneShotI18n.html`<label><input type="radio" name="choice" value="-1" ${selection.pick===-1?"checked":""}>自填答案</label>`:""}
     <textarea maxlength="500" aria-label="填写答案" rows="2" ${selection.pick===-1?"":"hidden"}>${esc(selection.pick===-1?selection.value:"")}</textarea>
   </fieldset>`:`<dl>${card.questions.map(({prompt},i)=>`<div><dt>${esc(prompt)}</dt><dd>${esc(answers[i].value)}</dd></div>`).join("")}</dl>`}
-  <footer>${step?'<button type="button" data-question-back>上一步</button>':""}
+  <footer>${step?OneShotI18n.markup('<button type="button" data-question-back>上一步</button>'):""}
   ${item?`<button type="button" data-question-next ${selection.value.trim()?"":"disabled"}>${step+1===answers.length?"核对答案":"下一项"}</button>`:
-    '<button type="submit">提交答案</button>'}</footer></form>`;
+    OneShotI18n.markup('<button type="submit">提交答案</button>')}</footer></form>`;
  const form=$("form",panel), next=$("[data-question-next]",form);
  const move=offset=>{
   draft.step+=offset;acRenderQuestions();
@@ -1066,15 +1066,15 @@ function acRenderState(){
  for(const button of $$("[data-retry-call]",$("#acMessages"))) {
   button.disabled=!!(button.dataset.attempted||button.dataset.sending||active||AC.queue.length||AC.sending);
  }
- $("#acStatus").textContent=active?AC_STATES[active.state]:(latest?.error||AC_STATES[latest?.state]||"可以讨论，也可以直接操作当前画布");
+ $("#acStatus").textContent=active?AC_STATES[active.state]:(latest?.error||AC_STATES[latest?.state]||OneShotI18n.t("可以讨论，也可以直接操作当前画布"));
  if(AC.questionnaires.length)$("#acStatus").textContent="请完成创作确认后继续";
  const queue=$("#acQueue");
  const queueMarkup=AC.queue.map((item,index)=>`<li data-queued-task="${esc(item.id)}" tabindex="-1"><span title="${esc(item.text)}">${esc(item.text)}</span>
-  ${item.removable===0?"":`<button type="button" data-remove-queued="${esc(item.id)}" aria-label="移除第 ${index+1} 条排队消息"${acQueueRemovals.has(item.id)?" disabled":""}>移除</button>`}</li>`).join("");
+  ${item.removable===0?"":OneShotI18n.html`<button type="button" data-remove-queued="${esc(item.id)}" aria-label="移除第 ${index+1} 条排队消息"${acQueueRemovals.has(item.id)?" disabled":""}>移除</button>`}</li>`).join("");
  if(queue._items!==queueMarkup){queue._items=queueMarkup;$("ol",queue).innerHTML=queueMarkup;}
  queue.hidden=!AC.queue.length;
  $("[data-queued-count]",queue).textContent="待执行 · "+AC.queue.length;
- if(!active&&AC.queue.length)$("#acStatus").textContent="指令已入队，等待并行位置";
+ if(!active&&AC.queue.length)$("#acStatus").textContent=OneShotI18n.t("指令已入队，等待并行位置");
  const lastMessage = AC.events.findLast(e => ["assistant","user","question_answer"].includes(e.kind));
  let choosing = false;
  for (const card of $$("#acMessages .ac-choices")) {
@@ -1082,10 +1082,10 @@ function acRenderState(){
   for (const button of card.querySelectorAll("button")) button.disabled = !current || !!active || !!AC.queue.length || AC.sending;
   choosing ||= !!current && !active && !AC.queue.length && !AC.sending;
  }
- if (choosing) $("#acStatus").textContent = "请选择上方的方案，或输入你的回复";
+ if (choosing) $("#acStatus").textContent = OneShotI18n.t("请选择上方的方案，或输入你的回复");
  $("#acStop").hidden=!active;$("#acStop").disabled=active?.state==="stopping";
  $("#acSend").disabled=AC.sending||!!AC.documentUpload||!!AC.loadingSessions||!AC.session||(!$("#acInput").value.trim()&&!AC.documents.length&&!AC.reviews.length);
- $("#acSend").textContent=active||AC.queue.length?"加入队列":"发送";
+ $("#acSend").textContent=active||AC.queue.length?OneShotI18n.t("加入队列"):OneShotI18n.t("发送");
  const delivery=AC.delivery.get(AC.session);
  $("#acDelivery").hidden=!delivery;
  const status=$("#acDeliveryStatus");
@@ -1099,7 +1099,7 @@ function acRenderState(){
    !AC.events.some(({kind,data})=>["user","assistant"].includes(kind)&&typeof data?.text==="string"&&data.text.trim());
  $("#acExecutionScope").value=AC.executionScope;
  $("#acExecutionScope").disabled=AC.sending||!!AC.loadingSessions;
- $("#acInput").placeholder=AC.executionScope==="brainstorm"?"描述创作目标，输入 @ 引用素材，一起探索不同方向…":"描述你想做什么，输入 @ 引用素材…";
+ $("#acInput").placeholder=AC.executionScope==="brainstorm"?OneShotI18n.t("描述创作目标，输入 @ 引用素材，一起探索不同方向…"):OneShotI18n.t("描述你想做什么，输入 @ 引用素材…");
  $("#acGenerationMode").disabled=AC.executionScope!=="full"||AC.sending||!!AC.loadingSessions;
  acRenderParallel();
  acRenderTaskCenter();
@@ -1117,15 +1117,15 @@ function acRenderModelPicker(){
  }
  const choice=state.locked?.id??state.choice??"";
  const option=models.find(model=>model.id===choice);
- const choices='<option value="">自动（平台路由）</option>'+models.map(model=>
+ const choices=OneShotI18n.html`<option value="">自动（平台路由）</option>`+models.map(model=>
   `<option value="${esc(model.id)}">${esc(model.name+" · "+model.model)}</option>`).join("");
  if(picker._options!==choices){picker._options=choices;picker.innerHTML=choices;}
  picker.value=option?.id||"";
  picker.disabled=!AC.session||AC.sending||!!AC.loadingSessions||!!state.locked||!models.length;
- picker.title=state.locked?"新建对话可切换模型":"选择本对话使用的文本模型";
+ picker.title=OneShotI18n.t(state.locked?"新建对话可切换模型":"选择本对话使用的文本模型");
  const levels=option?.levels||[];
  thinking.parentElement.hidden=levels.length<2;
- const options=levels.map(level=>`<option value="${level}">${AC_THINKING_LEVELS[level]}</option>`).join("");
+ const options=levels.map(level=>`<option value="${level}">${OneShotI18n.t(AC_THINKING_LEVELS[level])}</option>`).join("");
  if(thinking._options!==options){thinking._options=options;thinking.innerHTML=options;}
  thinking.value=levels.includes(state.level)?state.level:"off";
  thinking.disabled=AC.sending||!!AC.loadingSessions;
@@ -1139,7 +1139,7 @@ function acSessionDirectory(sessions, selected=AC.session, observedAt){
   if(AC.nodeDirectoryRequest?.board===boardId)AC.nodeDirectoryRequest=null;
  }
  const select=$("#acSessions");
- const options=AC.sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.title)}</option>`).join("");
+ const options=AC.sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.title==="新对话"?OneShotI18n.t("新对话"):s.title)}</option>`).join("");
  if(select._items!==options){select._items=options;select.innerHTML=options;}
  if(selected)select.value=selected;
 }
@@ -1352,11 +1352,11 @@ function acRenderTaskHistory(){
  const history=AC.taskHistory;
  const status=$("#acTaskHistoryStatus"), more=$("#acTaskHistoryMore"), list=$("#acTaskHistoryRows");
  if(!history||history.board!==boardId)return;
- status.textContent=history.loading?"正在读取任务历史…":history.error||
-  (history.before===null&&!history.tasks.length?"当前画布还没有已结束的助手任务。":"");
+ status.textContent=history.loading?OneShotI18n.t("正在读取任务历史…"):history.error||
+  (history.before===null&&!history.tasks.length?OneShotI18n.t("当前画布还没有已结束的助手任务。"):"");
  more.hidden=history.before===null;
  more.disabled=history.loading;
- more.textContent=history.tasks.length?"加载更早的任务":"查看任务历史";
+ more.textContent=history.tasks.length?OneShotI18n.t("加载更早的任务"):OneShotI18n.t("查看任务历史");
  const disabled=AC.sending||AC.documentUpload||AC.loadingSessions;
  const markup=history.tasks.map(task=>{
   const label=task.text||task.title;
@@ -1371,7 +1371,7 @@ function acRenderTaskHistory(){
 
 function acContinueTaskButton(session,run,state,disabled){
  if(state!=="done")return "";
- return `<button type="button" data-task-continue="${esc(session)}" data-task-continue-run="${esc(run)}"
+ return OneShotI18n.html`<button type="button" data-task-continue="${esc(session)}" data-task-continue-run="${esc(run)}"
   ${disabled?" disabled":""}>继续创作</button>`;
 }
 
@@ -1417,8 +1417,8 @@ function acRenderNodeTask(){
  stop.hidden=!active;
  stop.disabled=!active||session.run_state==="stopping"||acTaskStops.has(target.run);
  open.disabled=!!(AC.sending||AC.documentUpload||AC.loadingSessions);
- open.textContent=active&&session.run_state==="waiting_approval"?"去确认":
-  active&&session.run_state==="waiting_input"?"去补充":"打开对话";
+ open.textContent=active&&session.run_state==="waiting_approval"?OneShotI18n.t("去确认"):
+  active&&session.run_state==="waiting_input"?OneShotI18n.t("去补充"):OneShotI18n.t("打开对话");
 }
 
 function acRenderTaskCenter(){
@@ -1454,20 +1454,20 @@ function acRenderTaskCenter(){
   const text=terminal?session.title:session.active_task_text||session.title;
   return `<li><button type="button" class="ac-task-open" data-task-session="${esc(session.id)}"${terminal?` data-task-result="${esc(session.recent_task.id)}"`:""}${disabled?" disabled":""}>
     <strong>${esc(text)}${text!==session.title?`<small>${esc(session.title)}</small>`:""}</strong><small>${esc(state)}</small></button>
-    ${located?`<button type="button" data-task-locate="${esc(session.id)}"${disabled?" disabled":""}>定位节点</button>`:""}
+    ${located?OneShotI18n.html`<button type="button" data-task-locate="${esc(session.id)}"${disabled?" disabled":""}>定位节点</button>`:""}
     ${terminal?acContinueTaskButton(session.id,session.recent_task.id,phase,disabled):""}
-    ${!terminal&&session.active_task_id&&session.run_state?`<button type="button" data-task-stop="${esc(session.active_task_id)}" data-task-owner="${esc(session.id)}"
+    ${!terminal&&session.active_task_id&&session.run_state?OneShotI18n.html`<button type="button" data-task-stop="${esc(session.active_task_id)}" data-task-owner="${esc(session.id)}"
        aria-label="停止 ${esc(session.title)} 的当前任务"${session.run_state==="stopping"||acTaskStops.has(session.active_task_id)?" disabled":""}>停止</button>`:""}</li>`;
  }).join("")}</ul></section>`:"";
- const queueSection=queued.length?`<section><h3>排队指令</h3><ul>${queued.map(({session,task})=>`
+ const queueSection=queued.length?OneShotI18n.html`<section><h3>排队指令</h3><ul>${queued.map(({session,task})=>`
   <li><button type="button" class="ac-task-open" data-task-session="${esc(session.id)}" data-task-queued="${esc(task.id)}"${disabled?" disabled":""}>
   <strong>${esc(task.text||session.title)}<small>${esc(session.title)}</small></strong></button>
-  ${task.removable===0?"":`<button type="button" data-task-remove="${esc(task.id)}" data-task-owner="${esc(session.id)}"
+  ${task.removable===0?"":OneShotI18n.html`<button type="button" data-task-remove="${esc(task.id)}" data-task-owner="${esc(session.id)}"
    aria-label="移除排队指令 ${esc(task.text||session.title)}"${acQueueRemovals.has(task.id)?" disabled":""}>移除</button>`}</li>`).join("")}</ul></section>`:"";
  const status=AC.nodeDirectory?.board===boardId&&AC.nodeDirectory.error;
- const markup=(status?'<p role="status">任务列表更新失败，稍后将重试。</p>':"")+
+ const markup=(status?OneShotI18n.markup('<p role="status">任务列表更新失败，稍后将重试。</p>'):"")+
   (section("待处理",pending)+section("执行中",running)+queueSection+section("近期结果",recent,true)||
-   (AC.nodeDirectoryRequest?.board===boardId?'<p role="status">正在读取任务…</p>':"<p>当前画布还没有助手任务。</p>"));
+   (AC.nodeDirectoryRequest?.board===boardId?OneShotI18n.markup('<p role="status">正在读取任务…</p>'):OneShotI18n.markup("<p>当前画布还没有助手任务。</p>")));
  if(body._items!==markup){body._items=markup;body.innerHTML=markup;}
  acRenderTaskHistory();
 }
@@ -1611,13 +1611,13 @@ function acRenderApprovals() {
      const version=Number.isInteger(input.version)?` · 版本 ${input.version}`:"";
      return `<li>${esc([input.name||"参考素材",input.prompt_reference,label+version+timing].filter(Boolean).join(" · "))}</li>`;
    }).join("")}</ul></details>`:"";
-  const form=editable.prompt||editable.count?`<details><summary>调整参数</summary>
+  const form=editable.prompt||editable.count?OneShotI18n.html`<details><summary>调整参数</summary>
     <form class="ac-approval-editor" data-approval-edit="${esc(id)}">
     ${editable.prompt?`<label>${plan.kind==="audio"?"文案或描述":"提示词"}<textarea name="prompt" required maxlength="${esc(editable.prompt)}">${esc(plan.prompt||"")}</textarea></label>`:""}
-    ${editable.count?`<label>生成数量<input type="number" name="count" required min="1" max="${esc(editable.count)}" value="${esc(plan.count)}"></label>`:""}
+    ${editable.count?OneShotI18n.html`<label>生成数量<input type="number" name="count" required min="1" max="${esc(editable.count)}" value="${esc(plan.count)}"></label>`:""}
     <div class="ac-approval-actions"><button type="submit">保存参数</button><button type="reset">放弃更改</button></div></form></details>`:"";
   const blocked=!!(plan.reference_pending||plan.reference_error);
-  return `<article${blocked?" data-reference-blocked":""}><strong>确认生成</strong><div>${esc(plan.label || AC_LABELS[name] || "生成方案")} · ${esc(plan.count)} ${esc(units[plan.kind]||"个结果")}</div>
+  return OneShotI18n.html`<article${blocked?" data-reference-blocked":""}><strong>确认生成</strong><div>${esc(plan.label || AC_LABELS[name] || "生成方案")} · ${esc(plan.count)} ${esc(units[plan.kind]||"个结果")}</div>
    ${details?`<small>${esc(details)}</small>`:""}
    <small title="实际费用以服务账单为准">${esc(displayGenerationCost(Number.isFinite(plan.unit_cost) ? plan.unit_cost*plan.count : null))}</small>
    ${plan.reference_pending||plan.reference_error?`<p role="status">${esc(plan.reference_error||"正在核对生成参考…")}</p>`:referenceMarkup}
@@ -1668,7 +1668,7 @@ async function acPoll(background=false){
   if(AC.open&&bottom&&!$("#acTaskCenter").open&&current?.state==="done"&&acTaskResultElement(current.id))acTaskMarkSeen(current.id);
   AC.replaying=false;acRenderState();if(bottom)box.scrollTop=box.scrollHeight;$("#acError").hidden=true;
   acJumpToTaskResult();
- }catch(e){if(epoch===AC.epoch){$("#acError").textContent="连接中断，将自动重连："+e.message;$("#acError").hidden=false;}}finally{if(AC.polling===polling)AC.polling=false;}
+ }catch(e){if(epoch===AC.epoch){$("#acError").textContent=OneShotI18n.t("连接中断，将自动重连：")+" "+e.message;$("#acError").hidden=false;}}finally{if(AC.polling===polling)AC.polling=false;}
 }
 function acResetSession(id){
  acVoiceCancel();
@@ -1684,7 +1684,7 @@ function acResetSession(id){
  AC.modelSelection={};
  AC.executionScope="full";
  $("#acMessages").replaceChildren();$("#acInput").value="";
- $("#acModel").textContent="使用平台配置的文本模型";
+ $("#acModel").textContent=OneShotI18n.t("使用平台配置的文本模型");
 }
 async function acLoadSession(id){
  acRememberDraft();
@@ -1747,7 +1747,7 @@ async function acSessions(fresh=false){
   if(AC.loadingSessions===loading){AC.loadingSessions=null;acRenderState();}
  }
 }
-function acRenderEmpty(){const box=$("#acMessages");if(box.children.length)return;box.innerHTML=`<div class="ac-empty"><b>告诉我你想怎么创作</b><div>引用画布素材，我可以生成、编辑和整理结果。</div><button data-example="描述一下选中的图片">理解这张图片</button><button data-example="以选中图片为参考生成三个暖色版本，横向排列在原图右边">生成三个暖色版本</button><button data-example="把选中的节点横向排齐">整理选中的节点</button></div>`;$$("[data-example]",box).forEach(b=>b.onclick=()=>{$("#acInput").value=b.dataset.example;acRenderState();$("#acInput").focus();});}
+function acRenderEmpty(){const box=$("#acMessages");if(box.children.length)return;box.innerHTML=OneShotI18n.html`<div class="ac-empty"><b>告诉我你想怎么创作</b><div>引用画布素材，我可以生成、编辑和整理结果。</div><button data-example="描述一下选中的图片">理解这张图片</button><button data-example="以选中图片为参考生成三个暖色版本，横向排列在原图右边">生成三个暖色版本</button><button data-example="把选中的节点横向排齐">整理选中的节点</button></div>`;$$("[data-example]",box).forEach(b=>b.onclick=()=>{$("#acInput").value=b.dataset.example;acRenderState();$("#acInput").focus();});}
 function acMessageKey(board,sid,payload){
  const {text,selected,selection_id,review_id,review_ids,skill_id,document_ids,selected_versions,
   placement,generation_mode,chat_model,thinking_level,execution_scope,enqueue,empty_media_node}=payload;
@@ -1791,9 +1791,9 @@ async function acSend(choiceText){
  const submission=acComposeMessage(choiceText);
  const {payload,key,selection,reviews,documents,skill,draft,sid}=submission;
  if(!payload.text)return;
- if(payload.selected.length>30){toast("每条消息最多引用 30 个画布节点");return;}
+ if(payload.selected.length>30){toast(OneShotI18n.t("每条消息最多引用 30 个画布节点"));return;}
  if(payload.selected_versions?.some(({node_id,ref})=>!node(node_id)?.versions.some(v=>v.ref===ref))){
-  toast("引用的节点或版本已移除，请重新选择");return;
+  toast(OneShotI18n.t("引用的节点或版本已移除，请重新选择"));return;
  }
  if(selection&&(!payload.selected.includes(selection.node_id)||!node(selection.node_id)?.versions.some(v=>v.ref===selection.source_ref))){
   toast("选区源图已失效，请移除选区或重新圈选");return;
@@ -1828,7 +1828,7 @@ async function acSubmitMessage(submission){
    return;
   }
   const option=$("#acSessions").selectedOptions[0];
-  if(option?.textContent==="新对话")option.textContent=payload.text.slice(0,30);
+  if(option?.textContent===OneShotI18n.t("新对话"))option.textContent=payload.text.slice(0,30);
   const title=option?.textContent||"当前对话";
   AC.delivery.set(sid,{state:"accepted",message:(sent.state==="queued"?"已加入队列 · ":"已送达 · ")+title});
   const input=$("#acInput");
@@ -1836,7 +1836,7 @@ async function acSubmitMessage(submission){
   AC.modelSelection.locked??=AC.models.find(model=>model.id===payload.chat_model)||{id:""};
   if(sent.state==="queued"){
    if(!AC.queue.some(item=>item.id===sent.id))AC.queue.push({id:sent.id,text:payload.text});
-   toast("已加入创作助手队列");
+   toast(OneShotI18n.t("已加入创作助手队列"));
   }else if(!AC.runs.some(r=>r.id===sent.id))AC.runs.unshift(sent);
   const consumedDocuments=payload.document_ids||[];
   AC.documents=AC.documents.filter(doc=>!consumedDocuments.includes(doc.id));
@@ -1894,7 +1894,7 @@ async function acSendShotRequest(board, payload, expectedSession=null){
  if(board!==boardId || session!==AC.session || AC.pending.has(board))throw new Error("画布或对话已变化，请重试");
  const sent=await acApi(`/api/chat/sessions/${session}/messages`,payload);
  if(board===boardId && session===AC.session){
-  if(sent.state==="queued")toast("已加入创作助手队列");
+  if(sent.state==="queued")toast(OneShotI18n.t("已加入创作助手队列"));
   await acPoll();
  }
 }
@@ -1907,10 +1907,10 @@ function acBoardChanged(){
  acSessions().catch(e=>toast(e.message));
 }
 function initAgentChat(){
- const launch=document.createElement("button");launch.id="chatLaunch";launch.innerHTML=`${ico("script")}<span>创作助手</span>`;launch.setAttribute("aria-controls","agentChat");launch.setAttribute("aria-keyshortcuts","Meta+J Control+J /");launch.onclick=acOpen;document.body.append(launch);
- $("#tr").insertAdjacentHTML("afterbegin",`<button type="button" id="acTaskCenterBtn" aria-haspopup="dialog" aria-controls="acTaskCenter" hidden>
+ const launch=document.createElement("button");launch.id="chatLaunch";launch.innerHTML=OneShotI18n.html`${ico("script")}<span>创作助手</span>`;launch.setAttribute("aria-controls","agentChat");launch.setAttribute("aria-keyshortcuts","Meta+J Control+J /");launch.onclick=acOpen;document.body.append(launch);
+ $("#tr").insertAdjacentHTML("afterbegin",OneShotI18n.html`<button type="button" id="acTaskCenterBtn" aria-haspopup="dialog" aria-controls="acTaskCenter" hidden>
    助手任务 <span data-task-attention hidden></span><span data-task-running hidden></span><span data-task-results hidden></span></button>`);
- document.body.insertAdjacentHTML("beforeend",`<dialog id="acTaskCenter" aria-labelledby="acTaskCenterTitle">
+ document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="acTaskCenter" aria-labelledby="acTaskCenterTitle">
    <header><strong id="acTaskCenterTitle">当前画布的助手任务</strong><button type="button" data-task-close aria-label="关闭助手任务">×</button></header>
    <div id="acTaskCenterRows"></div>
    <div id="acTaskHistory"><ul id="acTaskHistoryRows" aria-label="任务历史"></ul>
@@ -1920,7 +1920,7 @@ function initAgentChat(){
    <label>节点上的任务标记 <select id="acTaskBadge"><option value="label">状态文字</option><option value="dot">圆点</option></select></label>
    </footer></dialog>`);
  const taskCenter=$("#acTaskCenter");
- document.body.insertAdjacentHTML("beforeend",`<dialog id="acNodeTask" aria-labelledby="acNodeTaskTitle">
+ document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="acNodeTask" aria-labelledby="acNodeTaskTitle">
   <header><strong id="acNodeTaskTitle"></strong><button type="button" data-node-task-close aria-label="关闭任务详情">×</button></header>
   <p id="acNodeTaskPrompt"></p><p id="acNodeTaskStatus" role="status"></p>
   <footer><button type="button" id="acNodeTaskOpen">打开对话</button><button type="button" id="acNodeTaskStop">停止本轮</button></footer>
@@ -2018,14 +2018,14 @@ function initAgentChat(){
   acCloseTaskCenter();
   acOpenNodeSession(id,{attention:true,locate:!!action.dataset.taskLocate,result,queued:action.dataset.taskQueued,history}).catch(error=>toast(error.message));
  };
- const pane=document.createElement("section");pane.id="agentChat";pane.hidden=true;pane.setAttribute("role","region");pane.setAttribute("aria-label","创作助手");pane.innerHTML=`<header class="ac-head"><strong>创作助手</strong><button id="acDock" title="切换停靠 / 浮动" aria-label="切换停靠 / 浮动">${ico("full")}</button><button id="acClose" title="收起，任务继续运行" aria-label="收起助手">×</button></header><div class="ac-subhead"><select id="acSessions" aria-label="对话历史"></select><button id="acNew">新对话</button></div><div id="acModel" class="ac-model">使用平台配置的文本模型</div><div id="acMessages" class="ac-messages" role="log" aria-label="对话与操作记录"></div><div id="acError" class="ac-status" hidden></div><div id="acStatus" class="ac-status" role="status"></div><div class="ac-composer"><div id="acRefs" class="ac-refs"></div><div id="acPicker" class="ac-picker" hidden></div><textarea id="acInput" aria-label="告诉助手要做什么" placeholder="描述你想做什么，输入 @ 引用素材…" maxlength="8000"></textarea><div class="ac-actions"><button id="acReference" title="引用画布节点">@ 引用</button><button id="acUndo" hidden>撤销本轮</button><span class="ac-hint">Enter 发送</span><button id="acStop" hidden>停止</button><button id="acSend" disabled>发送</button></div></div>`;document.body.append(pane);
+ const pane=document.createElement("section");pane.id="agentChat";pane.hidden=true;pane.setAttribute("role","region");pane.setAttribute("aria-label",OneShotI18n.t("创作助手"));pane.innerHTML=OneShotI18n.html`<header class="ac-head"><strong>创作助手</strong><button id="acDock" title="切换停靠 / 浮动" aria-label="切换停靠 / 浮动">${ico("full")}</button><button id="acClose" title="收起，任务继续运行" aria-label="收起助手">×</button></header><div class="ac-subhead"><select id="acSessions" aria-label="对话历史"></select><button id="acNew">新对话</button></div><div id="acModel" class="ac-model">使用平台配置的文本模型</div><div id="acMessages" class="ac-messages" role="log" aria-label="对话与操作记录"></div><div id="acError" class="ac-status" hidden></div><div id="acStatus" class="ac-status" role="status"></div><div class="ac-composer"><div id="acRefs" class="ac-refs"></div><div id="acPicker" class="ac-picker" hidden></div><textarea id="acInput" aria-label="告诉助手要做什么" placeholder="描述你想做什么，输入 @ 引用素材…" maxlength="8000"></textarea><div class="ac-actions"><button id="acReference" title="引用画布节点">@ 引用</button><button id="acUndo" hidden>撤销本轮</button><span class="ac-hint">Enter 发送</span><button id="acStop" hidden>停止</button><button id="acSend" disabled>发送</button></div></div>`;document.body.append(pane);
  $("#acNew").before(Object.assign(document.createElement("button"),{
   id:"acSaveMemory",type:"button",textContent:"收录到记忆",disabled:true,
   title:"把当前对话的文字消息保存到个人资产库，再次收录会更新正文",
   onclick:acSaveConversationMemory,
  }));
- $("#acInput").insertAdjacentHTML("beforebegin",'<div id="acDelivery" hidden><span id="acDeliveryStatus" role="status"></span><button type="button" id="acResend" hidden>重新发送</button></div>');
- $("#acInput").insertAdjacentHTML("beforebegin",`<div id="acContinuation" hidden>
+ $("#acInput").insertAdjacentHTML("beforebegin",OneShotI18n.markup('<div id="acDelivery" hidden><span id="acDeliveryStatus" role="status"></span><button type="button" id="acResend" hidden>重新发送</button></div>'));
+ $("#acInput").insertAdjacentHTML("beforebegin",OneShotI18n.html`<div id="acContinuation" hidden>
   <strong id="acContinuationDrag" draggable="true"></strong>
   <span role="status">点击节点或空白处，也可拖动任务名称到目标位置。</span>
   <button type="button" id="acContinuationCancel">取消</button>
@@ -2040,8 +2040,8 @@ function initAgentChat(){
   const delivery=AC.delivery.get(AC.session);
   if(delivery?.state==="failed")void acSubmitMessage(delivery);
  };
- $("#acModel").insertAdjacentHTML("afterend",'<section id="acParallel" aria-label="并行对话" hidden></section>');
- $("#acModel").insertAdjacentHTML("beforebegin",`<div class="ac-model-settings">
+ $("#acModel").insertAdjacentHTML("afterend",OneShotI18n.markup('<section id="acParallel" aria-label="并行对话" hidden></section>'));
+ $("#acModel").insertAdjacentHTML("beforebegin",OneShotI18n.html`<div class="ac-model-settings">
    <label>对话模型<select id="acModelChoice"></select></label>
    <label hidden>思考强度<select id="acThinkingLevel"></select></label>
  </div>`);
@@ -2059,9 +2059,9 @@ function initAgentChat(){
  acVoiceInit();
  initCreativeSkills();
  initCreativeProfile();
- $("#acStatus").insertAdjacentHTML("afterend",`<section id="acApprovals" aria-label="待确认的生成方案" aria-live="polite" hidden></section>`);
- $("#acRefs").insertAdjacentHTML("beforebegin",'<section id="acQuestions" aria-label="待填写的创作确认" hidden></section>');
- $(".ac-subhead",pane).insertAdjacentHTML("afterend",`<div class="ac-execution-controls"><label class="ac-generation-mode">本轮范围 <select id="acExecutionScope" aria-label="本轮执行范围">${Object.entries(AC_EXECUTION_SCOPES).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></label>
+ $("#acStatus").insertAdjacentHTML("afterend",OneShotI18n.html`<section id="acApprovals" aria-label="待确认的生成方案" aria-live="polite" hidden></section>`);
+ $("#acRefs").insertAdjacentHTML("beforebegin",OneShotI18n.markup('<section id="acQuestions" aria-label="待填写的创作确认" hidden></section>'));
+ $(".ac-subhead",pane).insertAdjacentHTML("afterend",OneShotI18n.html`<div class="ac-execution-controls"><label class="ac-generation-mode">本轮范围 <select id="acExecutionScope" aria-label="本轮执行范围">${Object.entries(AC_EXECUTION_SCOPES).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></label>
   <label class="ac-generation-mode">生成方式 <select id="acGenerationMode" aria-label="生成确认方式" title="智能确认每轮最多自动生成两张图片，超出额度的批次和其他类型会先确认">${Object.entries(AC_GENERATION_MODES).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select></label></div>`);
  $("#acExecutionScope").onchange=event=>{AC.executionScope=event.target.value;acRenderState();};
  const generationMode=$("#acGenerationMode");
@@ -2107,9 +2107,9 @@ function initAgentChat(){
   const card=form?.closest("article");
   if(card && !card.dataset.pending)$("[data-decision=approve]",card).disabled=card.hasAttribute("data-reference-blocked");
  };
- $("#acStatus").insertAdjacentHTML("afterend",`<section id="acQueue" aria-label="待执行指令" hidden><strong data-queued-count></strong><ol></ol></section>`);
- $("#acRefs").insertAdjacentHTML("afterend",`<div id="acDocuments" class="ac-refs" aria-label="文档附件" hidden></div>`);
- $("#acReference").insertAdjacentHTML("afterend",`<button type="button" id="acAttachDocs" title="添加文档附件" disabled>${ico("upload")}<span>文档</span></button>
+ $("#acStatus").insertAdjacentHTML("afterend",OneShotI18n.html`<section id="acQueue" aria-label="待执行指令" hidden><strong data-queued-count></strong><ol></ol></section>`);
+ $("#acRefs").insertAdjacentHTML("afterend",OneShotI18n.html`<div id="acDocuments" class="ac-refs" aria-label="文档附件" hidden></div>`);
+ $("#acReference").insertAdjacentHTML("afterend",OneShotI18n.html`<button type="button" id="acAttachDocs" title="添加文档附件" disabled>${ico("upload")}<span>文档</span></button>
    <button type="button" id="acPickPlacement" title="指定新结果放置位置" aria-label="指定新结果放置位置" aria-pressed="false">${ico("fit")}</button>
    <input type="file" id="acDocumentFile" accept=".txt,.md,.markdown,.csv,.json,.docx,.pdf" multiple hidden>`);
  const documentInput=$("#acDocumentFile"), composer=$(".ac-composer",pane);
@@ -2135,7 +2135,7 @@ function initAgentChat(){
  $("#acPickPlacement").onclick=()=>{
   if (AC.sending || !AC.session || AC.board!==boardId || !canvasCanEdit() || acVoicePointing()) return;
   acPickPlacement(!acPickingPlacement);
-  if(acPickingPlacement)toast("点击画布空白处指定放置位置，按 Esc 取消");
+  if(acPickingPlacement)toast(OneShotI18n.t("点击画布空白处指定放置位置，按 Esc 取消"));
  };
  document.addEventListener("keydown",event=>{
   acKeyboardShortcut(event);
@@ -2163,7 +2163,7 @@ function initAgentChat(){
   acApplyContinuation(event.target,event.clientX,event.clientY);
  },true);
  $("#acNew").onclick=()=>acSessions(true).catch(e=>toast(e.message));$("#acSessions").onchange=e=>acLoadSession(e.target.value).catch(e=>toast(e.message));$("#acReference").onclick=acPick;$("#acSend").onclick=acSend;
- $("#acStop").title="停止此对话的当前任务，队列继续执行";
+ $("#acStop").title=OneShotI18n.t("停止此对话的当前任务，队列继续执行");
  $("#acInput").oninput=event=>{
   acRenderState();
   if(event.inputType==="insertText"&&event.data==="/"&&!event.isComposing&&event.target.value==="/"&&
@@ -2171,7 +2171,7 @@ function initAgentChat(){
  };
  $("#acInput").onkeydown=e=>{e.stopPropagation();if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();acSend();}};
  $("#acStop").onclick=async()=>{try{await acStopCurrent();}catch(e){toast(e.message);}};
- $("#acUndo").onclick=async()=>{const rid=AC.runs[0]?.id;if(!rid)return;try{await flushSave();await acApi(`/api/chat/runs/${rid}/undo`,{});await acPoll();toast("已撤销本轮画布改动，生成文件仍保留");}catch(e){toast(e.message,5000);}};
+ $("#acUndo").onclick=async()=>{const rid=AC.runs[0]?.id;if(!rid)return;try{await flushSave();await acApi(`/api/chat/runs/${rid}/undo`,{});await acPoll();toast(OneShotI18n.t("已撤销本轮画布改动，生成文件仍保留"));}catch(e){toast(e.message,5000);}};
  $("#acMessages").onclick=async e=>{
   const gif=e.target.closest("[data-gif-showcase]");
   if(gif){if(AC.board===boardId)await openGifShowcase({ref:gif.dataset.gifShowcase});return;}
@@ -2221,8 +2221,8 @@ function initAgentChat(){
     for (const {source,ref} of refs) link(source,script,true,{ref});
     drawEdges();
    }
-   createStoryboard.textContent="定位分镜";
-   status.textContent="分镜已加入画布";
+   createStoryboard.textContent=OneShotI18n.t("定位分镜");
+   status.textContent=OneShotI18n.t("分镜已加入画布");
    const summary=card.closest(".ac-call")?.querySelector("summary");
    if(summary)summary.textContent=AC_LABELS.storyboard_create_plan+" · 已加入";
    selectOnly(script.id);fit([script]);
@@ -2232,7 +2232,7 @@ function initAgentChat(){
   if(revisionButton){
    const card=revisionButton.closest("[data-shot-revision]"), p=JSON.parse(card.dataset.shotRevision), script=node(p.node);
    if(p.board!==boardId || AC.board!==boardId || !canvasCanEdit())return toast("请回到对应的可编辑画布");
-   if(script?.type!=="script")return toast("分镜已移除");
+   if(script?.type!=="script")return toast(OneShotI18n.t("分镜已移除"));
    const run=$("[data-run-shot-revision]",card), status=$('[role="status"]',card);
    if(revisionButton===run){
     const index=script.data.shots.findIndex(shot=>shot.id===run.dataset.shot);
@@ -2259,21 +2259,21 @@ function initAgentChat(){
    const card=reviewButton.closest("[data-shot-review-card]"), p=JSON.parse(card.dataset.shotReviewCard);
    if(p.board!==boardId || AC.board!==boardId)return toast("请回到审阅所属画布");
    const script=node(p.script);
-   if(script?.type!=="script")return toast("分镜已移除");
+   if(script?.type!=="script")return toast(OneShotI18n.t("分镜已移除"));
    if(reviewButton.hasAttribute("data-plan-review-revision")){
     const status=$('[role="status"]',card), call=card.closest("[data-call]").dataset.call;
     const model=$("#acModelChoice").value, thinking=$("#acThinkingLevel").value;
     reviewButton.dataset.requestKey ||= crypto.randomUUID?.() || ("revise-review-"+Date.now()+Math.random());
-    reviewButton.disabled=true;status.textContent="正在提交…";
+    reviewButton.disabled=true;status.textContent=OneShotI18n.t("正在提交…");
     try{
      await acSendShotRequest(p.board,{text:"根据这次审阅，为当前镜头拟一份修改方案。",review_revision_call:call,
       request_key:reviewButton.dataset.requestKey,enqueue:true,...(model?{chat_model:model}:{}),
       ...(thinking&&thinking!=="off"?{thinking_level:thinking}:{})},AC.session);
-     status.textContent="已提交修改方案请求";
+     status.textContent=OneShotI18n.t("已提交修改方案请求");
     }catch(error){reviewButton.disabled=false;status.textContent=error.message;}
    }else{
     const index=p.shot_id?script.data.shots.findIndex(shot=>shot.id===p.shot_id):p.shot-1;
-    if(index<1)return toast("审阅关联的切点已变化，请重新审阅");
+    if(index<1)return toast(OneShotI18n.t("审阅关联的切点已变化，请重新审阅"));
     openShotContinuityReview(script,index,p);
    }
    return;
@@ -2294,7 +2294,7 @@ function initAgentChat(){
    }
    openScriptShot(script,index);
    const pair=scriptShotLinks(script)[index];
-   if(pair)open.textContent="定位这一镜";
+   if(pair)open.textContent=OneShotI18n.t("定位这一镜");
    tail.hidden=index===0||!node(pair?.img);
    run.hidden=!pair;
    return;
@@ -2313,7 +2313,7 @@ function initAgentChat(){
     if(shot.id){
      open.dataset.openApprovedShot=shot.id;
      const pair=scriptShotLinks(script)[index];
-     open.textContent=pair?"定位这一镜":"展开这一镜";
+     open.textContent=pair?OneShotI18n.t("定位这一镜"):OneShotI18n.t("展开这一镜");
      open.hidden=false;
      $("[data-link-previous-shot]",card).hidden=index===0||!node(pair?.img);
      $("[data-run-approved-shot]",card).hidden=!pair;

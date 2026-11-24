@@ -74,7 +74,7 @@ function finishFilmPlaylistPicker(apply=false,returnToFilm=true) {
 }
 
 function initFilmPlaylistPicker() {
-  document.body.insertAdjacentHTML("beforeend",`<aside id="filmPlaylistPick" aria-label="从画布选择视频" tabindex="-1" hidden>
+  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<aside id="filmPlaylistPick" aria-label="从画布选择视频" tabindex="-1" hidden>
     <strong>点击画布视频，按顺序加入播放列表</strong><span data-playlist-pick-count role="status"></span>
     <button type="button" class="pill" data-playlist-pick-cancel>取消</button>
     <button type="button" class="pill" data-playlist-pick-apply>加入列表</button></aside>`);

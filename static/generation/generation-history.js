@@ -149,7 +149,7 @@ function ghCard(item) {
     `<audio src="${esc(item.url)}" controls preload="none" aria-label="${title}"></audio>`;
   const date = Number.isFinite(item.created) ? new Date(item.created*1000).toLocaleString() : "";
   const references = seedAudioRefs({data:item.audio_recipe}).length, missing = item.missing_audio_references || 0;
-  card.innerHTML = `<div class="gh-preview">${preview}</div><strong title="${title}">${title}</strong>
+  card.innerHTML = OneShotI18n.html`<div class="gh-preview">${preview}</div><strong title="${title}">${title}</strong>
     <span>${esc([kind,item.model,date].filter(Boolean).join(" · "))}</span>
     ${item.prompt ? `<p title="${esc(item.prompt)}">${esc(item.prompt)}</p>` : ""}
     ${item.image_edit ? "<span>可复用编辑参数和图层</span>" : item.image_edit_unavailable ? "<span>编辑来源或图层已不可用</span>" : ""}

@@ -134,7 +134,7 @@ function publishForm(box,event,boards) {
     video.replaceChildren();
     upload.value="";
     video.onchange();
-    message.textContent="正在读取画布版本…";
+    message.textContent=OneShotI18n.t("正在读取画布版本…");
     try {
       const loaded=await request("/api/board/"+encodeURIComponent(id));
       if(attempt!==pending)return;
@@ -163,7 +163,7 @@ function publishForm(box,event,boards) {
     const payload={event:eventId,track:data.get("track")||"",title:data.get("title"),description:data.get("description"),
       revision:board.rev,confirmed:true,video:selected?{node:selected.node,ref:selected.ref}:null};
     const file=video.value==="upload"?upload.files[0]:null;
-    if(file?.size>300000000) { message.textContent="成片最多 300 MB"; return; }
+    if(file?.size>300000000) { message.textContent=OneShotI18n.t("成片最多 300 MB"); return; }
     let body=payload;
     if(file){
       body=new FormData();
@@ -171,7 +171,7 @@ function publishForm(box,event,boards) {
       body.append("video",file);
     }
     submit.disabled=canvas.disabled=refresh.disabled=true;
-    message.textContent=file?"正在上传并投稿…":"正在检查作品并投稿…";
+    message.textContent=file?OneShotI18n.t("正在上传并投稿…"):OneShotI18n.t("正在检查作品并投稿…");
     try {
       await request("/api/board/"+encodeURIComponent(data.get("board"))+"/showcase","POST",body);
       await showEvent();
@@ -331,7 +331,7 @@ async function showList() {
     article.append(h,el("p",labels[event.state],"event-hint"),el("p",dates(event),"event-dates"),el("p",event.brief));
     area.append(article);
   }
-  statusLine.textContent=items.length?"":"暂无创作活动";
+  statusLine.textContent=items.length?"":OneShotI18n.t("暂无创作活动");
   if(identity.user?.role!=="admin")return;
   const form=document.querySelector("#eventCreate");
   form.hidden=false;
