@@ -1,5 +1,25 @@
 "use strict";
 
+document.getElementById("audioToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="audioSeparation" aria-labelledby="audioSeparationTitle">
+  <header><strong id="audioSeparationTitle">人声分离</strong><button type="button" data-stem-close aria-label="关闭">×</button></header>
+  <p data-stem-source></p>
+  <div class="stem-source-player"></div>
+  <form>
+    <label>开始（秒） <input name="start" type="number" min="0" step="any" required></label>
+    <label>结束（秒） <input name="end" type="number" min="0" step="any"></label>
+    <button type="submit" data-stem-start>开始分离</button>
+    <button type="button" data-stem-cancel hidden>取消任务</button>
+  </form>
+  <p role="status"></p>
+  <div data-stem-results></div>
+  <footer class="stem-result-actions" hidden>
+    <button type="button" data-stem-add>两条音轨放入画布</button>
+    <button type="button" data-stem-edit>在剪辑台使用</button>
+  </footer>
+</dialog>
+`);
+
 const STEM_LABELS={vocals:"人声",no_vocals:"伴奏与环境声"};
 let stemDialogState=null;
 

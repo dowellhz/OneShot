@@ -16,7 +16,7 @@ from oneshot.editing import image_editor
 import server
 from oneshot.editing import image_routes
 from oneshot.generation import requests as generation_requests
-from test_agent_chat import ChatFixture, answer, call
+from chat_fixture import ChatFixture, answer, call
 
 
 class EditingIntegration(ChatFixture):

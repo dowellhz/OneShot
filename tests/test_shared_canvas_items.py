@@ -10,7 +10,7 @@ from oneshot.storage import db
 from oneshot.editing import image_editor
 import server
 from oneshot.canvas import shared_canvas_items
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class SharedCanvasItems(ChatFixture):

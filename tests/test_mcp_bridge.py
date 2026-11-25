@@ -16,7 +16,7 @@ from oneshot.editing import image_editor
 from oneshot.integrations import mcp_bridge
 import server
 from oneshot.generation import requests as generation_requests
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class ConnectorIntegration(ChatFixture):

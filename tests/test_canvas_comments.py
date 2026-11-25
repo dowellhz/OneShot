@@ -7,7 +7,7 @@ from oneshot.storage import db
 from oneshot.memory import document_review
 from oneshot.editing import image_editor
 import server
-from test_agent_chat import ChatFixture, answer, call
+from chat_fixture import ChatFixture, answer, call
 
 
 class CanvasComments(ChatFixture):

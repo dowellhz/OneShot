@@ -8,7 +8,7 @@ from PIL import Image
 from oneshot.storage import db
 import server
 from oneshot.generation import requests as generation_requests
-from test_agent_chat import ChatFixture, answer, call
+from chat_fixture import ChatFixture, answer, call
 
 
 class GifExport(ChatFixture):

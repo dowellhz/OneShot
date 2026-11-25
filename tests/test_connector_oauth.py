@@ -14,7 +14,7 @@ from oneshot.integrations import connector_oauth
 from oneshot.storage import db
 from oneshot.integrations import mcp_bridge
 import server
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class OAuthIntegration(ChatFixture):

@@ -104,24 +104,28 @@ Browser ──▶ server.py (aiohttp, :8190) ── accounts, projects, jobs, ro
 | `server.py` / `oneshot/app.py` | Entry point, web application setup, and background service lifecycle |
 | `oneshot/web/routing.py` | HTTP route registration. Feature modules own the handlers. |
 | `oneshot/generation/requests.py` / `oneshot/generation/jobs.py` | Generation previews and submissions, job status, and recovery |
+| `oneshot/generation/queue.py` | Generation queue status and completion estimates |
+| `oneshot/generation/reference.py` / `oneshot/generation/reference_prompts.py` / `oneshot/generation/reference_media.py` | Video reference routing and previews, prompt bindings, and pinned media validation |
 | `oneshot/config.py` | Repository root, data, models, and static asset paths |
 | `oneshot/canvas/board_store.py` | Canvas ID and data validation, JSON reads, and atomic writes |
 | `oneshot/web/auth.py` / `oneshot/storage/db.py` | Accounts with scrypt password hashing, sessions, and SQLite. API keys are encrypted with Fernet. |
 | `oneshot/providers/catalog.py` / `oneshot/providers/remote.py` | Model catalog, capability routing, and third-party image, video, voiceover, and music adapters |
-| `engine/h3engine.py` | Runs the full 31B BF16 H3 on a 24 GB GPU by streaming Transformer blocks from pinned memory, using an FP8 text encoder, and merging turbo LoRA at load time. |
+| `engine/h3engine.py` / `engine/h3_checkpoint.py` | Full 31B BF16 H3 inference, GPU weight streaming, checkpoint reads, and turbo LoRA merging |
 | `engine/service.py` | Single-GPU queue, progress, cancellation, and on-demand switching between image and video models |
 | `oneshot/generation/rewriter.py` / `oneshot/generation/fields.py` / `oneshot/generation/tools.py` | Prompt rewriting and structured assembly, storyboards, prompt extraction, shot analysis, grids, and stitching |
 | `oneshot/editing/image_editor.py` / `static/editing/image-editor.js` | Image edits, selection context, expansion and mask compositing, and version UI |
-| `oneshot/assistant/agent_chat.py` / `oneshot/assistant/agent_editing.py` / `oneshot/assistant/agent_video.py` / `static/assistant/agent-chat.js` | Persistent chat and tools, pinned image versions, duplicate prevention, progress, cancellation, undo, and canvas sync |
+| `oneshot/assistant/agent_chat.py` / `oneshot/assistant/chat_service.py` / `static/assistant/agent-chat.js` | Assistant routes, persistent conversations and task queue, and the chat panel |
+| `oneshot/assistant/agent_editing.py` / `oneshot/assistant/agent_video.py` | Image editing and video tools that operate on pinned media versions |
 | `oneshot/editing/video_remake.py` / `oneshot/editing/video_matte.py` / `static/editing/video-remake.js` | Source analysis, recasting, compositing, shot review, and export with source audio |
-| `oneshot/memory/creative_memory.py` / `static/memory/asset-library.js` | Asset library, references and generation history, assistant retrieval, and generation references |
+| `oneshot/memory/creative_memory.py` / `oneshot/memory/memory_generation.py` / `static/memory/asset-library.js` | Asset library entry point, pinned references and generation context, and the library interface |
 | `oneshot/editing/render.py` | Film rendering, transitions, subtitles, music ducking, and narration |
 | `oneshot/web/local_admin.py` / `engine.sh` | Local deployment view, GPU/memory/disk status, service controls, and model files |
-| `static/index.html` / `static/canvas/canvas.css` | Workspace markup and styling for the canvas and shared controls |
-| `static/canvas/canvas.js` | Canvas state, saves, undo, nodes, links, and interactions |
-| `static/generation/canvas-generation.js` | Generation settings, job polling, uploads, and asset history |
+| `static/index.html` / `static/canvas/` | Workspace markup and styles for the canvas layout, nodes, navigation, and workflows |
+| `static/canvas/canvas.js` / `static/canvas/canvas-persistence.js` / `static/canvas/canvas-history.js` | Shared canvas state, revision-aware saves, undo, and redo |
+| `static/generation/canvas-generation.js` | Canvas generation settings, job polling, and node version updates |
+| `static/canvas/canvas-import.js` / `static/memory/canvas-asset-drawer.js` | File imports and the canvas media drawer |
 | `static/canvas/canvas-projects.js` | Canvas switching, samples, and workspace startup |
-| `static/generation/tools.js` / `static/editing/film.js` / `static/generation/wizard.js` | Canvas tools, timeline editor, and Idea to Film |
+| `static/generation/storyboard-node.js` / `static/editing/film.js` / `static/generation/wizard.js` | Storyboard script nodes, timeline editor, and Idea to Film |
 
 The browser saves through `/api/board/{id}`. The assistant writes to the same canvas when a tool finishes. Browser saves check the canvas revision. The assistant saves tool results and canvas changes together to prevent duplicate operations.
 
@@ -136,12 +140,22 @@ Tested with an RTX 4090 (24 GB), 125 GB of system RAM, Ubuntu, and CUDA 12.8. Th
 python3 -m venv ~/h3engine-venv
 ~/h3engine-venv/bin/pip install -r requirements.txt
 
-# 2. Download the official model files and prompt guides from ModelScope.
+# 2. Download the official pipeline components, H3-Image, and prompt guides from ModelScope.
+export H3_WEIGHTS="$HOME/h3engine/weights"
+export H3_IMAGE_BASE="$HOME/h3engine/MiniMax-H3-Image"
 bash scripts/fetch_models.sh
+```
 
-# 3. Start the engine and the web service.
-bash engine.sh engine-start
-~/h3engine-venv/bin/python server.py      # Open http://<host>:8190 and create an admin account.
+Download the BF16 video transformers, text encoder, and turbo LoRA separately as listed below. From the repository root, start the engine in the terminal where you set the environment variables above.
+
+```bash
+~/h3engine-venv/bin/python engine/service.py
+```
+
+Start the web service from the repository root in a separate terminal and create an administrator on your first visit to port 8190.
+
+```bash
+~/h3engine-venv/bin/python server.py
 ```
 
 | Model files | Location or environment variable | Source |

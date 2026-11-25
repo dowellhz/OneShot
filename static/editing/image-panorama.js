@@ -1,5 +1,17 @@
 "use strict";
 
+document.getElementById("mediaToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="imagePanorama" aria-labelledby="imagePanoramaTitle">
+  <header><strong id="imagePanoramaTitle">360° 全景预览</strong><span data-panorama-name></span>
+    <button type="button" data-panorama-close aria-label="关闭全景">×</button></header>
+  <canvas tabindex="0" aria-label="全景视图"></canvas>
+  <footer><span role="status"></span>
+    <label>画幅 <select data-panorama-aspect><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
+    <button type="button" data-panorama-reset>重置视角</button>
+    <button type="button" data-panorama-capture>视角放入画布</button></footer>
+</dialog>
+`);
+
 const panoramaSizes={"16:9":[960,540],"9:16":[540,960],"1:1":[768,768]};
 const panoramaVersion=v=>!!(v?.ref&&v.url&&Math.abs(v.w/v.h-2)<.03);
 let panorama=null,panoramaPipeline=null;

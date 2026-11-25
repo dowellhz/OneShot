@@ -7,7 +7,7 @@ from unittest.mock import patch
 from aiohttp import FormData
 
 import server
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class AudioReferences(ChatFixture):

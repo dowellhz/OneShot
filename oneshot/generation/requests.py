@@ -141,11 +141,15 @@ async def generate_request(req, raw):
     return await submit_prepared_generation(req, payload, draft=draft)
 
 
+def image_story_sources(payload):
+    return [asset.get("generation_context") or asset for asset in payload.get("memory_used", [])
+            if asset.get("kind") in creative_memory.IMAGE_STORY_KINDS]
+
+
 async def image_story_prompt(llm, payload):
     if payload.get("kind") != "image":
         return payload, None
-    sources = [asset.get("generation_context") or asset for asset in payload.get("memory_used", [])
-               if asset.get("kind") in creative_memory.IMAGE_STORY_KINDS]
+    sources = image_story_sources(payload)
     if not sources:
         return payload, None
     prompt = payload["prompt"].strip()
@@ -179,12 +183,28 @@ async def image_story_prompt(llm, payload):
     return {**payload, "prompt": prompt.strip()}, status
 
 
-async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=None):
+def prepare_generation_replay(payload, recorded_prompt=None):
+    if (payload.get("kind") == "image" and not payload.get("_effective_image_snapshot") and
+            (image_story_sources(payload) or payload.get("expand") or payload.get("_native_inpaint"))):
+        if (not payload.get("expand") and not payload.get("_native_inpaint") and
+                isinstance(recorded_prompt, str) and creative_memory.IMAGE_STORY_PROMPT_MARKER in recorded_prompt):
+            return {**payload, "prompt": recorded_prompt, "_effective_image_snapshot": True}
+        raise ValueError("历史任务未保存实际提交的图片提示词，无法按原参数重试。请重新发起生成。")
+    return payload
+
+
+async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=None, replay=False):
     memory = req.app["creative_memory"]
-    prepared = payload
-    payload, story_status = await image_story_prompt(req.app.get("llm"), payload)
-    if not http_errors.clean(prepared.get("prompt")) and story_status is not None:
-        raise http_errors.bad("请描述想生成的画面，再用世界观补充细节")
+    if replay:
+        payload = dict(prepare_generation_replay(payload))
+        story_status = payload.pop("_image_story_status", None)
+        if payload.pop("_effective_image_snapshot", False):
+            req["replaying_effective_image"] = True
+    else:
+        original_prompt = payload.get("prompt")
+        payload, story_status = await image_story_prompt(req.app.get("llm"), payload)
+        if not http_errors.clean(original_prompt) and story_status is not None:
+            raise http_errors.bad("请描述想生成的画面，再用世界观补充细节")
     native = payload.get("_native_inpaint")
     if native:
         payload = {**payload, "_native_inpaint": {**native, "prompt": payload["prompt"]}}
@@ -194,7 +214,13 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
     else:
         response = await _generate_request(req, payload)
     if isinstance(req, agent_chat.InternalRequest):
-        req["generation_snapshot"] = copy.deepcopy(prepared)
+        snapshot = copy.deepcopy(payload)
+        if snapshot.get("kind") == "image":
+            snapshot.update(_effective_image_snapshot=True, _image_story_status=story_status,
+                            prompt=req.get("effective_image_prompt", snapshot["prompt"]))
+            if snapshot.get("expand"):
+                snapshot["expand"] = False
+        req["generation_snapshot"] = snapshot
     result = json.loads(response.body)
     if story_status is not None:
         result["image_story_context"] = story_status
@@ -415,6 +441,7 @@ async def _generate_request(req, raw, *, fixed_route=None):
         except Exception as e:
             raise web.HTTPBadRequest(text=json.dumps({"error": f"智能扩写失败：{e}"}, ensure_ascii=False), content_type="application/json")
         p = {**p, "prompt": cap, "expand": False}
+        req["effective_image_prompt"] = cap
         meta_extra = {"expanded": cap}
     if int8 and not await local_generation.engine_up(req.app, int8=True):
         raise http_errors.bad("本地 H3 INT8 ConvRot 引擎暂不可用，请稍后重试")

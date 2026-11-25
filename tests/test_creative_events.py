@@ -11,7 +11,7 @@ from oneshot.web import auth
 from oneshot.canvas import creative_events
 from oneshot.storage import db
 import server
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class EventIntegration(ChatFixture):

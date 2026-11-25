@@ -51,6 +51,26 @@ async function run() {
   assert.equal(host.querySelector("button").title, "Save");
   assert.equal(host.querySelector("button").dataset.token, "保存");
   assert.equal(host.querySelector("strong").textContent, userTitle);
+  host.innerHTML = html`<button data-title="保存" data-label="保存"
+    title = '保存' data-note='title="保存"'>${html`<span>保存</span>`}</button>
+    <select name="mode"><option> 保存 </option><option value="保留">保存</option>
+    <option>保存 ${userTitle}</option><option><span>保存</span></option></select>`;
+  const button = host.querySelector("button");
+  assert.equal(button.textContent, "Save");
+  assert.equal(button.title, "Save");
+  assert.equal(button.dataset.title, "保存");
+  assert.equal(button.dataset.label, "保存");
+  assert.equal(button.dataset.note, 'title="保存"');
+  const dynamicOptions = host.querySelector("select").options;
+  assert.equal(dynamicOptions[0].text.trim(), "Save");
+  assert.equal(dynamicOptions[0].value, "保存");
+  assert.equal(dynamicOptions[1].text, "Save");
+  assert.equal(dynamicOptions[1].value, "保留");
+  assert.equal(dynamicOptions[2].value, "保存 保存");
+  assert.equal(dynamicOptions[3].value, "保存");
+  const form = en.createElement("form");
+  form.append(host.querySelector("select"));
+  assert.equal(new english.window.FormData(form).get("mode"), "保存");
   assert.equal(t("{count} 次", { count: 3 }), "3 runs");
   let guarded = false;
   beforeSwitch(async () => { guarded = true; return false; });

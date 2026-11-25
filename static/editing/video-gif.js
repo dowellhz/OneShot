@@ -1,5 +1,36 @@
 "use strict";
 
+document.getElementById("mediaToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="videoGif" aria-labelledby="videoGifTitle">
+  <form novalidate>
+    <header><strong id="videoGifTitle">导出循环 GIF</strong><button type="button" data-gif-close aria-label="关闭">×</button></header>
+    <p data-gif-source></p>
+    <video controls playsinline muted preload="metadata"></video>
+    <div data-gif-grid-preview hidden><img alt="宫格序列帧原图"><div data-gif-cells aria-hidden="true"></div></div>
+    <div class="trim-points" data-gif-video-controls>
+      <label>入点（秒） <input name="start" type="number" min="0" step="any"></label>
+      <button type="button" data-gif-point="start">用播放头设入点</button>
+      <label>出点（秒） <input name="end" type="number" min="0" step="any"></label>
+      <button type="button" data-gif-point="end">用播放头设出点</button>
+    </div>
+    <div class="gif-grid-options" data-gif-grid-controls hidden>
+      <label>行数 <input name="rows" type="number" min="1" max="6" step="1" value="4"></label>
+      <label>列数 <input name="cols" type="number" min="1" max="6" step="1" value="4"></label>
+      <label>起始格 <input name="first" type="number" min="1" step="1" value="1"></label>
+      <label>结束格 <input name="last" type="number" min="2" step="1" value="16"></label>
+    </div>
+    <div class="gif-options">
+      <label>长边 <select name="size"><option value="256">256 px</option><option value="360" selected>360 px</option><option value="480">480 px</option></select></label>
+      <label>帧率 <select name="fps"><option value="8">8 fps</option><option value="12" selected>12 fps</option><option value="15">15 fps</option></select></label>
+      <label><input name="pingPong" type="checkbox"> 往返循环</label>
+    </div>
+    <p data-gif-status role="status"></p>
+    <div class="gif-preview" hidden><img alt="循环 GIF 预览"><a download>下载 GIF</a><button type="button" data-gif-publish hidden>发布到展映</button></div>
+    <footer><button type="submit">生成 GIF</button></footer>
+  </form>
+</dialog>
+`);
+
 function closeVideoGif() {
   const dialog = $("#videoGif"), video = $("video",dialog);
   if (!dialog.open) return;

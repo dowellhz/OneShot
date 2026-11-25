@@ -1,5 +1,20 @@
 "use strict";
 
+document.getElementById("mediaToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="videoExtension" aria-labelledby="videoExtensionTitle">
+  <form>
+    <header><strong id="videoExtensionTitle">续拍视频</strong><button type="button" data-ve-close aria-label="关闭">×</button></header>
+    <p data-ve-source></p>
+    <label>方向<select name="direction"><option value="before">补拍片头</option><option value="after">续拍片尾</option></select></label>
+    <label>方式<select name="method"></select></label>
+    <label>新增时长<input name="duration" type="number" min="4" max="30" step="1" required> 秒</label>
+    <p data-ve-help></p>
+    <textarea name="prompt" rows="3" maxlength="3000" aria-label="续拍描述"></textarea>
+    <footer><button type="submit">创建续拍节点</button></footer>
+  </form>
+</dialog>
+`);
+
 const extensionLabel=direction=>direction==="before"?"补拍片头":"续拍片尾";
 
 function videoReferenceRange(edge, version, limit) {

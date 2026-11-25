@@ -105,24 +105,28 @@ OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一�
 | `server.py` / `oneshot/app.py` | 启动入口、Web 应用装配和后台服务生命周期 |
 | `oneshot/web/routing.py` | HTTP 路由清单，处理函数位于各业务模块 |
 | `oneshot/generation/requests.py` / `oneshot/generation/jobs.py` | 生成预览与提交、任务状态和恢复 |
+| `oneshot/generation/queue.py` | 查询生成队列状态和预计完成时间 |
+| `oneshot/generation/reference.py` / `oneshot/generation/reference_prompts.py` / `oneshot/generation/reference_media.py` | 视频参考路由与预览、提示词绑定、固定素材校验 |
 | `oneshot/config.py` | 定位项目根目录、数据目录、模型与静态文件 |
 | `oneshot/canvas/board_store.py` | 画布编号与数据校验、JSON 读取、原子写入 |
 | `oneshot/web/auth.py` / `oneshot/storage/db.py` | 多人账号（scrypt）、会话、SQLite（服务、路由、任务），API Key 用 Fernet 加密存储 |
 | `oneshot/providers/catalog.py` / `oneshot/providers/remote.py` | 服务目录与能力路由；第三方生图 / 视频 / 配音 / 音乐适配器 |
-| `engine/h3engine.py` | 完整 H3（31B BF16）在 24 GB 显卡上运行：权重放在锁页内存里按 Transformer 块流式上卡，文本编码器 FP8 存储，turbo LoRA 加载时合并 |
+| `engine/h3engine.py` / `engine/h3_checkpoint.py` | 完整 H3（31B BF16）的推理、权重流式上卡、检查点读取和 turbo LoRA 合并 |
 | `engine/service.py` | 引擎服务：单 GPU 队列、进度、取消、视频 / 图片模型按需切换 |
 | `oneshot/generation/rewriter.py` / `oneshot/generation/fields.py` / `oneshot/generation/tools.py` | 提示词改写与分栏合成、分镜、反推、拉片、宫格、拼接 |
 | `oneshot/editing/image_editor.py` / `static/editing/image-editor.js` | 图像编辑、选区上下文、扩图与遮罩合成、历史版本界面 |
-| `oneshot/assistant/agent_chat.py` / `oneshot/assistant/agent_editing.py` / `oneshot/assistant/agent_video.py` / `static/assistant/agent-chat.js` | 持久化聊天与工具执行、图片版本绑定、防重复提交、进度、停止、撤销与画布同步 |
+| `oneshot/assistant/agent_chat.py` / `oneshot/assistant/chat_service.py` / `static/assistant/agent-chat.js` | 助手路由、持久化会话与任务队列、聊天面板 |
+| `oneshot/assistant/agent_editing.py` / `oneshot/assistant/agent_video.py` | 图像编辑与视频工具入口，按固定素材版本执行 |
 | `oneshot/editing/video_remake.py` / `oneshot/editing/video_matte.py` / `static/editing/video-remake.js` | 原片分析、角色替换、局部合成、镜头审核与保留原声导出 |
-| `oneshot/memory/creative_memory.py` / `static/memory/asset-library.js` | 资产库、参考素材与生成历史、助手检索和生成引用 |
+| `oneshot/memory/creative_memory.py` / `oneshot/memory/memory_generation.py` / `static/memory/asset-library.js` | 资产库入口、固定素材版本与生成上下文、资产库界面 |
 | `oneshot/editing/render.py` | 成片渲染（转场、字幕、配乐压低、旁白） |
 | `oneshot/web/local_admin.py` / `engine.sh` | 本地部署页：GPU / 内存 / 磁盘、服务启停、模型文件 |
-| `static/index.html` / `static/canvas/canvas.css` | 工作台页面结构、画布和通用控件样式 |
-| `static/canvas/canvas.js` | 画布状态、保存与撤销、节点、连线和交互 |
-| `static/generation/canvas-generation.js` | 生成参数、任务轮询、上传与素材历史 |
+| `static/index.html` / `static/canvas/` | 工作台页面结构，画布布局、节点、导航和工作流样式 |
+| `static/canvas/canvas.js` / `static/canvas/canvas-persistence.js` / `static/canvas/canvas-history.js` | 画布共享状态、按版本保存、撤销与重做 |
+| `static/generation/canvas-generation.js` | 画布生成参数、任务轮询和节点版本更新 |
+| `static/canvas/canvas-import.js` / `static/memory/canvas-asset-drawer.js` | 文件导入和画布素材抽屉 |
 | `static/canvas/canvas-projects.js` | 画布切换、示例及工作台启动 |
-| `static/generation/tools.js` / `static/editing/film.js` / `static/generation/wizard.js` | 画布工具、剪辑台、一句话成片 |
+| `static/generation/storyboard-node.js` / `static/editing/film.js` / `static/generation/wizard.js` | 分镜脚本节点、剪辑台、一句话成片 |
 
 浏览器通过 `/api/board/{id}` 保存画布，助手完成工具操作后也写入同一份画布。浏览器保存时检查版本号，助手把工具结果和画布修改一起写入，避免重复执行。
 
@@ -137,12 +141,22 @@ OneShot 是一个可自行部署的 AI 视频创作工作台。你可以从一�
 python3 -m venv ~/h3engine-venv
 ~/h3engine-venv/bin/pip install -r requirements.txt
 
-# 2. 模型权重（见下表；scripts/fetch_models.sh 从 ModelScope 下载官方组件和提示词指南）
+# 2. 从 ModelScope 下载官方管线组件、H3-Image 和提示词指南
+export H3_WEIGHTS="$HOME/h3engine/weights"
+export H3_IMAGE_BASE="$HOME/h3engine/MiniMax-H3-Image"
 bash scripts/fetch_models.sh
+```
 
-# 3. 启动引擎和 Web 服务
-bash engine.sh engine-start
-~/h3engine-venv/bin/python server.py      # http://<主机>:8190 ，第一次打开时创建管理员
+按下表另行下载 BF16 视频 Transformer、文本编码器和 turbo LoRA。然后在设置过上述环境变量的终端中，从仓库根目录启动引擎。
+
+```bash
+~/h3engine-venv/bin/python engine/service.py
+```
+
+在另一个终端从仓库根目录启动 Web 服务，首次访问 8190 端口时创建管理员。
+
+```bash
+~/h3engine-venv/bin/python server.py
 ```
 
 | 权重 | 位置（环境变量） | 来源 |

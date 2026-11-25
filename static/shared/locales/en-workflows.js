@@ -286,4 +286,7 @@ Object.assign(window.OneShotEnglish ||= Object.create(null), {
   "需要你的确认": "Awaiting your approval",
   "预览与使用": "Preview and use",
   "预览参考替换": "Preview replacement references",
+  "请先处理创作助手中未发送的内容、引用或录音，再切换语言。": "Send or clear unsent assistant drafts, references, or recordings before changing languages.",
+  "按原参数重试 {count} 个失败结果": "Retry failed results ({count}) with the original settings",
+  "历史任务未保存实际提交的图片提示词，无法按原参数重试。请重新发起生成。": "The original image prompt is missing from this job. Start a new generation to continue.",
 });

@@ -1,0 +1,187 @@
+"use strict";
+
+module.exports = async function nodeArrangement(workspace) {
+ const { assert, equal, evaluate, ready, requests, w } = workspace;
+ evaluate(`const foldFixture=snap();
+  B.edges=[{from:"n1",to:"n2"},{from:"n1",to:"n3"},{from:"n2",to:"n3"}];
+  sel=new Set(["n1","n2"]);updateSel();$("#selectionTools [data-action=fold]").click();`);
+ equal(evaluate('[...els.values()].map(el=>el.hidden)'),[true,true,false],'fold hides only group members');
+ equal(evaluate('[B.edges.length,$$("#edges .folded-edge").length,$(".folded-edge-count").textContent]'),[3,1,"2 条连线"],'fold preserves all underlying edges');
+ evaluate('restore(snap())');
+ equal(evaluate('[...els.values()].map(el=>el.hidden)'),[true,true,false],'fold persists through a rebuild');
+ evaluate(`const foldBase=B.nodes.slice(0,2).map(n=>n.x);
+  const foldAnchor=CT_FOLD_BOXES.values().next().value.x;
+  $(".canvas-group.is-folded .cg-grip").dispatchEvent(new MouseEvent("pointerdown",{button:0,bubbles:true}));
+  window.dispatchEvent(new MouseEvent("pointermove",{clientX:80*B.view.k}));
+  window.dispatchEvent(new MouseEvent("pointerup"));`);
+ equal(evaluate('[...B.nodes.slice(0,2).map((n,i)=>n.x-foldBase[i]),CT_FOLD_BOXES.values().next().value.x-foldAnchor]'),[80,80,80],'folded drag moves both members and proxy');
+ evaluate('AC.refs=[];$(".canvas-group.is-folded [data-fold-chat]").click()');
+ await ready('AC.open && AC.refs?.includes("n1")','folded group attaches media directly');
+ equal(evaluate('[AC.refs,$("#groupGallery").open,!!ctFolded("n1")]'),[["n1"],false,true]);
+ evaluate('AC.refs=[]');
+ evaluate('$(".canvas-group.is-folded [data-group-items]").click()');
+ equal(evaluate('[$("#groupGallery").open,$$("#groupGalleryItems article").length]'),[true,2],'gallery lists group members');
+ equal(evaluate('[$$("#groupGalleryItems img").length,$("#groupGalleryItems .cg-preview p").textContent]'),[1,"Hello"],'gallery previews current image and text');
+ evaluate('AC.refs=[];$("#groupGallery [data-group-chat]").click()');
+ await ready('AC.open && AC.refs?.includes("n1")','group media is ready to reference in chat');
+ equal(evaluate('[AC.refs,$("#groupGallery").open]'),[["n1"],false],'attach media without adding the text or unfolding the group');
+ evaluate('$("#acClose").click();localStorage.removeItem("h3.chat.session."+boardId);AC.board=null;AC.session=null;AC.refs=null;$(".canvas-group.is-folded [data-group-items]").click()');
+ evaluate('$("#groupGallery [data-member-extract]").click()');
+ equal(evaluate('[$("#groupGallery").open,...[...els.values()].map(el=>el.hidden),B.edges.length]'),[false,false,false,false,3],'extracting from a pair restores both cards and their links');
+ evaluate('undo();$(".canvas-group.is-folded [data-group-fold]").click()');
+ equal(evaluate('[...B.nodes.slice(0,2).map((n,i)=>n.x-foldBase[i]),$$("#edges .folded-edge").length,B.edges.length]'),[80,80,0,3],'undo and expansion restore the original per-node links and moved positions');
+ evaluate(`const targetGroup=B.groups.find(g=>g.nodes.length===2 && g.nodes.includes("n1"));
+  ctSetFold(targetGroup,true);
+  const dropAt=()=>{const box=CT_FOLD_BOXES.get(targetGroup.id);return {clientX:B.view.x+(box.x+24)*B.view.k,clientY:B.view.y+(box.y+24)*B.view.k};};
+  const dispatchDrop=(type)=>window.dispatchEvent(new MouseEvent(type,dropAt()));
+  const textPosition=[node("n3").x,node("n3").y];
+  $(".lbl",els.get("n3")).dispatchEvent(new MouseEvent("pointerdown",{button:0,bubbles:true,clientX:420,clientY:420}));
+  dispatchDrop("pointermove");`);
+ assert(evaluate('CT_GROUPS.get(targetGroup.id).classList.contains("cg-drop-target")'));
+ evaluate('dispatchDrop("pointerup")');
+ equal(evaluate('[targetGroup.nodes,els.get("n3").hidden,[node("n3").x,node("n3").y],B.edges.length]'),
+  [["n1","n2","n3"],true,Array.from(evaluate('textPosition')),3],'dropping on a fold hides the new member and keeps its position and links');
+ evaluate(`undo();
+  const extra={...structuredClone(node("n3")),id:"foldExtra",x:2000,y:900};
+  B.nodes.push(extra);build(extra);sel=new Set(["n3",extra.id]);updateSel();ctGroup(true);
+  const sourceGroup=B.groups.find(g=>g!==B.groups[0]);
+  const sourceGrip=$(".cg-grip",CT_GROUPS.get(sourceGroup.id));
+  sourceGrip.dispatchEvent(new MouseEvent("pointerdown",{button:0,bubbles:true,clientX:500,clientY:500}));
+  dispatchDrop("pointermove");dispatchDrop("pointerup");`);
+ equal(evaluate('[B.groups.map(g=>g.nodes),els.get("foldExtra").hidden,B.edges.length]'),[[["n1","n2","n3","foldExtra"]],true,3],'dropping a folded group merges all members');
+ evaluate('undo()');
+ equal(evaluate('B.groups.map(g=>g.nodes)'),[["n1","n2"],["n3","foldExtra"]],'undo restores both folded groups');
+ const memoriesBeforeBatch=w.__memories;
+ const activeGroupImage=evaluate('curV(node("n1")).ref');
+ w.__folders=[{id:"qa-batch-folder",name:"收录目标"}];
+ equal(evaluate('(()=>{const el=CT_GROUPS.get(B.groups[1].id);return [$("[data-fold-chat]",el).hidden,$("[data-fold-collect]",el).hidden];})()'),
+  [true,false],'a text-only group can be collected but cannot attach media');
+ evaluate('$("[data-fold-collect]",CT_GROUPS.get(B.groups[0].id)).click()');
+ await ready('$("#alCanvasImport").open && !$("#alCanvasImport [type=submit]").disabled','folded group opens the collection dialog directly');
+ equal(evaluate('[$$("#alCanvasImport .al-import-selection li").map(el=>el.querySelector("span").textContent),$("#groupGallery").open]'),
+  [Array.from(evaluate('B.groups[0].nodes.map(id=>node(id).name)')),false]);
+ evaluate('$("#alCanvasImport [data-cancel]").click()');
+ evaluate('$("[data-group-items]",CT_GROUPS.get(targetGroup.id)).click();$("#groupGallery [data-group-collect]").click()');
+ await ready('!!$("#groupGallery select[name=folder] option[value=qa-batch-folder]")','group import loads folder choices');
+ evaluate('$("#groupGallery select[name=scope]").value="personal";$("#groupGallery select[name=folder]").value="qa-batch-folder";$(".al-group-import").dispatchEvent(new Event("submit",{cancelable:true}))');
+ await ready('$(".al-group-import [role=status]").textContent==="收录超时"','group import exposes server error for retry');
+ evaluate('$(".al-group-import").dispatchEvent(new Event("submit",{cancelable:true}))');
+ await ready('AL.open && AL.folder==="qa-batch-folder" && $$("#alGrid .al-card").length===2 && $("#alLoading").hidden','batch import opens the selected folder');
+ equal(w.__batchImports[0].nodes,[{id:'n1',ref:activeGroupImage},{id:'n2',ref:null}],'the visible versions and text node are submitted together');
+ equal(w.__batchImports[0],w.__batchImports[1],'a retry reuses the same import key and selection');
+ evaluate('alClose();AL.folder="all"');
+ equal(evaluate(`(()=>{const sound=placeLibAsset({id:"sound",name:"现场录音",kind:"prop",media:[{type:"audio",ref:"input:h3studio/fx.wav",seconds:2}]},{x:400,y:350});return [sound.type,curV(sound).seconds,!!$("audio",els.get(sound.id))];})()`),["audio",2,true],'an audio asset returns to the canvas as playable audio');
+ w.__memories=memoriesBeforeBatch;w.__folders=[];
+ evaluate('restore(foldFixture);sel=new Set(["n1","n2","n3"]);updateSel()');
+ evaluate(`const plainImportLength=B.nodes.length;node("n3").data.text="";
+   $("#selectionTools [data-action=collect]").click();`);
+ await ready('$("#alCanvasImport").open && !$("#alCanvasImport [type=submit]").disabled','ungrouped selection opens the batch import dialog');
+ equal(evaluate('$$("#alCanvasImport .al-import-selection li").length'),2,'only the usable image and document are listed');
+ equal(evaluate('$("#alCanvasImport form p").textContent'),'另有 1 个节点暂不可收录。','unavailable items are identified');
+ evaluate('$("#alCanvasImport select[name=scope]").value="personal";$("#alCanvasImport [type=submit]").click()');
+ await ready('!$("#alCanvasImport").open && AL.open && $("#alLoading").hidden','selected nodes open in their destination library');
+ assert.equal(w.__batchImports[2].scope,'personal');
+ equal(w.__batchImports[2].nodes.map(n=>n.id),['n1','n2'],'the canvas entry submits the whole usable selection');
+ equal(evaluate('B.nodes.length'),evaluate('plainImportLength'),'collection leaves existing canvas nodes in place');
+ evaluate('$("#alReset").click();alClose();restore(foldFixture);sel=new Set(["n1","n2","n3"]);updateSel();');
+ w.__memories=memoriesBeforeBatch;
+ const positions=evaluate('ctPositions([{id:"a",x:0,y:0},{id:"b",x:40,y:0},{id:"c",x:100,y:0}],"distributeX",()=>({w:10,h:10}))');equal(positions.map(x=>x.x),[0,190,380],'distribution expands cramped bounds to keep positive spacing');
+ // Regressions: aligning a dense row/column and distributing overlapping cards must not stack them.
+ const packed=[{id:"wide",x:0,y:0,w:460,h:180},{id:"tall",x:0,y:0,w:240,h:760},{id:"portrait",x:10,y:10,w:280,h:520},{id:"video",x:20,y:20,w:440,h:250}];
+ for(const operation of ["left","centerX","right","top","centerY","bottom","distributeX","distributeY","grid"]){
+  const result=evaluate(`(()=>{const nodes=${JSON.stringify(packed)},sizeOf=n=>({w:n.w,h:n.h});return ${JSON.stringify(operation)}==="grid"?ctGridPositions(nodes,[],sizeOf):ctPositions(nodes,${JSON.stringify(operation)},sizeOf);})()`);
+  const rects=result.map(p=>({...packed.find(n=>n.id===p.id),...p}));
+  for(let a=0;a<rects.length;a++)for(let b=a+1;b<rects.length;b++){const x=rects[a],y=rects[b];assert(x.x+x.w+179<=y.x || y.x+y.w+179<=x.x || x.y+x.h+139<=y.y || y.y+y.h+139<=x.y,operation+" keeps visible space between mixed-size cards");}
+  const fixed=[{id:"fixedA",x:0,y:0,w:1200,h:400},{id:"fixedB",x:0,y:1400,w:1200,h:400}];
+  const avoided=evaluate(`(()=>{const nodes=${JSON.stringify(packed)},fixed=${JSON.stringify(fixed)},sizeOf=n=>({w:n.w,h:n.h});return ${JSON.stringify(operation)}==="grid"?ctGridPositions(nodes,fixed,sizeOf):ctPositions(nodes,${JSON.stringify(operation)},sizeOf,fixed);})()`);
+  for(const p of avoided){const n={...packed.find(n=>n.id===p.id),...p};for(const f of fixed)assert(n.x+n.w+179<=f.x || f.x+f.w+179<=n.x || n.y+n.h+139<=f.y || f.y+f.h+139<=n.y,operation+" avoids fixed nodes too");}
+ }
+ const roomy=evaluate('ctPositions([{id:"a",x:0,y:0,w:100,h:100},{id:"b",x:400,y:0,w:100,h:100},{id:"c",x:1000,y:0,w:100,h:100}],"distributeX",n=>({w:n.w,h:n.h}))');
+ equal(roomy.map(p=>p.x),[0,500,1000],'distribution preserves roomy outer bounds');
+ // Canvas right click: selected/all media scopes, collision-free grid, and undo.
+ const arrangeBase=evaluate('snap()');
+ evaluate('const template=node("n1");for(const [id,type,x,y] of [["arrangeImage","image",420,160],["arrangeVideo","video",550,190],["fixedImage","image",2400,120]]){const n=JSON.parse(JSON.stringify(template));Object.assign(n,{id,type,x,y,name:id});if(type==="video"){n.data={prompt:"keep movement",duration:5,aspect:"auto",quality:"std"};n.versions=[{ref:"output:h3studio/arrange.mp4",url:"/media?ref=output:h3studio/arrange.mp4",w:640,h:360,seconds:5}];n.cur=0;n.job={ids:["keepJob"],prompt:"keep movement",t0:123};}B.nodes.push(n);}B.edges.push({from:"n1",to:"arrangeVideo",role:"first"});rebuild();sel=new Set(["n1","arrangeImage","arrangeVideo"]);updateSel()');
+ const fixedBefore=JSON.parse(JSON.stringify(evaluate('B.nodes.filter(n=>["n2","n3","fixedImage"].includes(n.id)).map(n=>({id:n.id,x:n.x,y:n.y}))')));
+ const contentBefore=evaluate('JSON.stringify({edges:B.edges,groups:B.groups,media:B.nodes.filter(ctMedia).map(({id,data,versions,cur,job})=>({id,data,versions,cur,job}))})');
+ const originalPositions=JSON.parse(JSON.stringify(evaluate('B.nodes.map(({id,x,y})=>({id,x,y}))')));
+ evaluate('vp.dispatchEvent(new MouseEvent("pointerdown",{button:2,clientX:100,clientY:100,bubbles:true}));window.dispatchEvent(new MouseEvent("pointerup",{button:2,clientX:100,clientY:100,bubbles:true}))');
+ assert(w.document.getElementById('addMenu').classList.contains('on'));
+ const entry=w.document.querySelector('#addMenu button[data-arrange-entry]');assert.equal(entry.hidden,false);entry.click();
+ assert(w.document.getElementById('arrangeMenu').classList.contains('on'));
+ assert.equal(w.document.querySelector('#arrangeMenu select').value,'selected');
+ w.document.querySelector('#arrangeMenu [data-layout="grid"]').click();
+ equal(evaluate('B.nodes.filter(n=>["n2","n3","fixedImage"].includes(n.id)).map(n=>({id:n.id,x:n.x,y:n.y}))'),fixedBefore,'selected grid leaves other nodes fixed');
+ equal(evaluate('JSON.stringify({edges:B.edges,groups:B.groups,media:B.nodes.filter(ctMedia).map(({id,data,versions,cur,job})=>({id,data,versions,cur,job}))})'),contentBefore,'layout preserves links, groups, versions, parameters and job');
+ const arranged=JSON.parse(JSON.stringify(evaluate('B.nodes.map(({id,x,y})=>({id,x,y}))')));assert.notDeepEqual(arranged,originalPositions);
+ equal(evaluate('(()=>{const chosen=B.nodes.filter(n=>["n1","arrangeImage","arrangeVideo"].includes(n.id));return chosen.every(a=>B.nodes.every(b=>{if(a===b)return true;const sa=size(a),sb=size(b);return a.x+sa.w<=b.x || b.x+sb.w<=a.x || a.y+sa.h<=b.y || b.y+sb.h<=a.y;}));})()'),true,'grid has no media or fixed-node overlaps');
+ evaluate('undo()');equal(evaluate('B.nodes.map(({id,x,y})=>({id,x,y}))'),originalPositions,'undo layout restores positions');
+ evaluate('redo()');equal(evaluate('B.nodes.map(({id,x,y})=>({id,x,y}))'),arranged,'redo layout restores grid');
+ evaluate('ctxMenu({target:els.get("n1"),clientX:140,clientY:120})');w.document.querySelector('#ctxMenu [data-a="arrange"]').click();
+ const scope=w.document.querySelector('#arrangeMenu select');scope.value='all';scope.dispatchEvent(new w.Event('change'));
+ w.document.querySelector('#arrangeMenu [data-layout="left"]').click();
+ equal(evaluate('new Set(B.nodes.filter(ctMedia).map(n=>n.x)).size'),1,'all scope aligns every image and video');
+ equal(evaluate('B.nodes.filter(n=>["n2","n3"].includes(n.id)).map(n=>({id:n.id,x:n.x,y:n.y}))'),fixedBefore.slice(0,2),'all media scope leaves text positions unchanged');
+ evaluate('sel=new Set(["n1","arrangeImage"]);ctOpenArrangeMenu(100,100)');assert.equal(w.document.querySelector('#arrangeMenu [data-layout="distributeX"]').disabled,true,'distribution requires three media nodes');
+ evaluate('openAddMenu(100,100,{at:{x:0,y:0}})');assert.equal(entry.hidden,true,'ordinary add menu hides layout entry');assert.equal(w.getComputedStyle(entry).display,'none');
+ evaluate(`restore(${JSON.stringify(arrangeBase)});closeMenus();sel=new Set();updateSel();undoStack.length=0;redoStack.length=0`);
+ // Relation columns and reversible video tabs operate on existing canvas data.
+ const videoTabsBase=evaluate('snap()');
+ evaluate('(()=>{const image=(id,x,y)=>({id,type:"image",name:id,x,y,data:{aspect:"auto"},versions:[{ref:"input:h3studio/"+id+".png",url:"/media?ref=input:h3studio/"+id+".png",w:300,h:520}],cur:0,job:null});const video=(id,x,y,count=1)=>({id,type:"video",name:id,x,y,data:{prompt:id,duration:5,aspect:"auto",quality:"std",mode:"auto",seed:17},versions:Array.from({length:count},(_,i)=>({ref:"output:h3studio/"+id+i+".mp4",url:"/media?ref=output:h3studio/"+id+i+".mp4",w:320,h:480,seconds:5,seed:i+10,video_recipe:{prompt:id+i,duration:5,seed:i+10}})),cur:count-1,job:null});B.nodes.push(image("inputFirst",200,100),image("inputLast",0,700),video("takeA",1000,300,2),video("takeB",1600,400),image("scene2Image",100,1500),video("scene2Video",1500,1600));for(const id of ["takeA","takeB"])B.edges.push({from:"inputFirst",to:id,role:id==="takeA"?"auto":"first"},{from:"inputLast",to:id,role:id==="takeA"?"auto":"last"});B.edges.push({from:"scene2Image",to:"scene2Video",role:"first"});B.groups.push({id:"takesGroup",name:"Takes",nodes:["takeA","takeB"]});rebuild();})()');
+ const flowIds=['inputFirst','inputLast','takeA','takeB','scene2Image','scene2Video'];
+ const flowContents=evaluate('JSON.stringify({edges:B.edges,versions:B.nodes.map(n=>[n.id,n.data,n.versions])})');
+ evaluate(`sel=new Set(${JSON.stringify(flowIds)});ctOpenArrangeMenu(100,100)`);w.document.querySelector('#arrangeMenu [data-layout="flow"]').click();
+ equal(evaluate(`new Set(${JSON.stringify(flowIds)}.map(node).filter(n=>n.type==="image").map(n=>n.x)).size`),1,'relation layout puts images in one column');
+ equal(evaluate(`new Set(${JSON.stringify(flowIds)}.map(node).filter(n=>n.type==="video").map(n=>n.x)).size`),1,'relation layout puts videos in one column');
+ equal(evaluate('node("inputFirst").x<node("takeA").x && node("inputFirst").y<node("inputLast").y && node("scene2Image").y>node("inputLast").y+size(node("inputLast")).h && node("scene2Video").y>node("takeB").y+size(node("takeB")).h'),true,'relation blocks keep frame order and separate scenes');
+ equal(evaluate('JSON.stringify({edges:B.edges,versions:B.nodes.map(n=>[n.id,n.data,n.versions])})'),flowContents,'relation layout preserves inputs and recipes');
+ equal(evaluate('vtSignature(node("takeA"))===vtSignature(node("takeB"))'),true,'auto and explicit first/last inputs are equivalent');
+ equal(evaluate('vtSnapshot({...node("takeA"),versions:[{ref:"output:h3studio/legacy.mp4",video_recipe:{planned:true,duration:5,ar:1.5,images:[{node_id:"inputFirst",role:"frame",time:0},{node_id:"inputLast",role:"frame",time:2},{node_id:"inputLast",role:"frame",time:5}]}}],cur:0},0).input_edges.map(e=>e.role)'),['first','keyframe','last'],'legacy recipes recover their original keyframe inputs');
+ equal(evaluate(`vtSnapshot({...node("takeA"),versions:[{video_recipe:{images:[
+   {node_id:"inputFirst",ref:"input:h3studio/pinned.png",pinned:true},
+   {node_id:"inputLast",ref:"input:h3studio/current.png"}
+ ]}}],cur:0},0).input_edges.map(e=>e.ref||null)`),['input:h3studio/pinned.png',null],
+  'recovering links from a recipe keeps explicit version pins and leaves ordinary links dynamic');
+ equal(evaluate(`(()=>{const nodes=${JSON.stringify(flowIds)}.map(id=>({...node(id)}));nodes.find(n=>n.id==="inputFirst").y=99999;nodes.find(n=>n.id==="inputLast").y=-9999;const p=ctFlowPositions(nodes,B.edges);return p.find(n=>n.id==="inputFirst").y<p.find(n=>n.id==="inputLast").y;})()`),true,'frame roles determine image order even after positions are reversed');
+ assert(evaluate('!!vtMergeInfo(["takeA","scene2Video"]).error'),'different input graphs cannot merge');
+ evaluate('B.edges.find(e=>e.to==="takeB"&&e.from==="inputLast").role="keyframe";B.edges.find(e=>e.to==="takeB"&&e.from==="inputLast").time=2');
+ assert(evaluate('!!vtMergeInfo(["takeA","takeB"]).error'),'different keyframe timing cannot merge');
+ evaluate('B.edges.find(e=>e.to==="takeB"&&e.from==="inputLast").role="last";delete B.edges.find(e=>e.to==="takeB"&&e.from==="inputLast").time');
+ evaluate('node("takeB").job={ids:["busy"],t0:0}');assert(evaluate('!!vtMergeInfo(["takeA","takeB"]).error'),'busy videos cannot merge');evaluate('node("takeB").job=null');
+ evaluate('B.nodes.push({id:"scriptPin",type:"script",name:"Script",x:9000,y:9000,data:{made:[{vid:"takeB"}]},versions:[],cur:-1});vtMerge(["takeA","takeB"],"takeA")');
+ equal(evaluate('!!node("takeB")&&!node("takeA")&&node("scriptPin").data.made[0].vid==="takeB"'),true,'merge keeps the node referenced by the storyboard');
+ evaluate('undo();B.nodes=B.nodes.filter(n=>n.id!=="scriptPin");rebuild()');
+ const beforeVideoMerge=evaluate('snap()');
+ evaluate('sel=new Set(["takeA","takeB"]);ctxMenu({target:els.get("takeA"),clientX:100,clientY:100})');
+ const mergeButton=w.document.querySelector('#ctxMenu [data-a="merge-tabs"]');assert(mergeButton&&!mergeButton.disabled);mergeButton.click();
+ equal(evaluate('!!node("takeB")'),false,'merge removes the duplicate canvas card');equal(evaluate('node("takeA").versions.length'),3,'merge retains all versions');
+ equal(evaluate('node("takeA").cur'),1,'merge retains target active tab');
+ equal(evaluate('node("takeA").versions.every(v=>v.input_edges.every(e=>e.to==="takeA"))'),true,'merged input snapshots target surviving node');
+ equal(evaluate('B.edges.filter(e=>e.to==="takeA").length'),2,'merge retains one input graph');
+ equal(evaluate('vtResolve("takeB","output:h3studio/takeB0.mp4").node.id'),'takeA','old node references locate merged tabs');
+ equal(evaluate('acResultVersion({id:"takeB",ref:"output:h3studio/takeB0.mp4"}).ref'),'output:h3studio/takeB0.mp4','chat cards retain merged results');
+ evaluate('undo()');equal(evaluate('snap()'),beforeVideoMerge,'undo merge restores complete node and edge state');evaluate('redo()');
+ evaluate('switchVersion(node("takeA"),2)');equal(evaluate('node("takeA").data.prompt'),'takeB0','merged tab restores its generation settings');
+ equal(evaluate('B.edges.filter(e=>e.to==="takeA").map(e=>e.role)'),['first','last'],'merged tab restores frame roles');
+ evaluate('B.nodes.push({id:"filmFixture",type:"video",name:"Film",x:9000,y:9000,data:{film:{clips:[{node:"takeA"}]}},versions:[],cur:-1,job:null});rebuild();vtTabMenu(node("takeA"),2,100,100)');
+ w.document.querySelector('#videoTabMenu [data-split]').click();
+ const splitId=evaluate('[...sel][0]');
+ equal(evaluate('node("takeA").versions.length'),2,'split moves one tab out of the source');
+ equal(evaluate(`node(${JSON.stringify(splitId)}).versions[0].ref`),'output:h3studio/takeB0.mp4','split preserves the video file');
+ equal(evaluate(`B.edges.filter(e=>e.to===${JSON.stringify(splitId)}).map(e=>e.role)`),['first','last'],'split restores video inputs');
+ equal(evaluate(`node("filmFixture").data.film.clips[0].node`),splitId,'split current tab preserves film reference');
+ evaluate('undo()');equal(evaluate('node("takeA").versions.length'),3,'undo split restores tab group');equal(evaluate('node("filmFixture").data.film.clips[0].node'),'takeA','undo restores film reference');
+ evaluate('vtSplit("takeA",node("takeA").cur,true)');equal(evaluate('node("takeA").versions.length'),1,'split all retains current tab in original node');
+ equal(evaluate('vtResolve("takeA","output:h3studio/takeA0.mp4").node.id!=="takeA"'),true,'history references follow tabs split into new nodes');
+ // Drag a matching video onto another: highlight before drop and undo the drag+merge as one action.
+ evaluate(`restore(${JSON.stringify(beforeVideoMerge)});sel=new Set(["takeB"]);B.view={x:0,y:0,k:1};applyView();updateSel();(()=>{const a=node("takeA"),b=node("takeB");window.__drop={sx:b.x+10,sy:b.y-10,tx:a.x+10,ty:a.y-10};})()`);
+ const beforeDragMerge=evaluate('snap()');
+ const drop=w.__drop;
+ w.document.querySelector('[data-id="takeB"] .lbl').dispatchEvent(new w.MouseEvent('pointerdown',{button:0,clientX:drop.sx,clientY:drop.sy,bubbles:true}));
+ w.dispatchEvent(new w.MouseEvent('pointermove',{clientX:drop.tx,clientY:drop.ty,bubbles:true}));
+ assert(w.document.querySelector('[data-id="takeA"]').classList.contains('tab-merge-target'),'matching drop target is highlighted');
+ w.dispatchEvent(new w.MouseEvent('pointerup',{clientX:drop.tx,clientY:drop.ty,bubbles:true}));
+ equal(evaluate('!!node("takeB")'),false,'drop merges video into target tabs');
+ evaluate('undo()');equal(evaluate('snap()'),beforeDragMerge,'one undo restores drag position and separate videos');
+ evaluate(`restore(${JSON.stringify(videoTabsBase)});closeMenus();sel=new Set();updateSel();undoStack.length=0;redoStack.length=0`);
+ assert(requests.some(r=>r.url==='/api/image-edit/layers'));
+};

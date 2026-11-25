@@ -1,5 +1,22 @@
 "use strict";
 
+document.getElementById("mediaToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="videoCompare" aria-labelledby="videoCompareTitle">
+  <header><strong id="videoCompareTitle">对比视频版本</strong><button type="button" data-compare-close aria-label="关闭">×</button></header>
+  <div class="compare-panes">
+    <section><label><span data-compare-label>左侧版本</span> <select data-compare-version></select></label><video playsinline preload="auto"></video><p data-compare-meta></p></section>
+    <section><label><span data-compare-label>右侧版本</span> <select data-compare-version></select></label><video playsinline preload="auto"></video><p data-compare-meta></p></section>
+  </div>
+  <footer>
+    <button type="button" data-compare-play disabled>播放</button>
+    <input type="range" min="0" max="0" step=".01" value="0" aria-label="同步播放进度" data-compare-time disabled>
+    <output data-compare-clock>0.00 / 0.00 秒</output>
+    <label>声音 <select data-compare-audio><option value="left">左侧</option><option value="right">右侧</option><option value="mute">静音</option></select></label>
+  </footer>
+  <p role="status" data-compare-status></p>
+</dialog>
+`);
+
 const videoCompare = $("#videoCompare");
 const comparePlayers = $$("video", videoCompare);
 const compareVersions = $$("[data-compare-version]", videoCompare);

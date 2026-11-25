@@ -1,6 +1,6 @@
 """Project grouping preserves board content and the existing board permissions."""
 from oneshot.storage import db
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class CanvasProjects(ChatFixture):

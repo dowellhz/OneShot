@@ -1,5 +1,29 @@
 "use strict";
 
+document.getElementById("mediaToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="videoTrim" aria-labelledby="videoTrimTitle">
+  <form novalidate>
+    <header><strong id="videoTrimTitle">裁剪视频</strong><button type="button" data-trim-close aria-label="关闭">×</button></header>
+    <p data-trim-source></p>
+    <video controls playsinline preload="metadata"></video>
+    <div class="trim-points">
+      <label>入点（秒） <input name="start" type="number" min="0" step="any" required></label>
+      <button type="button" data-trim-point="start">用播放头设入点</button>
+      <label>出点（秒） <input name="end" type="number" min="0" step="any" required></label>
+      <button type="button" data-trim-point="end">用播放头设出点</button>
+    </div>
+    <div class="trim-actions">
+      <button type="button" data-trim-preview>预览所选区间</button>
+      <button type="button" data-trim-split>在播放头分割</button>
+      <button type="button" data-trim-detect>智能识别切点</button>
+    </div>
+    <div data-trim-cuts aria-label="分割点"></div>
+    <p data-trim-status role="status"></p>
+    <footer><button type="submit">生成裁剪视频</button></footer>
+  </form>
+</dialog>
+`);
+
 function closeVideoTrim() {
   const dialog=$("#videoTrim"), video=$("video",dialog);
   if (!dialog.open) return;

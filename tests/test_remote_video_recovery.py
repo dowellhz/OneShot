@@ -7,7 +7,7 @@ from PIL import Image
 from oneshot.storage import db
 import server
 from oneshot.generation import remote_jobs
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class RemoteVideoRecovery(ChatFixture):

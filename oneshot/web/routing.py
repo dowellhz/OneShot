@@ -7,13 +7,17 @@ from oneshot.canvas import routes as canvas_routes
 from oneshot.canvas import sharing as canvas_sharing
 from oneshot.canvas import showcase_routes
 from oneshot.canvas import template_routes
+from oneshot.editing import audio_edit_routes
 from oneshot.editing import audio_routes
+from oneshot.editing import audio_stem_routes
 from oneshot.editing import image_routes
 from oneshot.editing import timeline_routes
+from oneshot.editing import transcription_routes
 from oneshot.editing import video_routes
 from oneshot.generation import jobs as generation_jobs
 from oneshot.generation import motion_reference
 from oneshot.generation import prompts
+from oneshot.generation import queue as generation_queue
 from oneshot.generation import reference as video_reference
 from oneshot.generation import remote_jobs
 from oneshot.generation import requests as generation_requests
@@ -150,19 +154,19 @@ routes = [
     web.route("POST", "/api/previs/object-motion", timeline_routes.previs_object_motion),
     web.route("POST", "/api/previs/render", timeline_routes.render_previs),
     web.route("POST", "/api/cover", timeline_routes.cover),
-    web.route("GET", "/api/transcription", audio_routes.transcription_status),
-    web.route("POST", "/api/transcription", audio_routes.transcribe_audio),
-    web.route("GET", "/api/audio/waveform", audio_routes.get_audio_waveform),
-    web.route("GET", "/api/audio/separate", audio_routes.latest_stems),
-    web.route("POST", "/api/audio/separate", audio_routes.request_stems),
-    web.route("POST", "/api/audio/cut", audio_routes.audio_cut),
-    web.route("POST", "/api/audio/transcript", audio_routes.audio_transcript),
-    web.route("POST", "/api/video/captions", audio_routes.video_captions),
+    web.route("GET", "/api/transcription", transcription_routes.transcription_status),
+    web.route("POST", "/api/transcription", transcription_routes.transcribe_audio),
+    web.route("GET", "/api/audio/waveform", audio_edit_routes.get_audio_waveform),
+    web.route("GET", "/api/audio/separate", audio_stem_routes.latest_stems),
+    web.route("POST", "/api/audio/separate", audio_stem_routes.request_stems),
+    web.route("POST", "/api/audio/cut", audio_edit_routes.audio_cut),
+    web.route("POST", "/api/audio/transcript", transcription_routes.audio_transcript),
+    web.route("POST", "/api/video/captions", transcription_routes.video_captions),
     web.route("POST", "/api/upload_audio", audio_routes.upload_audio),
     web.route("GET", "/api/voices", audio_routes.voices),
     web.route("POST", "/api/tts", audio_routes.tts_say),
     web.route("POST", "/api/audio/generate", audio_routes.generate_audio),
-    web.route("GET", "/api/queue", generation_jobs.queue),
+    web.route("GET", "/api/queue", generation_queue.queue),
     web.route("GET", "/api/settings", settings_routes.get_settings),
     web.route("PUT", "/api/settings", settings_routes.put_settings),
     web.route("POST", "/api/settings/test", settings_routes.test_settings),

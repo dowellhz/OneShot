@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from oneshot.storage import db
 import server
-from test_agent_chat import ChatFixture, answer, call
+from chat_fixture import ChatFixture, answer, call
 
 
 class WorkflowTemplates(ChatFixture):

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import server
 from oneshot.generation import local as local_generation
-from test_agent_chat import ChatFixture
+from chat_fixture import ChatFixture
 
 
 class Int8Video(ChatFixture):

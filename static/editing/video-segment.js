@@ -1,5 +1,60 @@
 "use strict";
 
+document.getElementById("mediaToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="videoSegment" aria-labelledby="videoSegmentTitle">
+  <form>
+    <header><strong id="videoSegmentTitle">修改视频片段</strong><button type="button" data-vs-close aria-label="关闭">×</button></header>
+    <p data-vs-title></p>
+    <div class="video-segment-surface">
+      <video controls playsinline preload="metadata"></video>
+      <div class="video-object-overlay" data-object-overlay hidden><div data-object-box hidden></div></div>
+    </div>
+    <section data-retake-ranges hidden aria-label="重拍区间">
+      <div class="retake-strip" data-retake-strip aria-label="原片区间分布" role="img"></div>
+      <div class="retake-range-buttons" data-retake-tabs role="group" aria-label="选择重拍区间"></div>
+      <div class="retake-range-buttons">
+        <button type="button" data-retake-add>添加区间</button>
+        <button type="button" data-retake-split>在播放头拆分区间</button>
+        <button type="button" data-retake-remove>移除当前区间</button>
+        <button type="button" data-retake-preview>预览当前区间</button>
+      </div>
+    </section>
+    <label>入点 <input name="start" type="number" min="0" step="any" required> 秒 <button type="button" data-vs-point="start">设为播放位置</button></label>
+    <label>出点 <input name="end" type="number" min="0" step="any" required> 秒 <button type="button" data-vs-point="end">设为播放位置</button></label>
+    <label>服务 <select name="provider" aria-label="片段编辑服务"></select></label>
+    <fieldset data-vs-object hidden>
+      <legend>目标物体</legend>
+      <button type="button" data-object-mark>在当前帧框选</button>
+      <button type="button" data-object-locate hidden>定位标注帧</button>
+      <span data-object-status aria-live="polite"></span>
+      <div data-object-reference hidden>
+        <label>替换参考图 <select data-object-ref aria-label="选择替换参考图"></select></label>
+        <div class="object-reference-actions">
+          <button type="button" data-object-upload>上传本地图片</button>
+          <input type="file" data-object-file accept=".png,.jpg,.jpeg,.webp" hidden>
+          <img data-object-preview alt="当前所选替换参考图" hidden>
+          <span data-object-ref-status role="status"></span>
+        </div>
+      </div>
+    </fieldset>
+    <fieldset data-vs-camera hidden>
+      <legend>镜头方案</legend>
+      <label>镜头方式 <select name="cameraMode">
+        <option value="fixed">固定机位</option><option value="cut">切换机位</option><option value="move">连续运镜</option>
+      </select></label>
+      <div class="retake-views">
+        <fieldset data-vs-view="start"><legend>机位</legend></fieldset>
+        <fieldset data-vs-view="end" hidden><legend>结束机位</legend></fieldset>
+      </div>
+      <p data-vs-camera-hint></p>
+    </fieldset>
+    <p data-vs-status role="status"></p>
+    <textarea name="prompt" rows="3" maxlength="3000" aria-label="片段修改描述" placeholder="例如把窗外改成雨天，保留人物和镜头节奏"></textarea>
+    <footer><button type="submit">创建修改节点</button><button type="submit" data-retake-generate hidden>创建并生成</button></footer>
+  </form>
+</dialog>
+`);
+
 function closeSegmentEditor() {
   const dialog=$("#videoSegment"), player=$("video",dialog);
   if (!dialog.open) return;
@@ -340,114 +395,4 @@ function showSegmentCut(source,selected,keepAudio=false) {
   const spec=segmentTimelineSpec(source,selected,keepAudio);
   const key=filmDraftPrefix()+"segment:"+JSON.stringify(spec.clips.map(c=>keepAudio?[c.ref,c.in,c.out,c.audio_ref,c.audio_start]:[c.ref,c.in,c.out]));
   showFilm(spec,null,key);
-}
-
-function closeSegmentReview() {
-  const dialog=$("#segmentReview"), player=$("video",dialog);
-  if (!dialog.open) return;
-  player.pause();player.removeAttribute("src");
-  player.onloadedmetadata=player.ontimeupdate=null;
-  if (dialog.close) dialog.close(); else dialog.removeAttribute("open");
-}
-
-function openSegmentReview(sourceNode, useParent=false) {
-  if (!canvasCanEdit()) return;
-  const v=curV(sourceNode);
-  const clip=useParent && v?.video_recipe?.segment_edit && v.video_recipe.video_refs?.[0];
-  const source=clip ? vtResolve(clip.node_id,clip.ref) : {node:sourceNode,index:sourceNode.cur};
-  if (!source?.node.versions[source.index]) return toast("修改所对应的原片版本已移除");
-  const board=boardId, original=source.node.versions[source.index], originalId=source.node.id;
-  const dialog=$("#segmentReview"), player=$("video",dialog), list=$("[data-sr-list]",dialog), status=$("[data-sr-status]",dialog);
-  if (dialog.open) return;
-  const rows=collectSegmentVersions(source);
-  if (!rows.length) return toast("这个原片版本还没有生成完成的修改片段");
-  const reviewState=version=>JSON.stringify([version.segment_review ?? null,version.segment_review_original_audio===true]);
-  const initialReview=reviewState(original), keepAudio=$("[data-sr-original-audio]",dialog);
-  keepAudio.checked=original.segment_review_original_audio===true;
-  const prior=Array.isArray(original.segment_review)?original.segment_review:[];
-  const picks=new Map();
-  const entryKey=entry=>JSON.stringify([entry.node.id,entry.version.ref,entry.start,entry.end]);
-  const options=new Map(rows.flatMap(row=>row.entries.map(entry=>[entryKey(entry),entry])));
-  const read=()=>[...picks.values()].filter(Boolean).map(key=>options.get(key));
-  let missing=0;
-  for (const choice of prior) {
-    const row=rows.find(row=>row.start===choice?.start_frame && row.end===choice.end_frame);
-    const entry=row?.entries.find(entry=>entry.node.id===choice.node_id&&entry.version.ref===choice.ref) ||
-      row?.entries.find(entry=>entry.version.ref===choice.ref);
-    if (entry && !entry.short) picks.set(row.key,entryKey(entry));
-    else missing++;
-  }
-  if (clip && !Array.isArray(original.segment_review)) {
-    const match=segmentCandidate(sourceNode,sourceNode.cur);
-    if (match && !match.short && options.has(entryKey(match))) picks.set(`${match.start}:${match.end}`,entryKey(match));
-  }
-  $("[data-sr-name]",dialog).textContent=`${source.node.name} · 版本 ${source.index+1}`;
-  const hint=$("[data-sr-preview]",dialog);
-  hint.textContent="";
-  player.hidden=true;
-  const preview=(version,start,end,label)=>{
-    player.pause();player.hidden=false;hint.textContent=label;
-    const startTime=start/SEGMENT_FPS, endTime=end/SEGMENT_FPS;
-    player.onloadedmetadata=()=>{player.currentTime=startTime;};
-    player.ontimeupdate=()=>{
-      if (player.currentTime>=endTime) {player.pause();if (player.currentTime>endTime) player.currentTime=endTime;}
-    };
-    if (player.getAttribute("src")!==version.url) player.src=version.url || "";
-    else if (player.readyState>=1) player.currentTime=startTime;
-  };
-  const button=(label, action)=>{
-    const element=document.createElement("button");element.type="button";element.textContent=label;element.onclick=action;return element;
-  };
-  const send=$("[data-sr-send]",dialog),saveButton=$("[data-sr-save]",dialog);
-  const update=()=>{
-    const selected=read();
-    try {
-      segmentTimelineSpec(source,selected);
-      status.textContent=`采用 ${selected.length} 个区间`+(missing?`，${missing} 个已保存结果不可用`:"");
-      send.disabled=saveButton.disabled=false;
-    } catch (error) {status.textContent=error.message;send.disabled=saveButton.disabled=true;}
-  };
-  list.replaceChildren(...rows.map(row=>{
-    const group=document.createElement("fieldset"); group.className="segment-review-row";
-    const title=document.createElement("legend");title.textContent=`${segmentTime(row.start)} – ${segmentTime(row.end)}`;
-    const select=document.createElement("select");select.setAttribute("aria-label",`采用 ${title.textContent} 的版本`);
-    select.append(new Option("保留原片",""));
-    for (const entry of row.entries) {
-      const option=new Option(`${entry.node.name} · 版本 ${entry.index+1}${entry.short?"（时长不足）":""}`,entryKey(entry));
-      option.disabled=entry.short;select.append(option);
-    }
-    select.value=picks.get(row.key)||"";
-    select.onchange=()=>{picks.set(row.key,select.value);update();};
-    group.append(title,select,button("预览原片",()=>preview(original,row.start,row.end,title.textContent+" · 原片")),
-      button("预览候选",()=>{
-        const candidate=options.get(select.value)||row.entries.find(entry=>!entry.short);
-        if (!candidate) return;
-        preview(candidate.version,0,candidate.end-candidate.start,candidate.node.name+` · 版本 ${candidate.index+1}`);
-      }));
-    return group;
-  }));
-  const commit=editing=>{
-    const current=vtResolve(originalId,original.ref);
-    const ver=current?.node.versions[current.index];
-    if (!canvasCanEdit() || board!==boardId || !ver || reviewState(ver)!==initialReview) {
-      status.textContent="画布中的审核决定已变更，请关闭后重新打开。";return;
-    }
-    const live=collectSegmentVersions(current), valid=new Map(live.flatMap(row=>row.entries.map(entry=>[entryKey(entry),entry])));
-    const selected=read().map(entry=>valid.get(entryKey(entry)));
-    if (selected.some(entry=>!entry)) {status.textContent="有候选版本已变更，请关闭后重新打开。";return;}
-    try { segmentTimelineSpec(current,selected); } catch (error) {status.textContent=error.message;return;}
-    const review=selected.sort((a,b)=>a.start-b.start)
-      .map(entry=>({node_id:entry.node.id,ref:entry.version.ref,start_frame:entry.start,end_frame:entry.end}));
-    const audio=keepAudio.checked;
-    if (JSON.stringify([review,audio])!==initialReview) {
-      checkpoint();ver.segment_review=review;ver.segment_review_original_audio=audio;save();
-    }
-    closeSegmentReview();
-    if (editing) showSegmentCut(current,selected,audio);
-  };
-  $("[data-sr-close]",dialog).onclick=closeSegmentReview;
-  dialog.oncancel=event=>{event.preventDefault();closeSegmentReview();};
-  send.onclick=()=>commit(true);saveButton.onclick=()=>commit(false);
-  update();
-  if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open","");
 }

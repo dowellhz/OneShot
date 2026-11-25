@@ -64,7 +64,7 @@ async def generate_native_image(req, p):
     native = p["_native_inpaint"]
     # Native SD prompts use CLIP's English vocabulary. Translate through the configured text route when needed.
     prompt = native["prompt"]
-    if re.search(r"[\u4e00-\u9fff]", prompt):
+    if not req.get("replaying_effective_image") and re.search(r"[\u4e00-\u9fff]", prompt):
         llm = req.app["llm"]
         try:
             prompt = http_errors.clean(await llm.chat("Translate the image editing instruction into a concise English image description. Return only the English description, without commentary.", prompt, max_tokens=180, temperature=.1))
@@ -73,6 +73,7 @@ async def generate_native_image(req, p):
         if llm.running() and llm.device == "GPU":
             llm.stop()
     out, ref = tools._new(config.COMFY_DIR, "output", "inpaint", ".png")
+    req["effective_image_prompt"] = prompt
     seed = graphs.seed_of(p.get("seed"))
     body = {**native, "kind": "inpaint", "prompt": prompt, "seed": seed, "out": str(out),
             "image": str(tools.ref_path(config.COMFY_DIR, native["image"])), "mask": str(tools.ref_path(config.COMFY_DIR, native["mask"]))}

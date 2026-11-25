@@ -1,5 +1,19 @@
 "use strict";
 
+document.getElementById("mediaToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="videoDraftFinal" aria-labelledby="videoDraftFinalTitle">
+  <form>
+    <header><strong id="videoDraftFinalTitle">生成定稿</strong><button type="button" data-draft-close aria-label="关闭">×</button></header>
+    <p data-draft-name></p>
+    <label>分辨率 <select name="resolution"><option value="1080p">1080p</option><option value="4k">4K</option></select></label>
+    <label>结果位置 <select name="placement"><option value="tab">原节点的新版本</option><option value="branch">相连的新节点</option></select></label>
+    <p data-draft-guidance></p>
+    <p data-draft-status role="status"></p>
+    <footer><button type="submit">生成定稿</button></footer>
+  </form>
+</dialog>
+`);
+
 function videoDraftAvailable(n) {
   if (n.type!=="video" || n.data.previs || n.data.film) return false;
   if (hasMediaReferences(n)) return !!videoOutputModel(n)?.draft;

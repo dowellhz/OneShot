@@ -29,7 +29,9 @@ from oneshot.canvas.board_store import board_meta
 from oneshot.canvas.board_store import can_edit
 from oneshot.canvas.board_store import can_see
 from oneshot.config import DATA_DIR as DATA, ROOT
+from oneshot.editing import audio_edit_routes
 from oneshot.editing import audio_routes
+from oneshot.editing import audio_stem_routes
 from oneshot.editing import audio_separation
 from oneshot.editing import audio_waveform
 from oneshot.editing import broll
@@ -42,6 +44,7 @@ from oneshot.editing import object_edit
 from oneshot.editing import previs
 from oneshot.editing import render as film
 from oneshot.editing import timeline_routes
+from oneshot.editing import transcription_routes
 from oneshot.editing import tts
 from oneshot.editing import video_remake
 from oneshot.editing import video_routes
@@ -52,6 +55,7 @@ from oneshot.generation import jobs as generation_jobs
 from oneshot.generation import local as local_generation
 from oneshot.generation import motion_reference
 from oneshot.generation import prompts
+from oneshot.generation import queue as generation_queue
 from oneshot.generation import reference as video_reference
 from oneshot.generation import remote_jobs
 from oneshot.generation import requests as generation_requests
@@ -138,11 +142,15 @@ _FEATURE_MODULES = (
     template_routes,
     config,
     audio_routes,
+    audio_edit_routes,
+    audio_stem_routes,
+    transcription_routes,
     image_routes,
     timeline_routes,
     video_routes,
     graphs,
     generation_jobs,
+    generation_queue,
     local_generation,
     prompts,
     video_reference,

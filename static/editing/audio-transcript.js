@@ -1,5 +1,17 @@
 "use strict";
 
+document.getElementById("audioToolDialogs").insertAdjacentHTML("beforebegin", OneShotI18n.html`
+<dialog id="audioTranscript" aria-labelledby="audioTranscriptTitle">
+  <header><strong id="audioTranscriptTitle">音频转写</strong><button type="button" data-transcript-close aria-label="关闭">×</button></header>
+  <p data-transcript-source></p><audio controls preload="metadata"></audio>
+  <form><label>开始（秒） <input name="in" type="number" min="0" step="any" required></label>
+    <label>结束（秒） <input name="out" type="number" min="0" step="any" placeholder="音频末尾"></label>
+    <button type="submit" data-transcript-run>开始转写</button></form>
+  <p role="status"></p><div data-transcript-result></div>
+  <footer><button type="button" data-transcript-download disabled>下载 SRT</button><button type="button" data-transcript-add disabled>放入画布</button><button type="button" data-transcript-cut disabled>剪出选中台词</button></footer>
+</dialog>
+`);
+
 function closeAudioTranscript() {
   const dialog = $("#audioTranscript");
   if (!dialog.open) return;
