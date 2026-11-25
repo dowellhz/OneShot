@@ -50,7 +50,7 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
     elif cap == "video":
         prompt, _ = video_reference.remote_video_prompt(raw, p, model)
     else:
-        prompt = video_reference.plain_prompt(raw)
+        prompt = (raw.get("prompt") or "").strip()
     if not prompt:
         raise http_errors.bad("提示词不能为空")
     imgs = []

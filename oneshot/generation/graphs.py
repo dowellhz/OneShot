@@ -316,6 +316,8 @@ NO_SPEECH = ("No one speaks: there is no dialogue, narration, voiceover or singi
 
 
 NO_SPEECH_SOUND = "No human speech, narration or voices of any kind."
+SCRIPTED_SPEECH_SOUND = ("Only the explicitly scripted vocal lines are audible, verbatim and in order. "
+                         "No additional speech or narration. Do not read directions, labels or scene descriptions aloud.")
 
 
 _SECTION = re.compile(r"\n\n[a-z_]+:")
@@ -335,13 +337,16 @@ def _append_to_section(full: str, names, text: str) -> tuple[str, bool]:
 
 
 def no_speech_guard(full: str) -> str:
-    """H3 makes sound with the picture; a prompt with no <d> dialogue must say nobody talks, or the model may voice the text."""
-    if "<d>" in full:
+    """Constrain H3's generated voices to the supplied dialogue and lyrics."""
+    scripted = bool(re.search(r"<d>\s*[^<].*?</d>", full, re.S))
+    sound = SCRIPTED_SPEECH_SOUND if scripted else NO_SPEECH_SOUND
+    if sound in full:
         return full
-    full, _ = _append_to_section(full, ("detailed_description", "integrated_multimodal_description"), NO_SPEECH)
-    full, ok = _append_to_section(full, ("overall_soundscape",), NO_SPEECH_SOUND)
+    if not scripted:
+        full, _ = _append_to_section(full, ("detailed_description", "integrated_multimodal_description"), NO_SPEECH)
+    full, ok = _append_to_section(full, ("overall_soundscape",), sound)
     if not ok:
-        full = full.rstrip() + f"\n\noverall_soundscape:\n{SOUND_DEFAULT} {NO_SPEECH_SOUND}"
+        full = full.rstrip() + f"\n\noverall_soundscape:\n{SOUND_DEFAULT} {sound}"
     return full
 
 

@@ -36,6 +36,7 @@ const scenarios = [
  require('./workspace/creative-apps-and-assistant-context.cjs'),
  require('./workspace/image-layer-workspace.cjs'),
  require('./workspace/story-film-timing.cjs'),
+ require('./workspace/generation-adherence.cjs'),
 ];
 
 async function run() {

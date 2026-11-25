@@ -83,6 +83,7 @@ function ctxMenu(e) {
     if (n.type === "video") { add("firstframe", "image", "截取首帧"); add("currentframe", "image", "截取当前帧"); add("frame", "image", "截取末帧"); }
     if (n.type === "video") add("remake", "video", "视频重制 · 替换角色");
     if (n.type === "video") add("trim-video", "scissors", "裁剪视频 / 智能拆镜头");
+    if (n.type === "video" && v.ref && canvasCanEdit()) add("dialogue-review", "audio", "核对对白");
     if (n.type === "video" && v.draft_expires) add("draft-final","hd","从样片生成定稿");
     if (draftVideoComparison(n,v)) add("compare-draft","fit","对比样片与定稿");
     if (n.type === "video" && n.versions.filter(v=>v.url).length > 1) add("compare-video", "stack", "对比视频版本");

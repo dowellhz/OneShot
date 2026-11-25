@@ -14,11 +14,15 @@ function missingMotionFrames(shot,pair) {
 }
 
 function shotMotionFrameSettings(script,shot,phase) {
-  const description=shot.motion_frames[phase]?.trim()||[...(shot.action||[]),
-    phase==="end"?"动作已结束，保持最终站位和道具状态":"动作进行到中间时的姿态"].join("，");
+  const action=shot.action||[];
+  const end=phase==="end";
+  const description=shot.motion_frames[phase]?.trim()||[
+    end?action.at(-1):action[Math.floor((action.length-1)/2)],
+    end?"定格在动作完成之后，人物保持最终站位和姿态":"定格在动作进行到此处的瞬间"
+  ].filter(Boolean).join("，");
   const moment=phase==="end"?"尾帧":"中帧";
   const assets=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
-  const prompt=[`参考 @图{1} 延续同一镜头。锁定机位、构图、角色身份、服装、道具位置及光线，只推进动作到本帧状态。`,
+  const prompt=[`参考 @图{1} 延续同一镜头。保持机位、景别、场景、角色身份、服装和光线。人物和道具的位置以本帧描述为准。`,
     script.data.style,shot.scene,[shot.shot_size,shot.camera].filter(Boolean).join("，"),
     `${moment}画面：${description}`,assets&&"参考资产 "+assets].filter(Boolean).join("\n");
   return {prompt,caption:description,moment};
@@ -28,8 +32,8 @@ function makeShotMotionFrame(script,shot,settings,index,phase,prior,x,y) {
   const {moment,...data}=shotMotionFrameSettings(script,shot,phase);
   const image=addNode("image",x,y,{...data,aspect:script.data.aspect,quality:"4mp",image_ref_seq:1},
     {name:`镜${index+1} · ${moment}`});
-  B.edges.push({from:prior.id,to:image.id,prompt_slot:1});
-  settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:image.id,story_cast:!ref.pinned,...(ref.pinned?{ref:ref.ref}:{})}));
+  B.edges.push({from:prior.id,to:image.id,prompt_slot:1,image_use:"camera"});
+  settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:image.id,image_use:"character",story_cast:!ref.pinned,...(ref.pinned?{ref:ref.ref}:{})}));
   return image;
 }
 
@@ -91,7 +95,7 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
         img.versions.push({ref,url:"/media?ref="+encodeURIComponent(ref),w,h,source,prompt:""});
         img.cur=0;
       }
-      settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,story_cast:!r.pinned,...(r.pinned?{ref:r.ref}:{})}));
+      settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,image_use:"character",story_cast:!r.pinned,...(r.pinned?{ref:r.ref}:{})}));
       created.push(img);
     }
     let nextY=y0+(created.length?Math.max(size(img).h,300)+110:0);
@@ -105,7 +109,7 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
         created.push(frame);
         nextY+=Math.max(size(frame).h,300)+110;
       }else if(!B.edges.some(edge=>edge.to===frame.id&&edge.prompt_slot===1)){
-        B.edges.push({from:priorFrame.id,to:frame.id,prompt_slot:1});
+        B.edges.push({from:priorFrame.id,to:frame.id,prompt_slot:1,image_use:"camera"});
       }
       motionFrames[phase]=frame.id;
       priorFrame=frame;

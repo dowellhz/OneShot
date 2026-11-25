@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="/static/shared/i18n.css?v=1">
 <script src="/static/shared/locales/en-workspace.js?v=1"></script>
 <script src="/static/shared/locales/en-pages.js?v=1"></script>
-<script src="/static/shared/locales/en-workflows.js?v=3"></script>
+<script src="/static/shared/locales/en-workflows.js?v=4"></script>
 <script src="/static/shared/locales/en-wizard.js?v=1"></script>
 <script src="/static/shared/locales/en-canvas-actions.js?v=1"></script>
 </head>
@@ -231,6 +231,14 @@
   <ul id="pvInputs" aria-label="参考素材" hidden></ul><pre id="pvt"></pre>
   <button type="button" class="pill" id="pvBranchCommit" hidden>生成到新节点（1 个）</button>
 </div></div>
+<dialog id="dialogueReview" aria-labelledby="dialogueReviewTitle">
+  <header><strong id="dialogueReviewTitle">核对对白</strong><button type="button" class="pill" id="dialogueReviewClose">关闭</button></header>
+  <p id="dialogueReviewVersion"></p>
+  <audio id="dialogueReviewAudio" controls preload="none" aria-label="视频原声"></audio>
+  <b>预期对白</b><pre id="dialogueReviewExpected"></pre>
+  <b>原声转写</b><pre id="dialogueReviewActual"></pre>
+  <p id="dialogueReviewStatus" role="status"></p>
+</dialog>
 <div id="toast"></div>
 <template id="audioToolDialogs"></template>
 <dialog id="textDocument" aria-labelledby="textDocumentTitle">
@@ -364,7 +372,7 @@
 <script src="/static/memory/canvas-asset-bindings.js?v=1"></script>
 <script src="/static/generation/video-tools.js?v=1"></script>
 <script src="/static/generation/storyboard-continuity.js?v=1"></script>
-<script src="/static/generation/storyboard-expansion.js?v=1"></script>
+<script src="/static/generation/storyboard-expansion.js?v=2"></script>
 <script src="/static/generation/storyboard-revisions.js?v=1"></script>
 <script src="/static/generation/storyboard-batch.js?v=1"></script>
 <script src="/static/memory/canvas-asset-placement.js?v=1"></script>
@@ -408,7 +416,7 @@
 <script src="/static/editing/video-remake-depth.js?v=1"></script>
 <script src="/static/editing/video-remake-requests.js?v=1"></script>
 <script src="/static/editing/video-remake-actions.js?v=1"></script>
-<link rel="stylesheet" href="/static/generation/shot-list.css?v=12">
+<link rel="stylesheet" href="/static/generation/shot-list.css?v=22">
 <script src="/static/editing/remake-to-film.js?v=1"></script>
 <script src="/static/generation/shot-continuity-review.js?v=1"></script>
 <script src="/static/generation/shot-range-picker.js?v=1"></script>
@@ -433,24 +441,25 @@
 <script src="/static/canvas/canvas-nodes.js?v=1"></script>
 <script src="/static/canvas/canvas-connections.js?v=1"></script>
 <script src="/static/generation/canvas-video-settings.js?v=1"></script>
-<script src="/static/canvas/canvas-node-view.js?v=1"></script>
+<script src="/static/canvas/canvas-node-view.js?v=2"></script>
 <script src="/static/generation/canvas-video-queue.js?v=1"></script>
 <script src="/static/canvas/canvas-version-switch.js?v=1"></script>
 <script src="/static/generation/canvas-generation-drafts.js?v=1"></script>
 <script src="/static/canvas/canvas-edge-view.js?v=1"></script>
 <script src="/static/canvas/canvas-selection.js?v=1"></script>
 <script src="/static/generation/prompt-panel-layout.js?v=1"></script>
-<script src="/static/generation/prompt-panel.js?v=1"></script>
-<script src="/static/generation/prompt-preview.js?v=1"></script>
+<script src="/static/generation/image-generation-request.js?v=1"></script>
+<script src="/static/generation/prompt-panel.js?v=2"></script>
+<script src="/static/generation/prompt-preview.js?v=2"></script>
 <script src="/static/canvas/media-preview.js?v=1"></script>
 <script src="/static/canvas/canvas-gestures.js?v=1"></script>
-<script src="/static/canvas/canvas-context-menu.js?v=1"></script>
+<script src="/static/canvas/canvas-context-menu.js?v=2"></script>
 <script src="/static/canvas/canvas-minimap.js?v=1"></script>
 <script src="/static/canvas/canvas-commands.js?v=1"></script>
 <script src="/static/canvas/canvas-keyboard.js?v=1"></script>
 <script src="/static/canvas/canvas-clipboard.js?v=1"></script>
 <script src="/static/editing/image-panorama.js?v=2"></script>
-<script src="/static/generation/canvas-generation.js?v=61"></script>
+<script src="/static/generation/canvas-generation.js?v=62"></script>
 <script src="/static/canvas/canvas-import.js?v=1"></script>
 <script src="/static/editing/frame-capture.js?v=2"></script>
 <script src="/static/memory/canvas-asset-drawer.js?v=1"></script>
@@ -459,6 +468,8 @@
 <script src="/static/generation/video-extension.js?v=6"></script>
 <script src="/static/editing/video-object.js?v=3"></script>
 <script src="/static/generation/video-drafts.js?v=11"></script>
+<link rel="stylesheet" href="/static/generation/dialogue-review.css?v=1">
+<script src="/static/generation/dialogue-review.js?v=1"></script>
 <script src="/static/editing/video-compare.js?v=5"></script>
 <script src="/static/editing/video-segment.js?v=9"></script>
 <script src="/static/editing/video-segment-review.js?v=1"></script>

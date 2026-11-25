@@ -64,7 +64,7 @@ function showPanel() {
   const reference = guide || sounds.length || clips.length;
   if (n.type === "script") imgInputs(n).forEach(m => { const mv = curV(m); items.push(`<span class="ref" title="${esc(m.name)}">${mv ? `<img src="${mv.url}">` : `<span class="tx">${ico("image")}</span>`}${esc(m.name)}<span class="role">${KIND_CN[m.data.asset?.kind] || "参考"}</span></span>`); });
   if (n.type === "image") {
-    imageInputs(n).forEach((input,i)=>items.push(imagePromptChip(input,i,`<span class="role">${i===0?"原图":"参考"}</span>`)));
+    imageInputs(n).forEach((input,i)=>items.push(imagePromptChip(input,i,imageReferenceSelect(n,input.edge,i))));
     const composition=previsComposition(n);
     if(composition){
       const label=composition.enabled?"使用中":"已关闭";
@@ -136,6 +136,14 @@ function showPanel() {
     save(); showPanel();
   });
   $$(".ref[data-tok]", refs).forEach(r => r.onclick = e => { if (!e.target.closest("button, select, input, label")) insertTok(r.dataset.tok); });
+  $$("[data-image-use]", refs).forEach(select=>select.onchange=()=>{
+    if (!canvasCanEdit() || nodeLocked(n) || n.job || prepping.has(n.id)) return;
+    const input=imageInputs(n)[Number(select.dataset.imageUse)];
+    if (!input) return;
+    checkpoint();
+    input.edge.image_use=select.value;
+    save();
+  });
   $$("[data-image-update]",refs).forEach(button=>button.onclick=()=>{
     if(!canvasCanEdit()||n.job||prepping.has(n.id))return;
     const input=imageInputs(n)[Number(button.dataset.imageUpdate)], latest=curV(input?.source);
@@ -212,7 +220,8 @@ function showPanel() {
   const d = n.data, ctl = $("#ctl");
   const pill = (k, opts, label, extra = "", current=d[k]) => {
     const service = k === "provider" || k === "selected_model";
-    const name = k === "selected_model" ? ` aria-label="${esc(OneShotI18n.t("生成模型"))}"` : "";
+    const aria = {selected_model:"生成模型",image_text:"画面文字"}[k];
+    const name = aria ? ` aria-label="${esc(OneShotI18n.t(aria))}"` : "";
     const options = Object.entries(opts).map(([value, text]) =>
       `<option value="${esc(value)}" ${String(value) === String(current) ? "selected" : ""}>${service ? text : OneShotI18n.t(text)}</option>`).join("");
     return `<span class="pill ${extra}">${service ? label : OneShotI18n.t(label)}<select data-k="${k}"${name}>${options}</select></span>`;
@@ -231,6 +240,11 @@ function showPanel() {
     h += pill("aspect", { ...(ins ? { auto: "跟随原图" } : {}), "1:1": "1:1", "3:4": "3:4", "4:3": "4:3", "9:16": "9:16", "16:9": "16:9", "21:9": "21:9" }, fa ? `${arIcon(ins ? "4:3" : "1:1")}${ins ? OneShotI18n.t("原图比例") : "1:1"}` : `${arIcon(d.aspect)}${d.aspect}`);
     h += pill("quality", hi ? { "4mp": "4MP（约 2K）", "16mp": "16MP（约 4K，最佳画质，慢）" } : { "4mp": "1K", "16mp": "2K" }, hi ? (d.quality === "16mp" ? "16MP" : "4MP") : (d.quality === "16mp" ? "2K" : "1K"));
     h += pill("count", { 1: "1 张", 2: "2 张", 4: "4 张" }, `${ico("stack")}${d.count}`);
+    h += pill("image_text", {auto:"文字按描述",none:"画面无文字",specified:"仅指定文字"},
+      OneShotI18n.t(({none:"画面无文字",specified:"仅指定文字"})[d.image_text] || "文字按描述"),
+      "", d.image_text || "auto");
+    if (d.image_text==="specified") h += OneShotI18n.html`<span class="est">指定文字用引号标出</span>`;
+    h += OneShotI18n.html`<button class="pill" id="pvBtn" title="核对生成用的提示词和参考素材">预览</button>`;
     if (hi) h += OneShotI18n.html`<button class="pill" id="slashBtn" title="三视图、九宫格、换角度、打光……（也可以在提示词里输入 /）">/ 工具</button>`;
   } else {
     const rem = isRemote(n);
@@ -341,6 +355,12 @@ function imagePromptChip({edge,source,version,index},i,role) {
   const latest=curV(source);
   const update=edge.ref&&latest?.ref&&latest.ref!==edge.ref?`<button type="button" data-image-update="${i}">改用当前版本</button>`:"";
   return `<span class="ref" data-tok="${token}" title="点击在提示词中引用 · ${esc(source.name)}">${version?.url?`<img src="${esc(version.url)}">`:`<span class="tx">${ico("image")}</span>`}${slot?esc(source.name):"图"+(i+1)}${role}${pinned}${update}</span>`;
+}
+function imageReferenceSelect(n,edge,index) {
+  const current=edge.image_use || (edge.story_cast ? "character" : "reference");
+  const disabled=!canvasCanEdit() || nodeLocked(n) || n.job || prepping.has(n.id);
+  return OneShotI18n.html`<select data-image-use="${index}" aria-label="图片参考用途" ${disabled?"disabled":""}>${Object.entries(IMAGE_REFERENCE_USE).map(([use,label])=>
+    `<option value="${use}" ${use===current?"selected":""}>${OneShotI18n.t(label)}</option>`).join("")}</select>`;
 }
 function roleSelect(e) {
   const i = B.edges.indexOf(e);

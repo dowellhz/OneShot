@@ -11,7 +11,9 @@ function renderPreviewInputs(items, duration, memory=[]) {
   for (const item of items) {
     const {role, image_role, ref, time, start, end} = item;
     if (!ref) continue;
-    const label = labels[image_role || role] || (time > 0.01 ? time >= (vidFrames(duration)-4)/24-.05 ? "尾帧" : "关键帧" : "首帧");
+    const label = image_role?.startsWith("image_") && image_role!=="image_ref"
+      ? IMAGE_REFERENCE_USE[image_role.slice(6)]
+      : labels[image_role || role] || (time > 0.01 ? time >= (vidFrames(duration)-4)/24-.05 ? "尾帧" : "关键帧" : "首帧");
     const details = item.prompt_reference ? [item.prompt_reference] : [];
     const version = item.version ?? (node(item.node_id)?.versions.findIndex(v => v.ref === ref) ?? -1)+1;
     if (version > 0) details.push("版本 "+version);
@@ -32,7 +34,7 @@ function renderPreviewInputs(items, duration, memory=[]) {
     const name = document.createElement("strong");
     name.textContent = item.name || "素材";
     const meta = document.createElement("small");
-    meta.textContent = [label,...details].join(" · ");
+    meta.textContent = [OneShotI18n.t(label || "参考图"),...details].join(" · ");
     description.append(name, meta);
     row.append(description);
     list.append(row);
@@ -73,7 +75,7 @@ async function checkVideoModels(n, request, current, {branch=false}={}) {
   if (!candidate.segment_edit) candidate.duration=Number(n.data.duration)||candidate.duration;
   candidate.quality=n.data.quality||candidate.quality;
   if (n.data.draft) candidate.draft=true;
-  const signature=videoPreviewSignature(request);
+  const signature=generationPreviewSignature(request);
   panel.hidden=false;
   button.disabled=true;
   list.replaceChildren();
@@ -100,7 +102,7 @@ async function checkVideoModels(n, request, current, {branch=false}={}) {
         use.onclick=()=>{
           const latest=videoPreviewRequest(n,true);
           if (latest && branch) latest.count=1;
-          if (!current() || !latest || videoPreviewSignature(latest)!==signature || n.job || prepping.has(n.id) ||
+          if (!current() || !latest || generationPreviewSignature(latest)!==signature || n.job || prepping.has(n.id) ||
               !canvasCanEdit() || nodeLocked(n)) {
             status.textContent=OneShotI18n.t("生成设置已变化，请重新预览后再选择。");
             return;
@@ -123,34 +125,41 @@ async function checkVideoModels(n, request, current, {branch=false}={}) {
 }
 
 async function previewPrompt(n,{branch=false}={}) {
-  const req=videoPreviewRequest(n);
+  const image=n.type==="image";
+  const requestFor=(silent=false)=>image ? imageCanvasRequest(n,fullPrompt(n),{silent})?.request : videoPreviewRequest(n,silent);
+  const req=requestFor();
   if (!req) return;
   if (branch) req.count=1;
   const board = B, sequence = ++previewSequence;
   const current = () => sequence === previewSequence && B === board && node(n.id) === n && sel.has(n.id);
   const render = r => {
     if (!current()) return;
-    if (r.reference_preview||r.asset_review_key) videoReferencePreviews.set(n,{key:r.reference_preview,assetKey:r.asset_review_key,signature:videoPreviewSignature(req)});
-    else videoReferencePreviews.delete(n);
+    if (r.reference_preview||r.asset_review_key||r.image_preview) generationPreviews.set(n,{key:r.reference_preview,imageKey:r.image_preview,assetKey:r.asset_review_key,signature:generationPreviewSignature(req)});
+    else generationPreviews.delete(n);
     renderPreviewInputs(r.inputs || [], r.duration ?? req.duration,r.memory_context||[]);
     $("#pvt").textContent = r.prompt || "";
     $("#pvt").hidden = $("#pvCopy").hidden = !r.prompt;
-    $("#pvm").textContent = r.mode || "";
+    const expansion=image && r.image_preview && req.expand
+      ? OneShotI18n.t(r.image_expanded ? "已扩写" : "本次按原描述生成") : "";
+    $("#pvm").textContent = [r.mode,expansion].filter(Boolean).join(" · ");
     $("#pvModels").hidden = true;
     const check=$("#pvModelCheck");
+    check.hidden=image;
     check.disabled=false;
     check.onclick=()=>checkVideoModels(n,req,current,{branch});
     const submit=$("#pvBranchCommit");
-    submit.hidden=!branch || !r.prompt;
+    submit.hidden=image ? !r.image_preview || !canvasCanEdit() || nodeLocked(n) : !branch || !r.prompt;
+    submit.textContent=OneShotI18n.t(image ? "按预览生成" : "生成到新节点（1 个）");
     submit.onclick=()=>{
-      const latest=videoPreviewRequest(n,true);
-      if (latest) latest.count=1;
-      if (!current() || !latest || videoPreviewSignature(latest)!==videoPreviewSignature(req) || !canBranchGeneration(n)) {
+      const latest=requestFor(true);
+      if (latest && branch) latest.count=1;
+      if (!current() || !latest || generationPreviewSignature(latest)!==generationPreviewSignature(req) ||
+          (branch && !canBranchGeneration(n)) || (image && (!canvasCanEdit() || nodeLocked(n)))) {
         toast(OneShotI18n.t("生成设置已变化，请重新预览"));
         return;
       }
       closePromptPreview();
-      void generate(n,{branch:true});
+      void generate(n,{branch,reviewedImage:image});
     };
     $("#pv").classList.add("on");
     $("#pvClose").focus();

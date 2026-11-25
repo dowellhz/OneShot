@@ -1,0 +1,6 @@
+#dialogueReview { width:min(640px,calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:16px; color:var(--text); background:var(--panel); border:1px solid var(--line2); border-radius:12px; }
+#dialogueReview::backdrop { background:#0009; }
+#dialogueReview header { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+#dialogueReview audio { display:block; width:100%; margin-bottom:14px; }
+#dialogueReview pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0 14px; font:inherit; }
+#dialogueReview [role=status] { color:var(--dim); }

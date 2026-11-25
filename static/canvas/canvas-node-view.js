@@ -297,6 +297,7 @@ function nodeAction(n, a) {
   else if (a === "segment-review") openSegmentReview(n);
   else if (a === "segment-review-parent") openSegmentReview(n,true);
   else if (a === "trim-video") openVideoTrim(n);
+  else if (a === "dialogue-review") void openDialogueReview(n,v);
   else if (a === "gif-export") openGifExport(n,v);
   else if (a === "capture") openFrameCapture(n);
   else if (["frame","firstframe","currentframe"].includes(a)) {

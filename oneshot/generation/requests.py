@@ -14,13 +14,13 @@ from oneshot.canvas import workflow_review
 from oneshot.editing import audio_routes
 from oneshot.editing import object_edit
 from oneshot.generation import graphs
+from oneshot.generation import image_prompts
 from oneshot.generation import jobs as generation_jobs
 from oneshot.generation import local as local_generation
 from oneshot.generation import motion_reference
 from oneshot.generation import prompts
 from oneshot.generation import reference as video_reference
 from oneshot.generation import remote_jobs
-from oneshot.generation import rewriter
 from oneshot.generation import tools
 from oneshot.generation.audio import AUDIO_GENERATION_MODES
 from oneshot.memory import creative_memory
@@ -30,7 +30,7 @@ from oneshot.web import http as http_errors
 
 
 async def preview(req):
-    """Preview the prepared video prompt and its configured media without submitting a job."""
+    """Preview the prepared prompt and configured media without submitting a job."""
     raw = await req.json()
     replay_ref = checked_asset_replay(raw)
     payload = video_reference.apply_video_optics(req.app["creative_memory"].prepare(req["user"],raw,replay_ref=replay_ref))
@@ -38,6 +38,21 @@ async def preview(req):
     memory_review = {"memory_context":[{key:asset[key] for key in ("name","kind","story_state") if key in asset}
                                        for asset in assets],
                      "asset_review_key":creative_memory.generation_asset_key(assets)} if assets else {}
+    if payload.get("kind") == "image":
+        route = requested_generation_route(payload, "image")
+        if not http_errors.clean(payload.get("prompt")):
+            raise http_errors.bad("提示词不能为空")
+        story, status = await image_story_prompt(req.app.get("llm"), payload)
+        prepared, expanded = await image_prompts.prepare(req.app, story, route, review=True)
+        cache = req.app["reviewed_image_prompts"]
+        key = cache.save(image_prompts.fingerprint(req["user"], payload, route), prepared, status, expanded)
+        inputs = workflow_review.capture_generation(payload)["inputs"]
+        for index, (item, image) in enumerate(zip(inputs, payload.get("images") or []), 1):
+            item.update(image_role="image_" + image_prompts.image_use(image), prompt_reference=f"图{index}")
+        mode = route["model"] if route and route["provider"]["kind"] != "local_h3" else (
+            "H3 快速" if payload.get("model") == "h3video" else "H3-Image")
+        return web.json_response({"prompt":prepared["prompt"], "mode":mode, "inputs":inputs,
+                                  "image_preview":key, "image_expanded":expanded, **memory_review})
     if payload.get("previs_guide") is not None or payload.get("audio_refs") or payload.get("video_refs"):
         retake = video_reference.resolve_camera_plan(payload)
         object_plan = video_reference.resolve_object_edit(payload)
@@ -113,6 +128,10 @@ async def generate(req):
         if not isinstance(asset_key,str) or not re.fullmatch(r"[a-f0-9]{64}",asset_key):
             raise http_errors.bad("资产核对编号无效")
         req["asset_review_key"] = asset_key
+    if (key := raw.pop("image_preview", None)) is not None:
+        if raw.get("kind") != "image" or not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{32}", key):
+            raise http_errors.bad("生图预览编号无效")
+        req["image_preview"] = key
     return await generate_request(req, raw)
 
 
@@ -200,6 +219,11 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
         story_status = payload.pop("_image_story_status", None)
         if payload.pop("_effective_image_snapshot", False):
             req["replaying_effective_image"] = True
+    elif key := req.get("image_preview"):
+        route = requested_generation_route(payload, "image")
+        prepared = req.app["reviewed_image_prompts"].resolve(key, image_prompts.fingerprint(req["user"], payload, route))
+        prompt, expand, story_status, expanded = prepared
+        req["reviewed_image"] = {**payload, "prompt": prompt, "expand": expand}, expanded
     else:
         original_prompt = payload.get("prompt")
         payload, story_status = await image_story_prompt(req.app.get("llm"), payload)
@@ -417,6 +441,12 @@ async def _generate_request(req, raw, *, fixed_route=None):
     video_reference.verify_reference_preview(req,raw,route,guide_frames=cap=="video")
     if cap=="video" or isinstance(req, agent_chat.InternalRequest):
         req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]} if route else {"provider":None,"model":None}
+    meta_extra = {}
+    if cap == "image" and not req.get("replaying_effective_image"):
+        raw, expanded = req["reviewed_image"] if "reviewed_image" in req else await image_prompts.prepare(req.app, raw, route)
+        req["effective_image_prompt"] = raw["prompt"]
+        if expanded:
+            meta_extra = {"expanded": raw["prompt"]}
     if route and route["provider"]["kind"] != "local_h3":
         return await remote_jobs.generate_remote(req, raw, route, cap)
     int8 = bool(cap == "video" and route and route["model"] == h3_int8.MODEL)
@@ -430,19 +460,6 @@ async def _generate_request(req, raw, *, fixed_route=None):
     kind = p.get("kind")
     count = max(1, min(4, int(p.get("count") or 1)))
     llm = req.app["llm"]
-    meta_extra = {}
-    if kind == "image" and p.get("model", "h3img") != "h3video" and p.get("expand") and llm.available() and (graphs.TEMPLATES / "h3image_t2i.json").exists():
-        edit = bool(p.get("images"))
-        tpl = json.loads((graphs.TEMPLATES / ("h3image_edit.json" if edit else "h3image_t2i.json")).read_text())
-        ar = float(p.get("ar") or 1)
-        ar_text = "adaptive" if not p.get("ar") else f"{round(ar * 100)}:100"
-        try:
-            cap = await rewriter.expand_image(llm, config.COMFY_DIR, tpl, graphs.H3IMG_IDS[edit], re.sub(r"@图(\d+)", r"<Picture \1>", p["prompt"]), p.get("images") or [], ar_text)
-        except Exception as e:
-            raise web.HTTPBadRequest(text=json.dumps({"error": f"智能扩写失败：{e}"}, ensure_ascii=False), content_type="application/json")
-        p = {**p, "prompt": cap, "expand": False}
-        req["effective_image_prompt"] = cap
-        meta_extra = {"expanded": cap}
     if int8 and not await local_generation.engine_up(req.app, int8=True):
         raise http_errors.bad("本地 H3 INT8 ConvRot 引擎暂不可用，请稍后重试")
     if kind != "image" and (int8 or await local_generation.engine_up(req.app)):
@@ -452,7 +469,7 @@ async def _generate_request(req, raw, *, fixed_route=None):
     if llm.running() and llm.device == "GPU":
         llm.stop()   # give the GPU back to the engine
     if kind == "image" and await local_generation.engine_up(req.app, image=True):
-        return await local_generation.generate_engine_image(req, p, count)
+        return await local_generation.generate_engine_image(req, p, count, **meta_extra)
     ids = []
     for _ in range(count):
         g, meta = graphs.graph_image(p) if kind == "image" else graphs.graph_video(p)

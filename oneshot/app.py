@@ -51,6 +51,7 @@ from oneshot.editing import video_routes
 from oneshot.generation import fields as pfields
 from oneshot.generation import generation_watermark
 from oneshot.generation import graphs
+from oneshot.generation.image_prompts import ReviewedImagePrompts
 from oneshot.generation import jobs as generation_jobs
 from oneshot.generation import local as local_generation
 from oneshot.generation import motion_reference
@@ -112,6 +113,7 @@ async def on_stop(app):
 
 def create_app():
     app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[auth.middleware, media_routes.media_input_guard])
+    app["reviewed_image_prompts"] = ReviewedImagePrompts()
     agent_chat.install(app, sys.modules[__name__])
     canvas_live.install(app, sys.modules[__name__])
     app.add_routes(routing.routes)

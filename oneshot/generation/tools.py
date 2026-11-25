@@ -60,7 +60,8 @@ STORYBOARD_SYS = """你是电影分镜师。把用户的剧情拆成一组连续
 MOTION_FRAMES = """
 本次用于多关键帧动画。每镜优先只安排一个主要动作，能容纳对白时优先用 5 秒，后续动作拆到下一镜。
 除 keyframe 首帧外，每镜再写 motion_frames 对象，包含 middle（动作进行时）和 end（动作完成后的状态）两个字符串。
-三帧各用一句话描述可绘制的静态画面，人物、服装、道具、机位和光线一致，动作姿态随时间推进。不要重复同一帧描述。
+三帧各用一句话描述可绘制的静态画面。首帧写动作开始前的状态，中帧写完成该动作需要经过的关键姿态，尾帧写动作之后已经稳定的站位和道具状态。
+保持人物身份、服装、机位和光线。人物和道具的位置按动作推进。尾帧不要回到起始姿态或描述再次执行同一动作，除非剧情明确要求。
 仅当首帧可直接复用上一镜尾帧且不切换机位时，设置 continues_previous 为 true，并逐字沿用上一镜的 scene、shot_size 和 camera。
 """
 
@@ -271,12 +272,13 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
     if motion_frames:
         for shot in shots:
             frames = shot.setdefault("motion_frames", {})
-            action = "，".join(shot["action"])
+            actions = shot["action"]
             seen = {shot_text_key(shot["keyframe"])}
             for phase, state in (("middle","动作正在进行的中间状态"), ("end","动作完成后的最终站位、姿态和道具状态")):
                 key = shot_text_key(frames.get(phase,""))
                 if not key or key in seen:
-                    frames[phase] = "，".join(filter(None,(action,state)))
+                    index = -1 if phase == "end" else (len(actions) - 1) // 2
+                    frames[phase] = "，".join(filter(None, (actions[index] if actions else "", state)))
                     key = shot_text_key(frames[phase])
                 seen.add(key)
     else:

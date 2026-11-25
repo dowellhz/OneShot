@@ -220,6 +220,6 @@ class MemoryRetrieval:
             for lo, hi in sorted(occupied, reverse=True):
                 remaining = remaining[:lo] + " " * (hi - lo) + remaining[hi:]
             unknown = re.search(r"(?<![\w@])@([^\s@，。！？、；：,.!?;:()（）\[\]【】]{1,80})", remaining)
-            if unknown and not re.match(r"^(?:图\d+|<|Picture|Subject)", unknown[1]):
+            if unknown and not re.match(r"^(?:图片?\d+|<|Picture|Subject)", unknown[1]):
                 fail(f"未找到记忆 @{unknown[1]}，请先保存素材或选择已有记忆")
         return selected

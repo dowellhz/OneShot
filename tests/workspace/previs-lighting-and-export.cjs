@@ -158,7 +158,7 @@ module.exports = async function previsLightingAndExport(workspace, scenarioState
  assert.equal(previsGenerated.length,2);
  assert.deepEqual(previsGenerated[0].images.map(item=>item.ref),Array.from(evaluate('[curV(node("n1")).ref,pvWhitebox]')));
  assert.match(previsGenerated[0].prompt,/以 @图1 的角色/);
- assert.match(previsGenerated[0].prompt,/按 @图2 的机位/);
+ assert.equal(previsGenerated[0].images[1].image_use,"composition");
  assert.equal(previsGenerated[1].images[0].ref,'output:h3studio/previs-composition-image.png');
  equal(evaluate(`const pvFinalImage=node(pvLayoutImageId);
   [pvFinalImage.versions.map(version=>version.source),previsComposition(pvFinalImage).ref,

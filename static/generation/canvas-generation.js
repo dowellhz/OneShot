@@ -17,9 +17,9 @@ function canvasGenerationError(n) { return els.get(n.id)?.querySelector(".errbox
 const usesFields = n => !!n && n.type === "video" && n.data.pmode === "fields";
 const fieldsFilled = n => FIELDS.some(f => !["sound", "music"].includes(f.k) && (n.data.fields?.[f.k] || "").trim());
 const prepping = new Set();   // nodes whose request is being submitted before it reaches the queue
-const videoReferencePreviews = new WeakMap();
+const generationPreviews = new WeakMap();
 
-function videoPreviewSignature(request) {
+function generationPreviewSignature(request) {
   return JSON.stringify(Object.keys(request).filter(key=>key!=="label").sort().map(key=>[key,request[key]]));
 }
 const BATCH_LAYOUTS = {tabs:"同一节点的版本 Tab",spread:"在画布横向展开",fold:"收起为一组"};
@@ -128,10 +128,10 @@ function captureGenerationRecord(request, textInputs) {
   const settings = Object.fromEntries(["model","provider_model","provider","quality","ar","duration","seed","count","extension"]
     .filter(key => request[key] != null).map(key => [key,request[key]]));
   if (request.selected_model) settings.provider_model = request.selected_model;
-  const images = (request.images || []).map(({node_id,ref,role,time,name,memory_id,memory_view}) => {
+  const images = (request.images || []).map(({node_id,ref,role,time,name,memory_id,memory_view,image_use}) => {
     const n = node_id ? node(node_id) : null;
     const index = n ? (curV(n)?.ref === ref ? n.cur : n.versions.findIndex(v=>v.ref===ref)) : -1;
-    return {node_id, ref, role, time, name, memory_id, memory_view, version:index >= 0 ? index+1 : undefined};
+    return {node_id, ref, role, time, name, memory_id, memory_view, image_use, version:index >= 0 ? index+1 : undefined};
   });
   if (request.previs_guide) images.push({...request.previs_guide, role:"previs"});
   for (const clip of request.video_refs || []) images.push({...clip,role:"video_ref"});
@@ -167,7 +167,7 @@ function canBranchGeneration(n) {
     !!curV(n) && !n.job && !prepping.has(n.id) && !previsComposition(n)?.enabled;
 }
 
-async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false,assetReviewKey,branch=false}={}) {
+async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false,assetReviewKey,branch=false,reviewedImage=false}={}) {
   if (branch && !canBranchGeneration(n)) return;
   if (n.type === "audio") return generateAudio(n,{groupRunId});
   if (n.data.previs) return openPrevis(n);
@@ -181,37 +181,9 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   if (!hasEditPlan && (usesFields(n) ? !fieldsFilled(n) : !prompt)) { toast(usesFields(n) ? "至少填写场景、动作或对话中的一项" : OneShotI18n.t("先写提示词，或连入一个文本节点")); if (!usesFields(n)) $("#prompt").focus(); return; }
   let req, gridReference;
   if (n.type === "image") {
-    const linked=imageInputs(n), images=[];
-    const guide=grid?null:previsComposition(n);
-    if(grid){
-      gridReference=linked.find(input=>input.version?.ref);
-      if(!gridReference){toast("请先连入有图片的节点");return;}
-    }
-    const ins=grid?[gridReference]:linked, model=grid&&isRemote(n)?"h3img":d.model;
-    if ((ins.length || guide?.enabled) && model === "h3video") { toast("以图改图需要 H3-Image 模型"); return; }
-    for(const {edge,source,version} of ins){
-      if(!version?.ref){showErr(n,edge.ref?`「${source.name}」引用的版本已移除`:`「${source.name}」还没有图片`);return;}
-      images.push({ref:version.ref,node_id:source.id,name:source.name,
-        ...(edge.story_cast&&!edge.ref&&source.data.asset?.id?{story_cast:true,asset:source.data.asset.id}:{}),
-        ...(edge.prompt_slot?{prompt_slot:edge.prompt_slot}:{})});
-    }
-    let resolved=resolveCanvasPrompt(n,prompt,canvasPromptBindings(ins));
-    if(resolved===null)return;
-    if(guide?.enabled){
-      if(!guide.version){showErr(n,"白模构图版本已移除，请关闭构图参考或恢复原版本");return;}
-      if(!previsCompositionHasRoom(n,guide,images.map(image=>image.ref))){
-        showErr(n,"H3-Image 最多使用 9 张参考图，请为白模构图留出一个位置");return;
-      }
-      let index=images.findIndex(image=>image.ref===guide.ref);
-      if(index<0){
-        index=images.length;
-        images.push({ref:guide.ref,node_id:n.id,name:"白模构图"});
-      }
-      resolved+=`\n按 @图${index+1} 的机位、透视和主体位置构图。按提示词制作角色、环境、材质与光线。`;
-    }
-    let ar = AR[d.aspect];
-    if (d.aspect === "auto") { const v=ins[0]?.version || (guide?.enabled && guide.version); ar=v?.w&&v.h?v.w/v.h:1; }
-    req = { kind: "image", model, expand: d.expand, prompt:resolved, images, ar, quality: model === "h3video" ? (d.quality === "16mp" ? "hd" : "std") : d.quality, turbo: d.turbo, seed: d.seed, count: canvasGenerationCount(n) };
+    const image=imageCanvasRequest(n,prompt,{grid});
+    if (!image) return;
+    ({request:req,gridReference}=image);
   }
   else {
     req = videoReq(n, prompt); if (!req) return;
@@ -249,10 +221,15 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
       await flushSave();
       if (B!==sourceBoard || node(n.id)!==n) return;
     }
-    const preview=videoReferencePreviews.get(n);
-    const checked=preview?.signature===videoPreviewSignature(req);
+    const preview=generationPreviews.get(n);
+    const checked=preview?.signature===generationPreviewSignature(req);
+    if (reviewedImage && (!checked || !preview.imageKey)) {
+      showErr(n,OneShotI18n.t("生成设置已变化，请重新预览"));
+      return;
+    }
     const rememberedAssetKey=assetReviewKey|| (checked?preview.assetKey:null);
     const r = await api("/api/generate",{...req,...(checked&&preview.key?{reference_preview:preview.key}:{}),
+      ...(reviewedImage?{image_preview:preview.imageKey}:{}),
       ...(rememberedAssetKey?{asset_review_key:rememberedAssetKey}:{})});
     if (B!==sourceBoard || node(n.id)!==n) return;
     if (r.image_story_context === "unavailable") toast("世界观细节暂时无法提取，本次按镜头描述生图", 4500);

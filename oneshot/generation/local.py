@@ -28,7 +28,7 @@ async def engine_up(app, image: bool = False, *, int8: bool = False) -> bool:
         return False
 
 
-async def generate_engine_image(req, p: dict, count: int):
+async def generate_engine_image(req, p: dict, count: int, *, expanded=None):
     """H3-Image on our engine: text-to-image, or editing with the linked images as <Picture 1..n>."""
     u = req["user"]
     imgs = p.get("images") or []
@@ -41,6 +41,8 @@ async def generate_engine_image(req, p: dict, count: int):
     meta = {"prompt": p["prompt"], "cls": cls, "units": units, "est": generation_jobs.estimate(cls, units, dflt), "label": http_errors.clean(p.get("label"))[:60],
             "uid": u["id"], "board": http_errors.clean(p.get("board")), "engine": True, "width": w, "height": h,
             "mode_name": ("以图改图" if paths else "文生图") + f" · {round(w * h / 1e6)}MP"}
+    if expanded:
+        meta.update(expanded=expanded, mode_name=meta["mode_name"] + " · 扩写")
     ids = []
     for k in range(max(1, min(4, count))):
         seed = graphs.seed_of(p.get("seed")) + k
