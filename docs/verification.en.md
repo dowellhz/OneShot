@@ -25,3 +25,15 @@ Snapshot dated November 24, 2026. The 4090 previously resumed the `0a0fc3d` Web 
 - Record the effective prompt, model, seed, anchor times, and media references before generating. Change an upstream version, retry with the original parameters, and confirm that the preview, submission, and history use the pinned versions.
 - Choose **H3 Ref2VA INT8 ConvRot** with the same anchors and seed, starting with five seconds at 480p. Record idle VRAM and sample GPU VRAM through completion. Record the sampling interval, peak, queue time, execution time, job ID, resolution, actual duration, frame rate, presence of audio, and whether the MP4 decodes through the end. Repeat the baseline successfully before increasing duration or resolution. Record failures and remaining VRAM separately.
 - When test credentials are available, verify Seedance draft-to-final and job recovery across service restarts. Check cloud H3 reference limits, grouped inputs, edits from prior versions, and regeneration with the real API.
+
+### 4090 test results (2026-11-25)
+
+After the reboot, the production Web service, H3 engine, and local transcription service passed their checks. The production Web release record identifies `07e4c35`. The runs below used an isolated Web instance at `aacc045` with the production H3 engine. Each run used H3 Ref2VA INT8 ConvRot, seed `8273`, four sampling steps, two character references, and three keyframes. The five-second runs placed the keyframes at 0, 2, and 5 seconds. The eight-second run used 0, 4, and 8 seconds.
+
+| Job | Requested duration | Actual output (864×480, 24 fps) | Submission to completion | Peak VRAM |
+| --- | --- | --- | --- | --- |
+| `pa7be56e18231` | 5 s | 5.17 s, 124 frames | 43.9 s | 23,771 MiB |
+| `pddcf69d703b6` | 5 s | 5.17 s, 124 frames | 39.7 s | 23,797 MiB |
+| `p1fde0529a14e` | 8 s | 8.00 s, 192 frames | 61.2 s | 23,771 MiB |
+
+Idle VRAM was 510 MiB, with roughly one sample per second during each run. All three jobs started within about one second, and all video frames and 32 kHz stereo audio decoded to the end. Six frames sampled from the first clip showed exactly two characters, and the timeline exported that clip as a five-second MP4. Transcription of the first and eight-second clips detected only the requested dialogue, “Hello, Crimson.” All 32 isolated regression tests for creative memory, generation replay, and INT8 selection passed. The complete Idea to Film workflow with worldbuilding and repeatability at eight seconds still need live verification.
