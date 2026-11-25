@@ -5,10 +5,4 @@ diffusers>=0.43
 transformers
 accelerate
 safetensors
-aiohttp
-av
-pillow
-pypdf>=6.21,<8
-numpy
-cryptography
-opencv-contrib-python-headless>=4.10,<5
+-r requirements-web.txt

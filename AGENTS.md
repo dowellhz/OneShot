@@ -43,16 +43,16 @@
 
 ## 验证与审查
 
-在仓库根目录按改动范围选择检查。Python 测试使用满足 `requirements.txt` 的环境。前端交互测试需要 Node.js 和可访问的 `jsdom`。
+在仓库根目录按改动范围选择检查。CPU 回归使用 `requirements-web.txt`。前端测试使用 Node.js 24.15 或兼容版本，通过 `npm ci` 安装锁定依赖。GitHub Actions 在提交至 main 和拉取请求时运行行数检查及前后端回归。
 
 ```bash
 git diff --check
+python scripts/check_file_lengths.py
+python scripts/fetch_editor_models.py --upscale-only
 python -m unittest discover -s tests -v
 PYTHONPATH=tests python -m unittest test_creative_memory test_memory_generation test_h3_int8 -v
-node --check static/generation/canvas-generation.js
-node tests/editor_workspace.test.cjs
-node tests/editor_workspace.test.cjs --english
-node tests/i18n.test.cjs
+npm ci
+npm test
 ```
 
 - 优先检查正常入口和最近容易复发的场景。回归用例使用临时数据，模拟外部服务。需要真实模型验证时，使用隔离实例和现有 GPU 队列，并记录模型、输入规格、结果及尚未验证的范围。

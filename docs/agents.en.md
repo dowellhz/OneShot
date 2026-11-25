@@ -43,16 +43,16 @@ This guide applies to the whole repository. See the [README](../README.md) for t
 
 ## Verification and review
 
-Run checks from the repository root according to the scope of the change. Python tests need an environment with `requirements.txt` installed. Frontend interaction tests need Node.js and access to `jsdom`.
+Run the relevant checks from the repository root. CPU regressions use `requirements-web.txt`. Frontend tests use Node.js 24.15 or a compatible version and install locked dependencies with `npm ci`. GitHub Actions runs the line limit and both regression suites on pushes to main and pull requests.
 
 ```bash
 git diff --check
+python scripts/check_file_lengths.py
+python scripts/fetch_editor_models.py --upscale-only
 python -m unittest discover -s tests -v
 PYTHONPATH=tests python -m unittest test_creative_memory test_memory_generation test_h3_int8 -v
-node --check static/generation/canvas-generation.js
-node tests/editor_workspace.test.cjs
-node tests/editor_workspace.test.cjs --english
-node tests/i18n.test.cjs
+npm ci
+npm test
 ```
 
 - Prioritize normal entry points and scenarios most likely to regress. Use temporary data and mock external services in regression tests. When real model verification is needed, use an isolated instance and the existing GPU queue. Record the model, input settings, results, and any scope left unverified.

@@ -25,3 +25,5 @@ editor-venv/
 !static/creative-examples/previs.mp4
 *.part
 .DS_Store
+node_modules/
+.venv/

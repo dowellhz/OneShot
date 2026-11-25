@@ -1,0 +1,13 @@
+{
+  "name": "oneshot-workspace-tests",
+  "private": true,
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
+  "scripts": {
+    "test": "node tests/editor_workspace.test.cjs && node tests/editor_workspace.test.cjs --english && node tests/i18n.test.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "31.0.1"
+  }
+}
