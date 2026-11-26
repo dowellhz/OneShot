@@ -39,7 +39,8 @@ function generationDraft(n,v) {
     const {model,provider,provider_model,quality,seed,count,ar} = receipt.settings || {};
     data.prompt=receipt.prompt;
     for (const [key,value] of Object.entries({model,provider,quality,seed,count})) if (value != null) data[key]=value;
-    if (provider && provider_model && provider!=="local_h3") data.selected_model=provider_model;
+    if (provider && provider_model && (provider!=="local_h3" || provider_model!=="h3-image"))
+      data.selected_model=provider_model;
     if (Number.isFinite(ar)) data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-ar)<.001) || "auto";
     links=inputs.filter(input=>input.role!=="text" && input.node_id).map(input=>({from:input.node_id,to:n.id,ref:input.ref}));
   }

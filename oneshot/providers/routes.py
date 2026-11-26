@@ -2,7 +2,7 @@
 
 from aiohttp import web
 
-from engine import h3_int8
+from engine import h3_int8, image_models
 from oneshot.editing import audio_routes
 from oneshot.editing import render as film
 from oneshot.generation import motion_reference
@@ -11,6 +11,7 @@ from oneshot.generation import rewriter
 from oneshot.generation.audio import AUDIO_GENERATION_MODES
 from oneshot.providers import catalog as providers
 from oneshot.providers import remote
+from oneshot.providers.selection import configured_models
 
 
 def canvas_provider_choices(cap, *, enabled=None):
@@ -26,8 +27,8 @@ def canvas_provider_choices(cap, *, enabled=None):
             choices.append({"id":pr["id"],"name":pr["name"],"kind":pr["kind"],"local":local,
                 "model":model,"default":pr["id"]==default,
                 **({"default_route_model":rts[0]["model"]} if pr["id"]==default else {}),
-                **({"models":[canvas_model_choice(pr,cap,choice) for choice in video_reference.configured_models(pr,cap,rts)]}
-                   if cap=="video" or cap=="image" and not local else {}),
+                **({"models":[canvas_model_choice(pr,cap,choice) for choice in configured_models(pr,cap,rts)]}
+                   if cap in ("video", "image") else {}),
                 **({"draft":remote.supports_video_draft(pr,model)} if cap=="video" else {})})
     choices.sort(key=lambda item:(not item["default"],not item["local"]))
     return choices
@@ -52,6 +53,14 @@ async def capabilities(req):
 
 def canvas_model_choice(provider, cap, model):
     if cap != "video":
+        if cap == "image":
+            if provider["kind"] == "local_h3" and (spec := image_models.MODELS.get(model)):
+                return {"id":model, "label":spec.label, "image_engine":True, "ref_limit":spec.references,
+                        "high_resolution":spec.high_resolution}
+            if model == "gemini-3.1-flash-image" and provider["kind"] == "gemini":
+                return {"id":model, "label":"Nano Banana 2", "ref_limit":14}
+            if model == "gpt-image-2.6-sunburst" and provider["kind"] == "openai":
+                return {"id":model, "label":"GPT-Image-2.6 Sunburst"}
         return {"id":model}
     kind = provider["kind"]
     audio = motion_reference.supports_audio(provider,model)

@@ -85,6 +85,7 @@ module.exports = async function selectionBatchesAndWizardMotion(workspace, scena
    imageInputs(motionTail)[0].source.id===motionMiddle.id,
    Object.values(plan(node(motionPairs[0].vid)).times),
    $$("#wzBody .bc").length,$('#wzBody [data-go=videos]').disabled]`),[true,true,true,[0,2,5],6,true]);
+ assert.match(evaluate('motionTail.data.prompt'),/^尾帧画面：停在门外\n参考 @图\{1\} 的机位[\s\S]*新的相对位置、接触点/);
  evaluate('batchImages(motionScript)');
  await ready('!$("#groupRunConfirm [type=submit]").disabled','the animation frames are ready for batch confirmation');
  evaluate('approveWorkflow()');
@@ -132,11 +133,31 @@ module.exports = async function selectionBatchesAndWizardMotion(workspace, scena
    };
    editWizard("[data-f=action]","0–1 秒 向右走");
    editWizard("[data-f=duration]","8");
+   motionMiddle.data.prompt=shotMotionFrameSettings(motionScript,motionScript.data.shots[0],"middle",{legacy:true}).prompt+"\\n保留自定光线";
    editWizard("[data-motion-frame=middle]","她站在门外");
    const wizardVideo=node(motionPairs[0].vid);`);
  equal(evaluate(`[videoReq(wizardVideo,fullPrompt(wizardVideo)).fields.action,videoReq(wizardVideo,fullPrompt(wizardVideo)).duration,
    motionMiddle.data.caption,storyboardFrameReady(motionMiddle),storyboardFrameReady(motionTail),node(motionPairs[0].vid).versions.length]`),
    ["0–1 秒 向右走",8,"她站在门外",false,false,1]);
+ assert.match(evaluate('motionMiddle.data.prompt'),/^中帧画面：她站在门外[\s\S]*保留自定光线$/);
+ evaluate(`{
+   const adaptive=addNode("script",4800,200,{style:"写实",shots:[
+     {...motionShot,id:newCanvasNodeId(),duration:5,keyframe:"手里持球",motion_frames:{middle:"球刚离手",middle_time:1.25,end:"球在草地滚动"}},
+     {...motionShot,id:newCanvasNodeId(),duration:5,keyframe:"球在草地滚动",motion_frames:{end:"球停在草地上"},continues_previous:true}
+   ]});
+   expandScript(adaptive);
+   const [throwPair,rollPair]=scriptShotLinks(adaptive);
+   const rollTail=node(rollPair.motion_frames.end);
+   window.adaptiveFrameWiring=[
+     Object.values(plan(node(throwPair.vid)).times),
+     plan(node(rollPair.vid)).ordered.length,
+     rollPair.img===throwPair.motion_frames.end,
+     imageInputs(rollTail)[0].source.id===rollPair.img,
+     missingMotionFrames(adaptive.data.shots[1],rollPair),
+     "middle" in rollPair.motion_frames
+   ];
+ }`);
+ equal(w.adaptiveFrameWiring,[[0,1.25,5],2,true,true,false,false]);
  evaluate('$("#groupRunProgress [data-dismiss]").click();restore(beforeMotionWizard);W=oldMotionWizard');
  console.log('Wizard animation passed: dependent keyframes, a shared boundary, and the actual rendered tail for reruns.');
  w.fetch=scenarioState.generationFetch;

@@ -31,16 +31,19 @@ function applyScriptShotRevision(script,plan,{wizard=false,recordUndo=true}={}) 
     if(Object.keys(patch).length)imageChanges.set(target,patch);
   };
   const detach=wizard&&pair?.shared_first&&image&&previous.image.caption!==settings.image.caption;
-  const middle=node(pair?.motion_frames?.middle);
-  if(detach&&[video,middle].some(target=>target&&(nodeLocked(target)||target.job||prepping.has(target.id))))
+  const nextFrame=firstMotionFrame(pair);
+  if(detach&&[video,nextFrame].some(target=>target&&(nodeLocked(target)||target.job||prepping.has(target.id))))
     throw new Error("请先解锁镜头并等待生成完成，再修改共用首帧");
   if(pair?.shared_first&&!detach){
     if(previous.image.caption!==settings.image.caption)retained.add(image?.name||"共用首帧");
   }else if(!detach)stageImage(image,previous.image,settings.image);
   if(wizard&&shot.motion_frames&&next.motion_frames){
-    for(const phase of ["middle","end"]){
-      stageImage(node(pair?.motion_frames?.[phase]),shotMotionFrameSettings(script,shot,phase),
-        shotMotionFrameSettings(script,next,phase));
+    for(const phase of motionFramePhases(shot)){
+      const target=node(pair?.motion_frames?.[phase]), current=target?.data.prompt;
+      const legacy=shotMotionFrameSettings(script,shot,phase,{legacy:true});
+      const oldSettings=current===legacy.prompt||current?.startsWith(legacy.prompt+"\n")
+        ?legacy:shotMotionFrameSettings(script,shot,phase);
+      stageImage(target,oldSettings,shotMotionFrameSettings(script,next,phase));
     }
   }
   if(video){
@@ -57,7 +60,7 @@ function applyScriptShotRevision(script,plan,{wizard=false,recordUndo=true}={}) 
   const updated=[];
   const stale=new Set();
   if(detach){
-    const first=addNode("image",middle?.x??image.x,(middle?.y??image.y)-size(image).h-110,
+    const first=addNode("image",nextFrame?.x??image.x,(nextFrame?.y??image.y)-size(image).h-110,
       {...settings.image,aspect:script.data.aspect,quality:"4mp"},{name:`镜${index+1} · 分镜图`});
     settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:first.id,story_cast:!ref.pinned,...(ref.pinned?{ref:ref.ref}:{})}));
     if(video){
@@ -66,11 +69,11 @@ function applyScriptShotRevision(script,plan,{wizard=false,recordUndo=true}={}) 
       if(edge){edge.from=first.id;delete edge.ref;}
       else B.edges.push({from:first.id,to:video.id,role:"first"});
     }
-    if(middle){
-      const guide=B.edges.find(entry=>entry.to===middle.id&&entry.prompt_slot===1);
+    if(nextFrame){
+      const guide=B.edges.find(entry=>entry.to===nextFrame.id&&entry.prompt_slot===1);
       if(guide){guide.from=first.id;delete guide.ref;}
-      else B.edges.push({from:first.id,to:middle.id,prompt_slot:1});
-      stale.add(middle);
+      else B.edges.push({from:first.id,to:nextFrame.id,prompt_slot:1,image_use:"camera"});
+      stale.add(nextFrame);
     }
     pair.img=first.id;
     pair.shared_first=false;
@@ -93,6 +96,10 @@ function applyScriptShotRevision(script,plan,{wizard=false,recordUndo=true}={}) 
     target.data.storyboard_stale_refs=target.versions.map(version=>version.ref);
   if(Object.keys(videoPatch).length||Object.keys(fieldPatch).length){
     rememberVideoVersion(video);
+    if(wizard&&videoPatch.duration){
+      const anchor=B.edges.find(edge=>edge.to===video.id&&edge.from===pair?.motion_frames?.middle&&edge.role==="keyframe");
+      if(anchor&&Number.isFinite(anchor.time))anchor.time=shotMiddleTime(anchor.time,videoPatch.duration);
+    }
     Object.assign(video.data,videoPatch);
     if(Object.keys(fieldPatch).length)video.data.fields={...video.data.fields,...fieldPatch};
     updated.push(video);

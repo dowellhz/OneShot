@@ -3,7 +3,16 @@
 // ================================================================= canvas input
 // ---- tools: "pan" = drag empty canvas to move it (shift/⌘ + drag = marquee); "select" = drag = marquee
 let tool = localStorage.getItem("h3.tool") || "pan";
-function setTool(t) { tool = t; localStorage.setItem("h3.tool", t); vp.classList.toggle("tool-pan", t === "pan"); $("#toolPan").classList.toggle("on", t === "pan"); $("#toolSel").classList.toggle("on", t === "select"); }
+function setTool(t) {
+  tool = t === "select" ? "select" : "pan";
+  localStorage.setItem("h3.tool", tool);
+  for (const [mode, button] of [["pan", "#toolPan"], ["select", "#toolSel"]]) {
+    const active = tool === mode;
+    vp.classList.toggle("tool-" + mode, active);
+    $(button).classList.toggle("on", active);
+    $(button).setAttribute("aria-pressed", String(active));
+  }
+}
 $("#toolPan").onclick = () => setTool("pan"); $("#toolSel").onclick = () => setTool("select");
 setTool(tool);
 
@@ -40,46 +49,85 @@ vp.addEventListener("wheel", e => {
 
 // ---- pointer on the canvas
 let spaceDown = false;
+let canvasPointerActive = false;
+
+function trackCanvasPointer(pointerId, move, finish) {
+  canvasPointerActive = true;
+  const onMove = event => { if (event.pointerId === pointerId) move(event); };
+  const end = event => {
+    if (event.type !== "blur" && event.pointerId !== pointerId) return;
+    canvasPointerActive = false;
+    removeEventListener("pointermove", onMove);
+    removeEventListener("pointerup", end);
+    removeEventListener("pointercancel", end);
+    removeEventListener("blur", end);
+    finish(event);
+  };
+  addEventListener("pointermove", onMove);
+  addEventListener("pointerup", end);
+  addEventListener("pointercancel", end);
+  addEventListener("blur", end);
+}
+
 vp.addEventListener("pointerdown", e => {
+  if (canvasPointerActive || e.isPrimary === false) return;
   closeMenus();
+  const board = B;
   const onBg = e.target === vp || e.target === world || e.target === svg;
   const marquee = e.button === 0 && onBg && !spaceDown && (tool === "select" || e.shiftKey || e.metaKey || e.ctrlKey);
   if (e.button === 1 || e.button === 2 || (e.button === 0 && (spaceDown || (onBg && !marquee)))) { // pan
     e.preventDefault(); const sx = e.clientX, sy = e.clientY, vx = B.view.x, vy = B.view.y; let moved = false;
     const mv = ev => {
+      if (B !== board) return;
       if (!moved && Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) < 4) return;
       if (!moved) { moved = true;vp.classList.add("pan");liveStopFollow(false); }
       B.view.x = vx + ev.clientX - sx; B.view.y = vy + ev.clientY - sy; applyView();
     };
-    const up = () => {
-      vp.classList.remove("pan"); removeEventListener("pointermove", mv); removeEventListener("pointerup", up);
+    const up = ev => {
+      vp.classList.remove("pan");
+      if (B !== board) return;
       if (moved) { save(); return; }
+      if (ev.type !== "pointerup") return;
       if (e.button === 2) ctxMenu(e);                                       // plain right click
       else if (e.button === 0 && onBg) { sel.clear(); selEdge = null; updateSel(); drawEdges(); } // plain click on empty canvas
     };
-    addEventListener("pointermove", mv); addEventListener("pointerup", up); return;
+    trackCanvasPointer(e.pointerId, mv, up); return;
   }
   if (!marquee) return;
   // pan tool: Shift/⌘ only *starts* the marquee, so adding to the selection needs ⇧⌘; select tool: Shift adds
   const additive = tool === "select" ? e.shiftKey : (e.shiftKey && (e.metaKey || e.ctrlKey));
-  if (!additive) sel.clear(); selEdge = null; updateSel(); drawEdges();
-  const sx = e.clientX, sy = e.clientY, mq = $("#marquee"), base = new Set(sel); let active = false;
+  e.preventDefault();
+  const sx = e.clientX, sy = e.clientY, mq = $("#marquee");
+  const base = additive ? new Set(sel) : new Set();
+  let active = false, preview = base;
   const mv = ev => {
+    if (B !== board) return;
     const x0 = Math.min(sx, ev.clientX), y0 = Math.min(sy, ev.clientY), x1 = Math.max(sx, ev.clientX), y1 = Math.max(sy, ev.clientY);
     if (!active && x1 - x0 + y1 - y0 < 6) return;
     if(!active)liveStopFollow(false);
     active = true;
     Object.assign(mq.style, { display: "block", left: x0 + "px", top: y0 + "px", width: x1 - x0 + "px", height: y1 - y0 + "px" });
-    sel = new Set(base);
+    preview = new Set(base);
     els.forEach((el, id) => {   // a card counts once the box covers at least half of it
       if (el.hidden) return;
       const r = $(".card", el).getBoundingClientRect();
       const ow = Math.min(r.right, x1) - Math.max(r.left, x0), oh = Math.min(r.bottom, y1) - Math.max(r.top, y0);
-      if (ow > 0 && oh > 0 && ow * oh >= 0.5 * r.width * r.height) sel.add(id);
+      if (ow > 0 && oh > 0 && ow * oh >= 0.5 * r.width * r.height) preview.add(id);
     });
-    els.forEach((el, id) => el.classList.toggle("sel", sel.has(id)));
+    els.forEach((el, id) => el.classList.toggle("sel", preview.has(id)));
   };
-  const up = () => { mq.style.display = "none"; removeEventListener("pointermove", mv); removeEventListener("pointerup", up); if (active) updateSel(); };
-  addEventListener("pointermove", mv); addEventListener("pointerup", up);
+  const up = ev => {
+    if (B === board && ev.type === "pointerup") {
+      mv(ev);
+      sel = preview;
+      selEdge = null;
+      updateSel();
+      if (!sel.size) drawEdges();
+    } else {
+      els.forEach((el, id) => el.classList.toggle("sel", sel.has(id)));
+    }
+    mq.style.display = "none";
+  };
+  trackCanvasPointer(e.pointerId, mv, up);
 });
 vp.addEventListener("contextmenu", e => e.preventDefault());

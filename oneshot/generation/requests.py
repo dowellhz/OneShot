@@ -7,7 +7,7 @@ import re
 
 from aiohttp import web
 
-from engine import h3_int8
+from engine import h3_int8, image_models
 from oneshot import config
 from oneshot.assistant import agent_chat
 from oneshot.canvas import workflow_review
@@ -27,6 +27,7 @@ from oneshot.generation.audio import AUDIO_GENERATION_MODES
 from oneshot.memory import creative_memory
 from oneshot.providers import catalog as providers
 from oneshot.providers import remote
+from oneshot.providers.selection import requested_generation_route as requested_generation_route
 from oneshot.web import http as http_errors
 
 
@@ -53,7 +54,7 @@ async def preview(req):
         inputs = workflow_review.capture_generation(payload)["inputs"]
         for index, (item, image) in enumerate(zip(inputs, payload.get("images") or []), 1):
             item.update(image_role="image_" + image_prompts.image_use(image), prompt_reference=f"图{index}")
-        mode = route["model"] if route and route["provider"]["kind"] != "local_h3" else (
+        mode = route["model"] if route and (route["provider"]["kind"] != "local_h3" or route["model"] in image_models.MODELS) else (
             "H3 快速" if payload.get("model") == "h3video" else "H3-Image")
         return web.json_response({"prompt":prepared["prompt"], "mode":mode, "inputs":inputs,
                                   "image_preview":key, "image_expanded":expanded, **memory_review})
@@ -261,6 +262,9 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
         if route.get("model") and (provider_id!="local_h3" or route["model"] == h3_int8.MODEL
                                   or payload.get("selected_model") == "h3-video"):
             result["video_model"]["selected_model"] = route["model"]
+    elif payload.get("kind") == "image" and route and route["provider"] and route["model"]:
+        if route["provider"] != "local_h3" or route["model"] in image_models.MODELS:
+            result["image_model"] = {"provider":route["provider"], "selected_model":route["model"]}
     references = {key:payload[key] for key in ("video_refs","audio_refs") if payload.get(key)}
     if references:
         result["reference_context"] = references
@@ -277,24 +281,6 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
         if not native:
             result["memory_context"] = {k: payload[k] for k in ("prompt", "images", "planned", "memory_views") if k in payload}
     return web.json_response(result)
-
-
-def requested_generation_route(raw, cap):
-    provider_id = raw.get("provider")
-    choice = providers.get(provider_id) if isinstance(provider_id, str) and provider_id else None
-    selected = raw.get("selected_model")
-    if selected is not None:
-        if (not isinstance(selected, str) or not choice or not choice["enabled"] or
-                (choice["kind"].startswith("local_") and (choice["kind"], cap) != ("local_h3", "video")) or
-                cap not in providers.caps_of(choice) or
-                selected not in video_reference.configured_models(choice, cap, providers.routes(cap))):
-            raise http_errors.bad("所选模型已不可用，请重新选择模型")
-        return {"provider":choice, "model":selected}
-    if choice and choice["enabled"] and cap in providers.caps_of(choice):
-        return {"provider": choice, "model": raw.get("provider_model") or providers.default_model(choice, cap)}
-    if cap=="video" and provider_id=="local_h3":
-        raise http_errors.bad("本地 H3 服务已不可用，请重新选择模型")
-    return providers.primary(cap)
 
 
 def generation_unit_cost(raw):
@@ -447,8 +433,7 @@ async def _generate_request(req, raw, *, fixed_route=None):
     else:
         route = requested_generation_route(raw, cap)
     video_reference.verify_reference_preview(req,raw,route,guide_frames=cap=="video")
-    if cap=="video" or isinstance(req, agent_chat.InternalRequest):
-        req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]} if route else {"provider":None,"model":None}
+    req["generation_route"] = {"provider":route["provider"]["id"],"model":route["model"]} if route else {"provider":None,"model":None}
     meta_extra = {}
     if cap == "image" and not req.get("replaying_effective_image"):
         raw, expanded = req["reviewed_image"] if "reviewed_image" in req else await image_prompts.prepare(req.app, raw, route)
@@ -480,6 +465,10 @@ async def _generate_request(req, raw, *, fixed_route=None):
         p = await prompts.to_english(req.app, p)
     if llm.running() and llm.device == "GPU":
         llm.stop()   # give the GPU back to the engine
+    if kind == "image" and route and (model := route["model"]) in image_models.MODELS:
+        if not image_models.installed(model) or not await local_generation.engine_up(req.app, image_model=model):
+            raise http_errors.bad(f"{image_models.MODELS[model].label} 暂不可用")
+        return await local_generation.generate_engine_image(req, p, count, model=model, **meta_extra)
     if kind == "image" and await local_generation.engine_up(req.app, image=True):
         return await local_generation.generate_engine_image(req, p, count, **meta_extra)
     ids = []

@@ -1,5 +1,7 @@
 """Model and capability definitions offered by the provider configuration UI."""
 
+from engine import image_models
+
 CAPS = {
     "text": "文本（剧本、改写、扩写）",
     "vision": "看图（反推、看图填写、拉片）",
@@ -21,7 +23,7 @@ CATALOG: dict[str, dict] = {
                      "models":{"search":["web"]}, "fields":[{"k":"api_key","t":"搜索 API Key","secret":True}],
                      "desc":"用于创作助手搜索公开网页；支持限定站点及最近一天、一周、一月或一年。"},
     "local_h3": {"label": "本地 H3（4090）", "group": "local", "caps": ["image", "video"],
-                 "models": {"image": ["h3-image"], "video": ["h3-video"]}, "fields": [],
+                 "models": {"image": ["h3-image", *image_models.MODELS], "video": ["h3-video"]}, "fields": [],
                  "desc": "MiniMax H3 视频 + H3-Image，跑在这台 4090 上，不花钱，排队用 GPU"},
     "local_qwen": {"label": "本地 Qwen3.5-9B", "group": "local", "caps": ["text", "vision"],
                    "models": {"text": ["qwen3.5-9b"], "vision": ["qwen3.5-9b"]}, "fields": [],
@@ -41,10 +43,14 @@ CATALOG: dict[str, dict] = {
                              {"k": "api_key", "t": "API Key", "secret": True, "hint": "百炼控制台 → API-KEY"}],
                   "desc": "千问能看图，可以替代本地 Qwen 做反推、拉片"},
     "openai": {"label": "OpenAI", "group": "multi", "caps": ["text", "vision", "image"],
-               "models": {"text": ["gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-sol"], "vision": ["gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-sol"], "image": ["gpt-image-2.5-flare", "gpt-image-2.6-flare", "gpt-image-1.5"]},
+               "models": {"text": ["gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-sol"], "vision": ["gpt-6.1-terra", "gpt-6-luna", "gpt-6.1-sol"], "image": ["gpt-image-2.5-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-1.5"]},
                "fields": [{"k": "base_url", "t": "接口地址", "default": "https://api.openai.com/v1"},
                           {"k": "api_key", "t": "API Key", "secret": True}],
                "desc": "需要能访问 OpenAI 的网络"},
+    "gemini": {"label": "Google Gemini", "group": "multi", "caps": ["image"],
+               "models": {"image": ["gemini-3.1-flash-image"]},
+               "fields": [{"k": "api_key", "t": "API Key", "secret": True}],
+               "desc": "Nano Banana 2 生图与多参考图编辑"},
     "openai_compat": {"label": "OpenAI 兼容接口（Kimi / 智谱 / 本机 DeepSeek 等）", "group": "llm", "caps": ["text", "vision"],
                       "models": {"text": [], "vision": []},
                       "fields": [{"k": "base_url", "t": "接口地址", "hint": "例如 https://api.moonshot.cn/v1"},

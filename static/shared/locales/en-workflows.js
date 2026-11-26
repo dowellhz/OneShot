@@ -6,6 +6,8 @@ Object.assign(window.OneShotEnglish ||= Object.create(null), {
   "保存": "Save",
   "生成": "Generate",
   "预览": "Preview",
+  "此模型最多使用 {count} 张参考图": "This model accepts up to {count} reference images",
+  "Nano Banana 2 生图与多参考图编辑": "Nano Banana 2 image generation and multi-reference editing",
   "关闭质量预检": "Turn off quality precheck",
   "INT8 画面预检，最多五次": "INT8 visual precheck, up to five attempts",
   "质量预检开": "Quality precheck on",

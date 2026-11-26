@@ -60,6 +60,16 @@ Use the Ref2VA and VAE files from the quantization repository and the text encod
 
 Start the engine and Web service with the same paths. The engine starts an isolated ComfyUI instance for each INT8 job. Check `int8_ready` in the engine's local `/status` response, then select **H3 Ref2VA INT8 ConvRot** from a video node's model menu. A five-second 480p shot is the first acceptance case. [GPU acceptance procedure](verification.en.md#4090-release-acceptance)
 
+## Optional local image models
+
+Run the installer in the GPU engine's Python environment. These models share the single GPU queue with H3.
+
+```bash
+python scripts/fetch_image_models.py qwen-image-2.1 flux-2-klein-4b
+```
+
+The engine needs Diffusers with `QwenImage21Pipeline` and `Flux2KleinPipeline`, plus Accelerate. Weights go in `models/image` by default. Set `ONESHOT_IMAGE_MODELS` to use another location and use the same path for the web app and engine. Qwen-Image-2.1 and FLUX.2 [klein] 4B each use the license in their upstream repository.
+
 ## Optional components
 
 - **Local prompt rewriting and scriptwriting** use `llama-server` with Qwen3.5-9B GGUF and mmproj. Set `H3_LLAMA_SERVER`, `H3_LLM_MODEL`, and `H3_LLM_MMPROJ`. A third-party text provider can handle these tasks as well. [llama.cpp](https://github.com/ggml-org/llama.cpp)

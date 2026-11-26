@@ -1,6 +1,7 @@
 """Remote image generation and image edit adapters."""
 
 import base64
+from urllib.parse import quote
 
 import aiohttp
 
@@ -18,7 +19,8 @@ def _size_for(ar: float, total: int, mult: int = 16, sep: str = "x") -> str:
 async def _save_images(http, comfy_dir, who, items):
     files = []
     for it in items:
-        path, ref = _new(comfy_dir, "output", "img", ".png")
+        suffix = {"image/jpeg": ".jpg", "image/webp": ".webp"}.get(it.get("mime"), ".png")
+        path, ref = _new(comfy_dir, "output", "img", suffix)
         if it.get("b64"):
             path.write_bytes(base64.b64decode(it["b64"]))
         else:
@@ -79,6 +81,9 @@ async def oai_image(http, comfy_dir, p, model, req):
     size = "1024x1024" if 0.8 < ar < 1.25 else ("1536x1024" if ar >= 1.25 else "1024x1536")
     h = {"Authorization": "Bearer " + p["secrets"].get("api_key", "")}
     body = {"model": model, "prompt": req["prompt"], "n": max(1, min(4, int(req.get("n") or 1))), "size": size, "quality": "medium"}
+    if model == "gpt-image-2.6-sunburst":
+        body["complexity"] = "high"
+        body["quality"] = "high" if req.get("quality") == "16mp" else "medium"
     if req.get("images"):
         body["images"] = [{"image_url": data_url(x, 1536)} for x in req["images"][:16]]
         url = base + "/images/edits"
@@ -87,3 +92,52 @@ async def oai_image(http, comfy_dir, p, model, req):
     j = await json_req(http, "POST", url, p["name"], json=body, headers=h, timeout=aiohttp.ClientTimeout(total=360))
     items = [{"b64": d.get("b64_json")} for d in j.get("data") or [] if d.get("b64_json")]
     return {"files": await _save_images(http, comfy_dir, p["name"], items), "units": len(items)}
+
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
+GEMINI_IMAGE_RATIOS = ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+
+
+async def gemini_image(http, comfy_dir, p, model, req):
+    references = req.get("images") or []
+    if len(references) > 14:
+        raise ProviderError("Nano Banana 2 最多使用 14 张参考图")
+    parts = []
+    for index, path in enumerate(references, 1):
+        data = data_url(path, 1536).partition(",")[2]
+        parts.extend([{"text": f"图{index} (Image {index})"},
+                      {"inlineData": {"mimeType": "image/jpeg", "data": data}}])
+    parts.append({"text": req["prompt"]})
+    ratio = req.get("ar") or 1
+    def distance(aspect):
+        width, height = map(int, aspect.split(":"))
+        return abs(width / height - ratio)
+
+    body = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {
+            "aspectRatio": min(GEMINI_IMAGE_RATIOS, key=distance),
+            "imageSize": "4K" if req.get("quality") == "16mp" else "2K",
+        }},
+    }
+    model_url = f"{GEMINI_URL}/{quote(model, safe='')}"
+    headers = {"x-goog-api-key": p["secrets"].get("api_key", "")}
+    response = await json_req(http, "POST", model_url + ":generateContent", p["name"], json=body,
+                              headers=headers, timeout=aiohttp.ClientTimeout(total=360))
+    for candidate in response.get("candidates") or []:
+        for part in (candidate.get("content") or {}).get("parts") or []:
+            inline = part.get("inlineData") or {}
+            if not part.get("thought") and inline.get("data") and inline.get("mimeType") in (
+                "image/png", "image/jpeg", "image/webp",
+            ):
+                items = [{"b64": inline["data"], "mime": inline["mimeType"]}]
+                return {"files": await _save_images(http, comfy_dir, p["name"], items), "units": 1}
+    reason = (response.get("promptFeedback") or {}).get("blockReason")
+    raise ProviderError(f"{p['name']} 没有返回图片" + (f"（{reason}）" if reason else ""))
+
+
+async def test_gemini_image(http, p):
+    await json_req(http, "GET", f"{GEMINI_URL}/{GEMINI_IMAGE_MODEL}", p["name"],
+                   headers={"x-goog-api-key": p["secrets"].get("api_key", "")})
+    return {"ok": True, "detail": "Nano Banana 2"}

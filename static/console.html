@@ -125,7 +125,7 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 <script src="/static/shared/locales/en-workspace.js?v=1"></script>
 <script src="/static/shared/locales/en-pages.js?v=1"></script>
 <script src="/static/shared/locales/en-projects.js?v=1"></script>
-<script src="/static/shared/locales/en-workflows.js?v=7"></script>
+<script src="/static/shared/locales/en-workflows.js?v=13"></script>
 <script src="/static/shared/locales/en-canvas-actions.js?v=1"></script>
 </head>
 <body>
@@ -223,12 +223,14 @@ function serviceDisplayName(provider) {
 async function pgServices() {
   SV = await api("/api/admin/providers");
   const P = Object.fromEntries(SV.providers.map(p => [p.id, p]));
+  const modelOptions = (kind, cap) => (SV.catalog[kind]?.models?.[cap] || [])
+    .map(model => `<option value="${esc(model)}">`).join("");
   const capCards = Object.entries(SV.caps).map(([cap, label]) => {
     const rts = SV.routes[cap] || [], opts = SV.providers.filter(p => p.enabled && p.caps.includes(cap));
     return OneShotI18n.html`<div class="card cap" data-cap="${cap}"><div class="hd"><b>${tr(CAPN[cap])}</b><span class="dim" style="font-size:var(--fs-small)">${esc(tr(label.replace(/^[^（]+/, "")))}</span></div>
       ${rts.map((r, i) => OneShotI18n.html`<div class="rt" data-i="${i}"><span class="no">${i ? tr("备用 {number}", {number:i}) : tr("默认")}</span>
           <select class="in" data-k="provider_id">${opts.map(p => `<option value="${p.id}" ${p.id === r.provider_id ? "selected" : ""}>${esc(serviceDisplayName(p))}</option>`).join("")}</select>
-          <input class="in" data-k="model" value="${esc(r.model || "")}" placeholder="模型" list="m_${cap}_${i}"><datalist id="m_${cap}_${i}">${(SV.catalog[P[r.provider_id]?.kind]?.models?.[cap] || []).map(m => `<option value="${m}">`).join("")}</datalist>
+          <input class="in" data-k="model" value="${esc(r.model || "")}" placeholder="模型" list="m_${cap}_${i}"><datalist id="m_${cap}_${i}">${modelOptions(P[r.provider_id]?.kind,cap)}</datalist>
           <button class="x" data-x="${i}" title="移除">×</button></div>`).join("") || OneShotI18n.html`<div class="faint">还没有设置，用到这项功能时会报错</div>`}
       <div class="row" style="margin-top:6px">${opts.length > rts.length ? `<button class="btn sm" data-add>${tr(rts.length ? "＋ 备用" : "＋ 设置默认")}</button>` : ""}<span class="faint">${rts.length > 1 && ["text","vision","asr"].includes(cap) ? tr("默认失败时依次尝试备用") : ""}</span><span class="grow"></span><button class="btn sm pri" data-save style="display:none">保存</button></div></div>`;
   }).join("");
@@ -245,7 +247,11 @@ async function pgServices() {
     const cap = card.dataset.cap, items = () => $$(".rt", card).map(r => ({ provider_id: $("[data-k=provider_id]", r).value, model: $("[data-k=model]", r).value.trim() }));
     const dirty = () => $("[data-save]", card).style.display = "";
     $$("select, input", card).forEach(x => x.addEventListener("input", () => {
-      if (x.dataset.k === "provider_id") { const pr = P[x.value]; const m = $("[data-k=model]", x.closest(".rt")); m.value = (pr.config.models || {})[cap] || SV.catalog[pr.kind]?.models?.[cap]?.[0] || ""; }
+      if (x.dataset.k === "provider_id") {
+        const pr = P[x.value], model = $("[data-k=model]", x.closest(".rt"));
+        model.value = (pr.config.models || {})[cap] || SV.catalog[pr.kind]?.models?.[cap]?.[0] || "";
+        model.list.innerHTML = modelOptions(pr.kind,cap);
+      }
       dirty();
     }));
     $$("[data-x]", card).forEach(b => b.onclick = async () => { const it = items(); it.splice(+b.dataset.x, 1); await api("/api/admin/routes/" + cap, { items: it }, "PUT"); pgServices(); });

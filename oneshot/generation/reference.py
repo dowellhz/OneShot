@@ -6,7 +6,6 @@ import json
 
 from aiohttp import web
 
-from engine import h3_int8
 from oneshot.canvas import routes as canvas_routes
 from oneshot.canvas import workflow_review
 from oneshot.canvas.board_store import board_meta, can_edit
@@ -42,17 +41,8 @@ from oneshot.memory import creative_memory
 from oneshot.providers import catalog as providers
 from oneshot.providers import remote
 from oneshot.providers import routes as provider_routes
+from oneshot.providers.selection import configured_models
 from oneshot.web import http as http_errors
-
-
-def configured_models(provider, cap, routes):
-    models = [providers.default_model(provider, cap)]
-    models.extend(route["model"] for route in routes if route["provider"]["id"] == provider["id"])
-    if cap == "video" and provider["kind"] == "ark":
-        models.extend(provider.get("config",{}).get("video_endpoint_models",{}))
-    if cap == "video" and provider["kind"] == "local_h3" and h3_int8.installed():
-        models.append(h3_int8.MODEL)
-    return list(dict.fromkeys(model for model in models if model))
 
 
 def reference_routes(*, require_motion=False, segment_edit=False, extension=False, all_models=False, image_only=False):

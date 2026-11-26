@@ -175,7 +175,7 @@ function wireStep(body) {
     $$("[data-m]", body).forEach(b => b.onclick = () => {
       const el = b.closest(".sh"), i = el ? +el.dataset.i : -1, m = b.dataset.m;
       checkpoint();ensureScriptShotIds(s);
-      if (m === "add") d.shots.push({ id:newCanvasNodeId(), duration: 5, shot_size: "中景", camera: "", scene: d.shots.at(-1)?.scene || "", characters: d.shots.at(-1)?.characters || [], action: [], dialogue: [], sound: "", keyframe: "",motion_frames:{middle:"",end:""} });
+      if (m === "add") d.shots.push({ id:newCanvasNodeId(), duration: 5, shot_size: "中景", camera: "", scene: d.shots.at(-1)?.scene || "", characters: d.shots.at(-1)?.characters || [], action: [], dialogue: [], sound: "", keyframe: "",motion_frames:{end:""} });
       else if (m === "del") d.shots.splice(i, 1);
       else if (m === "up" && i > 0) d.shots.splice(i - 1, 0, d.shots.splice(i, 1)[0]);
       else if (m === "down" && i + 1 < d.shots.length) d.shots.splice(i + 1, 0, d.shots.splice(i, 1)[0]);
@@ -188,13 +188,15 @@ function wireStep(body) {
     const timing=pair&&wizardMiddleTiming(pair);
     if(!timing)return;
     const seconds=input.valueAsNumber;
-    const time=timing.editable&&Number.isFinite(seconds)?
-      Math.min(timing.maxFrame,Math.max(1,Math.round(seconds*24)))/24:timing.time;
+    const time=timing.editable&&Number.isFinite(seconds)?shotMiddleTime(seconds,canvasVideoDuration(pair.vid)):timing.time;
     input.value=String(Number(time.toFixed(2)));
     if(time===timing.time)return;
     checkpoint();
     rememberVideoVersion(pair.vid);
     timing.edge.time=time;
+    const frames=wizScript().data.shots[pair.index].motion_frames;
+    if(frames)frames.middle_time=time;
+    if(pair.vid.versions.length)pair.vid.data.storyboard_stale_refs=pair.vid.versions.map(version=>version.ref);
     refresh(pair.vid);
     save();
   });

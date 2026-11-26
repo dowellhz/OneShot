@@ -2,6 +2,38 @@
 
 module.exports = async function nodeArrangement(workspace) {
  const { assert, equal, evaluate, ready, requests, w } = workspace;
+ evaluate(`{
+  const cards=["n1","n2","n3"].map(id=>$(".card",els.get(id)));
+  const originalBounds=cards.map(card=>card.getBoundingClientRect);
+  cards.forEach((card,i)=>card.getBoundingClientRect=()=>new DOMRect(100+i*100,100,80,80));
+  const previousTool=tool;
+  $("#toolSel").click();
+  const pointer=(type,x,y,{id=1,shiftKey=false}={})=>(type==="pointerdown"?vp:window).dispatchEvent(
+    new PointerEvent(type,{pointerId:id,isPrimary:true,button:0,bubbles:true,cancelable:true,clientX:x,clientY:y,shiftKey}));
+  selectOnly("n2");
+  pointer("pointerdown",90,90);
+  pointer("pointermove",180,180);
+  pointer("pointerup",180,180,{id:2});
+  window.selectionWhileDragging=[...sel,$("#marquee").style.display];
+  pointer("pointercancel",180,180);
+  window.selectionAfterCancel=[...sel,$("#marquee").style.display];
+  pointer("pointerdown",90,90,{shiftKey:true});
+  pointer("pointerup",140,180);
+  window.selectionAfterRelease=[...sel,$("#marquee").style.display,$("#toolSel").getAttribute("aria-pressed")];
+  pointer("pointerdown",20,20);
+  window.dispatchEvent(new Event("blur"));
+  window.selectionAfterBlur=[...sel,$("#marquee").style.display];
+  pointer("pointerdown",20,20);
+  pointer("pointerup",20,20);
+  window.selectionAfterBlank=[...sel];
+  cards.forEach((card,i)=>card.getBoundingClientRect=originalBounds[i]);
+  setTool(previousTool);
+ }`);
+ equal(w.selectionWhileDragging,["n2","block"]);
+ equal(w.selectionAfterCancel,["n2","none"]);
+ equal(w.selectionAfterRelease,["n2","n1","none","true"]);
+ equal(w.selectionAfterBlur,["n2","n1","none"]);
+ equal(w.selectionAfterBlank,[]);
  evaluate(`const foldFixture=snap();
   B.edges=[{from:"n1",to:"n2"},{from:"n1",to:"n3"},{from:"n2",to:"n3"}];
   sel=new Set(["n1","n2"]);updateSel();$("#selectionTools [data-action=fold]").click();`);

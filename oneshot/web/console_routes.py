@@ -9,13 +9,19 @@ from aiohttp import web
 from oneshot import config
 from oneshot.generation import jobs as generation_jobs
 from oneshot.providers import catalog as providers
+from oneshot.providers.selection import configured_models
 from oneshot.storage import db
 from oneshot.web import http as http_errors
 
 
 async def admin_providers(_):
+    catalog = dict(providers.CATALOG)
+    local_h3 = catalog["local_h3"]
+    catalog["local_h3"] = {**local_h3, "models": {
+        **local_h3["models"], "image": configured_models({"id":"local_h3", "kind":"local_h3"}, "image", []),
+    }}
     return web.json_response({"providers": [providers.public(x) for x in providers.all_providers()],
-                              "catalog": providers.CATALOG, "caps": providers.CAPS,
+                              "catalog": catalog, "caps": providers.CAPS,
                               "routes": {c: [{"provider_id": r["provider"]["id"], "model": r["model"]} for r in providers.routes(c)] for c in providers.CAPS}})
 
 

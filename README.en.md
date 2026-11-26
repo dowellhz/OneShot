@@ -24,6 +24,8 @@ python3.12 -m venv .venv
 
 Open `http://localhost:8190` and create the first administrator. Configure remote models in **Console**. For local image and video generation, follow GPU setup. [Linux deployment for H3 BF16, H3-Image, and INT8 ConvRot](docs/deployment.en.md)
 
+Choose an image model on each canvas node. GPT-Image-2.6 Sunburst is available through a configured OpenAI service. Add Google Gemini under **Models and services** and enter its API key to use Nano Banana 2. After installing Qwen-Image-2.1 or FLUX.2 [klein] 4B, select them under the local H3 service. Idea to Film uses the default **Image generation** route in Console.
+
 ## Getting started
 
 1. Open **Idea to Film** to create a storyboard, or drop your media onto the canvas.

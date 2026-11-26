@@ -239,12 +239,16 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
       Object.assign(history.video_recipe,r.video_model);
       Object.assign(history.node_data,r.video_model);
     }
+    if(r.image_model) {
+      if(history?.node_data) Object.assign(history.node_data,r.image_model);
+      if(batch) Object.assign(batch.data,r.image_model);
+    }
     if(history?.video_recipe && r.reference_context) {
       Object.assign(history.video_recipe,r.reference_context);
       history.input_edges=vtEdgesWithReferenceRanges(history.input_edges,r.reference_context);
     }
-    if (r.memory_context || r.reference_context || r.video_model) {
-      Object.assign(generationRecord,captureGenerationRecord({...req,...r.memory_context,...r.reference_context,...r.video_model},textInputs));
+    if (r.memory_context || r.reference_context || r.video_model || r.image_model) {
+      Object.assign(generationRecord,captureGenerationRecord({...req,...r.memory_context,...r.reference_context,...r.video_model,...r.image_model},textInputs));
     }
     n.job = { ids: r.ids, prompt, t0: Date.now(), st: {}, memory_used:r.memory_used||[], generation_record:generationRecord,
       ...(groupRunId ? {group_run_id:groupRunId} : {}),

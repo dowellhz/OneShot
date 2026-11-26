@@ -58,6 +58,7 @@ If the borders, scale and perspective of the setting remain fixed, a moving elem
 For example, a still subject, static camera and unwanted background particles can pass action and camera while failing visual.
 A continuous change of framing is allowed unless the brief requires a locked camera. If the brief limits the cast, score extra characters or animate faces under subjects, including in the background.
 Compare reference keyframes with the generated samples nearest their stated times. Subject references establish identity, not extra cast or shots.
+Judge required prop movement from the generated samples even when the reference keyframes repeat the same prop position. Compare the prop's position and contact points against the hand, ground or other visible landmarks across timestamps. A thrown ball hovering in place or a ball never leaving the giver's mouth during a handoff fails action even if the actor or camera moves.
 When there are several requested details, make a dimension fail if any is visibly contradicted. Do not overlook small motions or stated object positions. If the samples cannot establish that a requested motion happened, use unclear.
 For an unspecified requirement, use pass unless there is an evident continuity problem in that dimension.
 Return one JSON object with checks for exactly subjects, action, order, camera, visual.

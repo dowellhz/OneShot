@@ -15,6 +15,7 @@ from oneshot.editing.clip_concat import concat
 from oneshot.editing.grid import grid_boxes, split_grid
 from oneshot.generation.media_files import AUDIO_EXT, FPS, SR, VIDEO_EXT, _new, ref_path
 from oneshot.generation.rewriter import LLM, image_part, strip_fences
+from oneshot.generation.storyboard_frames import MOTION_FRAMES, motion_frame_plan, shot_text_key
 
 
 def parse_json(text: str):
@@ -57,14 +58,6 @@ STORYBOARD_SYS = """你是电影分镜师。把用户的剧情拆成一组连续
 - 台词只用剧情里写到的或剧情明显需要的，台词原文保留；没有台词就给空数组。
 - 全部用中文。"""
 
-MOTION_FRAMES = """
-本次用于多关键帧动画。每镜优先只安排一个主要动作，能容纳对白时优先用 5 秒，后续动作拆到下一镜。
-除 keyframe 首帧外，每镜再写 motion_frames 对象，包含 middle（动作进行时）和 end（动作完成后的状态）两个字符串。
-三帧各用一句话描述可绘制的静态画面。首帧写动作开始前的状态，中帧写完成该动作需要经过的关键姿态，尾帧写动作之后已经稳定的站位和道具状态。
-保持人物身份、服装、机位和光线。人物和道具的位置按动作推进。尾帧不要回到起始姿态或描述再次执行同一动作，除非剧情明确要求。
-仅当首帧可直接复用上一镜尾帧且不切换机位时，设置 continues_previous 为 true，并逐字沿用上一镜的 scene、shot_size 和 camera。
-"""
-
 STORYBOARD_SPLIT_SYS = """你是电影分镜师，负责拆分已有脚本中的超长镜头。只返回指定 replacement JSON。
 每个替换镜头包含 duration、shot_size、camera、scene、characters、action、dialogue、sound、keyframe。
 时长使用 5、8、10、14 秒。按真实动作和语速安排，完整保留原动作、台词、说话人及顺序。
@@ -105,16 +98,11 @@ def storyboard_shots(raw, preferred):
             "action":action, "dialogue":dialogue, "sound":str(s.get("sound") or ""), "keyframe":str(s.get("keyframe") or ""),
             **({"asset_refs":s["asset_refs"]} if isinstance(s.get("asset_refs"),list) else {}),
             **({"visual_asset_keys":s["visual_asset_keys"][:8]} if isinstance(s.get("visual_asset_keys"),list) else {}),
-            **({"motion_frames":{key:s["motion_frames"][key].strip()[:1200] for key in ("middle","end")
-                                 if isinstance(s["motion_frames"].get(key),str)}}
+            **({"motion_frames":motion_frame_plan(s["motion_frames"], supported, str(s.get("keyframe") or ""))}
                if isinstance(s.get("motion_frames"),dict) else {}),
             **({"continues_previous":True} if s.get("continues_previous") is True else {}),
         })
     return shots, overloaded
-
-
-def shot_text_key(text):
-    return "".join(char for char in text if char.isalnum())
 
 
 def shot_dialogue_key(lines):
@@ -277,15 +265,9 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
     if motion_frames:
         for shot in shots:
             frames = shot.setdefault("motion_frames", {})
-            actions = shot["action"]
-            seen = {shot_text_key(shot["keyframe"])}
-            for phase, state in (("middle","动作正在进行的中间状态"), ("end","动作完成后的最终站位、姿态和道具状态")):
-                key = shot_text_key(frames.get(phase,""))
-                if not key or key in seen:
-                    index = -1 if phase == "end" else (len(actions) - 1) // 2
-                    frames[phase] = "，".join(filter(None, (actions[index] if actions else "", state)))
-                    key = shot_text_key(frames[phase])
-                seen.add(key)
+            if not frames.get("end"):
+                action = shot["action"][-1:] or [shot["keyframe"]]
+                frames["end"] = "，".join(filter(None, (*action, "动作已完成，画出最终站位、姿态和道具状态")))
     else:
         for shot in shots:
             shot.pop("motion_frames",None)

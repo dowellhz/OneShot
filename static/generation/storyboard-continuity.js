@@ -132,10 +132,10 @@ async function useRenderedMotionTail(script,index) {
   const pair=scriptShotLinks(script)[index], previous=node(scriptShotLinks(script)[index-1]?.vid), video=node(pair?.vid);
   const version=curV(previous);
   const first=video&&B.edges.find(edge=>edge.to===video.id&&edge.role==="first");
-  const middle=node(pair?.motion_frames?.middle);
-  const previousFrame=first&&B.edges.find(edge=>edge.from===first.from&&edge.to===middle?.id&&edge.prompt_slot===1);
+  const nextFrame=firstMotionFrame(pair);
+  const previousFrame=first&&B.edges.find(edge=>edge.from===first.from&&edge.to===nextFrame?.id&&edge.prompt_slot===1);
   if(!canvasCanEdit()||nodeLocked(script)||!pair?.shared_first||!version||!first||nodeLocked(video)||
-     video.job||prepping.has(video.id)||middle?.job||prepping.has(middle?.id)||
+     video.job||prepping.has(video.id)||nextFrame?.job||prepping.has(nextFrame?.id)||
      scriptContinuityPending.has(video)||vtReferenceAncestors(previous).has(video.id))return false;
   const originalSource=first.from, originalRef=first.ref;
   const priorCapture=node(first.from)?.versions.find(item=>item.ref===first.ref)?.capture;
@@ -149,13 +149,13 @@ async function useRenderedMotionTail(script,index) {
       active:()=>node(script.id)===script&&node(video.id)===video&&curV(previous)===version&&
         !video.job&&!prepping.has(video.id)&&!nodeLocked(video)&&B.edges.includes(first)&&
         first.from===originalSource&&first.ref===originalRef&&
-        !middle?.job&&!prepping.has(middle?.id)&&
+        !nextFrame?.job&&!prepping.has(nextFrame?.id)&&
         scriptShotLinks(script)[index]===pair&&scriptShotLinks(script)[index-1]?.vid===previous.id&&
         !vtReferenceAncestors(previous).has(video.id),
       onCaptured:image=>{
         rememberVideoVersion(video);
         Object.assign(first,{from:image.id,ref:curV(image).ref});
-        if(previousFrame&&B.edges.includes(previousFrame)&&previousFrame.from===originalSource&&!nodeLocked(middle))
+        if(previousFrame&&B.edges.includes(previousFrame)&&previousFrame.from===originalSource&&!nodeLocked(nextFrame))
           Object.assign(previousFrame,{from:image.id,ref:curV(image).ref});
         drawEdges();
         return video;

@@ -60,6 +60,16 @@ Ref2VA 和 VAE 从量化仓库取，文本编码器和 LoRA 从原 Comfy-Org 权
 
 用相同的路径配置启动引擎和 Web 服务。每个 INT8 任务由引擎启动隔离的 ComfyUI 进程。确认引擎本机 `/status` 的 `int8_ready` 为真，再从视频节点的模型菜单选择 **H3 Ref2VA INT8 ConvRot**。首次验收可用五秒、480p 的镜头。 [GPU 验收步骤](verification.md#4090-版本验收)
 
+## 可选本地图像模型
+
+在与 GPU 引擎相同的 Python 环境下执行。模型与 H3 共用单 GPU 队列。
+
+```bash
+python scripts/fetch_image_models.py qwen-image-2.1 flux-2-klein-4b
+```
+
+引擎环境需要提供 Diffusers 的 `QwenImage21Pipeline`、`Flux2KleinPipeline` 以及 Accelerate。权重默认位于 `models/image`，可用 `ONESHOT_IMAGE_MODELS` 修改，Web 与引擎应使用相同路径。Qwen-Image-2.1 和 FLUX.2 [klein] 4B 分别遵循其发布仓库的许可证。
+
 ## 可选组件
 
 - **提示词改写 / 写剧本（本地）**：[llama.cpp](https://github.com/ggml-org/llama.cpp) 的 `llama-server` + Qwen3.5-9B GGUF 与 mmproj（`H3_LLAMA_SERVER`、`H3_LLM_MODEL`、`H3_LLM_MMPROJ`）。也可以只用第三方文本模型。

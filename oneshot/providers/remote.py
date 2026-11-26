@@ -37,7 +37,7 @@ from oneshot.providers.remote_audio import (
     mm_tts,
     volc_seed_audio,
 )
-from oneshot.providers.remote_images import ark_image, ds_image, oai_image
+from oneshot.providers.remote_images import ark_image, ds_image, gemini_image, oai_image, test_gemini_image
 
 
 # =========================================================================== video
@@ -383,6 +383,7 @@ ADAPTERS = {
     ("ark", "image"): ark_image,
     ("dashscope", "image"): ds_image,
     ("openai", "image"): oai_image,
+    ("gemini", "image"): gemini_image,
     ("minimax", "tts"): mm_tts,
     ("minimax", "music"): mm_music,
     ("elevenlabs", "sfx"): elevenlabs_sfx,
@@ -440,4 +441,5 @@ async def _test_openai(http, p):
     return {"ok": True, "detail": "Key 有效（模型列表可以访问）"}
 
 
-TESTS: dict = {"kling": _test_kling, "ark": _test_ark, "dashscope": _test_dashscope, "openai": _test_openai}
+TESTS: dict = {"kling": _test_kling, "ark": _test_ark, "dashscope": _test_dashscope, "openai": _test_openai,
+               "gemini": test_gemini_image}

@@ -171,6 +171,7 @@ function cutEdge(e) {
     return toast("请等分镜图任务结束，或解锁节点后再移除尾帧");
   }
   checkpoint();
+  if (target?.type === "video" && node(e.from)?.type === "image") rememberVideoVersion(target);
   if(e.story_continuity&&target)removeScriptTailPrompt(target,e);
   B.edges=B.edges.filter(x=>x!==e);
   if(selEdge===e)selEdge=null;

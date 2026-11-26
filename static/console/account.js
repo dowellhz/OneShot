@@ -47,7 +47,7 @@ function canvasNodeModel(n, service, reference = false) {
 
 function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {
   const options = service?.models || [];
-  if (!service || (service.local && (n.type !== "video" || (options.length < 2 && !n.data.selected_model))) ||
+  if (!service || (service.local && options.length < 2 && !n.data.selected_model) ||
       (n.data.selected_model && n.data.provider && n.data.provider!==service.id)) return "";
   const model = canvasNodeModel(n,service,reference);
   const fallback = reference || n.data.provider ? service.model : service.default_route_model || service.model;

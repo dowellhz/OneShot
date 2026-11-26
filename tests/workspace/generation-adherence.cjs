@@ -22,6 +22,29 @@ module.exports = async function generationAdherence({ assert, evaluate, ready, w
   return original(url,options);
  };
  try {
+  evaluate(`const savedGenerationCaps=CAPS_LIST;
+   CAPS_LIST={...CAPS_LIST,image:[{id:"local_h3",name:"本地 H3",local:true,default:true,model:"h3-image",models:[
+     {id:"h3-image"},{id:"qwen-image-2.1",label:"Qwen-Image-2.1",image_engine:true,high_resolution:true,ref_limit:6},
+     {id:"flux-2-klein-4b",label:"FLUX.2 [klein] 4B",image_engine:true,ref_limit:4}]},
+     {id:"google",name:"Google Gemini",model:"gemini-3.1-flash-image",models:[{id:"gemini-3.1-flash-image",label:"Nano Banana 2"}]},
+     {id:"openai",name:"OpenAI",model:"gpt-image-2.5-flare",models:[{id:"gpt-image-2.5-flare"},{id:"gpt-image-2.6-sunburst"}]}]};
+   const altImage=addNode("image",180,250,{prompt:"move the ball",model:"h3video"});
+   selectOnly(altImage.id);
+   const changeModel=(key,value)=>{
+     const field=$('#ctl select[data-k="'+key+'"]');
+     field.value=value;field.dispatchEvent(new Event("change"));
+   };
+   changeModel("selected_model","qwen-image-2.1");`);
+  assert.equal(evaluate('imageCanvasRequest(altImage,altImage.data.prompt).request.selected_model'),"qwen-image-2.1");
+  assert.equal(evaluate('imageCanvasRequest(altImage,altImage.data.prompt).request.model'),"h3img");
+  assert.equal(evaluate('$("#ctl select[data-k=model]")'),null);
+  evaluate('changeModel("selected_model","flux-2-klein-4b")');
+  assert.equal(evaluate('$("#ctl select[data-k=quality]")'),null);
+  evaluate('changeModel("provider","google")');
+  assert.match(evaluate('$("#ctl").textContent'),/Nano Banana 2/);
+  evaluate('changeModel("provider","openai");changeModel("selected_model","gpt-image-2.6-sunburst")');
+  assert.equal(evaluate('imageCanvasRequest(altImage,altImage.data.prompt).request.selected_model'),"gpt-image-2.6-sunburst");
+  evaluate('removeNodes([altImage.id]);CAPS_LIST=savedGenerationCaps');
   evaluate(`const checkImage=addNode("image",250,250,{prompt:'门牌写“17”',image_text:"specified"});
    B.edges.push({from:"n1",to:checkImage.id,image_use:"camera"}); selectOnly(checkImage.id); showPanel(); $("#pvBtn").click();`);
   await ready('$("#pv").classList.contains("on") && !$("#pvBranchCommit").hidden',"prepared image preview");

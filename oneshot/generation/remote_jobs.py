@@ -61,7 +61,8 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
             except Exception:
                 pass
     if cap == "image":
-        nreq = {"prompt": re.sub(r"@图(\d+)", r"图\1", prompt), "images": [x["path"] for x in imgs], "ar": float(raw.get("ar") or 1), "n": int(raw.get("count") or 1)}
+        nreq = {"prompt": re.sub(r"@图(\d+)", r"图\1", prompt), "images": [x["path"] for x in imgs],
+                "ar": float(raw.get("ar") or 1), "n": int(raw.get("count") or 1), "quality": raw.get("quality")}
     elif full_reference or image_references:
         model_for_limits = motion_reference.video_model_for_limits(p,model)
         video_reference.ensure_reference_media_count(raw,p["kind"],model_for_limits,object_plan)

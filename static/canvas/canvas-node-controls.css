@@ -89,6 +89,9 @@
 #pp .ref img { width: 26px; height: 26px; border-radius: 6px; object-fit: cover; background: #000; }
 #pp .ref .tx { width: 26px; height: 26px; border-radius: 6px; background: #2a2236; color: var(--c-text); display: flex; align-items: center; justify-content: center; }
 #pp .ref .role { color: var(--faint); }
+#pp .ref [data-image-remove] { display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 0; color: var(--text); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font: inherit; font-size: 18px; }
+#pp .ref [data-image-remove]:enabled:is(:hover,:focus-visible) { background: var(--card-hi); }
+#pp .ref [data-image-remove]:disabled { opacity: .4; cursor: default; }
 #pp textarea { width: 100%; min-height: 70px; max-height: 320px; resize: none; border: none; outline: none; background: transparent; color: var(--text); padding: 4px 6px; line-height: 1.6; }
 #pp textarea::placeholder { color: var(--faint); }
 #pp .ctl { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

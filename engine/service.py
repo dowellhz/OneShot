@@ -29,6 +29,7 @@ from aiohttp import web
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import h3engine as E
 import h3_int8
+import image_models
 import editor_tools as EDITOR
 
 PORT = int(os.environ.get("H3_ENGINE_PORT", "8189"))
@@ -120,6 +121,19 @@ def worker():
                 j.update(state="done", took=round(time.time() - t0, 1), finished=time.time(), phase="done")
                 continue
             if r.get("kind") == "image":
+                if r.get("image_model"):
+                    ENGINE._drop_big()
+                    t0 = time.time()
+
+                    def report(phase, value, maximum):
+                        j.update(phase=phase, value=value, max=maximum)
+
+                    image_models.generate(r, [load_image(path) for path in r.get("images") or []],
+                                          report, lambda: bool(j.get("cancel")))
+                    if j.get("cancel"):
+                        raise Cancelled()
+                    j.update(state="done", took=round(time.time() - t0, 1), finished=time.time(), phase="done")
+                    continue
                 if not ENGINE.image_ready():
                     raise RuntimeError("H3-Image 权重还在下载")
                 j["phase"] = "loading" if ENGINE.task != "image" else "encoding"
@@ -184,6 +198,8 @@ async def submit(req):
         return web.json_response({"error": STATE["error"]}, status=503)
     if r.get("kind") == "video_int8" and not h3_int8.installed():
         return web.json_response({"error": "H3 INT8 ConvRot 尚未安装"}, status=503)
+    if r.get("kind") == "image" and r.get("image_model") and not image_models.installed(r["image_model"]):
+        return web.json_response({"error": "所选图像模型尚未安装"}, status=503)
     try:                                   # a bad number must be refused here, not crash the worker later
         for k in ("steps", "seed", "height", "width", "frames"):
             if r.get(k) is not None:
@@ -231,6 +247,7 @@ async def status(_):
     free, total = torch.cuda.mem_get_info() if torch.cuda.is_available() else (0, 0)
     return web.json_response({**{k: STATE[k] for k in ("ready", "loading", "running", "error")},
                               "image_ready": bool(ENGINE and ENGINE.image_ready()),
+                              "image_models": [model for model in image_models.MODELS if image_models.installed(model)],
                               "int8_ready": h3_int8.installed(),
                               "loaded": ENGINE and {"task": ENGINE.task, "lora": ENGINE.lora},
                               "queue": sum(1 for v in JOBS.values() if v["state"] == "queued"),

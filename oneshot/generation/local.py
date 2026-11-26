@@ -9,7 +9,7 @@ import uuid
 import aiohttp
 from aiohttp import web
 
-from engine import h3_int8
+from engine import h3_int8, image_models
 from oneshot import config
 from oneshot.generation import graphs
 from oneshot.generation import jobs as generation_jobs
@@ -19,23 +19,29 @@ from oneshot.storage import db
 from oneshot.web import http as http_errors
 
 
-async def engine_up(app, image: bool = False, *, int8: bool = False) -> bool:
+async def engine_up(app, image: bool = False, *, int8: bool = False, image_model: str | None = None) -> bool:
     try:
         async with app["http"].get(config.ENGINE + "/status", timeout=aiohttp.ClientTimeout(total=2)) as r:
             s = await r.json()
-            return bool(s.get("ready")) and (not image or bool(s.get("image_ready"))) and (not int8 or bool(s.get("int8_ready")))
+            return (bool(s.get("ready")) and (not image or bool(s.get("image_ready")))
+                    and (not int8 or bool(s.get("int8_ready")))
+                    and (not image_model or image_model in s.get("image_models", ())))
     except Exception:
         return False
 
 
-async def generate_engine_image(req, p: dict, count: int, *, expanded=None):
-    """H3-Image on our engine: text-to-image, or editing with the linked images as <Picture 1..n>."""
+async def generate_engine_image(req, p: dict, count: int, *, model=None, expanded=None):
+    """Queue a local image generation or edit."""
     u = req["user"]
     imgs = p.get("images") or []
     ar = float(p.get("ar") or 1)
-    mp = 16.0 if p.get("quality") == "16mp" else 4.0
+    spec = image_models.MODELS.get(model)
+    high = p.get("quality") == "16mp"
+    if spec and len(imgs) > spec.references:
+        raise http_errors.bad(f"{spec.label} 最多使用 {spec.references} 张参考图")
+    mp = (4.0 if high and spec.high_resolution else 1.0) if spec else (16.0 if high else 4.0)
     w, h = graphs.size_for(ar, mp, 32)
-    prompt = re.sub(r"@图(\d+)", r"<Picture \1>", p["prompt"])
+    prompt = p["prompt"] if spec else re.sub(r"@图(\d+)", r"<Picture \1>", p["prompt"])
     paths = [str(tools.ref_path(config.COMFY_DIR, im["ref"])) for im in imgs]
     cls, units, dflt = generation_jobs.job_class(p)
     meta = {"prompt": p["prompt"], "cls": cls, "units": units, "est": generation_jobs.estimate(cls, units, dflt), "label": http_errors.clean(p.get("label"))[:60],
@@ -43,20 +49,30 @@ async def generate_engine_image(req, p: dict, count: int, *, expanded=None):
             "mode_name": ("以图改图" if paths else "文生图") + f" · {round(w * h / 1e6)}MP"}
     if expanded:
         meta.update(expanded=expanded, mode_name=meta["mode_name"] + " · 扩写")
+    if spec:
+        meta.update(model=model, provider_id="local_h3", mode_name=f"{spec.label} · {meta['mode_name']}")
     ids = []
     for k in range(max(1, min(4, count))):
         seed = graphs.seed_of(p.get("seed")) + k
         name = f"image_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:5]}.png"
         out = config.COMFY_DIR / "output" / "h3studio" / name
         out.parent.mkdir(parents=True, exist_ok=True)
-        async with req.app["http"].post(config.ENGINE + "/jobs", json={"kind": "image", "prompt": prompt, "images": paths, "height": h, "width": w,
-                                                                "seed": seed, "out": str(out)}) as r:
-            jid = (await r.json())["id"]
+        body = {"kind": "image", "prompt": prompt, "images": paths, "height": h, "width": w,
+                "seed": seed, "out": str(out)}
+        if spec:
+            body.update(image_model=model, steps=spec.steps)
+        async with req.app["http"].post(config.ENGINE + "/jobs", json=body, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            response = await r.json()
+            if not response.get("id"):
+                if not ids:
+                    raise http_errors.bad(response.get("error") or "图像模型暂不可用")
+                break
+            jid = response["id"]
         generation_jobs.JOBS[jid] = {"id": jid, "kind": "image", "state": "queued", "created": time.time(), "meta": dict(meta, seed=seed),
                      "out_ref": f"output:h3studio/{name}"}
         generation_jobs.attach_image_edit(generation_jobs.JOBS[jid], p)
         db.task_start(id=jid, user_id=u["id"], board_id=meta["board"], label=meta["label"], capability="image", provider_id="local_h3",
-                      provider_kind="local_h3", model="H3-Image " + meta["mode_name"], state="queued", cost=0)
+                      provider_kind="local_h3", model=model if spec else "H3-Image " + meta["mode_name"], state="queued", cost=0)
         ids.append(jid)
     asyncio.create_task(generation_jobs.follow_engine(req.app))
     return web.json_response({"ids": ids, "meta": generation_jobs.JOBS[ids[0]]["meta"]})

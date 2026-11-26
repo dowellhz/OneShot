@@ -9,11 +9,25 @@ function shotFrameIds(pair) {
   return [pair.img,pair.motion_frames?.middle,pair.motion_frames?.end].filter(Boolean);
 }
 
-function missingMotionFrames(shot,pair) {
-  return !!shot?.motion_frames&&["middle","end"].some(phase=>!node(pair?.motion_frames?.[phase]));
+function motionFramePhases(shot) {
+  const frames=shot?.motion_frames;
+  return !frames?[]:Object.hasOwn(frames,"middle")?["middle","end"]:["end"];
 }
 
-function shotMotionFrameSettings(script,shot,phase) {
+function firstMotionFrame(pair) {
+  return node(pair?.motion_frames?.middle)||node(pair?.motion_frames?.end);
+}
+
+function shotMiddleTime(seconds,duration) {
+  const lastFrame=vidFrames(duration)-4;
+  return Math.min(lastFrame-1,Math.max(1,Math.round(seconds*24)))/24;
+}
+
+function missingMotionFrames(shot,pair) {
+  return motionFramePhases(shot).some(phase=>!node(pair?.motion_frames?.[phase]));
+}
+
+function shotMotionFrameSettings(script,shot,phase,{legacy=false}={}) {
   const action=shot.action||[];
   const end=phase==="end";
   const description=shot.motion_frames[phase]?.trim()||[
@@ -22,9 +36,16 @@ function shotMotionFrameSettings(script,shot,phase) {
   ].filter(Boolean).join("，");
   const moment=phase==="end"?"尾帧":"中帧";
   const assets=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
-  const prompt=[`参考 @图{1} 延续同一镜头。保持机位、景别、场景、角色身份、服装和光线。人物和道具的位置以本帧描述为准。`,
-    script.data.style,shot.scene,[shot.shot_size,shot.camera].filter(Boolean).join("，"),
-    `${moment}画面：${description}`,assets&&"参考资产 "+assets].filter(Boolean).join("\n");
+  const framing=[script.data.style,shot.scene,[shot.shot_size,shot.camera].filter(Boolean).join("，")];
+  const pose=`${moment}画面：${description}`;
+  const lines=legacy?[
+    "参考 @图{1} 延续同一镜头。保持机位、景别、场景、角色身份、服装和光线。人物和道具的位置以本帧描述为准。",
+    ...framing,pose
+  ]:[pose,
+    "参考 @图{1} 的机位、景别、场景、角色身份和光线。按本帧要求重新摆放发生移动的人物和道具，画出新的相对位置、接触点和姿态。发生移动的每件道具只出现一次，原位不留副本。",
+    ...framing
+  ];
+  const prompt=[...lines,assets&&"参考资产 "+assets].filter(Boolean).join("\n");
   return {prompt,caption:description,moment};
 }
 
@@ -115,8 +136,7 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
     let nextY=y0+(created.length?Math.max(size(img).h,300)+110:0);
     const motionFrames={};
     let priorFrame=img;
-    for(const phase of ["middle","end"]){
-      if(!s.motion_frames)break;
+    for(const phase of motionFramePhases(s)){
       const frame=node(pair?.motion_frames?.[phase])||
         makeShotMotionFrame(n,s,settings,i,phase,priorFrame,x,nextY);
       if(!node(pair?.motion_frames?.[phase])){
@@ -139,7 +159,9 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
       created.push(vid);
     }
     if(s.motion_frames){
-      for(const [id,role,time] of [[img.id,"first"],[motionFrames.middle,"keyframe",Math.floor(settings.video.duration/2)],[motionFrames.end,"last"]]){
+      const duration=settings.video.duration;
+      const middleTime=shotMiddleTime(s.motion_frames.middle_time??Math.floor(duration/2),duration);
+      for(const [id,role,time] of [[img.id,"first"],[motionFrames.middle,"keyframe",middleTime],[motionFrames.end,"last"]]){
         if(id&&!B.edges.some(edge=>edge.to===vid.id&&(edge.from===id||role==="first"&&edge.role==="first")))
           B.edges.push({from:id,to:vid.id,role,...(time!=null?{time}:{})});
       }

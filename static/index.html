@@ -6,17 +6,17 @@
 <title>OneShot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%2032%2032%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Crect%20x%3D%22.5%22%20y%3D%22.5%22%20width%3D%2231%22%20height%3D%2231%22%20rx%3D%227.5%22%20fill%3D%22%23242429%22%20stroke%3D%22%234a4a52%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%229%22%20fill%3D%22none%22%20stroke%3D%22%23ededf0%22%20stroke-width%3D%222%22%2F%3E%3Cpath%20d%3D%22M14%2011.6v8.8l6.8-4.4z%22%20fill%3D%22%23ededf0%22%2F%3E%3C%2Fsvg%3E">
 <link rel="stylesheet" href="/static/shared/type.css?v=1">
-<link rel="stylesheet" href="/static/canvas/canvas.css?v=79">
+<link rel="stylesheet" href="/static/canvas/canvas.css?v=80">
 <link rel="stylesheet" href="/static/canvas/canvas-nodes.css?v=1">
-<link rel="stylesheet" href="/static/canvas/canvas-node-controls.css?v=1">
+<link rel="stylesheet" href="/static/canvas/canvas-node-controls.css?v=2">
 <link rel="stylesheet" href="/static/canvas/canvas-navigation.css?v=1">
 <link rel="stylesheet" href="/static/canvas/canvas-workflows.css?v=1">
 <link rel="stylesheet" href="/static/shared/i18n.css?v=1">
 <script src="/static/shared/locales/en-workspace.js?v=3"></script>
 <script src="/static/shared/locales/en-pages.js?v=1"></script>
-<script src="/static/shared/locales/en-workflows.js?v=12"></script>
+<script src="/static/shared/locales/en-workflows.js?v=13"></script>
 <script src="/static/shared/locales/en-wizard.js?v=4"></script>
-<script src="/static/shared/locales/en-canvas-actions.js?v=2"></script>
+<script src="/static/shared/locales/en-canvas-actions.js?v=3"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
@@ -86,8 +86,8 @@
 <div class="float" id="tr"><div class="interface-language"><select data-interface-language aria-label="界面语言"><option value="zh-CN" lang="zh-CN">中文</option><option value="en" lang="en">English</option></select><span data-language-status role="status"></span></div><button id="shareBtn" type="button" aria-controls="canvasShare" aria-expanded="false">分享</button><button type="button" id="commentBtn" aria-controls="canvasComments" aria-expanded="false"><svg class="i"><use href="#i-comment"/></svg><span>评论</span></button><button id="shotListBtn" aria-controls="shotList" aria-expanded="false"><svg class="i"><use href="#i-script"/></svg><span>镜头</span></button><button id="assetLibraryBtn" aria-controls="assetLibrary" aria-expanded="false"><svg class="i"><use href="#i-assets"/></svg><span>资产库</span></button><span class="st"><span class="sd" id="sd"></span><span id="stt">连接中…</span></span></div>
 
 <div class="float" id="lt">
-  <button class="ib" id="toolPan" data-tip="抓手 H：拖空白处移动画布"><svg class="i"><use href="#i-hand"/></svg></button>
-  <button class="ib" id="toolSel" data-tip="框选 V：拖空白处框选节点"><svg class="i"><use href="#i-select"/></svg></button>
+  <button class="ib" id="toolPan" data-tip="抓手 H：拖空白处移动画布" aria-label="抓手 H：拖空白处移动画布"><svg class="i"><use href="#i-hand"/></svg></button>
+  <button class="ib" id="toolSel" data-tip="框选 V：拖空白处框选节点" aria-label="框选 V：拖空白处框选节点"><svg class="i"><use href="#i-select"/></svg></button>
   <div class="sep"></div>
   <button class="ib" id="addBtn" data-tip="添加节点"><svg class="i"><use href="#i-plus"/></svg></button>
   <button class="ib" id="upBtn" data-tip="上传图片或视频" aria-label="上传图片或视频"><svg class="i"><use href="#i-upload"/></svg></button>
@@ -370,9 +370,9 @@
 <script src="/static/generation/image-tools.js?v=1"></script>
 <script src="/static/memory/canvas-asset-bindings.js?v=1"></script>
 <script src="/static/generation/video-tools.js?v=1"></script>
-<script src="/static/generation/storyboard-continuity.js?v=1"></script>
-<script src="/static/generation/storyboard-expansion.js?v=3"></script>
-<script src="/static/generation/storyboard-revisions.js?v=1"></script>
+<script src="/static/generation/storyboard-continuity.js?v=2"></script>
+<script src="/static/generation/storyboard-expansion.js?v=5"></script>
+<script src="/static/generation/storyboard-revisions.js?v=3"></script>
 <script src="/static/generation/storyboard-batch.js?v=1"></script>
 <script src="/static/memory/canvas-asset-placement.js?v=1"></script>
 <script src="/static/generation/storyboard-node.js?v=2"></script>
@@ -402,10 +402,10 @@
 <script src="/static/editing/film-export.js?v=1"></script>
 <script src="/static/generation/queue-panel.js?v=1"></script>
 <script src="/static/generation/wizard-assets.js?v=2"></script>
-<script src="/static/generation/wizard-view.js?v=5"></script>
-<script src="/static/generation/wizard.js?v=21"></script>
+<script src="/static/generation/wizard-view.js?v=6"></script>
+<script src="/static/generation/wizard.js?v=22"></script>
 <script src="/static/canvas/settings.js?v=4t"></script>
-<script src="/static/console/account.js?v=11"></script>
+<script src="/static/console/account.js?v=12"></script>
 <link rel="stylesheet" href="/static/editing/video-remake.css?v=11">
 <script src="/static/editing/video-remake.js?v=41"></script>
 <script src="/static/editing/video-remake-dialog.js?v=1"></script>
@@ -444,22 +444,22 @@
 <script src="/static/canvas/canvas-node-view.js?v=3"></script>
 <script src="/static/generation/canvas-video-queue.js?v=1"></script>
 <script src="/static/canvas/canvas-version-switch.js?v=1"></script>
-<script src="/static/generation/canvas-generation-drafts.js?v=1"></script>
-<script src="/static/canvas/canvas-edge-view.js?v=1"></script>
+<script src="/static/generation/canvas-generation-drafts.js?v=2"></script>
+<script src="/static/canvas/canvas-edge-view.js?v=2"></script>
 <script src="/static/canvas/canvas-selection.js?v=1"></script>
 <script src="/static/generation/prompt-panel-layout.js?v=1"></script>
-<script src="/static/generation/image-generation-request.js?v=2"></script>
-<script src="/static/generation/prompt-panel.js?v=4"></script>
+<script src="/static/generation/image-generation-request.js?v=3"></script>
+<script src="/static/generation/prompt-panel.js?v=6"></script>
 <script src="/static/generation/prompt-preview.js?v=3"></script>
 <script src="/static/canvas/media-preview.js?v=1"></script>
-<script src="/static/canvas/canvas-gestures.js?v=2"></script>
+<script src="/static/canvas/canvas-gestures.js?v=3"></script>
 <script src="/static/canvas/canvas-context-menu.js?v=4"></script>
 <script src="/static/canvas/canvas-minimap.js?v=1"></script>
 <script src="/static/canvas/canvas-commands.js?v=1"></script>
 <script src="/static/canvas/canvas-keyboard.js?v=1"></script>
 <script src="/static/canvas/canvas-clipboard.js?v=1"></script>
 <script src="/static/editing/image-panorama.js?v=2"></script>
-<script src="/static/generation/canvas-generation.js?v=67"></script>
+<script src="/static/generation/canvas-generation.js?v=68"></script>
 <script src="/static/canvas/canvas-import.js?v=1"></script>
 <script src="/static/editing/frame-capture.js?v=2"></script>
 <script src="/static/memory/canvas-asset-drawer.js?v=1"></script>

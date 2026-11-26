@@ -88,6 +88,7 @@ Object.assign(window.OneShotEnglish ||= Object.create(null), {
   "改用当前版本": "Use current version",
   "版本 {number}": "Version {number}",
   "点击在提示词中引用 · {name}": "Click to reference in the prompt · {name}",
+  "移除参考图 · {name}": "Remove reference image · {name}",
   "图{number}": "Image {number}",
   "已选 {count} 个节点": "{count} nodes selected",
   "沿用资产": "Reused asset",

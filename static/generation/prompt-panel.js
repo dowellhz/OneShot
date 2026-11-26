@@ -57,6 +57,11 @@ function showPanel() {
   if (n.type === "text" || n.data.previs) { placeOverlays(); return; }
   // ---- refs
   const refs = $("#refs"), items = [];
+  const videoPlan = n.type === "video" ? plan(n) : null;
+  const pictures = videoPlan?.inputs || (n.type === "image" ? imageInputs(n) : []);
+  const canRemoveImage = () => canvasCanEdit() && !nodeLocked(n) && !n.job &&
+    !prepping.has(n.id) && !toolBusy.has(n.id);
+  const disableRemove = !canRemoveImage();
   const guide = n.type === "video" ? previsInput(n) : null;
   const sounds = n.type === "video" ? audioInputs(n) : [];
   const clips = n.type === "video" ? videoInputs(n) : [];
@@ -65,7 +70,7 @@ function showPanel() {
   const reference = guide || sounds.length || clips.length;
   if (n.type === "script") imgInputs(n).forEach(m => { const mv = curV(m); items.push(`<span class="ref" title="${esc(m.name)}">${mv ? `<img src="${mv.url}">` : `<span class="tx">${ico("image")}</span>`}${esc(m.name)}<span class="role">${KIND_CN[m.data.asset?.kind] || "参考"}</span></span>`); });
   if (n.type === "image") {
-    imageInputs(n).forEach((input,i)=>items.push(imagePromptChip(input,i,imageReferenceSelect(n,input.edge,i))));
+    pictures.forEach((input,i)=>items.push(imagePromptChip(input,i,imageReferenceSelect(n,input.edge,i),disableRemove)));
     const composition=previsComposition(n);
     if(composition){
       const label=composition.enabled?"使用中":"已关闭";
@@ -75,7 +80,7 @@ function showPanel() {
     }
   }
   if (n.type === "video") {
-    const p = plan(n);
+    const p = videoPlan;
     if (!n.data.replay_memory_ref) inheritedVideoAssets(n).forEach(asset=>{
       const name = asset.name || "资产";
       items.push(OneShotI18n.html`<span class="ref"><span class="tx">${ico("assets")}</span>${esc(name)}<span class="role">沿用资产</span>
@@ -113,12 +118,18 @@ function showPanel() {
       const tbox = p.useRef && r !== "subject" && r !== "first" && r !== "last" && p.times[i] != null
         ? OneShotI18n.html`<input class="tsec" type="number" min="0" max="${p.end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
       const label = `<span class="role rsel">${OneShotI18n.t(p.labels[i])} ▾${roleSelect(p.es[i])}</span>`;
-      items.push(imagePromptChip(input,i,label+tbox)); });
+      items.push(imagePromptChip(input,i,label+tbox,disableRemove)); });
   }
   inputs(n, "text").forEach(t => items.push(OneShotI18n.html`<span class="ref" title="${esc(t.data.text.slice(0, 200))}"><span class="tx">${ico("text")}</span>${esc(t.name)}<span class="role">已并入</span></span>`));
   if (n.data.replay_memory_ref) items.push(OneShotI18n.html`<span class="ref"><span class="tx">${ico("assets")}</span>沿用原资产
     <button type="button" data-replay-assets-clear aria-label="取消沿用原资产" title="取消沿用原资产" ${n.job||nodeLocked(n)||!canvasCanEdit()?"disabled":""}>×</button></span>`);
   refs.innerHTML = items.join(""); refs.style.display = items.length ? "" : "none";
+  $$("[data-image-remove]",refs).forEach(button=>{
+    const {edge}=pictures[Number(button.dataset.imageRemove)];
+    button.onclick=()=>{
+      if (node(n.id)===n && canRemoveImage()) cutEdge(edge);
+    };
+  });
   const replayClear=$("[data-replay-assets-clear]",refs);
   if (replayClear) replayClear.onclick=()=>{
     if (!canvasCanEdit() || nodeLocked(n) || n.job || prepping.has(n.id)) return;
@@ -235,15 +246,21 @@ function showPanel() {
   let h;
   if (n.type === "script") h = scriptCtl(n);
   else if (n.type === "image") {
-    const rem = isRemote(n), hi = rem || d.model !== "h3video", ins = imgInputs(n).length || previsComposition(n)?.enabled, fa = d.aspect === "auto";
+    const model = canvasNodeModel(n,nodeProvider(n)), alternative = model?.image_engine;
+    const rem = isRemote(n), hi = rem || alternative || d.model !== "h3video", ins = imgInputs(n).length || previsComposition(n)?.enabled, fa = d.aspect === "auto";
     h = provPill(n, pill) + nodeModelPill(n,pill);
-    if (!rem) {
+    if (!rem && !alternative) {
       h += pill("model", { h3img: "H3-Image（推荐，支持以图改图）", h3video: "H3 视频模型 · 快速出图" }, `<span class="dot"></span>${hi ? "H3-Image" : OneShotI18n.t("H3 快速")}${ico("down")}`, "model");
       if (hi) h += pill("expand", { false: "智能扩写：关", true: "智能扩写：开（按官方格式扩写，理解更准）" }, d.expand ? "扩写 开" : "扩写 关");
       else h += pill("turbo", { true: "极速 8 步", false: "高质量 30 步" }, d.turbo ? "极速" : "高质量");
     }
     h += pill("aspect", { ...(ins ? { auto: "跟随原图" } : {}), "1:1": "1:1", "3:4": "3:4", "4:3": "4:3", "9:16": "9:16", "16:9": "16:9", "21:9": "21:9" }, fa ? `${arIcon(ins ? "4:3" : "1:1")}${ins ? OneShotI18n.t("原图比例") : "1:1"}` : `${arIcon(d.aspect)}${d.aspect}`);
-    h += pill("quality", hi ? { "4mp": "4MP（约 2K）", "16mp": "16MP（约 4K，最佳画质，慢）" } : { "4mp": "1K", "16mp": "2K" }, hi ? (d.quality === "16mp" ? "16MP" : "4MP") : (d.quality === "16mp" ? "2K" : "1K"));
+    if (alternative && !model.high_resolution) h += '<span class="pill">1K</span>';
+    else {
+      const megapixels = hi && !alternative;
+      h += pill("quality", megapixels ? { "4mp": "4MP（约 2K）", "16mp": "16MP（约 4K，最佳画质，慢）" } : { "4mp": "1K", "16mp": "2K" },
+        megapixels ? (d.quality === "16mp" ? "16MP" : "4MP") : (d.quality === "16mp" ? "2K" : "1K"));
+    }
     h += pill("count", { 1: "1 张", 2: "2 张", 4: "4 张" }, `${ico("stack")}${d.count}`);
     h += pill("image_text", {auto:"文字按描述",none:"画面无文字",specified:"仅指定文字"},
       OneShotI18n.t(({none:"画面无文字",specified:"仅指定文字"})[d.image_text] || "文字按描述"),
@@ -357,12 +374,14 @@ function showPanel() {
   const mm = $("#mMusic"); if (mm) mm.oninput = e => { n.data.music = e.target.value; save(); };
   placeOverlays();
 }
-function imagePromptChip({edge,source,version,index},i,role) {
+function imagePromptChip({edge,source,version,index},i,role,disableRemove) {
   const slot=promptSlot(edge.prompt_slot), token=promptMediaToken("image",slot,i+1);
   const pinned=edge.ref?`<span class="role">${version?OneShotI18n.t("版本 {number}",{number:index+1}):OneShotI18n.t("版本已移除")}</span>`:"";
   const latest=curV(source);
   const update=edge.ref&&latest?.ref&&latest.ref!==edge.ref?OneShotI18n.html`<button type="button" data-image-update="${i}">改用当前版本</button>`:"";
-  return `<span class="ref" data-tok="${token}" title="${esc(OneShotI18n.t("点击在提示词中引用 · {name}",{name:source.name}))}">${version?.url?`<img src="${esc(version.url)}">`:`<span class="tx">${ico("image")}</span>`}${slot?esc(source.name):OneShotI18n.t("图{number}",{number:i+1})}${role}${pinned}${update}</span>`;
+  const removeLabel=esc(OneShotI18n.t("移除参考图 · {name}",{name:source.name}));
+  const remove=`<button type="button" data-image-remove="${i}" aria-label="${removeLabel}" title="${removeLabel}" ${disableRemove?"disabled":""}>×</button>`;
+  return `<span class="ref" data-tok="${token}" title="${esc(OneShotI18n.t("点击在提示词中引用 · {name}",{name:source.name}))}">${version?.url?`<img src="${esc(version.url)}">`:`<span class="tx">${ico("image")}</span>`}${slot?esc(source.name):OneShotI18n.t("图{number}",{number:i+1})}${role}${pinned}${update}${remove}</span>`;
 }
 function imageReferenceSelect(n,edge,index) {
   const current=edge.image_use || (edge.story_cast ? "character" : "reference");

@@ -53,7 +53,7 @@ function stepScript() {
           <input data-f="cam" value="${esc([x.shot_size, x.camera].filter(Boolean).join("，"))}" placeholder="景别和运镜，如：中景，缓慢推近">
           <span class="grow"></span><button class="ic" data-m="up" title="上移">↑</button><button class="ic" data-m="down" title="下移">↓</button><button class="ic" data-m="del" title="删除这个镜头">×</button></div>
         <label>首帧画面<textarea data-f="keyframe" rows="2">${esc(x.keyframe)}</textarea></label>
-        ${x.motion_frames?["middle","end"].map(phase=>`<label>${OneShotI18n.t(phase==="middle"?"中帧画面":"尾帧画面")}<textarea data-motion-frame="${phase}" rows="2">${esc(x.motion_frames[phase])}</textarea></label>`).join(""):""}
+        ${motionFramePhases(x).map(phase=>`<label>${OneShotI18n.t(phase==="middle"?"中帧画面":"尾帧画面")}<textarea data-motion-frame="${phase}" rows="2">${esc(x.motion_frames[phase]||"")}</textarea></label>`).join("")}
         <label>动作<textarea data-f="action" rows="2" placeholder="一行一个动作，可写 0–0.5 秒 保持站姿">${esc(x.action.join("\n"))}</textarea></label>
         <label>台词<textarea data-f="dialogue" rows="1" placeholder="名字：台词（没有可以空着）">${esc(x.dialogue.join("\n"))}</textarea></label></div>`).join("")}
       <button class="add" data-m="add">＋ 加一个镜头</button></div>

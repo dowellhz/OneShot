@@ -24,6 +24,8 @@ python3.12 -m venv .venv
 
 打开 `http://localhost:8190` 创建首个管理员，再到「控制台」配置第三方模型。本地生成需要配置 GPU 引擎。 [H3 BF16、H3-Image 和 INT8 ConvRot 的 Linux 部署](docs/deployment.md)
 
+生图节点支持单独选模型。已有 OpenAI 服务可直接选择 GPT-Image-2.6 Sunburst。Nano Banana 2 需要在「模型与服务」添加 Google Gemini 并填入 API Key。安装本地 Qwen-Image-2.1 或 FLUX.2 [klein] 4B 后，从本地 H3 服务的模型菜单选择。一句话成片使用控制台「生图」的默认路由。
+
 ## 开始创作
 
 1. 打开「一句话成片」创建分镜，或把已有素材拖入画布。

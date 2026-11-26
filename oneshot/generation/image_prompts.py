@@ -7,6 +7,7 @@ import re
 from time import monotonic
 from uuid import uuid4
 
+from engine import image_models
 from oneshot import config
 from oneshot.generation import graphs, rewriter
 from oneshot.memory.memory_values import IMAGE_STORY_PROMPT_MARKER, MEMORY_PROMPT_MARKER
@@ -86,8 +87,17 @@ def route_identity(route, payload):
 
 
 async def prepare(app, payload, route, *, review=False):
-    _, adapter, _ = route_identity(route, payload)
+    _, adapter, model = route_identity(route, payload)
     prompt = compose(payload)
+    if adapter == "gemini" and len(payload.get("images") or []) > 14:
+        raise http_errors.bad("Nano Banana 2 最多使用 14 张参考图")
+    if adapter == "local_h3" and model in image_models.MODELS:
+        spec = image_models.MODELS[model]
+        if not image_models.installed(model):
+            raise http_errors.bad(f"{spec.label} 尚未安装")
+        if len(payload.get("images") or []) > spec.references:
+            raise http_errors.bad(f"{spec.label} 最多使用 {spec.references} 张参考图")
+        return {**payload, "prompt": remote_labels(prompt), "expand": False}, False
     if adapter != "local_h3":
         return {**payload, "prompt": remote_labels(prompt)}, False
     if payload.get("model", "h3img") == "h3video":

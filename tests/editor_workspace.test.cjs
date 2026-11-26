@@ -2,6 +2,7 @@
 "use strict";
 
 const { boot, close } = require('./workspace_fixture.cjs');
+const imageReferenceRemoval = require('./workspace/image-reference-removal.cjs');
 
 const scenarios = [
  require('./workspace/workspace-navigation.cjs'),
@@ -39,11 +40,13 @@ const scenarios = [
  require('./workspace/generation-adherence.cjs'),
  require('./workspace/video-quality.cjs'),
  require('./workspace/wizard-assets.cjs'),
+ imageReferenceRemoval,
 ];
 
 async function run() {
  const workspace = await boot();
  if (workspace.englishSmoke) {
+  await imageReferenceRemoval(workspace);
   await require('./workspace_localization.cjs')(workspace);
   return;
  }
