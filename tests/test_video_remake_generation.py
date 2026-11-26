@@ -147,7 +147,7 @@ class RemakeGeneration(RemakeFixture):
         calls = []
         outcomes = {}
 
-        def submit(url, json):
+        def submit(url, json, *, timeout=None):
             self.assertTrue(url.endswith("/jobs"))
             jid = f"e{len(calls) + 1:012x}"
             calls.append(json)
