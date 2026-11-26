@@ -103,7 +103,7 @@ def _needs_english(t: str) -> bool:
     return bool(t) and bool(_CJK.search(_IMAGE_MENTION.sub("", _DBLOCK.sub("", t))))
 
 
-async def to_english(app, p: dict) -> dict:
+async def to_english(app, p: dict, *, local_only=False) -> dict:
     """H3's prompt format is English except dialogue/lyrics in <d> and visible text. Translate the rest before generation."""
     if p.get("kind", "video") != "video":
         return p
@@ -122,6 +122,8 @@ async def to_english(app, p: dict) -> dict:
     if not src:
         return p
     key = json.dumps(src, ensure_ascii=False, sort_keys=True)
+    if local_only:
+        key = "local:" + key
     if any(_IMAGE_MENTION.search(value) for entry in src.values() for value in (entry if isinstance(entry, list) else [entry])):
         key = "image-mentions:" + key
     if pfields.ACTION_TIME.search(src.get("prompt", "")):
@@ -129,10 +131,12 @@ async def to_english(app, p: dict) -> dict:
     out = _XLATE_CACHE.get(key)
     if out is None:
         llm = app["llm"]
-        if not llm.available():
+        available = llm.local_vision_available if local_only else llm.available
+        if not available():
             return {**p, "_xlate_err": "没有可用的文本模型"}
         try:
-            text = await llm.chat(XLATE_SYSTEM, json.dumps(src, ensure_ascii=False, indent=1), max_tokens=4000, temperature=0.2)
+            chat = llm.local_vision if local_only else llm.chat
+            text = await chat(XLATE_SYSTEM, json.dumps(src, ensure_ascii=False, indent=1), max_tokens=4000, temperature=0.2)
             text = rewriter.strip_fences(text)
             out = json.loads(text[text.index("{"): text.rindex("}") + 1])
             for k, v in src.items():
@@ -203,6 +207,7 @@ async def storyboard(req):
     return await http_errors.llm_call(req, tools.storyboard(req.app["llm"], config.COMFY_DIR, p["story"], p.get("refs") or [], p.get("shots"),
                                                 p.get("seconds"), http_errors.clean(p.get("style")), p.get("aspect") or "16:9", p.get("target_seconds"),
                                                 **({"motion_frames":True} if p.get("motion_frames") is True else {}),
+                                                **({"prepare_assets":True} if p.get("prepare_assets") is True else {}),
                                                 **({"asset_candidates":candidates} if candidates else {})))
 
 

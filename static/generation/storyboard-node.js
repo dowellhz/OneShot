@@ -2,7 +2,7 @@
 
 // ================================================================= storyboard script node
 function scriptRefs(n) {
-  return imageInputs(n).filter(({version})=>version?.ref).map(({source,version,edge})=>({
+  return imageInputs(n).filter(({version,source})=>version?.ref&&!source.data.story_asset_key).map(({source,version,edge})=>({
     node:source,name:source.name,ref:version.ref,pinned:!!edge.ref,desc:source.data.caption||"",kind:source.data.asset?.kind||"",
   }));
 }
@@ -113,12 +113,13 @@ async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=
     if(boardId!==bid||node(n.id)!==n)return;
     const r = await api("/api/storyboard", { board:bid, story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
       seconds: d.shotlen === "auto" ? null : +d.shotlen, style: "", aspect: d.aspect,
-      ...(motionFrames ? {motion_frames:true} : {}),
+      ...(motionFrames ? {motion_frames:true,prepare_assets:true} : {}),
       ...(targetSeconds ? {target_seconds:targetSeconds} : {}) });
     if(node(n.id)!==n)return;
     checkpoint();ensureScriptShotIds(n);
     if(resetLinks)d.made=[];
-    Object.assign(d,{title:r.title,style:r.style,characters:r.characters,shots:r.shots.map(shot=>({...shot,id:newCanvasNodeId()}))});
+    Object.assign(d,{title:r.title,style:r.style,characters:r.characters,visual_assets:r.visual_assets||[],
+      shots:r.shots.map(shot=>({...shot,id:newCanvasNodeId()}))});
     save(); render(n); drawEdges();
     const total = r.planned_seconds ?? r.shots.reduce((sum,shot)=>sum+shot.duration,0);
     toast(`拆成 ${r.shots.length} 镜，计划约 ${total} 秒${llmNote(r)}`, 4000);

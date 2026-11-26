@@ -273,6 +273,7 @@ function showNodeToolTip(button) {
 function nodeAction(n, a) {
   if (a === "text-document") return openTextDocument(n);
   if (a === "panorama") return openPanorama(n);
+  if (a === "video-quality-report") return showVideoQualityReport(curV(n)?.generation_record?.quality_review);
   if (!canvasCanEdit() && !["prev","next","full","compare-video","compare-draft","dl","gif-export","playlist-open"].includes(a)) return;
   const v = curV(n);
   if (a === "prev" || a === "next") { switchVersion(n, (n.cur + (a === "next" ? 1 : -1) + n.versions.length) % n.versions.length); }

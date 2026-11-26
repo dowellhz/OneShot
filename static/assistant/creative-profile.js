@@ -1,5 +1,6 @@
 "use strict";
 
+const cpText = OneShotI18n.t;
 let profileEpoch=0;
 let profileSettings=null;
 
@@ -8,7 +9,7 @@ function cpSetFields(settings) {
  $("#cpPersonal").value=settings.personal.text;
  $("#cpProject").value=project?.text||"";
  $("#cpProjectScope").hidden=!project;
- $("#cpProjectName").textContent=project?"项目规则 · "+project.name:"";
+ $("#cpProjectName").textContent=project?cpText("项目规则 · {name}", {name:project.name}):"";
  profileSettings=settings;
 }
 
@@ -29,7 +30,7 @@ async function cpOpen() {
  fieldset.disabled=true;
  $("#cpProjectScope").hidden=true;
  $("#cpPersonal").value=$("#cpProject").value="";
- $("#cpStatus").textContent="正在读取记忆…";
+ $("#cpStatus").textContent=cpText("正在读取记忆…");
  if(dialog.showModal)dialog.showModal();
  else dialog.setAttribute("open","");
  try{
@@ -52,15 +53,15 @@ async function cpSave(event) {
   if(!entry||text===entry.text)continue;
   changes[scope]={text,revision:entry.revision,...(scope==="project"?{id:entry.id}:{})};
  }
- if(!Object.keys(changes).length){status.textContent="没有需要保存的改动";return;}
+ if(!Object.keys(changes).length){status.textContent=cpText("没有需要保存的改动");return;}
  const epoch=profileEpoch, board=boardId;
  fieldset.disabled=true;
- status.textContent="正在保存…";
+ status.textContent=cpText("正在保存…");
  try{
   const saved=await boardRequest("/api/chat/profile","PUT",{board,changes});
   if(epoch!==profileEpoch||board!==boardId)return;
   cpSetFields(saved);
-  status.textContent="已保存，后续对话会沿用当前记忆";
+  status.textContent=cpText("已保存，后续对话会沿用当前记忆");
  }catch(error){if(epoch===profileEpoch)status.textContent=error.message;}
  finally{if(epoch===profileEpoch)fieldset.disabled=false;}
 }
@@ -69,8 +70,8 @@ function cpApplyDecision(id, decision) {
  const host=AC.calls.get(id), card=host&&$(".ac-profile-suggestion",host);
  if(!card)return;
  for(const button of $$("button[data-profile-decision]",card))button.hidden=true;
- $("summary",host).textContent=host.dataset.label+" · "+(decision==="save"?"已保存":"已忽略");
- $("[role=status]",card).textContent=decision==="save"?"已保存到记忆":"已忽略建议";
+ $("summary",host).textContent=host.dataset.label+" · "+(decision==="save"?cpText("已保存"):cpText("已忽略"));
+ $("[role=status]",card).textContent=decision==="save"?cpText("已保存到记忆"):cpText("已忽略建议");
 }
 
 function cpAddSuggestion(host, suggestion) {
@@ -78,13 +79,13 @@ function cpAddSuggestion(host, suggestion) {
  card.className="ac-profile-suggestion";
  const title=document.createElement("strong"), text=document.createElement("p"),
        controls=document.createElement("div"), status=document.createElement("span");
- title.textContent=suggestion.scope==="project"?"保存为项目规则 · "+suggestion.project:"保存为个人偏好";
+ title.textContent=suggestion.scope==="project"?cpText("保存为项目规则 · {name}", {name:suggestion.project}):cpText("保存为个人偏好");
  text.textContent=suggestion.text;
  status.setAttribute("role","status");
  for(const [decision,label] of [["save","记住"],["dismiss","忽略"]]){
   const button=document.createElement("button");
   button.type="button";
-  button.textContent=label;
+  button.textContent=cpText(label);
   button.dataset.profileDecision=decision;
   button.onclick=async()=>{
    if(button.disabled||button.hidden||!AC.session)return;
@@ -105,10 +106,10 @@ function cpAddSuggestion(host, suggestion) {
 }
 
 function initCreativeProfile() {
- AC_LABELS.creative_profile_suggest="建议保存创作记忆";
- $("#acNew").insertAdjacentHTML("afterend",'<button type="button" id="acProfile" aria-haspopup="dialog" aria-controls="creativeProfile">记忆</button>');
+ AC_LABELS.creative_profile_suggest=cpText("建议保存创作记忆");
+ $("#acNew").insertAdjacentHTML("afterend",OneShotI18n.markup('<button type="button" id="acProfile" aria-haspopup="dialog" aria-controls="creativeProfile">记忆</button>'));
  $("#acProfile").onclick=cpOpen;
- document.body.insertAdjacentHTML("beforeend",`<dialog id="creativeProfile" aria-labelledby="cpTitle">
+ document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="creativeProfile" aria-labelledby="cpTitle">
   <header><h2 id="cpTitle">创作助手记忆</h2><button type="button" id="cpClose" aria-label="关闭记忆设置">×</button></header>
   <form>
    <fieldset disabled>

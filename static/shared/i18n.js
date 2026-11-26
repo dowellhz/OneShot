@@ -138,5 +138,11 @@ window.OneShotI18n = (() => {
   }
 
   mount();
-  return { locale, t, html, markup: source => html([source]), beforeSwitch: guard => guards.push(guard) };
+  function canvasName(board) {
+    const empty = Array.isArray(board.nodes) ? !board.nodes.length : board.nodes === 0;
+    const legacy = board.auto_name == null && empty && !board.wiz?.idea && ["新项目","New project"].includes(board.name);
+    return board.auto_name === "project" || legacy ? t("新项目") : board.name;
+  }
+
+  return { locale, t, html, canvasName, markup: source => html([source]), beforeSwitch: guard => guards.push(guard) };
 })();

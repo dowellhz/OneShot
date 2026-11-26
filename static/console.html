@@ -124,7 +124,8 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 <link rel="stylesheet" href="/static/shared/i18n.css?v=1">
 <script src="/static/shared/locales/en-workspace.js?v=1"></script>
 <script src="/static/shared/locales/en-pages.js?v=1"></script>
-<script src="/static/shared/locales/en-workflows.js?v=3"></script>
+<script src="/static/shared/locales/en-projects.js?v=1"></script>
+<script src="/static/shared/locales/en-workflows.js?v=7"></script>
 <script src="/static/shared/locales/en-canvas-actions.js?v=1"></script>
 </head>
 <body>
@@ -146,8 +147,8 @@ th { background: transparent; } tr:last-child td { border-bottom: none; } tr:hov
 </div>
 <div class="modal" id="modal"><div class="box" id="mbox"></div></div>
 <div class="toast" id="toast"></div>
-<script src="/static/shared/i18n.js?v=2"></script>
-<script src="/static/console/console-projects.js?v=3"></script>
+<script src="/static/shared/i18n.js?v=3"></script>
+<script src="/static/console/console-projects.js?v=5"></script>
 <script>
 "use strict";
 const tr = OneShotI18n.t;
@@ -210,20 +211,29 @@ async function pgTasks() {
 
 // ============================================================ services
 let SV = null;
+function serviceDisplayName(provider) {
+  const localizedNames = {
+    local_h3: ["本地 H3"],
+    local_qwen: ["本地 Qwen"],
+    local_kokoro: ["本地配音"],
+    asr_compat: ["本机 Faster Whisper"],
+  };
+  return localizedNames[provider.kind]?.includes(provider.name) ? tr(provider.name) : provider.name;
+}
 async function pgServices() {
   SV = await api("/api/admin/providers");
   const P = Object.fromEntries(SV.providers.map(p => [p.id, p]));
   const capCards = Object.entries(SV.caps).map(([cap, label]) => {
     const rts = SV.routes[cap] || [], opts = SV.providers.filter(p => p.enabled && p.caps.includes(cap));
-    return OneShotI18n.html`<div class="card cap" data-cap="${cap}"><div class="hd"><b>${tr(CAPN[cap])}</b><span class="dim" style="font-size:var(--fs-small)">${esc(label.replace(/^[^（]+/, ""))}</span></div>
-      ${rts.map((r, i) => OneShotI18n.html`<div class="rt" data-i="${i}"><span class="no">${i ? "备" + i : "默认"}</span>
-          <select class="in" data-k="provider_id">${opts.map(p => `<option value="${p.id}" ${p.id === r.provider_id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+    return OneShotI18n.html`<div class="card cap" data-cap="${cap}"><div class="hd"><b>${tr(CAPN[cap])}</b><span class="dim" style="font-size:var(--fs-small)">${esc(tr(label.replace(/^[^（]+/, "")))}</span></div>
+      ${rts.map((r, i) => OneShotI18n.html`<div class="rt" data-i="${i}"><span class="no">${i ? tr("备用 {number}", {number:i}) : tr("默认")}</span>
+          <select class="in" data-k="provider_id">${opts.map(p => `<option value="${p.id}" ${p.id === r.provider_id ? "selected" : ""}>${esc(serviceDisplayName(p))}</option>`).join("")}</select>
           <input class="in" data-k="model" value="${esc(r.model || "")}" placeholder="模型" list="m_${cap}_${i}"><datalist id="m_${cap}_${i}">${(SV.catalog[P[r.provider_id]?.kind]?.models?.[cap] || []).map(m => `<option value="${m}">`).join("")}</datalist>
           <button class="x" data-x="${i}" title="移除">×</button></div>`).join("") || OneShotI18n.html`<div class="faint">还没有设置，用到这项功能时会报错</div>`}
-      <div class="row" style="margin-top:6px">${opts.length > rts.length ? `<button class="btn sm" data-add>${rts.length ? "＋ 备用" : "＋ 设置默认"}</button>` : ""}<span class="faint">${rts.length > 1 && ["text","vision","asr"].includes(cap) ? "默认失败时依次尝试备用" : ""}</span><span class="grow"></span><button class="btn sm pri" data-save style="display:none">保存</button></div></div>`;
+      <div class="row" style="margin-top:6px">${opts.length > rts.length ? `<button class="btn sm" data-add>${tr(rts.length ? "＋ 备用" : "＋ 设置默认")}</button>` : ""}<span class="faint">${rts.length > 1 && ["text","vision","asr"].includes(cap) ? tr("默认失败时依次尝试备用") : ""}</span><span class="grow"></span><button class="btn sm pri" data-save style="display:none">保存</button></div></div>`;
   }).join("");
-  const provCards = SV.providers.map(p => `<div class="card prov"><div><b>${esc(p.name)}</b> ${p.group === "local" ? OneShotI18n.html`<span class="tag loc">本地</span>` : ""}${!p.enabled ? OneShotI18n.html`<span class="tag bad">已停用</span>` : ""}
-      <div class="faint">${esc(p.label || "")}${p.config.base_url ? " · " + esc(p.config.base_url) : ""}${p.config.region ? " · " + esc(p.config.region) : ""}${Object.entries(p.secrets).map(([k, v]) => ` · ${k}: ${esc(v)}`).join("")}</div>
+  const provCards = SV.providers.map(p => `<div class="card prov"><div><b>${esc(serviceDisplayName(p))}</b> ${p.group === "local" ? OneShotI18n.html`<span class="tag loc">本地</span>` : ""}${!p.enabled ? OneShotI18n.html`<span class="tag bad">已停用</span>` : ""}
+      <div class="faint">${esc(tr(p.label || ""))}${p.config.base_url ? " · " + esc(p.config.base_url) : ""}${p.config.region ? " · " + esc(p.config.region) : ""}${Object.entries(p.secrets).map(([k, v]) => ` · ${k}: ${esc(v)}`).join("")}</div>
       <div class="caps2">${p.caps.map(c => `<span class="tag">${tr(CAPN[c])}</span>`).join("")}</div></div>
       <div class="row">${!p.enabled || !p.caps.includes("text") ? "" : (SV.routes.text || [])[0]?.provider_id === p.id ? OneShotI18n.html`<span class="tag" style="background:#242429;color:#d6d6dc">✓ 正在用作文本模型</span>` : OneShotI18n.html`<button class="btn sm pri" data-uselm="${p.id}">设为文本模型</button>`}
       ${p.group === "local" ? OneShotI18n.html`<span class="faint">在「本地部署」里管理</span>` : OneShotI18n.html`<button class="btn sm" data-test="${p.id}">测试</button><button class="btn sm" data-edit="${p.id}">编辑</button>`}</div></div>`).join("");
@@ -244,7 +254,7 @@ async function pgServices() {
       it.push({ provider_id: pr.id, model: (pr.config.models || {})[cap] || SV.catalog[pr.kind]?.models?.[cap]?.[0] || "" });
       await api("/api/admin/routes/" + cap, { items: it }, "PUT"); pgServices();
     });
-    $("[data-save]", card).onclick = async () => { await api("/api/admin/routes/" + cap, { items: items() }, "PUT"); toast(`已保存「${tr(CAPN[cap])}」`); pgServices(); };
+    $("[data-save]", card).onclick = async () => { await api("/api/admin/routes/" + cap, { items: items() }, "PUT"); toast(tr("已保存「{name}」",{name:tr(CAPN[cap])})); pgServices(); };
   });
   $$("[data-test]").forEach(b => b.onclick = async () => {
     b.disabled = true; b.textContent = OneShotI18n.t("测试中…");
@@ -254,7 +264,7 @@ async function pgServices() {
   });
   $$("[data-edit]").forEach(b => b.onclick = () => editProvider(P[b.dataset.edit]));
   $$("[data-uselm]").forEach(b => b.onclick = async () => {
-    try { await api("/api/admin/llm", { provider: b.dataset.uselm }, "PUT"); toast(`文本模型已切换为 ${P[b.dataset.uselm].name}（翻译提示词、写剧本、改写、看图），另一个作为备用`, 4000); pgServices(); }
+    try { await api("/api/admin/llm", { provider: b.dataset.uselm }, "PUT"); toast(tr("文本模型已切换为 {name}（翻译提示词、写剧本、改写、看图），另一个作为备用",{name:serviceDisplayName(P[b.dataset.uselm])}), 4000); pgServices(); }
     catch (e) { toast("✗ " + e.message, 6000); }
   });
   $("#addp").onclick = () => {

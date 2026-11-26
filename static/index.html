@@ -12,11 +12,11 @@
 <link rel="stylesheet" href="/static/canvas/canvas-navigation.css?v=1">
 <link rel="stylesheet" href="/static/canvas/canvas-workflows.css?v=1">
 <link rel="stylesheet" href="/static/shared/i18n.css?v=1">
-<script src="/static/shared/locales/en-workspace.js?v=1"></script>
+<script src="/static/shared/locales/en-workspace.js?v=3"></script>
 <script src="/static/shared/locales/en-pages.js?v=1"></script>
-<script src="/static/shared/locales/en-workflows.js?v=4"></script>
-<script src="/static/shared/locales/en-wizard.js?v=1"></script>
-<script src="/static/shared/locales/en-canvas-actions.js?v=1"></script>
+<script src="/static/shared/locales/en-workflows.js?v=12"></script>
+<script src="/static/shared/locales/en-wizard.js?v=4"></script>
+<script src="/static/shared/locales/en-canvas-actions.js?v=2"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute">
@@ -313,7 +313,6 @@
   <div class="app-workspace"><nav data-app-list aria-label="创作应用列表"></nav><section data-app-detail aria-label="应用详情"></section></div>
 </dialog>
 <input type="file" id="file" accept="image/*,video/*,audio/*,.ora,.mp4,.mov,.webm,.m4v,.mkv,.wav,.mp3,.m4a,.aac,.flac,.ogg,.txt,.md,.markdown,.csv,.json,.docx,.pdf" multiple hidden>
-
 <section id="assetTransferPanel" aria-label="素材下载进度" hidden>
   <div><strong data-transfer-state role="status"></strong><button type="button" data-transfer-close aria-label="关闭下载进度">×</button></div>
   <p data-transfer-name></p>
@@ -321,7 +320,7 @@
 </section>
 <iframe name="assetTransferDownload" title="素材下载" hidden></iframe>
 <link rel="stylesheet" href="/static/editing/image-editor.css?v=10">
-<script src="/static/shared/i18n.js?v=2"></script>
+<script src="/static/shared/i18n.js?v=3"></script>
 <script src="/static/editing/image-relight.js?v=5"></script>
 <script src="/static/editing/image-camera.js?v=5"></script>
 <script src="/static/editing/image-pixel-size.js?v=1"></script>
@@ -342,9 +341,9 @@
 <script src="/static/assistant/voice-canvas.js?v=1"></script>
 <script src="/static/assistant/agent-voice.js?v=11"></script>
 <script src="/static/assistant/creative-skills.js?v=3"></script>
-<script src="/static/assistant/creative-profile.js?v=1"></script>
+<script src="/static/assistant/creative-profile.js?v=2"></script>
 <script src="/static/assistant/drafts.js?v=1"></script>
-<script src="/static/assistant/agent-chat.js?v=130"></script>
+<script src="/static/assistant/agent-chat.js?v=131"></script>
 <script src="/static/assistant/chat-result-cards.js?v=1"></script>
 <script src="/static/assistant/chat-board-sync.js?v=1"></script>
 <script src="/static/assistant/chat-references.js?v=1"></script>
@@ -362,7 +361,7 @@
 <script src="/static/assistant/chat-approvals.js?v=1"></script>
 <script src="/static/assistant/chat-message-submit.js?v=1"></script>
 <script src="/static/assistant/chat-result-actions.js?v=1"></script>
-<script src="/static/canvas/canvas-conflicts.js?v=3"></script>
+<script src="/static/canvas/canvas-conflicts.js?v=4"></script>
 <link rel="stylesheet" href="/static/canvas/canvas-document.css?v=3">
 <script src="/static/canvas/canvas-document.js?v=4"></script>
 <script src="/static/assistant/agent-editing.js?v=4"></script>
@@ -372,11 +371,11 @@
 <script src="/static/memory/canvas-asset-bindings.js?v=1"></script>
 <script src="/static/generation/video-tools.js?v=1"></script>
 <script src="/static/generation/storyboard-continuity.js?v=1"></script>
-<script src="/static/generation/storyboard-expansion.js?v=2"></script>
+<script src="/static/generation/storyboard-expansion.js?v=3"></script>
 <script src="/static/generation/storyboard-revisions.js?v=1"></script>
 <script src="/static/generation/storyboard-batch.js?v=1"></script>
 <script src="/static/memory/canvas-asset-placement.js?v=1"></script>
-<script src="/static/generation/storyboard-node.js?v=1"></script>
+<script src="/static/generation/storyboard-node.js?v=2"></script>
 <link rel="stylesheet" href="/static/memory/creative-memory.css?v=10">
 <script src="/static/memory/character-views.js?v=3"></script>
 <script src="/static/memory/creative-memory.js?v=35"></script>
@@ -398,12 +397,13 @@
 <script src="/static/editing/film-playback.js?v=1"></script>
 <script src="/static/editing/film-storyboard.js?v=1"></script>
 <script src="/static/editing/film-timeline.js?v=1"></script>
-<script src="/static/editing/film-clip-editing.js?v=1"></script>
+<script src="/static/editing/film-clip-editing.js?v=2"></script>
 <script src="/static/editing/film-clip-versions.js?v=1"></script>
 <script src="/static/editing/film-export.js?v=1"></script>
 <script src="/static/generation/queue-panel.js?v=1"></script>
-<script src="/static/generation/wizard-view.js?v=1"></script>
-<script src="/static/generation/wizard.js?v=17"></script>
+<script src="/static/generation/wizard-assets.js?v=2"></script>
+<script src="/static/generation/wizard-view.js?v=5"></script>
+<script src="/static/generation/wizard.js?v=21"></script>
 <script src="/static/canvas/settings.js?v=4t"></script>
 <script src="/static/console/account.js?v=11"></script>
 <link rel="stylesheet" href="/static/editing/video-remake.css?v=11">
@@ -430,7 +430,7 @@
 <link rel="stylesheet" href="/static/canvas/canvas-share.css?v=12">
 <script src="/static/canvas/share-items.js?v=1"></script>
 <script src="/static/canvas/share-showcase.js?v=1"></script>
-<script src="/static/canvas/canvas-share.js?v=14"></script>
+<script src="/static/canvas/canvas-share.js?v=15"></script>
 <script src="/static/canvas/canvas-live.js?v=3"></script>
 <script src="/static/canvas/canvas-review-region.js?v=1"></script>
 <link rel="stylesheet" href="/static/editing/image-panorama.css?v=1">
@@ -440,26 +440,26 @@
 <script src="/static/canvas/canvas-viewport.js?v=1"></script>
 <script src="/static/canvas/canvas-nodes.js?v=1"></script>
 <script src="/static/canvas/canvas-connections.js?v=1"></script>
-<script src="/static/generation/canvas-video-settings.js?v=1"></script>
-<script src="/static/canvas/canvas-node-view.js?v=2"></script>
+<script src="/static/generation/canvas-video-settings.js?v=2"></script>
+<script src="/static/canvas/canvas-node-view.js?v=3"></script>
 <script src="/static/generation/canvas-video-queue.js?v=1"></script>
 <script src="/static/canvas/canvas-version-switch.js?v=1"></script>
 <script src="/static/generation/canvas-generation-drafts.js?v=1"></script>
 <script src="/static/canvas/canvas-edge-view.js?v=1"></script>
 <script src="/static/canvas/canvas-selection.js?v=1"></script>
 <script src="/static/generation/prompt-panel-layout.js?v=1"></script>
-<script src="/static/generation/image-generation-request.js?v=1"></script>
-<script src="/static/generation/prompt-panel.js?v=2"></script>
-<script src="/static/generation/prompt-preview.js?v=2"></script>
+<script src="/static/generation/image-generation-request.js?v=2"></script>
+<script src="/static/generation/prompt-panel.js?v=4"></script>
+<script src="/static/generation/prompt-preview.js?v=3"></script>
 <script src="/static/canvas/media-preview.js?v=1"></script>
-<script src="/static/canvas/canvas-gestures.js?v=1"></script>
-<script src="/static/canvas/canvas-context-menu.js?v=2"></script>
+<script src="/static/canvas/canvas-gestures.js?v=2"></script>
+<script src="/static/canvas/canvas-context-menu.js?v=4"></script>
 <script src="/static/canvas/canvas-minimap.js?v=1"></script>
 <script src="/static/canvas/canvas-commands.js?v=1"></script>
 <script src="/static/canvas/canvas-keyboard.js?v=1"></script>
 <script src="/static/canvas/canvas-clipboard.js?v=1"></script>
 <script src="/static/editing/image-panorama.js?v=2"></script>
-<script src="/static/generation/canvas-generation.js?v=62"></script>
+<script src="/static/generation/canvas-generation.js?v=67"></script>
 <script src="/static/canvas/canvas-import.js?v=1"></script>
 <script src="/static/editing/frame-capture.js?v=2"></script>
 <script src="/static/memory/canvas-asset-drawer.js?v=1"></script>
@@ -468,8 +468,9 @@
 <script src="/static/generation/video-extension.js?v=6"></script>
 <script src="/static/editing/video-object.js?v=3"></script>
 <script src="/static/generation/video-drafts.js?v=11"></script>
-<link rel="stylesheet" href="/static/generation/dialogue-review.css?v=1">
+<link rel="stylesheet" href="/static/generation/dialogue-review.css?v=2">
 <script src="/static/generation/dialogue-review.js?v=1"></script>
+<script src="/static/generation/video-quality-report.js?v=4"></script>
 <script src="/static/editing/video-compare.js?v=5"></script>
 <script src="/static/editing/video-segment.js?v=9"></script>
 <script src="/static/editing/video-segment-review.js?v=1"></script>
@@ -491,8 +492,8 @@
 <script src="/static/editing/previs-guides.js?v=1"></script>
 <script src="/static/editing/previs-motion.js?v=1"></script>
 <script src="/static/editing/previs-model-import.js?v=1"></script>
-<script src="/static/canvas/canvas-projects.js?v=46"></script>
-<script src="/static/generation/generation-history.js?v=9"></script>
+<script src="/static/canvas/canvas-projects.js?v=49"></script>
+<script src="/static/generation/generation-history.js?v=10"></script>
 <script src="/static/editing/broll.js?v=2"></script>
 <script src="/static/canvas/creative-apps.js?v=4"></script>
 </body>

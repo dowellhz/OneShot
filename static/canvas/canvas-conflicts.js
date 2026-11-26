@@ -44,7 +44,7 @@ function restoreCanvasConflict() {
   if (state && canvasCanEdit()) {
     const {access,owner,shared,rev,agent_ops} = B;
     acApplyBoard({...acClone(state.draft),access,owner,shared,rev,agent_ops});
-    $("#bname").textContent = B.name;
+    $("#bname").textContent = canvasDisplayName(B);
   }
   renderCanvasConflict();
 }
@@ -187,7 +187,7 @@ async function showCanvasConflict(id, notice="") {
       else AC.base.delete(id);
       if (saved && boardId === id) {
         acApplyBoard(saved,true);
-        $("#bname").textContent = B.name;
+        $("#bname").textContent = canvasDisplayName(B);
         closeCanvasConflict();
         renderCanvasConflict();
       }

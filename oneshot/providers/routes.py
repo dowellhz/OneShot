@@ -7,6 +7,7 @@ from oneshot.editing import audio_routes
 from oneshot.editing import render as film
 from oneshot.generation import motion_reference
 from oneshot.generation import reference as video_reference
+from oneshot.generation import rewriter
 from oneshot.generation.audio import AUDIO_GENERATION_MODES
 from oneshot.providers import catalog as providers
 from oneshot.providers import remote
@@ -38,6 +39,7 @@ async def capabilities(req):
     out = {cap:canvas_provider_choices(cap,enabled=enabled) for cap in providers.CAPS}
     route = providers.primary("video")
     out["default_video_draft"] = bool(route and remote.supports_video_draft(route["provider"],route["model"]))
+    out["video_quality_precheck"] = h3_int8.installed() and all(path.is_file() for path in (rewriter.LLAMA, rewriter.MODEL, rewriter.MMPROJ))
     out["previs"] = canvas_reference_choices(require_motion=True)
     out["video_extension"] = canvas_reference_choices(require_motion=True,extension=True)
     out["audio_reference"] = canvas_reference_choices()

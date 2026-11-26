@@ -17,7 +17,7 @@ HOME = Path.home()
 LLAMA = Path(os.environ.get("H3_LLAMA_SERVER", str(HOME / "llama.cpp/build/bin/llama-server")))
 MODEL = Path(os.environ.get("H3_LLM_MODEL", "/d2/Lego/llm/qwen3.5-9b/Qwen3.5-9B-Q6_K.gguf"))
 MMPROJ = Path(os.environ.get("H3_LLM_MMPROJ", "/d2/Lego/llm/qwen3.5-9b/mmproj-F16.gguf"))
-PORT = 8191
+PORT = int(os.environ.get("H3_LLM_PORT", "8192"))
 IDLE_S = 300
 SETTINGS = DATA_DIR / "settings.json"
 
@@ -73,6 +73,18 @@ class LLM:
     def local_ok(self) -> bool:
         return LLAMA.is_file() and MODEL.is_file()
 
+    def local_vision_available(self) -> bool:
+        return self.local_ok() and MMPROJ.is_file()
+
+    async def local_vision(self, system, content, max_tokens=550, temperature=0.1, *, response_schema=None):
+        return await self._local_chat(system, content, max_tokens, temperature, force_cpu=True,
+                                      response_schema=response_schema)
+
+    async def release_gpu(self):
+        async with self.lock:
+            if self.running() and self.device == "GPU":
+                await asyncio.to_thread(self.stop)
+
     def available(self) -> bool:
         from oneshot.providers import catalog as providers
         return self.local_ok() or any(r["provider"]["kind"] != "local_qwen" for c in ("text", "vision") for r in providers.routes(c))
@@ -95,10 +107,10 @@ class LLM:
         except Exception:
             return False
 
-    async def start(self):
+    async def start(self, *, force_cpu=False):
         if self.running():
             return
-        gpu = await self.comfy_idle()
+        gpu = not force_cpu and await self.comfy_idle()
         if gpu:   # an old ComfyUI engine, if one still runs, drops its VRAM cache; the H3 engine leaves room by itself
             try:
                 async with self.http().post(f"{self.comfy}/free", json={"unload_models": True, "free_memory": True},
@@ -165,13 +177,18 @@ class LLM:
                 errs.append(f"{pr.get('name')}：{e}")
         raise RuntimeError("；".join(errs))
 
-    async def _local_chat(self, system: str, content, max_tokens=2000, temperature=0.6) -> str:
+    async def _local_chat(self, system: str, content, max_tokens=2000, temperature=0.6, *, force_cpu=False,
+                          response_schema=None) -> str:
         async with self.lock:
-            await self.start()
+            if force_cpu and self.running() and self.device == "GPU":
+                await asyncio.to_thread(self.stop)
+            await self.start(force_cpu=force_cpu)
             self.last = time.time()
             body = {"messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
                     "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.9,
                     "chat_template_kwargs": {"enable_thinking": False}}
+            if response_schema is not None:
+                body["response_format"] = {"type":"json_object", "schema":response_schema}
             async with self.http().post(f"http://127.0.0.1:{PORT}/v1/chat/completions", json=body,
                                         timeout=aiohttp.ClientTimeout(total=600)) as r:
                 j = await r.json(content_type=None)

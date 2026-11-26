@@ -4,12 +4,13 @@ function showPanel() {
   hideNodeToolTip();
   ctRenderSelectionTools();
   const tools = $("#ntools");
+  const tr=OneShotI18n.t;
   if (sel.size !== 1) { placeOverlays(); return; }
   const n = node([...sel][0]); if (!n) return;
   const v = curV(n);
   // ---- toolbar
   const b = [];
-  const tool = (action, icon, label, hint = label) => `<button type="button" data-a="${action}" aria-label="${esc(label)}" data-tip="${esc(hint)}">${ico(icon)}</button>`;
+  const tool = (action, icon, label, hint = label) => `<button type="button" data-a="${action}" aria-label="${esc(OneShotI18n.t(label))}" data-tip="${esc(OneShotI18n.t(hint))}">${ico(icon)}</button>`;
   if (n.type === "text") b.push(tool("text-document", "script", canvasCanEdit() ? "编辑文档" : "查看文档"));
   if (n.type === "text" && n.data.transcript?.cues?.length && canvasCanEdit()) b.push(tool("saved-transcript", "scissors", "按台词剪辑音频"));
   if (n.data.previs) b.push(tool("previs", "video", "编辑白模"));
@@ -77,8 +78,8 @@ function showPanel() {
     const p = plan(n);
     if (!n.data.replay_memory_ref) inheritedVideoAssets(n).forEach(asset=>{
       const name = asset.name || "资产";
-      items.push(`<span class="ref"><span class="tx">${ico("assets")}</span>${esc(name)}<span class="role">沿用资产</span>
-        ${canvasCanEdit() ? `<button type="button" data-memory-ignore="${esc(asset.id)}" aria-label="取消沿用 ${esc(name)}" title="取消沿用此资产">×</button>` : ""}</span>`);
+      items.push(OneShotI18n.html`<span class="ref"><span class="tx">${ico("assets")}</span>${esc(name)}<span class="role">沿用资产</span>
+        ${canvasCanEdit() ? OneShotI18n.html`<button type="button" data-memory-ignore="${esc(asset.id)}" aria-label="${esc(OneShotI18n.t("取消沿用 {name}",{name}))}" title="取消沿用此资产">×</button>` : ""}</span>`);
     });
     if (guide) {
       const latest = curV(guide.source);
@@ -89,29 +90,33 @@ function showPanel() {
     clips.forEach(({edge,source,version,index},i)=>{
       const number=promptVideoIndex(i,guide,extension||segment);
       const {start,end:finish}=videoReferenceRange(edge,version,referenceDuration(n));
-      const settings=version ? `<label>入 <input class="tsec" type="number" min="0" step=".01" value="${start ?? ""}" data-clip-index="${i}" data-clip-point="start" aria-label="视频 ${number} 入点（秒）" ${edge.extension==="before"?"disabled":""}></label>
-        <label>出 <input class="tsec" type="number" min="0" step=".01" value="${finish ?? ""}" data-clip-index="${i}" data-clip-point="end" aria-label="视频 ${number} 出点（秒）" ${edge.extension==="after"?"disabled":""}></label>` : "";
+      const settings=version ? `<label>${tr("入")} <input class="tsec" type="number" min="0" step=".01" value="${start ?? ""}" data-clip-index="${i}" data-clip-point="start" aria-label="${tr("视频 {number} 入点（秒）",{number})}" ${edge.extension==="before"?"disabled":""}></label>
+        <label>${tr("出")} <input class="tsec" type="number" min="0" step=".01" value="${finish ?? ""}" data-clip-index="${i}" data-clip-point="end" aria-label="${tr("视频 {number} 出点（秒）",{number})}" ${edge.extension==="after"?"disabled":""}></label>` : "";
       const change=curV(source) && curV(source)!==version;
-      const role=version ? `${edge.segment_edit?"待修改片段 · ":edge.extension?extensionLabel(edge.extension)+" · ":""}视频 ${number} · 版本 ${index+1}` : "版本已移除";
-      items.push(`<span class="ref" data-tok="${promptMediaToken("video",edge.prompt_slot,number)}" title="${esc(source?.name || "视频参考")}"><span class="tx">${ico("video")}</span>${esc(source?.name || "视频参考")}<span class="role">${role}</span>${settings}${change ? `<button type="button" data-video-update="${i}">改用当前版本</button>` : ""}</span>`);
+      const role=version ? [edge.segment_edit?tr("待修改片段"):edge.extension?tr(extensionLabel(edge.extension)):"",
+        tr("视频 {number}",{number}),tr("版本 {number}",{number:index+1})].filter(Boolean).join(" · ") : tr("版本已移除");
+      const name=esc(source?.name || tr("视频参考"));
+      items.push(`<span class="ref" data-tok="${promptMediaToken("video",edge.prompt_slot,number)}" title="${name}"><span class="tx">${ico("video")}</span>${name}<span class="role">${role}</span>${settings}${change ? `<button type="button" data-video-update="${i}">${tr("改用当前版本")}</button>` : ""}</span>`);
     });
     sounds.forEach(({edge,source,version,index},i)=>{
       const change = curV(source) && curV(source) !== version;
-      const settings=version ? ["start","end"].map((point,j)=>`<label>${j?"出":"入"} <input class="tsec" type="number"
+      const settings=version ? ["start","end"].map((point,j)=>`<label>${tr(j?"出":"入")} <input class="tsec" type="number"
         min="0" step=".01" value="${Number.isFinite(edge[point])?edge[point]:""}"
-        placeholder="${j?esc(version.seconds||"结尾"):"0"}"
-        data-audio-index="${i}" data-audio-point="${point}" aria-label="音频 ${i+1} ${j?"出点":"入点"}（秒）"></label>`).join("") : "";
-      items.push(`<span class="ref" data-tok="${promptMediaToken("audio",edge.prompt_slot,i+1)}" title="${esc(source?.name || "音频参考")}"><span class="tx">${ico("audio")}</span>${esc(source?.name || "音频参考")}<span class="role">${version ? `音频 ${i+1} · 版本 ${index+1}` : "版本已移除"}</span>${settings}${change ? `<button type="button" data-audio-update="${i}">改用当前版本</button>` : ""}</span>`);
+        placeholder="${j?esc(version.seconds||tr("结尾")):"0"}"
+        data-audio-index="${i}" data-audio-point="${point}" aria-label="${tr(j?"音频 {number} 出点（秒）":"音频 {number} 入点（秒）",{number:i+1})}"></label>`).join("") : "";
+      const name=esc(source?.name || tr("音频参考"));
+      const role=version ? tr("音频 {number}",{number:i+1})+" · "+tr("版本 {number}",{number:index+1}) : tr("版本已移除");
+      items.push(`<span class="ref" data-tok="${promptMediaToken("audio",edge.prompt_slot,i+1)}" title="${name}"><span class="tx">${ico("audio")}</span>${name}<span class="role">${role}</span>${settings}${change ? `<button type="button" data-audio-update="${i}">${tr("改用当前版本")}</button>` : ""}</span>`);
     });
     p.inputs.forEach((input, i) => { const r = p.roles[i];
       // keyframes get a seconds box: where in the video this picture should be reached
       const tbox = p.useRef && r !== "subject" && r !== "first" && r !== "last" && p.times[i] != null
-        ? `<input class="tsec" type="number" min="0" max="${p.end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
+        ? OneShotI18n.html`<input class="tsec" type="number" min="0" max="${p.end.toFixed(1)}" step="0.1" value="${(+p.times[i]).toFixed(1)}" data-time="${B.edges.indexOf(p.es[i])}" title="第几秒到达这张图">s` : "";
       const label = `<span class="role rsel">${OneShotI18n.t(p.labels[i])} ▾${roleSelect(p.es[i])}</span>`;
       items.push(imagePromptChip(input,i,label+tbox)); });
   }
-  inputs(n, "text").forEach(t => items.push(`<span class="ref" title="${esc(t.data.text.slice(0, 200))}"><span class="tx">${ico("text")}</span>${esc(t.name)}<span class="role">已并入</span></span>`));
-  if (n.data.replay_memory_ref) items.push(`<span class="ref"><span class="tx">${ico("assets")}</span>沿用原资产
+  inputs(n, "text").forEach(t => items.push(OneShotI18n.html`<span class="ref" title="${esc(t.data.text.slice(0, 200))}"><span class="tx">${ico("text")}</span>${esc(t.name)}<span class="role">已并入</span></span>`));
+  if (n.data.replay_memory_ref) items.push(OneShotI18n.html`<span class="ref"><span class="tx">${ico("assets")}</span>沿用原资产
     <button type="button" data-replay-assets-clear aria-label="取消沿用原资产" title="取消沿用原资产" ${n.job||nodeLocked(n)||!canvasCanEdit()?"disabled":""}>×</button></span>`);
   refs.innerHTML = items.join(""); refs.style.display = items.length ? "" : "none";
   const replayClear=$("[data-replay-assets-clear]",refs);
@@ -288,7 +293,10 @@ function showPanel() {
     if(!d.film&&!d.previs)h += OneShotI18n.html`<button type="button" class="pill" id="videoOpticsBtn"${n.job||nodeLocked(n)?" disabled":""}>镜头参数${Number.isFinite(d.video_optics?.lens)?` · ${d.video_optics.lens} mm`:d.video_optics?" · 已设置":""}</button>`;
     if (segment && d.camera_plan) h += OneShotI18n.html`<button type="button" class="pill" id="retakeSettings" title="重拍设置">重拍设置 · ${esc(cameraModeLabel[d.camera_plan.mode] || "机位")}</button>`;
     if (segment && d.object_edit) h += OneShotI18n.html`<button type="button" class="pill" id="objectSettings">物体编辑设置</button>`;
-    if (!d.film) h += pill("count", { 1: "出 1 个", 2: "抽 2 个版本，挑最好的", 3: "抽 3 个版本，挑最好的" }, `${ico("stack")}${d.count > 1 ? OneShotI18n.t("抽 {count}",{count:d.count}) : OneShotI18n.t("1 个")}`);
+    const precheck=videoQualityPrecheckAvailable(n);
+    if (precheck || d.quality_precheck) h += pill("quality_precheck",{false:"关闭质量预检",true:"INT8 画面预检，最多五次"},
+      d.quality_precheck?"质量预检开":"质量预检关","",!!d.quality_precheck);
+    if (!d.film && !(precheck && d.quality_precheck)) h += pill("count", { 1: "出 1 个", 2: "抽 2 个版本，挑最好的", 3: "抽 3 个版本，挑最好的" }, `${ico("stack")}${d.count > 1 ? OneShotI18n.t("抽 {count}",{count:d.count}) : OneShotI18n.t("1 个")}`);
   }
   if (n.type !== "script") h += OneShotI18n.html`<button class="pill" id="moreBtn" title="更多设置">${ico("more")}</button>`;
   if (n.type === "video" && d.pmode === "fields") h += OneShotI18n.html`<button class="pill" id="fillBtn" title="Qwen 看连入的首帧 / 人物图，填写风格、场景、人物、镜头（只填空着的栏）">看图填写</button>`;
@@ -306,7 +314,7 @@ function showPanel() {
   $$("select", ctl).forEach(s => s.onchange = () => {
     checkpoint();
     const key = s.dataset.k;
-    let val = s.value; if (["turbo","expand","draft"].includes(key)) val = val === "true"; else if (["count", "duration"].includes(key)) val = Number(val);
+    let val = s.value; if (["turbo","expand","draft","quality_precheck"].includes(key)) val = val === "true"; else if (["count", "duration"].includes(key)) val = Number(val);
     if (key === "provider") delete d.selected_model;
     if (key === "selected_model" && val && !d.provider) d.provider = nodeProvider(n)?.id;
     if (key === "selected_model" && !val) delete d.selected_model;
@@ -351,10 +359,10 @@ function showPanel() {
 }
 function imagePromptChip({edge,source,version,index},i,role) {
   const slot=promptSlot(edge.prompt_slot), token=promptMediaToken("image",slot,i+1);
-  const pinned=edge.ref?`<span class="role">${version?`版本 ${index+1}`:"版本已移除"}</span>`:"";
+  const pinned=edge.ref?`<span class="role">${version?OneShotI18n.t("版本 {number}",{number:index+1}):OneShotI18n.t("版本已移除")}</span>`:"";
   const latest=curV(source);
-  const update=edge.ref&&latest?.ref&&latest.ref!==edge.ref?`<button type="button" data-image-update="${i}">改用当前版本</button>`:"";
-  return `<span class="ref" data-tok="${token}" title="点击在提示词中引用 · ${esc(source.name)}">${version?.url?`<img src="${esc(version.url)}">`:`<span class="tx">${ico("image")}</span>`}${slot?esc(source.name):"图"+(i+1)}${role}${pinned}${update}</span>`;
+  const update=edge.ref&&latest?.ref&&latest.ref!==edge.ref?OneShotI18n.html`<button type="button" data-image-update="${i}">改用当前版本</button>`:"";
+  return `<span class="ref" data-tok="${token}" title="${esc(OneShotI18n.t("点击在提示词中引用 · {name}",{name:source.name}))}">${version?.url?`<img src="${esc(version.url)}">`:`<span class="tx">${ico("image")}</span>`}${slot?esc(source.name):OneShotI18n.t("图{number}",{number:i+1})}${role}${pinned}${update}</span>`;
 }
 function imageReferenceSelect(n,edge,index) {
   const current=edge.image_use || (edge.story_cast ? "character" : "reference");

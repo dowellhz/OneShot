@@ -38,7 +38,7 @@ class MemoryGeneration(MemoryFixture):
                           story_states=[{"scene":"十七号厅","notes":"改穿红色外套"}])
         request = {"kind":"video","board":"test","prompt":"","planned":True,"fields":{"scene":"十七号厅","people":"林森"},
                    "images":[{"asset":hero["id"],"ref":hero["ref"],"index":1,"role":"subject","story_cast":True}]}
-        with patch.object(prompts,"to_english",side_effect=lambda app,p:p):
+        with patch.object(prompts,"to_english",side_effect=lambda app,p,**options:p):
             preview = await self.client.post("/api/preview",json=request)
         self.assertEqual(preview.status,200,await preview.text())
         reviewed = await preview.json()

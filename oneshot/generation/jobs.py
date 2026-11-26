@@ -287,7 +287,7 @@ async def jobs(req):
                 await finish(req.app, i)   # in case a websocket message was missed
             except Exception:
                 pass
-        r = {k: j.get(k) for k in ("state", "value", "max", "node", "error", "outputs", "meta", "prep", "phase")}
+        r = {k: j.get(k) for k in ("state", "value", "max", "node", "error", "outputs", "meta", "prep", "phase", "engine_queue")}
         if j["state"] == "queued" and i in queue_order:
             r["ahead"] = queue_order.index(i)
             r["eta"] = round(sum(remaining(JOBS[x]) if x in JOBS else 90 for x in queue_order[:r["ahead"] + 1]))
@@ -333,11 +333,11 @@ async def cancel(req):
     await cancel_engine_jobs(req.app, eng)
     return web.json_response({"ok": True})
 
-
 def video_job_details(meta):
     details = {key:meta[key] for key in ("mode","mode_name","provider","model","resolution") if isinstance(meta.get(key),str)}
     if isinstance(meta.get("full_prompt"),str):
         details["full_prompt"] = meta["full_prompt"][:5000]
+    if isinstance(meta.get("quality_review"), dict): details["quality_review"] = meta["quality_review"]
     return details
 
 

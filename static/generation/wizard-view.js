@@ -6,6 +6,8 @@ function jobText(n) {
   if (!n?.job) return "";
   const st = n.job.ids.map(i => n.job.st?.[i]).filter(Boolean), run = st.find(s => s.state === "running"), q = st.find(s => s.state === "queued");
   const eta = Math.max(...st.map(s => s.eta || 0), 0);
+  const quality=(run||q)?.meta?.quality_review;
+  if (quality) return videoQualityProgress(quality,run||q);
   if (run && run.max > 1 && run.value != null) return OneShotI18n.t("生成中 {percent}%",{percent:Math.round(run.value / run.max * 100)}) +
     (eta ? OneShotI18n.t(" · 还要约 {time}",{time:fmtT(eta)}) : "");
   if (run) return OneShotI18n.t("准备中…");
@@ -18,7 +20,8 @@ const verNav = n => n.versions.length > 1 ? `<span class="vn"><button data-v="pr
 
 // ① 想法
 function stepIdea() {
-  const chip = (k, v, label = v) => `<button class="chip ${String(W[k]) === String(v) ? "on" : ""}" data-set="${k}" data-val="${v}">${OneShotI18n.t(label)}</button>`;
+  const precheck=wizardQualityEnabled();
+  const chip = (k, v, label = v) => `<button class="chip ${String(k==="quality_precheck"?precheck:W[k]) === String(v) ? "on" : ""}" data-set="${k}" data-val="${v}">${OneShotI18n.t(label)}</button>`;
   return OneShotI18n.html`<div class="wz1">
     <h2>你想拍一个什么样的视频？</h2>
     <textarea id="wzIdea" rows="5" placeholder="用一两句话说说你的想法，例如：一只橘猫在雨夜给流浪狗送伞">${esc(W.idea)}</textarea>
@@ -29,7 +32,8 @@ function stepIdea() {
       <div><span class="lab">时长</span>${chip("dur", 15, "15 秒")}${chip("dur", 30, "30 秒")}${chip("dur", 60, "1 分钟")}</div>
       <div><span class="lab">画幅</span>${chip("aspect", "16:9", "横屏 16:9")}${chip("aspect", "9:16", "竖屏 9:16")}</div>
       <div><span class="lab">画质</span>${chip("quality", "std", "快速 480P")}${chip("quality", "hd", "高清 768P")}</div>
-      <div><span class="lab">每个镜头</span>${chip("takes", 1, "出 1 个版本")}${chip("takes", 2, "抽 2 个挑")}${chip("takes", 3, "抽 3 个挑")}</div>
+      ${CAPS_LIST.video_quality_precheck || precheck ? OneShotI18n.html`<div><span class="lab">质量预检</span>${chip("quality_precheck",true,"先用 INT8 检查")}${chip("quality_precheck",false,"直接生成")}</div>` : ""}
+      ${precheck ? OneShotI18n.html`<div class="est">每镜最多试生成五次，再用 BF16 生成一份定稿。</div>` : OneShotI18n.html`<div><span class="lab">每个镜头</span>${chip("takes",1,"出 1 个版本")}${chip("takes",2,"抽 2 个挑")}${chip("takes",3,"抽 3 个挑")}</div>`}
     </div>
     <div class="est">根据动作和台词决定镜头数。较长的段落会拆成多个镜头。</div>
     <div class="nav"><span></span><button class="go" data-go="script">写剧本 →</button></div></div>`;
@@ -53,14 +57,12 @@ function stepScript() {
         <label>动作<textarea data-f="action" rows="2" placeholder="一行一个动作，可写 0–0.5 秒 保持站姿">${esc(x.action.join("\n"))}</textarea></label>
         <label>台词<textarea data-f="dialogue" rows="1" placeholder="名字：台词（没有可以空着）">${esc(x.dialogue.join("\n"))}</textarea></label></div>`).join("")}
       <button class="add" data-m="add">＋ 加一个镜头</button></div>
-    <div class="nav"><button class="ghost" data-goto="0">← 想法</button><button class="go" data-goto="2">下一步：定角色 →</button></div></div>`;
+    <div class="nav"><button class="ghost" data-goto="0">← 想法</button><button class="go" data-goto="2">下一步：制作素材 →</button></div></div>`;
 }
 // ③ 角色
 function stepCast() {
-  const d = wizScript().data, chars = d.characters || [];
-  if (!chars.length) return OneShotI18n.html`<div class="wz3"><div class="wait">这个故事里没有固定的角色，可以直接做分镜图。</div>
-    <div class="nav"><button class="ghost" data-goto="1">← 剧本</button><button class="go" data-go="boards">下一步：分镜图 →</button></div></div>`;
-  return OneShotI18n.html`<div class="wz3"><p class="tip">给每个角色定一张形象图，后面每个镜头都会照着它画，人物才不会变脸。声音描述会写进每段台词，让同一个角色的声音前后一致。</p>
+  const script=wizScript(), chars=script.data.characters||[], busy=wizardAssetRuns.has(script);
+  return OneShotI18n.html`<div class="wz3"><p class="tip">先准备角色、场景和道具。缺少的素材会生成并存入库，分镜只引用所需素材的选定版本。</p>
     <div class="cast">${chars.map((c, i) => {
       const m = castOf(c.name), busy = m && (m.job || toolBusy.has(m.id));
       return OneShotI18n.html`<div class="cc" data-i="${i}"><div class="pics">${m && m.versions.length ? m.versions.map((v, k) => OneShotI18n.html`<img src="${v.url}" class="${k === m.cur ? "on" : ""}" data-pick="${k}" data-n="${m.id}" title="点击选用这张">`).join("") : ""}
@@ -71,9 +73,9 @@ function stepCast() {
           <div class="vh">${VOICES_HINT.map(v => `<button class="chip sm" data-voice="${v}">${OneShotI18n.t(v)}</button>`).join("")}</div>
           <div class="btns"><button class="go sm" data-cast="gen">${OneShotI18n.t(m && m.versions.length ? "再画 2 张" : "画 2 张定妆照")}</button>
             <button class="ghost sm" data-cast="lib">从资产库选</button><button class="ghost sm" data-cast="up">上传图片</button></div></div></div>`;
-    }).join("")}</div>
+    }).join("")}${wizardAssetCards(script)}</div>
     <div id="wzLib"></div>
-    <div class="nav"><button class="ghost" data-goto="1">← 剧本</button><button class="go" data-go="boards">下一步：分镜图 →</button></div></div>`;
+    <div class="nav"><button class="ghost" data-goto="1">← 剧本</button><button class="go" data-go="boards" ${busy?"disabled":""}>${OneShotI18n.t(busy?"正在准备素材…":"准备素材并生成分镜 →")}</button></div></div>`;
 }
 // ④ 分镜图
 function stepBoards() {
@@ -94,7 +96,7 @@ function stepBoards() {
         ${v&&!storyboardFrameReady(image)?OneShotI18n.html`<p class="wz-shot-error" role="status">分镜描述已更新，请重新生成画面。</p>`:""}
         ${shared?"":OneShotI18n.html`<div class="fix"><input placeholder="怎么改？例如：人物离镜头近一点" data-fix="${image.id}"><button class="ghost sm" data-redo="${image.id}" ${busy?"disabled":""}>${OneShotI18n.t(v ? "重画" : "生成")}</button></div>`}</div>`;
     }).join("")}</div>
-    <div class="nav"><button class="ghost" data-goto="2">← 角色</button>
+    <div class="nav"><button class="ghost" data-goto="2">← 制作素材</button>
       ${missing||ready<images.length?OneShotI18n.html`<button class="ghost" data-go="fill-frames">补齐关键帧</button>`:""}
       <button class="go" data-go="videos" ${missing||ready<images.length ? "disabled" : ""}>下一步：生成视频 →</button></div></div>`;
 }

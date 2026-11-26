@@ -10,7 +10,7 @@ setTool(tool);
 // ---- wheel: trackpad scroll pans, pinch (ctrlKey) zooms; a mouse wheel zooms or pans per setting
 const WM = { auto: "滚轮：自动", zoom: "滚轮：缩放", pan: "滚轮：平移" };
 let wheelMode = localStorage.getItem("h3.wheel") || "auto";
-function setWheel(m) { wheelMode = m; localStorage.setItem("h3.wheel", m); $("#wmBtn").textContent = WM[m]; }
+function setWheel(m) { wheelMode = m; localStorage.setItem("h3.wheel", m); $("#wmBtn").textContent = OneShotI18n.t(WM[m]); }
 $("#wmBtn").onclick = () => { setWheel({ auto: "zoom", zoom: "pan", pan: "auto" }[wheelMode]); toast(wheelMode === "auto" ? "自动：鼠标滚轮缩放，触控板滑动平移" : wheelMode === "zoom" ? "鼠标滚轮 = 缩放（⇧+滚轮横向平移）" : "鼠标滚轮 = 平移（⌘+滚轮缩放）", 2200); };
 setWheel(wheelMode);
 let lastTrackpad = 0;

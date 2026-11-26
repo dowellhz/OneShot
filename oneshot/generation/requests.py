@@ -22,6 +22,7 @@ from oneshot.generation import prompts
 from oneshot.generation import reference as video_reference
 from oneshot.generation import remote_jobs
 from oneshot.generation import tools
+from oneshot.generation import video_quality
 from oneshot.generation.audio import AUDIO_GENERATION_MODES
 from oneshot.memory import creative_memory
 from oneshot.providers import catalog as providers
@@ -38,6 +39,9 @@ async def preview(req):
     memory_review = {"memory_context":[{key:asset[key] for key in ("name","kind","story_state") if key in asset}
                                        for asset in assets],
                      "asset_review_key":creative_memory.generation_asset_key(assets)} if assets else {}
+    precheck = payload.get("quality_precheck") is True
+    if precheck:
+        video_quality.validate(payload, requested_generation_route(payload, "video"))
     if payload.get("kind") == "image":
         route = requested_generation_route(payload, "image")
         if not http_errors.clean(payload.get("prompt")):
@@ -92,13 +96,13 @@ async def preview(req):
         return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs, **details, **memory_review})
     int8 = bool(route and route["model"] == h3_int8.MODEL)
     resolution = video_reference.checked_video_resolution(payload,"local_h3",h3_int8.MODEL if int8 else "h3-video")
-    p = prompts.apply_fields(graphs.int8_video_input(payload) if int8 else payload)
-    if int8:
+    p = prompts.apply_fields(graphs.int8_video_input(payload) if int8 or precheck else payload)
+    if int8 or precheck:
         inputs = workflow_review.capture_generation(p)["inputs"]
     if not http_errors.clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
-    p = await prompts.to_english(req.app, p)
-    _, meta = graphs.graph_video({**p, "_int8": int8}, native=int8 or await local_generation.engine_up(req.app))
+    p = await prompts.to_english(req.app, p, local_only=precheck)
+    _, meta = graphs.graph_video({**p, "_int8": int8}, native=int8 or precheck or await local_generation.engine_up(req.app))
     if meta["mode"] == "planned":
         for item in inputs:
             if item.get("role") == "frame":
@@ -106,6 +110,8 @@ async def preview(req):
     if meta.get("mode") == "fl2v" and len(inputs) > 1:
         inputs[-1]["role"] = "last_frame"
     mode = " · ".join(filter(None,(meta.get("mode_name"), h3_int8.LABEL if int8 else "本地 H3", resolution)))
+    if precheck:
+        mode += " · INT8 质量预检（最多 5 次） → BF16"
     if p.get("_xlate_err"):
         mode += " · 未翻译成英文：" + p["_xlate_err"]
     return web.json_response({"prompt": meta.get("full_prompt", p["prompt"]), "mode": mode, "inputs": inputs,
@@ -415,6 +421,8 @@ async def _generate_request(req, raw, *, fixed_route=None):
     raw = video_reference.apply_video_optics(raw)
     u = req["user"]
     cap = "image" if raw.get("kind") == "image" else "video"
+    if "quality_precheck" in raw:
+        video_quality.validate(raw, requested_generation_route(raw, cap) if raw["quality_precheck"] is True else None)
     video_reference.check_reference_operation(raw)
     retake = video_reference.resolve_camera_plan(raw)
     if retake:
@@ -454,9 +462,13 @@ async def _generate_request(req, raw, *, fixed_route=None):
         video_reference.checked_video_resolution(raw,"local_h3",h3_int8.MODEL if int8 else "h3-video")
     if raw.get("draft"):
         raise http_errors.bad("请选择支持原生样片的 Seedance 2.5 服务")
-    p = prompts.apply_fields({**(graphs.int8_video_input(raw) if int8 else raw), "_int8": int8})
+    p = prompts.apply_fields({**(graphs.int8_video_input(raw) if int8 or raw.get("quality_precheck") else raw), "_int8": int8})
     if not http_errors.clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词不能为空"}), content_type="application/json")
+    if p.get("quality_precheck"):
+        if isinstance(req, agent_chat.InternalRequest):
+            raise http_errors.bad("请在视频节点上提交质量预检")
+        return await video_quality.enqueue(req, p)
     kind = p.get("kind")
     count = max(1, min(4, int(p.get("count") or 1)))
     llm = req.app["llm"]

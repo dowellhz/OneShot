@@ -15,7 +15,8 @@ function imageCanvasRequest(n, prompt, {grid=false,silent=false}={}) {
     gridReference=linked.find(input=>input.version?.ref);
     if(!gridReference)return fail("请先连入有图片的节点");
   }
-  const ins=grid?[gridReference]:linked, model=grid&&isRemote(n)?"h3img":d.model;
+  const sheet=!grid&&d.character_sheet===true;
+  const ins=grid?[gridReference]:sheet?[]:linked, model=grid&&isRemote(n)?"h3img":d.model;
   if ((ins.length || guide?.enabled) && model === "h3video") return fail("以图改图需要 H3-Image 模型");
   for(const {edge,source,version} of ins){
     if(!version?.ref)return fail(edge.ref?`「${source.name}」引用的版本已移除`:`「${source.name}」还没有图片`);
@@ -43,6 +44,7 @@ function imageCanvasRequest(n, prompt, {grid=false,silent=false}={}) {
   const request = { kind: "image", model, expand: d.expand, prompt:resolved, images, ar, quality: model === "h3video" ? (d.quality === "16mp" ? "hd" : "std") : d.quality, turbo: d.turbo, seed: d.seed, count: canvasGenerationCount(n),
     ...(d.image_text ? {image_text:d.image_text} : {}) };
   request.board=boardId;
+  if(sheet)Object.assign(request,{character_sheet:true,expand:false,image_text:"none"});
   if (d.replay_memory_ref) request.replay_memory_ref=d.replay_memory_ref;
   if (CAPS_LIST.image?.some(service=>service.id===d.provider)) request.provider=d.provider;
   if (d.selected_model) Object.assign(request,{provider:d.provider,selected_model:d.selected_model});

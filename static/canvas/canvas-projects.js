@@ -3,6 +3,8 @@
 // ================================================================= boards
 let boardDirectory = [], canvasProjects = [], canvasTeams = [], boardOpenEpoch = 0, boardMenuEpoch = 0;
 const currentProject = () => canvasProjects.find(p => p.id === boardDirectory.find(b => b.id === boardId)?.project);
+const canvasDisplayName = board => OneShotI18n.canvasName(board);
+const boardMenuCount = (count, one, many) => OneShotI18n.t(count===1?one:many,{count});
 
 async function boardRequest(url, method = "GET", body) {
   const response = await fetchOk(url, {method, ...(body === undefined ? {} : {
@@ -31,7 +33,7 @@ function renderProjectCanvases() {
   if (!project) { nav.replaceChildren(); return; }
   const siblings = boardDirectory.filter(b => b.project === project.id && !b.team).sort((a,b) => a.id.localeCompare(b.id));
   nav.innerHTML = OneShotI18n.html`<strong title="${esc(project.name)}">${esc(project.name)}</strong><div class="project-links">${siblings.map(b =>
-    `<button type="button" data-project-board="${esc(b.id)}" title="${esc(b.name)}" ${b.id === boardId ? 'aria-current="page"' : ""}>${esc(b.name)}</button>`).join("")}</div>
+    `<button type="button" data-project-board="${esc(b.id)}" title="${esc(canvasDisplayName(b))}" ${b.id === boardId ? 'aria-current="page"' : ""}>${esc(canvasDisplayName(b))}</button>`).join("")}</div>
     <button type="button" data-project-add title="在此项目新建画布" aria-label="在此项目新建画布">${ico("plus")}</button>`;
   $$("[data-project-board]",nav).forEach(b => b.onclick = boardAction(() => b.dataset.projectBoard !== boardId && openBoard(b.dataset.projectBoard)));
   $("[data-project-add]",nav).onclick = boardAction(() => createCanvas(project.id));
@@ -111,7 +113,7 @@ async function openBoard(id, savedConflictDraft) {
   restoreCanvasGroupRun();
   historyEpoch++;
   undoStack.length = redoStack.length = 0; sel.clear(); selEdge = null;
-  $("#bname").textContent = B.name || OneShotI18n.t("我的画布");
+  $("#bname").textContent = canvasDisplayName(B) || OneShotI18n.t("我的画布");
   rebuild();
   applyView();
   poll(); schedulePrewarm(3000);
@@ -145,10 +147,10 @@ $("#bname").addEventListener("blur", e => {
   if (!B || !canvasCanEdit()) return;
   const t = e.target.textContent.trim() || OneShotI18n.t("未命名画布");
   e.target.textContent = t;
-  if (B.name === t) return;
-  B.name = t; save();
+  if (canvasDisplayName(B) === t) return;
+  B.name = t; B.auto_name = false; save();
   const entry = boardDirectory.find(b => b.id === boardId);
-  if (entry) entry.name = t;
+  if (entry) Object.assign(entry,{name:t,auto_name:false});
   const active = $("#projectCanvases [aria-current=page]");
   if (active) active.textContent = active.title = t;
 });
@@ -156,22 +158,22 @@ $("#bname").addEventListener("blur", e => {
 function renderBoardMenu() {
   const m = $("#boards"), project = currentProject(), entry = boardDirectory.find(b => b.id === boardId);
   const teamId = entry?.team || B.team || null;
-  const boardButtons = entries => entries.map(b => `<button type="button" data-id="${esc(b.id)}" ${b.id === boardId ? 'aria-current="page"' : ""}><span class="bp-name">${esc(b.name)}</span>${b.id === boardId ? ico("check") : ""}<span class="k">${b.nodes} 个节点</span></button>`).join("");
+  const boardButtons = entries => entries.map(b => `<button type="button" data-id="${esc(b.id)}" ${b.id === boardId ? 'aria-current="page"' : ""}><span class="bp-name">${esc(canvasDisplayName(b))}</span>${b.id === boardId ? ico("check") : ""}<span class="k">${boardMenuCount(b.nodes,"1 个节点","{count} 个节点")}</span></button>`).join("");
   const teamGroups = new Map(canvasTeams.map(team=>[team.id,{name:team.name,boards:[]}]));
   for (const board of boardDirectory.filter(b=>b.team)) {
-    if (!teamGroups.has(board.team)) teamGroups.set(board.team,{name:"其他协作画布",boards:[]});
+    if (!teamGroups.has(board.team)) teamGroups.set(board.team,{name:OneShotI18n.t("其他协作画布"),boards:[]});
     teamGroups.get(board.team).boards.push(board);
   }
   const teamSection = [...teamGroups.entries()].map(([id,team])=>`
     <details class="bp-group" ${team.boards.some(b=>b.id===boardId)?"open":""}>
-      <summary>团队 · ${esc(team.name)}<span class="k">${team.boards.length} 个画布</span></summary>${boardButtons(team.boards)}
+      <summary>${esc(OneShotI18n.t("团队 · {name}",{name:team.name}))}<span class="k">${boardMenuCount(team.boards.length,"1 个画布","{count} 个画布")}</span></summary>${boardButtons(team.boards)}
       ${canvasTeams.some(member=>member.id===id)?OneShotI18n.html`<button type="button" data-new-team="${esc(id)}">${ico("plus")}新建团队画布</button>`:""}
     </details>`).join("");
   m.innerHTML = OneShotI18n.html`<label class="bp-search">${ico("search")}<input type="search" aria-label="搜索当前空间的画布" placeholder="搜索当前空间的画布" autocomplete="off"></label>
     <div class="bp-results" hidden></div><div class="bp-directory">` + teamSection + canvasProjects.map(p => {
     const entries = boardDirectory.filter(b => b.project === p.id && !b.team);
     return OneShotI18n.html`<details class="bp-group" ${p.id === project?.id ? "open" : ""}>
-      <summary>${esc(p.name)}<span class="k">${entries.length} 个画布</span></summary>
+      <summary>${esc(p.name)}<span class="k">${boardMenuCount(entries.length,"1 个画布","{count} 个画布")}</span></summary>
       ${boardButtons(entries)}
       <div class="bp-actions"><button type="button" data-new-in="${esc(p.id)}">${ico("plus")}新建画布</button>
       <button type="button" data-rename-project="${esc(p.id)}">改名</button>
@@ -184,12 +186,12 @@ function renderBoardMenu() {
        ${canvasProjects.map(p => `<option value="${esc(p.id)}" ${p.id === entry?.project ? "disabled" : ""}>${esc(p.name)}</option>`).join("")}
      </select><button type="submit">移动当前画布</button></form>` : "") +
     OneShotI18n.html`<div id="bpForm"></div><div class="sep"></div><label class="bp-batch">批量结果排布<select data-batch-layout ${canvasCanEdit()?"":"disabled"}>
-     ${Object.entries(BATCH_LAYOUTS).map(([value,label])=>`<option value="${value}" ${canvasBatchLayout()===value?"selected":""}>${label}</option>`).join("")}</select></label>
+     ${Object.entries(BATCH_LAYOUTS).map(([value,label])=>`<option value="${value}" ${canvasBatchLayout()===value?"selected":""}>${OneShotI18n.t(label)}</option>`).join("")}</select></label>
      <label class="bp-batch" title="此设置适用于该账号之后提交的图片和视频生成任务">AI 生成水印<select data-ai-watermark ${ME_USER?"":"disabled"}>
-     <option value="off" ${ME_USER?.ai_watermark?"":"selected"}>关闭</option><option value="on" ${ME_USER?.ai_watermark?"selected":""}>开启</option></select></label>
+     <option value="off" ${ME_USER?.ai_watermark?"":"selected"}>${OneShotI18n.t("关闭水印")}</option><option value="on" ${ME_USER?.ai_watermark?"selected":""}>${OneShotI18n.t("开启水印")}</option></select></label>
      <button data-qnew>${ico("video")}排队生成：还没生成的视频</button><button data-qall>${ico("video")}排队生成：全部视频</button>
      <div class="sep"></div><button data-templates>${ico("stack")}工作流模板</button><button data-workflow-review>${ico("script")}制作复盘</button><button data-export>${ico("dl")}导出当前画布</button><button data-import>${ico("upload")}导入画布 JSON</button><button data-del style="color:#ff8a8a">${ico("trash")}删除当前画布</button></div>
-     <div class="bp-create"><button type="button" data-new ${teamId && !canvasTeams.some(team=>team.id===teamId) ? 'disabled title="只有团队成员可以新建团队画布"' : ""}>${ico("plus")}${teamId ? "在当前团队新建画布" : "在个人空间新建画布"}</button></div>`;
+     <div class="bp-create"><button type="button" data-new ${teamId && !canvasTeams.some(team=>team.id===teamId) ? `disabled title="${esc(OneShotI18n.t("只有团队成员可以新建团队画布"))}"` : ""}>${ico("plus")}${OneShotI18n.t(teamId ? "在当前团队新建画布" : "在个人空间新建画布")}</button></div>`;
   const activateBoard = boardAction(async e => {
     const id = e.currentTarget.dataset.id;
     if (id === boardId || await openBoard(id)) closeMenus();
@@ -202,7 +204,7 @@ function renderBoardMenu() {
     results.hidden = !query;
     directory.hidden = !!query;
     if (!query) { results.replaceChildren(); return; }
-    const matches = boardDirectory.filter(board => (board.team || null) === teamId && String(board.name).toLocaleLowerCase().includes(query));
+    const matches = boardDirectory.filter(board => (board.team || null) === teamId && [board.name,canvasDisplayName(board)].some(name=>String(name).toLocaleLowerCase().includes(query)));
     const actionable = matches.filter(board => board.id !== boardId);
     const active = matches.filter(board => board.id === boardId);
     results.innerHTML = boardButtons([...actionable, ...active]) || OneShotI18n.markup('<div class="mt" role="status">当前空间没有匹配的画布</div>');
@@ -319,7 +321,14 @@ async function status() {
     const s = await (await fetch("/api/status")).json(), q = (s.running || 0) + (s.pending || 0);
     $("#sd").className = "sd " + (!s.comfy ? "bad" : q ? "busy" : "ok");
     let qt = "";
-    if (q || B?.nodes.some(n => n.job)) { try { const Q = await (await fetch("/api/queue")).json(); if (Q.jobs.length) qt = `${Q.jobs.length} 个任务 · 约 ${fmtT(Q.total)}`; } catch {} }
+    if (q || B?.nodes.some(n => n.job)) {
+      try {
+        const queue = await (await fetch("/api/queue")).json();
+        const count = queue.jobs.length;
+        if (count) qt = OneShotI18n.t(count === 1 ? "1 个任务 · 约 {duration}" : "{count} 个任务 · 约 {duration}",
+          {count, duration:fmtT(queue.total)});
+      } catch {}
+    }
     const label = !s.comfy ? (s.loading ? "H3 引擎启动中…" : "生成引擎未启动") : qt ? "生成中 · {active}" : q ? "生成中 · 队列 {queued}" : "H3 引擎就绪";
     const online = OneShotI18n.t(label,{active:qt,queued:q});
     const rewriter = s.llm_running ? OneShotI18n.t(" · 改写模型({device})",{device:s.llm_device}) : "";

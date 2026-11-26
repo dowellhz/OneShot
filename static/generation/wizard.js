@@ -3,7 +3,7 @@
 // Every step creates ordinary canvas nodes through the existing tools, so the user can switch to the canvas any time.
 // Progress lives in the board (B.wiz), so closing the page and coming back resumes where it was.
 
-const WSTEPS = ["想法", "剧本", "角色", "分镜图", "视频", "成片"];
+const WSTEPS = ["想法", "剧本", "制作素材", "分镜图", "视频", "成片"];
 const STYLES = ["写实电影", "日系动画", "3D 动画", "水彩绘本", "国风水墨", "赛博朋克", "复古胶片"];
 const VOICES_HINT = ["清亮少女音", "温柔女声", "干练女声", "少年音", "低沉男声", "沙哑大叔音", "苍老男声", "奶声童音"];
 const TEMPLATES = [
@@ -22,6 +22,11 @@ let wizSig = "";
 
 const wizScript = () => W && node(W.script);
 function wizSave() { B.wiz = W; save(); }
+const wizardQualityEnabled = () => W?.quality_precheck ?? CAPS_LIST.video_quality_precheck === true;
+function setWizardVideoQuality(video, count) {
+  Object.assign(video.data,{count:count||1,quality:W.quality||video.data.quality||"hd",quality_precheck:wizardQualityEnabled()});
+  if (video.data.quality_precheck) Object.assign(video.data,{provider:"local_h3",selected_model:"h3-video",draft:false});
+}
 
 // ---- open / close
 async function openWizard() {
@@ -31,7 +36,7 @@ async function openWizard() {
     if (B.nodes.length) {   // a guided project gets its own board
       const id = "b" + Date.now().toString(36);
       await flushSave();
-      await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(emptyBoard(OneShotI18n.t("新项目"))) });
+      await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({...emptyBoard(OneShotI18n.t("新项目")),auto_name:"project"}) });
       await openBoard(id);
     }
     W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: "hd", takes: 1, script: null };
@@ -98,7 +103,7 @@ function maxStep() {
 }
 function sigOf() {
   const s = wizScript(); if (!s) return "";
-  const ns = [s, ...shotPairs().flatMap(p => [...wizardShotFrames(p).map(frame=>frame.node),p.vid]), ...castNodes(), ...B.nodes.filter(n => n.data.film)];
+  const ns = [s, ...shotPairs().flatMap(p => [...wizardShotFrames(p).map(frame=>frame.node),p.vid]), ...imgInputs(s), ...B.nodes.filter(n => n.data.film)];
   return JSON.stringify(ns.map(n => [n.id, n.versions.length, n.cur, n.job ? jobText(n) : 0, toolBusy.has(n.id), canvasGenerationError(n)])) + W.step + (s.data.shots || []).length;
 }
 setInterval(() => {
@@ -107,7 +112,7 @@ setInterval(() => {
   const sg = sigOf(); if (sg !== wizSig) renderWiz();
 }, 1000);
 
-const castNodes = () => { const s = wizScript(); return s ? imgInputs(s) : []; };
+const castNodes = () => { const s = wizScript(); return s ? imgInputs(s).filter(n=>!n.data.story_asset_key) : []; };
 const castOf = name => castNodes().find(m => m.name === name);
 function wizardMissingVideos(script) {
   return scriptShotLinks(script).flatMap((pair,index)=>storyboardVersionReady(node(pair?.vid))?[]:[index+1]);
@@ -129,8 +134,8 @@ function wizardFilm(script) {
 function wireStep(body) {
   $$("[data-goto]", body).forEach(b => b.onclick = () => goStep(+b.dataset.goto));
   $$("[data-go]", body).forEach(b => b.onclick = () => wizGo(b.dataset.go, b));
-  $$("[data-set]", body).forEach(b => b.onclick = () => { const k = b.dataset.set; W[k] = ["dur", "takes"].includes(k) ? +b.dataset.val : b.dataset.val; wizSave(); renderWiz(); });
-  $$("[data-tpl]", body).forEach(b => b.onclick = () => { const t = TEMPLATES[+b.dataset.tpl]; Object.assign(W, { idea: t.idea, style: t.style, aspect: t.aspect, dur: t.dur }); wizSave(); renderWiz(); });
+  $$("[data-set]", body).forEach(b => b.onclick = () => { const k = b.dataset.set; W[k] = k==="quality_precheck" ? b.dataset.val==="true" : ["dur", "takes"].includes(k) ? +b.dataset.val : b.dataset.val; wizSave(); renderWiz(); });
+  $$("[data-tpl]", body).forEach(b => b.onclick = () => { const i=+b.dataset.tpl, t = TEMPLATES[i]; Object.assign(W, { idea: wizardTemplateIdea(i), style: t.style, aspect: t.aspect, dur: t.dur }); wizSave(); renderWiz(); });
   $$("[data-sample]", body).forEach(b => b.onclick = () => showSample(SAMPLES[+b.dataset.sample]));
   const idea = $("#wzIdea", body); if (idea) { idea.oninput = () => { W.idea = idea.value; wizSave(); }; if (!W.idea) idea.focus(); }
   $$("[data-v]", body).forEach(b => b.onclick = () => { const n = node(b.dataset.n); nodeAction(n, b.dataset.v); wizSig = ""; renderWiz(); });
@@ -205,7 +210,7 @@ function wireStep(body) {
     if(missingMotionFrames(wizScript().data.shots[pair.index],pair.record)||
        wizardShotFrames(pair).some(frame=>!storyboardFrameReady(frame.node)))
       return toast("请先到分镜图步骤补齐更新后的画面");
-    pair.vid.data.count=1;
+    setWizardVideoQuality(pair.vid,1);
     void generate(pair.vid).then(()=>{if(W&&$("#wiz").classList.contains("on"))renderWiz();});
   });
   $$("[data-motion-tail]",body).forEach(b=>b.onclick=async()=>{
@@ -244,11 +249,10 @@ function castNode(c) {
   return m;
 }
 async function castAction(c, a) {
-  const d = wizScript().data;
   if (a === "gen") {
     const m = castNode(c);
-    m.data.prompt = `角色定妆照，${d.style || W.style}风格。${c.look || c.name}。全身正面站姿，表情自然，浅灰色纯色背景，光线均匀柔和，人物居中，细节清晰`;
-    m.data.caption = c.look || ""; m.data.count = 2; save();
+    setWizardCharacterPrompt(m,wizScript(),c);
+    m.data.count = 2; save();
     await generate(m); wizSig = ""; renderWiz();
   } else if (a === "up") {
     pickFiles(async files => { const m = castNode(c); await uploadInto(m, files[0]); m.data.caption = c.look || ""; save(); wizSig = ""; renderWiz(); });
@@ -258,7 +262,7 @@ async function castAction(c, a) {
     box.innerHTML = list.length ? `<div class="lib"><b>${esc(OneShotI18n.t("选一个资产库里的角色给「{name}」",{name:c.name}))}</b><div class="li">${list.map(x => `<div data-id="${x.id}"><img src="${x.url}"><span>${esc(x.name)}</span></div>`).join("")}</div></div>` : OneShotI18n.html`<div class="lib">资产库里还没有角色</div>`;
     $$("[data-id]", box).forEach(el => el.onclick = () => {
       const x = list.find(y => y.id === el.dataset.id), m = castNode(c);
-      checkpoint(); m.versions.push({ ref: x.ref, url: x.url, w: x.w, h: x.h, source: "asset", prompt: "" }); m.cur = m.versions.length - 1;
+      checkpoint(); m.versions.push({ ref: x.ref, url: x.url, w: x.w, h: x.h, asset_id:x.id, source: "asset", prompt: "" }); m.cur = m.versions.length - 1;
       m.data.asset = { id: x.id, kind: "character" }; if (x.desc && !c.look) c.look = x.desc; if (x.voice && !c.voice) c.voice = x.voice;
       save(); render(m); box.innerHTML = ""; wizSig = ""; renderWiz();
     });
@@ -278,20 +282,7 @@ async function wizGo(what, btn) {
     await job;
     fit(B.nodes); wizSig = ""; renderWiz();
   } else if (what === "boards") {
-    const d = s.data, miss = (d.characters || []).filter(c => !curV(castOf(c.name)));
-    if (miss.length && !btn.dataset.sure) { btn.dataset.sure = 1; btn.textContent = OneShotI18n.t("{names} 还没有形象图，人物会变脸。仍然继续？",{names:wizardShotNumbers(miss.map(c=>c.name))}); return; }
-    if (castNodes().some(m => m.job)) return toast("定妆照还在生成，等它画完再继续");
-    // characters go into the asset library with their look and voice
-    for (const c of d.characters || []) {
-      const m = castOf(c.name), v = curV(m); if (!v) continue;
-      try {
-        const scope = m.data.asset?.id ? {} : cmNewScope();
-        const a = await api("/api/library", { id:m.data.asset?.id, kind:"character", name:c.name, desc:c.look||"",
-          voice:c.voice||"", ref:v.ref, w:v.w, h:v.h, source_board:boardId, node_id:m.id, ...scope });
-        m.data.asset = { id: a.id, kind: "character" }; m.data.caption = c.look || m.data.caption;
-      } catch {}
-    }
-    libCache = null;
+    if (!await prepareWizardAssets(s)) return;
     expandMissingScriptShots(s);
     W.step = 3; wizSave(); renderWiz();
     await batchImages(s); wizSig = ""; renderWiz();
@@ -308,7 +299,7 @@ async function wizGo(what, btn) {
     wizSig = ""; renderWiz();
   } else if (what === "genvids") {
     const pairs = shotPairs().filter(p => !storyboardVersionReady(p.vid) && !p.vid.job);
-    pairs.forEach(p => { p.vid.data.count = W.takes; p.vid.data.quality = W.quality; });
+    pairs.forEach(p => setWizardVideoQuality(p.vid,W.takes));
     save();
     await batchVideos(s); wizSig = ""; renderWiz();
   } else if (what === "edit" || what === "quick" || what === "current-cut") {
@@ -322,12 +313,21 @@ async function wizGo(what, btn) {
 }
 
 // ---- example films: watch, start from the same idea, or open the whole project
+function wizardTemplateIdea(index) {
+  const key=`wizard.example.idea.${index}`, localized=OneShotI18n.t(key);
+  return localized===key ? TEMPLATES[index]?.idea : localized;
+}
+const builtInSampleTitles=["贪吃橘猫现形记","清晨手冲","雨夜重逢","会唱歌的魔法树","洱海落日骑行","2077 霓虹雨夜","竹林对决","水的循环"];
+const isBuiltInSample = sample => sample.id===`sample${sample.tpl}` && sample.title===builtInSampleTitles[sample.tpl];
+const sampleTitle = sample => isBuiltInSample(sample) ? OneShotI18n.t(sample.title) : sample.title;
+const sampleIdea = sample => isBuiltInSample(sample) && OneShotI18n.locale==="en" ? wizardTemplateIdea(sample.tpl) : sample.idea;
+const sampleStyle = sample => isBuiltInSample(sample) ? OneShotI18n.t(sample.style) : sample.style;
 function showSample(x) {
   const m = $("#wzSample");
-  m.innerHTML = OneShotI18n.html`<div class="box"><div class="hd"><b>${esc(x.title)}</b><span class="dim">${esc(x.style || "")} · ${OneShotI18n.t("{seconds} 秒",{seconds:x.seconds?.toFixed(1)})} · ${OneShotI18n.t("每镜 1 个版本，没有挑选和精修")}</span>
+  m.innerHTML = OneShotI18n.html`<div class="box"><div class="hd"><b>${esc(sampleTitle(x))}</b><span class="dim">${esc(sampleStyle(x) || "")} · ${OneShotI18n.t("{seconds} 秒",{seconds:x.seconds?.toFixed(1)})} · ${OneShotI18n.t("每镜 1 个版本，没有挑选和精修")}</span>
       <span style="flex:1"></span><button class="ghost sm" data-x>关闭</button></div>
     <video src="${x.url}" controls autoplay playsinline></video>
-    <div class="idea">${OneShotI18n.t("想法：{idea}",{idea:esc(x.idea || "")})}</div>
+    <div class="idea">${OneShotI18n.t("想法：{idea}",{idea:esc(sampleIdea(x) || "")})}</div>
     <div class="row"><button class="go" data-use>用这个想法开始</button><button class="ghost" data-open title="复制一份完整项目：剧本、角色、分镜图、每个镜头的视频都能看、能改">打开完整项目，看每一步</button></div></div>`;
   m.classList.add("on");
   const close = () => { $("video", m).pause(); m.classList.remove("on"); m.innerHTML = ""; };
@@ -336,7 +336,7 @@ function showSample(x) {
   $("[data-use]", m).onclick = async () => {
     close();
     if (!($("#wiz").classList.contains("on") && W && !W.script)) await newWizardProject();   // never overwrite a project in progress
-    const t = TEMPLATES[x.tpl]; if (t) Object.assign(W, { idea: t.idea, style: t.style, aspect: t.aspect, dur: t.dur });
+    const t = TEMPLATES[x.tpl]; if (t) Object.assign(W, { idea: sampleIdea(x) || wizardTemplateIdea(x.tpl), style: t.style, aspect: t.aspect, dur: t.dur });
     W.step = 0; wizSave(); wizSig = ""; renderWiz();
   };
   $("[data-open]", m).onclick = async () => {
@@ -348,15 +348,15 @@ function showSample(x) {
 async function newWizardProject() {
   if (B.nodes.length || B.wiz) {
     const id = "b" + Date.now().toString(36);
-    await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(emptyBoard(OneShotI18n.t("新项目"))) });
+    await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({...emptyBoard(OneShotI18n.t("新项目")),auto_name:"project"}) });
     await openBoard(id);
   }
   W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: "hd", takes: 1, script: null };
   $("#wiz").classList.add("on"); wizSig = "";
 }
 async function loadSamples() { try { SAMPLES = await (await fetch("/api/samples")).json() || []; } catch {} return SAMPLES; }
-const sampleCards = () => SAMPLES.map((x, k) => `<button class="gc" data-sample="${k}" title="${esc(x.idea || "")}">
-  <img src="${x.cover_url || ""}" loading="lazy"><span class="pl">▶</span><b>${esc(x.title)}</b><small>${x.seconds ? OneShotI18n.t("{seconds} 秒",{seconds:x.seconds.toFixed(0)}) + " · " : ""}${esc(x.style || "")}</small></button>`).join("");
+const sampleCards = () => SAMPLES.map((x, k) => `<button class="gc" data-sample="${k}" title="${esc(sampleIdea(x) || "")}">
+  <img src="${x.cover_url || ""}" loading="lazy"><span class="pl">▶</span><b>${esc(sampleTitle(x))}</b><small>${x.seconds ? OneShotI18n.t("{seconds} 秒",{seconds:x.seconds.toFixed(0)}) + " · " : ""}${esc(sampleStyle(x) || "")}</small></button>`).join("");
 async function showGallery() {
   await loadSamples();
   const m = $("#wzSample");

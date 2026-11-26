@@ -39,8 +39,9 @@ function ctxMenu(e) {
   if (!sel.has(n.id)) selectOnly(n.id);
   const selected = [...sel].map(node).filter(Boolean);
   const many = sel.size > 1, v = curV(n), it = [];
-  const add = (a, icon, label, k = "") => it.push(`<button data-a="${a}">${ico(icon)}${label}${k ? `<span class="k">${k}</span>` : ""}</button>`);
-  it.push(`<div class="mt">${many ? `已选 ${sel.size} 个节点` : esc(n.name)}</div>`);
+  const tr=OneShotI18n.t;
+  const add = (a, icon, label, k = "") => it.push(`<button data-a="${a}">${ico(icon)}${esc(tr(label))}${k ? `<span class="k">${k}</span>` : ""}</button>`);
+  it.push(`<div class="mt">${esc(many ? tr("已选 {count} 个节点",{count:sel.size}) : n.name)}</div>`);
   if (canvasCanEdit()) {
     add("agent-new", "script", many ? "用选中节点发起新对话" : "用此节点发起新对话");
     it.push(nodePinPalette(selected));
@@ -84,6 +85,7 @@ function ctxMenu(e) {
     if (n.type === "video") add("remake", "video", "视频重制 · 替换角色");
     if (n.type === "video") add("trim-video", "scissors", "裁剪视频 / 智能拆镜头");
     if (n.type === "video" && v.ref && canvasCanEdit()) add("dialogue-review", "audio", "核对对白");
+    if (n.type === "video" && v.generation_record?.quality_review) add("video-quality-report", "script", "查看质量预检");
     if (n.type === "video" && v.draft_expires) add("draft-final","hd","从样片生成定稿");
     if (draftVideoComparison(n,v)) add("compare-draft","fit","对比样片与定稿");
     if (n.type === "video" && n.versions.filter(v=>v.url).length > 1) add("compare-video", "stack", "对比视频版本");
@@ -120,13 +122,13 @@ function ctxMenu(e) {
   if (!many) add("comment", "comment", "评论此节点");
   add("arrange", "assets", "整理图片与视频…");
   const vids = [...sel].map(node).filter(m => m && m.type === "video" && curV(m));
-  if(vids.length>=2){const info=vtMergeInfo(vids.map(m=>m.id));it.push(`<button data-a="merge-tabs" ${info.error?`disabled title="${esc(info.error)}"`:""}>${ico("stack")}合并为 Tab（${vids.length} 个视频）</button>`);}
+  if(vids.length>=2){const info=vtMergeInfo(vids.map(m=>m.id));it.push(`<button data-a="merge-tabs" ${info.error?`disabled title="${esc(tr(info.error))}"`:""}>${ico("stack")}${esc(tr("合并为 Tab（{count} 个视频）",{count:vids.length}))}</button>`);}
   if(!many&&n.type==="video"&&n.versions.length>1){add("split-tab","copy","拆出当前 Tab");add("split-tabs","assets","拆开所有 Tab");}
   const qv = [...sel].map(node).filter(m => m && m.type === "video" && !m.job && !m.data.film && !m.data.previs);
-  if (many && qv.length) { add("queuegen", "video", `排队生成（${qv.length} 段视频，按名称顺序）`); if (!(vids.length >= 2)) it.push(`<div class="sep"></div>`); }
+  if (many && qv.length) { add("queuegen", "video", tr("排队生成（{count} 段视频，按名称顺序）",{count:qv.length})); if (!(vids.length >= 2)) it.push(`<div class="sep"></div>`); }
   const media = byPosition([...sel]).filter(filmSource);
   if (media.filter(playlistVideo).length >= 2) add("playlist-create","stack","创建播放列表");
-  if (many && media.length >= 2) { add("concat", "scissors", `剪辑成片（${media.length} 段，按位置顺序）`); it.push(`<div class="sep"></div>`); }
+  if (many && media.length >= 2) { add("concat", "scissors", tr("剪辑成片（{count} 段，按位置顺序）",{count:media.length})); it.push(`<div class="sep"></div>`); }
   if (!many) add("workflow-review", "script", "制作复盘");
   add("focus", "fit", many ? "聚焦选中" : "聚焦此节点", "F");
   if (!many) add("rename", "text", "重命名");

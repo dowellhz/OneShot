@@ -7,6 +7,23 @@ from oneshot.generation import tools
 
 
 class StoryboardTiming(IsolatedAsyncioTestCase):
+    async def test_idea_to_film_keeps_only_declared_assets_used_by_the_shot(self):
+        llm = AsyncMock()
+        llm.chat.return_value = json.dumps({
+            "visual_assets":[
+                {"key":"kitchen","kind":"scene","name":"厨房","look":"浅木餐桌与左侧窗户"},
+                {"key":"mug","kind":"prop","name":"蓝杯","look":"带白色杯柄的蓝杯"},
+                {"key":"unused","kind":"prop","name":"汽车","look":"蓝色"},
+            ],
+            "shots":[
+                {"duration":5,"keyframe":"窗旁的蓝杯","visual_asset_keys":["kitchen","mug","mug","bad"]},
+                {"duration":5,"keyframe":"厨房全景","visual_asset_keys":["kitchen"]},
+            ]})
+        result = await tools.storyboard(llm,Path("."),"厨房和蓝杯",[],None,None,"","16:9",prepare_assets=True)
+        self.assertEqual([asset["key"] for asset in result["visual_assets"]],["kitchen","mug"])
+        self.assertEqual([shot["visual_asset_keys"] for shot in result["shots"]],[["kitchen","mug"],["kitchen"]])
+        self.assertIn("visual_assets",llm.chat.await_args.args[0])
+
     async def test_motion_storyboards_keep_distinct_phases_and_continuity(self):
         llm = AsyncMock()
         llm.chat.return_value = json.dumps({"shots":[

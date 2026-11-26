@@ -6,9 +6,15 @@ const directorySorts = {
   newest:"最近修改",oldest:"最早修改",created:"最新创建",first:"最早创建",name:"按名称"
 };
 
+const directoryText = (label, values) => OneShotI18n.t(label, values);
+
+function directoryCanvasCount(count) {
+  return directoryText(count===1?"1 张画布":"{count} 张画布",{count});
+}
+
 function directoryMessage(text) {
   const status=$("#directoryStatus");
-  if (status) status.textContent=text;
+  if (status) status.textContent=directoryText(text);
 }
 
 async function pgProjects() {
@@ -27,7 +33,7 @@ async function pgProjects() {
     Object.assign(state,{boards,projects,teams});
     if(!state.projects.some(project=>project.id===canvasDirectoryPrefs.folder))canvasDirectoryPrefs.folder="";
     if(!state.teams.some(team=>team.id===canvasDirectoryPrefs.team))canvasDirectoryPrefs.team="";
-    $("#directoryTeam").replaceChildren(new Option("所有团队",""),...teams.map(team=>new Option(team.name,team.id)));
+    $("#directoryTeam").replaceChildren(new Option(directoryText("所有团队"),""),...teams.map(team=>new Option(team.name,team.id)));
     $("#directoryTeam").value=canvasDirectoryPrefs.team;
     renderDirectory(state);
   }
@@ -40,17 +46,17 @@ async function pgProjects() {
       <button class="nc grad" type="button" data-directory-new="wiz"><b>一句话成片</b><small>从一句想法开始制作短片</small></button>
       <button class="nc" type="button" data-directory-new="blank"><b>＋ 空白画布</b><small>自由搭建工作流</small></button>
       <button class="nc" type="button" data-directory-new="brief"><b>从创作需求开始</b><small>新建画布并交给创作助手</small></button>
-      ${samples.length?`<button class="nc" type="button" data-directory-new="samples"><b>看示例</b></button>`:""}
+      ${samples.length?OneShotI18n.html`<button class="nc" type="button" data-directory-new="samples"><b>看示例</b></button>`:""}
     </div>
     <div class="directory-filters">
       <input class="in" type="search" id="directoryQuery" aria-label="搜索画布和项目" placeholder="搜索画布和项目" maxlength="120">
       <select class="in" id="directoryScope" aria-label="画布范围"><option value="all">所有可见画布</option><option value="personal">我的个人画布</option><option value="team">团队画布</option><option value="shared">共享给我的画布</option></select>
       <select class="in" id="directoryTeam" aria-label="筛选团队" hidden></select>
       <select class="in" id="directoryType" aria-label="筛选类型"><option value="all">项目和画布</option><option value="boards">仅画布</option><option value="projects">仅项目</option></select>
-      <select class="in" id="directorySort" aria-label="排序">${Object.entries(directorySorts).map(([key,label])=>`<option value="${key}">${label}</option>`).join("")}</select>
+      <select class="in" id="directorySort" aria-label="排序">${Object.entries(directorySorts).map(([key,label])=>`<option value="${key}">${directoryText(label)}</option>`).join("")}</select>
       <button class="btn" id="directoryLayout" type="button">列表视图</button>
       <button class="btn" id="directoryCreate" type="button">新建项目</button>
-      ${ME.role==="admin"?`<label><input id="directoryAll" type="checkbox" ${state.all?"checked":""}> 显示全部成员的画布</label>`:""}
+      ${ME.role==="admin"?OneShotI18n.html`<label><input id="directoryAll" type="checkbox" ${state.all?"checked":""}> 显示全部成员的画布</label>`:""}
     </div>
     <div class="directory-actions">
       <button class="btn" type="button" id="directoryBack" hidden>返回所有项目和画布</button>
@@ -126,7 +132,7 @@ async function pgProjects() {
     }else if(action==="rename"){
       directoryNameDialog("重命名画布",board.name,async name=>{
         const current=await api("/api/board/"+encodeURIComponent(id));
-        await api("/api/board/"+encodeURIComponent(id),{...current,name},"PUT");
+        await api("/api/board/"+encodeURIComponent(id),{...current,name,auto_name:false},"PUT");
         await refresh();
       });
     }else if(action==="move"){
@@ -181,7 +187,7 @@ async function startDirectoryCanvas(state,mode) {
   if(inTeam&&!teams.length)throw new Error("请先加入团队，或切换到个人画布");
   const team=inTeam&&teams.find(item=>item.id===preferences.team);
   const project=!inTeam&&(state.projects||[]).find(item=>item.id===preferences.folder);
-  const locationLabel=team?team.name:project?project.name:"个人空间";
+  const locationLabel=team?team.name:project?project.name:directoryText("个人空间");
   const destination=team?{team:team.id}:project?{project:project.id}:{};
   let attempt;
   const open=async fields=>{
@@ -196,19 +202,19 @@ async function startDirectoryCanvas(state,mode) {
     }else{
       const id="b"+directoryRequestKey();
       const query=new URLSearchParams(chosen).toString();
-      await api("/api/board/"+id+(query?"?"+query:""),{name:mode==="wiz"?"新项目":"新画布",nodes:[],edges:[],groups:[],
-        view:{x:0,y:0,k:1},seq:1},"PUT");
+      await api("/api/board/"+id+(query?"?"+query:""),{name:directoryText(mode==="wiz"?"新项目":"新画布"),nodes:[],edges:[],groups:[],
+        view:{x:0,y:0,k:1},seq:1,...(mode==="wiz"?{auto_name:"project"}:{})},"PUT");
       location.href=directoryBoardURL(id)+(mode==="wiz"?"&wizard=1":"");
     }
   };
   const chooseTeam=inTeam&&!team;
   if(mode!=="brief"&&!chooseTeam)return open();
-  const locationControl=chooseTeam?`<label>团队空间<select class="in" name="team" required>
+  const locationControl=chooseTeam?OneShotI18n.html`<label>团队空间<select class="in" name="team" required>
     <option value="">请选择团队</option>${teams.map(item=>`<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("")}
-    </select></label>`:`<p>创建位置 · ${esc(locationLabel)}</p>`;
-  const brief=mode==="brief"?`<label>画布名称（选填）<input class="in" name="title" maxlength="80" placeholder="留空时使用需求首行"></label>
+    </select></label>`:`<p>${esc(directoryText("创建位置 · {location}",{location:locationLabel}))}</p>`;
+  const brief=mode==="brief"?OneShotI18n.html`<label>画布名称（选填）<input class="in" name="title" maxlength="80" placeholder="留空时使用需求首行"></label>
     <label>创作需求<textarea class="in" name="text" required maxlength="3000" rows="5" placeholder="例如：为春季新品写一个 4 镜头短片分镜"></textarea></label>
-    <p>${inTeam?"团队成员可查看画布名称和画布上的结果。":""}图片与视频生成需要你确认。</p>`:"";
+    <p>${inTeam?directoryText("团队成员可查看画布名称和画布上的结果。"):""}图片与视频生成需要你确认。</p>`:"";
   directoryDialog(mode==="brief"?"从创作需求开始":"新建团队画布",locationControl+brief,
     mode==="brief"?"新建画布并发送":"新建画布",open);
 }
@@ -216,7 +222,7 @@ async function startDirectoryCanvas(state,mode) {
 function directoryFilter(state) {
   const {scope,team,type,folder,query,sort}=canvasDirectoryPrefs;
   const match=name=>String(name||"").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  const names=(a,b)=>a.name.localeCompare(b.name,"zh-CN");
+  const names=(a,b)=>a.name.localeCompare(b.name,OneShotI18n.locale);
   function order(a,b){
     if(sort==="name")return names(a,b);
     if(sort==="oldest")return a.mtime-b.mtime||names(a,b);
@@ -236,7 +242,7 @@ function directoryFilter(state) {
   const matched=type==="projects"?[]:scoped.filter(board=>{
     if(folder && (board.project!==folder||board.team))return false;
     if(hideArchived && board.project&&!board.team)return false;
-    return match(board.name);
+    return match(board.name)||match(OneShotI18n.canvasName(board));
   }).sort(order);
   const projects=folder||scope==="team"||scope==="shared"||type==="boards"?[]:state.projects.filter(project=>match(project.name));
   return {boards:matched,projects,scoped};
@@ -248,24 +254,24 @@ function renderDirectory(state) {
   const current=state.projects.find(project=>project.id===canvasDirectoryPrefs.folder);
   const visible=new Set(boards.map(board=>board.id));
   for(const id of state.selected)if(!visible.has(id))state.selected.delete(id);
-  $("#directoryHeading").textContent=current?.name||"画布目录";
+  $("#directoryHeading").textContent=current?.name||directoryText("画布目录");
   $("#directoryBack").hidden=!current;
   $("#directoryTeam").hidden=canvasDirectoryPrefs.scope!=="team";
   const list=localStorage.getItem("c.directoryLayout")==="list";
-  $("#directoryLayout").textContent=list?"网格视图":"列表视图";
-  $("#directoryCount").textContent=`${boards.length} 张画布${projects.length?" · "+projects.length+" 个项目":""}`;
+  $("#directoryLayout").textContent=directoryText(list?"网格视图":"列表视图");
+  $("#directoryCount").textContent=[directoryCanvasCount(boards.length),projects.length&&directoryText(projects.length===1?"1 个项目":"{count} 个项目",{count:projects.length})].filter(Boolean).join(" · ");
   const grid=$("#directoryItems");
   grid.classList.toggle("directory-list",list);
   grid.innerHTML=projects.map(project=>`<article class="pj directory-project" data-drop-project="${esc(project.id)}">
     <button class="directory-folder-name" type="button" data-directory-action="folder" data-id="${esc(project.id)}">${esc(project.name)}</button>
-    <div class="bd dim">${scoped.filter(board=>board.project===project.id&&!board.team).length} 张画布</div>
+    <div class="bd dim">${directoryCanvasCount(scoped.filter(board=>board.project===project.id&&!board.team).length)}</div>
     <div class="acts">${directoryButton("project-rename",project.id,"改名")}${directoryButton("project-dissolve",project.id,"解散")}</div>
-  </article>`).concat(boards.map(board=>directoryCard(state,board,list))).join("")||'<p class="dim">没有符合条件的项目或画布</p>';
+  </article>`).concat(boards.map(board=>directoryCard(state,board,list))).join("")||OneShotI18n.html`<p class="dim">没有符合条件的项目或画布</p>`;
   renderDirectoryStatus(state);
 }
 
 function directoryButton(action,id,label,extra="") {
-  return `<button class="btn sm ${extra}" type="button" data-directory-action="${action}" data-id="${esc(id)}">${label}</button>`;
+  return `<button class="btn sm ${extra}" type="button" data-directory-action="${action}" data-id="${esc(id)}">${esc(directoryText(label))}</button>`;
 }
 
 function directoryCard(state,board,list) {
@@ -273,13 +279,13 @@ function directoryCard(state,board,list) {
   const team=state.teams.find(item=>item.id===board.team);
   const cover=typeof board.cover==="string"&&board.cover.startsWith("/media?")?esc(board.cover):"";
   const date=canvasDirectoryPrefs.sort==="created"||canvasDirectoryPrefs.sort==="first"?
-    board.created?new Date(board.created*1000).toLocaleDateString():"创建日期未知":ago(board.mtime);
-  const share=team?.name||(board.team?"团队":board.shared?"平台共享":null);
+    board.created?new Date(board.created*1000).toLocaleDateString(OneShotI18n.locale):directoryText("创建日期未知"):ago(board.mtime);
+  const share=team?.name||(board.team?directoryText("团队"):board.shared?directoryText("已共享给平台成员"):null);
   return `<article class="pj" data-board="${esc(board.id)}" ${owned&&!board.team?'draggable="true" data-drag-board="'+esc(board.id)+'"':""}>
-    ${state.selecting&&owned?`<label class="directory-check"><input type="checkbox" data-directory-check value="${esc(board.id)}" ${state.selected.has(board.id)?"checked":""}>选中 ${esc(board.name)}</label>`:""}
-    ${list?"":`<a class="cv" href="${directoryBoardURL(board.id)}" tabindex="-1" aria-hidden="true">${cover?(cover.includes("cover_")?`<img src="${cover}" loading="lazy" alt="">`:`<video src="${cover}#t=1" muted preload="metadata"></video>`):"空白"}</a>`}
-    <div class="bd"><a class="nm" href="${directoryBoardURL(board.id)}">${esc(board.name)}</a>
-      <div class="mt"><span>${esc(date)}</span><span>${board.nodes} 个节点</span>
+    ${state.selecting&&owned?`<label class="directory-check"><input type="checkbox" data-directory-check value="${esc(board.id)}" ${state.selected.has(board.id)?"checked":""}>${esc(directoryText("选中 {name}",{name:board.name}))}</label>`:""}
+    ${list?"":`<a class="cv" href="${directoryBoardURL(board.id)}" tabindex="-1" aria-hidden="true">${cover?(cover.includes("cover_")?`<img src="${cover}" loading="lazy" alt="">`:`<video src="${cover}#t=1" muted preload="metadata"></video>`):directoryText("空白")}</a>`}
+    <div class="bd"><a class="nm" href="${directoryBoardURL(board.id)}">${esc(OneShotI18n.canvasName(board))}</a>
+      <div class="mt"><span>${esc(date)}</span><span>${directoryText(board.nodes===1?"1 个节点":"{count} 个节点",{count:board.nodes})}</span>
       ${share?`<span class="tag">${esc(share)}</span>`:""}${!owned&&state.users.has(board.owner)?`<span>${esc(state.users.get(board.owner))}</span>`:""}</div></div>
     ${manageable?`<div class="acts">${directoryButton("rename",board.id,"改名")}
       ${owned&&!board.team?directoryButton("move",board.id,"移到项目"):""}
@@ -289,17 +295,17 @@ function directoryCard(state,board,list) {
 }
 
 function renderDirectoryStatus(state) {
-  $("#directorySelect").textContent=state.selecting?"结束选择":"批量选择";
+  $("#directorySelect").textContent=directoryText(state.selecting?"结束选择":"批量选择");
   $("#directoryBatch").hidden=!state.selecting;
   $("#directoryDelete").disabled=!state.selected.size;
   $("#directoryMove").disabled=!state.selected.size||state.boards.some(board=>state.selected.has(board.id)&&board.team);
-  $("#directoryDelete").textContent=state.selected.size?`删除所选（${state.selected.size}）`:"删除所选";
+  $("#directoryDelete").textContent=state.selected.size?directoryText("删除所选（{count}）",{count:state.selected.size}):directoryText("删除所选");
 }
 
 function directoryDialog(title,content,button,action) {
-  const box=modal(OneShotI18n.html`<h3>${esc(title)}</h3><form class="directory-dialog">
+  const box=modal(OneShotI18n.html`<h3>${esc(directoryText(title))}</h3><form class="directory-dialog">
     ${content}<p class="directory-error" role="status"></p><div class="row"><span class="grow"></span>
-    <button class="btn" type="button" data-directory-cancel>取消</button><button class="btn pri" type="submit">${button}</button></div></form>`);
+    <button class="btn" type="button" data-directory-cancel>取消</button><button class="btn pri" type="submit">${esc(directoryText(button))}</button></div></form>`);
   $("[data-directory-cancel]",box).onclick=closeModal;
   const form=$("form",box);
   form.onsubmit=async event=>{
@@ -308,7 +314,7 @@ function directoryDialog(title,content,button,action) {
     if(submit.disabled)return;
     submit.disabled=true;
     try { await action(new FormData(form));if(form.isConnected)closeModal(); }
-    catch(error) { $(".directory-error",form).textContent=error.message||"操作失败"; }
+    catch(error) { $(".directory-error",form).textContent=directoryText(error.message||"操作失败"); }
     finally {submit.disabled=false;}
   };
   $("input,select,button",form)?.focus();
@@ -325,7 +331,7 @@ function directoryNameDialog(title,current,action) {
 }
 
 function directoryConfirm(title,text,button,action) {
-  directoryDialog(title,`<p>${esc(text)}</p>`,button,action);
+  directoryDialog(title,`<p>${esc(directoryText(text))}</p>`,button,action);
 }
 
 function moveDirectoryBoards(boards,target) {
@@ -335,12 +341,12 @@ function moveDirectoryBoards(boards,target) {
 function openDirectoryMove(state,ids,refresh,newOnly=false) {
   if(!ids.length)return;
   const options=state.projects.map(project=>`<option value="${esc(project.id)}">${esc(project.name)}</option>`).join("");
-  const form=directoryDialog("将 "+ids.length+" 张画布移到项目",
+  const form=directoryDialog(directoryText("将 {canvases} 移到项目",{canvases:directoryCanvasCount(ids.length)}),
     OneShotI18n.html`<label ${newOnly?"hidden":""}>目标项目<select class="in" name="target"><option value="new">新建项目</option><option value="">移出项目</option>${options}</select></label>
     <label>新项目名称<input class="in" name="name" maxlength="60" required></label>`,"移动",async fields=>{
     const target=fields.get("target");
     await moveDirectoryBoards(ids,target==="new"?{name:fields.get("name")}:{project:target||null});
-    state.selected.clear();await refresh();directoryMessage("已移动 "+ids.length+" 张画布");
+    state.selected.clear();await refresh();directoryMessage(directoryText("已移动 {canvases}",{canvases:directoryCanvasCount(ids.length)}));
   });
   $("[name=target]",form).onchange=event=>{
     const name=$("[name=name]",form);
@@ -350,7 +356,7 @@ function openDirectoryMove(state,ids,refresh,newOnly=false) {
 }
 
 function openDirectoryTeam(state,board,refresh) {
-  directoryDialog("移动画布到团队空间",`<label>工作空间<select class="in" name="team"><option value="">个人空间</option>
+  directoryDialog("移动画布到团队空间",OneShotI18n.html`<label>工作空间<select class="in" name="team"><option value="">个人空间</option>
     ${state.teams.map(team=>`<option value="${esc(team.id)}" ${board.team===team.id?"selected":""}>${esc(team.name)}</option>`).join("")}
     </select></label><p>移入后，所选团队的成员可以打开并编辑此画布。</p>`,"确认移动",async fields=>{
     await api("/api/board/"+encodeURIComponent(board.id)+"/access",{team:fields.get("team")||null},"PATCH");
@@ -361,7 +367,7 @@ function openDirectoryTeam(state,board,refresh) {
 function openDirectoryDelete(state,ids,refresh) {
   if(!ids.length)return;
   const names=ids.map(id=>state.boards.find(board=>board.id===id)?.name||id);
-  directoryDialog("删除 "+ids.length+" 张画布",`<ul>${names.map(name=>`<li>${esc(name)}</li>`).join("")}</ul>
+  directoryDialog(directoryText("删除 {canvases}",{canvases:directoryCanvasCount(ids.length)}),OneShotI18n.html`<ul>${names.map(name=>`<li>${esc(name)}</li>`).join("")}</ul>
       <p>这些画布将从目录中移除，相关公开链接会失效。</p>`,"确认删除",async ()=>{
     const failed=[];
     for(const [index,id] of ids.entries()){
@@ -369,6 +375,7 @@ function openDirectoryDelete(state,ids,refresh) {
       catch { failed.push(names[index]); }
     }
     state.selected.clear();await refresh();
-    directoryMessage("已删除 "+(ids.length-failed.length)+" 张画布"+(failed.length?"，删除失败："+failed.join("、"):""));
+    directoryMessage(directoryText("已删除 {canvases}",{canvases:directoryCanvasCount(ids.length-failed.length)})+
+      (failed.length?directoryText("。删除失败：{names}",{names:failed.join(OneShotI18n.locale==="en"?", ":"、")}):""));
   });
 }

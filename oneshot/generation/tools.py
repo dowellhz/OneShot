@@ -53,7 +53,7 @@ STORYBOARD_SYS = """你是电影分镜师。把用户的剧情拆成一组连续
 - 可提交的镜头时长只有 5、8、10、14 秒。选能容纳内容的最短档位。简单一拍可用 5 秒，多个连续动作、有停顿的对话可以用 8、10 或 14 秒。
 - 同一段内容在 15 秒内讲不完，或任何连续动作、对白超过单镜 14 秒预算，必须按动作转折或台词换气拆成多个镜头。保留原动作、台词和节奏，不要为了总时长或镜头数把内容加速或删减。总时长与目标镜头数是偏好，超出时分镜优先。
 - 新拆的每镜都有独立静态首帧。首帧从上一镜动作结束后的合理姿态起步，保持人物位置、视线、道具、光线和空间方向连续。首帧描述不要提前写入本镜尚未发生的动作结果。
-- 角色名必须和用户给的参考图名字一致；参考图里能看到的外貌要写进 look，并在每个镜头保持一致。
+- 角色名必须和用户给的参考图名字一致；look 只写该角色自己的五官、体型、毛色、服装和佩饰，用于单角色定妆照。亲子关系、抱住另一个角色、互动和站位写进对应镜头，别写进 look。
 - 台词只用剧情里写到的或剧情明显需要的，台词原文保留；没有台词就给空数组。
 - 全部用中文。"""
 
@@ -104,6 +104,7 @@ def storyboard_shots(raw, preferred):
             "scene":str(s.get("scene") or ""), "characters":[str(c) for c in (s.get("characters") or [])],
             "action":action, "dialogue":dialogue, "sound":str(s.get("sound") or ""), "keyframe":str(s.get("keyframe") or ""),
             **({"asset_refs":s["asset_refs"]} if isinstance(s.get("asset_refs"),list) else {}),
+            **({"visual_asset_keys":s["visual_asset_keys"][:8]} if isinstance(s.get("visual_asset_keys"),list) else {}),
             **({"motion_frames":{key:s["motion_frames"][key].strip()[:1200] for key in ("middle","end")
                                  if isinstance(s["motion_frames"].get(key),str)}}
                if isinstance(s.get("motion_frames"),dict) else {}),
@@ -212,7 +213,9 @@ def bind_storyboard_assets(shots, candidates):
             shot["asset_refs"] = bound
 
 
-async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None, *, asset_candidates=(), motion_frames=False) -> dict:
+async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None, *, asset_candidates=(), motion_frames=False, prepare_assets=False) -> dict:
+    from oneshot.generation import storyboard_assets
+
     content = []
     head = f"剧情：\n{story.strip()}\n"
     if style:
@@ -244,6 +247,8 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
         content.append({"type": "text", "text": f"参考图「{r.get('name') or '参考图'}」"})
         content.append(image_part(ref_path(comfy_dir, r["ref"]), 640))
     motion_instructions = MOTION_FRAMES if motion_frames else ""
+    if prepare_assets:
+        motion_instructions += storyboard_assets.INSTRUCTIONS
     out = parse_json(await llm.chat(STORYBOARD_SYS + motion_instructions, content, max_tokens=6200, temperature=.4))
     shots, overloaded = storyboard_shots(out.get("shots") or [], seconds)
     if overloaded:
@@ -289,7 +294,8 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
     chars = [{"name": str(c.get("name") or ""), "look": str(c.get("look") or ""), "voice": str(c.get("voice") or "")}
              for c in (out.get("characters") or []) if c.get("name")]
     return {"title":str(out.get("title") or ""), "style":str(out.get("style") or style or ""), "characters":chars,
-            "shots":shots, "planned_seconds":sum(shot["duration"] for shot in shots)}
+            "shots":shots, "planned_seconds":sum(shot["duration"] for shot in shots),
+            **({"visual_assets":storyboard_assets.bind_visual_assets(out.get("visual_assets"),shots)} if prepare_assets else {})}
 
 
 # ------------------------------------------------------------------ describe (反推)

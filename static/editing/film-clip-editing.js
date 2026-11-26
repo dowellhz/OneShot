@@ -110,7 +110,7 @@ async function transcribeFilmClip(F, clip, button) {
   const before = signature();
   pending.add(clip);
   button.disabled = true;
-  button.textContent = "正在识别…";
+  button.textContent = OneShotI18n.t("正在识别…");
   try {
     const result = await api("/api/video/captions", request);
     if (FILM !== F || !F.spec.clips.includes(clip)) return;
@@ -133,7 +133,8 @@ function renderClipBox() {
   stopFilmVersionPreview(F);
   const isStill = c.kind === "image";
   const bounds=filmTrimBounds(c),{start:baseIn,end:baseOut}=bounds;
-  const volumeLabel = c.audio_ref ? "原片音量" : "原声音量";
+  const tr = OneShotI18n.t;
+  const volumeLabel = tr(c.audio_ref ? "原片音量" : "原声音量");
   const seekStep = c.remake_shot || c.tight ? 1 / RM_FPS : .1;
   const source = node(c.node);
   const planLength=Number.isSafeInteger(c.story_frames) && c.story_frames>0 && !isStill ? c.story_frames/FILM_FPS : 0;
@@ -146,16 +147,16 @@ function renderClipBox() {
   const trimControls = isStill ? "" : '<button class="pill" data-a="in" title="从这里开始 (Q)" aria-keyshortcuts="Q">从这里开始</button><button class="pill" data-a="out" title="到这里结束 (E)" aria-keyshortcuts="E">到这里结束</button><button class="pill" data-a="reset">恢复完整</button><button class="pill" data-split-clip title="在播放头分割 (C)" aria-keyshortcuts="C">在播放头分割</button>' +
     (canvasCanEdit() ? '<button class="pill" data-film-capture>截帧到画布</button>' : "");
   const captionBusy = F.captionRequests?.has(c);
-  const captions = c.captions ? `<div class="fm-captions" aria-label="时间码字幕">
+  const captions = c.captions ? OneShotI18n.html`<div class="fm-captions" aria-label="时间码字幕">
     ${c.captions.map((cue,i) => `<div class="fm-caption" data-cue="${i}">
-      <button class="pill" type="button" data-cue-seek aria-label="定位第 ${i+1} 条字幕">▶</button>
-      <input type="number" min="0" step=".001" data-cue-time="start" value="${esc(cue.start)}" aria-label="第 ${i+1} 条字幕开始时间">
-      <input type="number" min="0" step=".001" data-cue-time="end" value="${esc(cue.end)}" aria-label="第 ${i+1} 条字幕结束时间">
-      <input type="text" data-cue-text maxlength="500" value="${esc(cue.text)}" aria-label="第 ${i+1} 条字幕文本">
-      <button class="pill" type="button" data-cue-remove aria-label="删除第 ${i+1} 条字幕">×</button>
+      <button class="pill" type="button" data-cue-seek aria-label="${esc(tr("定位第 {number} 条字幕", {number:i+1}))}">▶</button>
+      <input type="number" min="0" step=".001" data-cue-time="start" value="${esc(cue.start)}" aria-label="${esc(tr("第 {number} 条字幕开始时间", {number:i+1}))}">
+      <input type="number" min="0" step=".001" data-cue-time="end" value="${esc(cue.end)}" aria-label="${esc(tr("第 {number} 条字幕结束时间", {number:i+1}))}">
+      <input type="text" data-cue-text maxlength="500" value="${esc(cue.text)}" aria-label="${esc(tr("第 {number} 条字幕文本", {number:i+1}))}">
+      <button class="pill" type="button" data-cue-remove aria-label="${esc(tr("删除第 {number} 条字幕", {number:i+1}))}">×</button>
     </div>`).join("")}</div>`
-    : `<label>手写字幕（一行一句）<textarea data-film-lines rows="2" placeholder="这段没有字幕">${esc(c.subs.join("\n"))}</textarea></label>`;
-  box.innerHTML = `<div class="row"><b>第 ${F.sel + 1} 段 · ${esc(c.name || node(c.node)?.name || "")}</b>
+    : OneShotI18n.html`<label>手写字幕（一行一句）<textarea data-film-lines rows="2" placeholder="这段没有字幕">${esc(c.subs.join("\n"))}</textarea></label>`;
+  box.innerHTML = OneShotI18n.html`<div class="row"><b>${esc(tr("第 {number} 段 · {name}", {number:F.sel+1,name:c.name || source?.name || ""}))}</b>
       <span class="grow"></span>${c.ref && (c.remake_shot || alternative) ? `<button class="pill" data-update-version ${c.remake_shot?"":'aria-expanded="false"'}>${c.remake_shot ? "更新这一镜" : "更换素材版本"}</button>` : ""}${trimControls}</div>
     ${isStill ? OneShotI18n.html`<label class="still-duration">停留时长 <input type="number" min="0.5" max="60" step="0.1" value="${c.duration}"> 秒</label>` : OneShotI18n.html`
     <div class="trim"><span>入点 <b>${(c.in || 0).toFixed(1)}s</b></span><input type="range" min="${baseIn}" max="${baseOut}" step="${seekStep}" value="${c.in || 0}" data-t="in">
@@ -165,15 +166,15 @@ function renderClipBox() {
       ${slowdown&&canvasCanEdit()?'<button class="pill" type="button" data-story-slowdown>预览减速补齐</button>':""}</div>` : ""}
     <div class="row2">${captions}
       ${isStill ? "" : `<label class="vol">${volumeLabel}<input type="range" min="0" max="1.5" step="0.05" value="${c.volume}"><span>${Math.round(c.volume * 100)}%</span></label><label class="clip-speed">速度（倍）<input type="number" min="0.5" max="2" step="any" value="${filmSpeed(c)}" data-clip-speed></label>`}</div>`;
-  if (!isStill && canvasCanEdit()) box.insertAdjacentHTML("beforeend", `<div class="row fm-caption-actions">
-    <button class="pill" type="button" data-film-transcribe ${captionBusy ? "disabled" : ""}>${captionBusy ? "正在识别…" : c.captions ? "重新识别字幕" : "识别原声字幕"}</button>
-    ${c.captions ? '<button class="pill" type="button" data-film-manual>改用手写字幕</button><span class="dim">时间为原片秒数</span>' : ""}</div>`);
+  if (!isStill && canvasCanEdit()) box.insertAdjacentHTML("beforeend", OneShotI18n.html`<div class="row fm-caption-actions">
+    <button class="pill" type="button" data-film-transcribe ${captionBusy ? "disabled" : ""}>${tr(captionBusy ? "正在识别…" : c.captions ? "重新识别字幕" : "识别原声字幕")}</button>
+    ${c.captions ? OneShotI18n.html`<button class="pill" type="button" data-film-manual>改用手写字幕</button><span class="dim">时间为原片秒数</span>` : ""}</div>`);
   const vid = $("#fmV");
   if (F.n?.data.playlist) {
     const locate = document.createElement("button");
     locate.className = "pill";
     locate.type = "button";
-    locate.textContent = "定位原片";
+    locate.textContent = OneShotI18n.t("定位原片");
     locate.dataset.playlistLocate = "";
     locate.onclick = () => locateFilmPlaylistSource(F,c);
     $(".row", box).append(locate);

@@ -15,6 +15,7 @@ from oneshot.editing import timeline_routes
 from oneshot.editing import transcription_routes
 from oneshot.editing import video_routes
 from oneshot.generation import jobs as generation_jobs
+from oneshot.generation import character_sheet
 from oneshot.generation import motion_reference
 from oneshot.generation import prompts
 from oneshot.generation import queue as generation_queue
@@ -134,6 +135,7 @@ routes = [
     web.route("GET", "/api/video/frame-preview", video_routes.video_frame_preview),
     web.route("POST", "/api/rewrite", prompts.rewrite),
     web.route("POST", "/api/storyboard", prompts.storyboard),
+    web.route("POST", "/api/character-sheet/review", character_sheet.review),
     web.route("POST", "/api/describe", prompts.describe),
     web.route("POST", "/api/analyze", prompts.analyze),
     web.route("POST", "/api/video/trim", video_routes.trim_video),

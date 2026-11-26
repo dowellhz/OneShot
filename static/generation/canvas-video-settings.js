@@ -48,6 +48,12 @@ function canvasVideoQuality(n) {
   return options && !Object.hasOwn(options,quality) ? "std" : quality;
 }
 
+function videoQualityPrecheckAvailable(n) {
+  return n.type==="video" && !n.data.film && !n.data.previs && CAPS_LIST.video_quality_precheck===true &&
+    !hasMediaReferences(n) && !n.data.draft && nodeProvider(n)?.id==="local_h3" &&
+    (videoOutputModel(n)?.id || "h3-video")==="h3-video";
+}
+
 const ROLE_CN = { auto: "自动", subject: "人物设定", first: "首帧", last: "尾帧", keyframe: "关键帧" };
 function vidFrames(sec) { let f = Math.max(5, Math.round(sec * 24)); return f + (5 - f % 17 + 17) % 17; }
 // how a video node uses its images: per edge role (auto / subject / first / last / keyframe) -> labels, times, model path

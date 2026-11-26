@@ -168,7 +168,7 @@ async def list_boards(req):
         v = next((n["versions"][n["cur"]] for n in reversed(b.get("nodes", [])) if n.get("type") == "video" and
                   n.get("versions") and type(n.get("cur")) is int and 0<=n["cur"]<len(n["versions"])), None)
         out.append({"id": f.stem, "name": b.get("name") or "未命名画布", "nodes": len(b.get("nodes", [])), "mtime": f.stat().st_mtime,
-                    "created":b.get("created"),
+                    "created":b.get("created"), "auto_name":b.get("auto_name"),
                     "owner": b.get("owner"), "shared": bool(b.get("shared")), "wiz": (b.get("wiz") or {}).get("step"),
                     "project":groups.get(f.stem) if b.get("owner") == u["id"] else None, "access":access_role(u,b),"team":team,
                     "cover": (v or {}).get("cover_url") or (v or {}).get("url")})

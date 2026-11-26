@@ -28,6 +28,7 @@ function canvasBatchLayout() {
 }
 
 function canvasGenerationCount(n) {
+  if (n.data.quality_precheck && videoQualityPrecheckAvailable(n)) return 1;
   const max = n.type === "audio" ? 1 : n.type === "video" ? 3 : 4;
   return Math.max(1,Math.min(max,Math.trunc(Number(n.data.count)) || 1));
 }
@@ -121,8 +122,8 @@ function showPrep(n, on) {
   const el = els.get(n.id); if (!el) return;
   const g = $(".gen", el);
   if (!on) { renderJob(n); if (!n.job) g.classList.toggle("on", toolBusy.has(n.id)); return; }
-  g.classList.add("on"); $(".pct", g).textContent = "译"; $(".bar i", g).style.width = "3%";
-  $(".s", g).textContent = "提交中…";
+  g.classList.add("on"); $(".pct", g).textContent = OneShotI18n.t("译"); $(".bar i", g).style.width = "3%";
+  $(".s", g).textContent = OneShotI18n.t("提交中…");
 }
 function captureGenerationRecord(request, textInputs) {
   const settings = Object.fromEntries(["model","provider_model","provider","quality","ar","duration","seed","count","extension"]
@@ -278,6 +279,8 @@ function videoReq(n, prompt, {silent=false}={}) {
   const sounds = audioInputs(n);
   const clips = videoInputs(n);
   const missingReference = message => { if(!silent)showErr(n,message); return null; };
+  if (d.quality_precheck && !videoQualityPrecheckAvailable(n))
+    return missingReference(OneShotI18n.t("当前设置无法预检，请选择本地 H3 BF16 或关闭质量预检"));
   if (guide && !guide.version) return missingReference("白模参考版本已移除，请改用当前版本或删除连线");
   if (sounds.some(s=>!s.version)) return missingReference("音频参考版本已移除，请重新连接");
   if (clips.some(s=>!s.version)) return missingReference("视频参考版本已移除，请重新选择");
@@ -301,6 +304,7 @@ function videoReq(n, prompt, {silent=false}={}) {
     const resolved=resolveCanvasPrompt(n,prompt,bindings,{silent});
     if(resolved===null)return null;
     const common = { kind: "video", prompt:resolved, ar, duration:canvasVideoDuration(n), quality:canvasVideoQuality(n), turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: canvasGenerationCount(n) };
+    if (d.quality_precheck) common.quality_precheck=true;
     if(d.video_optics&&Object.keys(d.video_optics).length)common.video_optics=structuredClone(d.video_optics);
     if (d.draft && videoDraftAvailable(n)) Object.assign(common,{draft:true,quality:"std"});
     if(usesFields(n)){
@@ -360,14 +364,20 @@ function renderJob(n) {
   g.classList.add("on");
   const sts = n.job.ids.map(i => n.job.st?.[i]).filter(Boolean);
   const run = sts.find(s => s.state === "running"), q = sts.find(s => s.state === "queued"), done = sts.filter(s => s.state === "done").length;
-  let pct = "", msg = "提交中…", frac = 0;
+  const tr = OneShotI18n.t;
+  let pct = "", msg = tr("提交中…"), frac = 0;
   if (run) {
-    if (run.max > 1 && run.value != null) { frac = run.value / run.max; pct = Math.round(frac * 100) + "%"; msg = n.data.film ? "合成成片中" : run.value >= run.max ? "解码合成中" : `生成中 · 第 ${run.value}/${run.max} 步`; }
-    else { pct = "…"; msg = "加载模型 / 处理输入"; }
-    if (run.phase && EW_PHASES[run.phase] && run.phase !== "sampling") { pct = "…"; msg = EW_PHASES[run.phase]+"…"; }
-  } else if (q) { pct = "排队"; msg = q.prep ? "已进入队列 · 正在把提示词翻译成英文" : q.ahead > 0 ? `前面还有 ${q.ahead} 个任务` : "即将开始"; }
-  const eta = Math.max(0, ...sts.filter(s => s.state !== "done").map(s => s.eta || 0));
-  if (eta && (run || q)) msg += ` · ${run ? "还要" : ""}约 ${fmtT(eta)}${run ? "" : "后完成"}`;
+    if (run.max > 1 && run.value != null) { frac = run.value / run.max; pct = Math.round(frac * 100) + "%"; msg = n.data.film ? tr("合成成片中") : run.value >= run.max ? tr("解码合成中") : tr("生成中 · 第 {step}/{total} 步", {step:run.value,total:run.max}); }
+    else { pct = "…"; msg = tr("加载模型 / 处理输入"); }
+    if (run.phase && EW_PHASES[run.phase] && run.phase !== "sampling") { pct = "…"; msg = tr(EW_PHASES[run.phase])+"…"; }
+  } else if (q) { pct = tr("排队"); msg = q.prep ? tr("已进入队列 · 正在把提示词翻译成英文") : q.ahead > 0 ? tr(q.ahead === 1 ? "前面还有 1 个任务" : "前面还有 {count} 个任务",{count:q.ahead}) : tr("即将开始"); }
+  const review=(run||q)?.meta?.quality_review;
+  if (review) {
+    msg = videoQualityProgress(review,run||q);
+    if (Number.isInteger((run||q).engine_queue)) pct = tr("排队");
+  }
+  const eta = review ? 0 : Math.max(0, ...sts.filter(s => s.state !== "done").map(s => s.eta || 0));
+  if (eta && (run || q)) msg += " · " + tr(run ? "还要约 {duration}" : "约 {duration} 后完成", {duration:fmtT(eta)});
   if (n.job.ids.length > 1) msg += ` · ${done}/${n.job.ids.length}`;
   $(".pct", g).textContent = pct; $(".bar i", g).style.width = Math.max(3, frac * 100) + "%";
   $(".s", g).textContent = msg + " · " + Math.round((Date.now() - n.job.t0) / 1000) + "s";
@@ -444,6 +454,7 @@ async function poll() {
           const generation = receipt && {generation_record:{...receipt, service:s.meta?.provider || receipt.service,
             mode:s.meta?.mode || receipt.mode,
             effective_prompt:s.meta?.full_prompt || s.meta?.prompt || receipt.effective_prompt,
+            ...(s.meta?.quality_review ? {quality_review:s.meta.quality_review} : {}),
             settings:{...receipt.settings,...(s.meta?.model ? {provider_model:s.meta.model} : {}),
               ...(s.meta?.resolution ? {resolution:s.meta.resolution} : {})}}};
           versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: actualSource, memory_used: n.job.memory_used||[], mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}), ...generation, ...(job.group_run_id?{group_run_id:job.group_run_id}:{}) });

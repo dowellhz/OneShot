@@ -94,6 +94,10 @@ tool("storyboard_create_plan", "从剧情生成一份新分镜脚本供用户确
     "shots":prop("integer",minimum=1,maximum=32),"target_seconds":prop("integer",minimum=1,maximum=600),
     "style":prop("string",maxLength=200),"aspect":prop("string",enum=["16:9","9:16","4:3","1:1","21:9"])
 },["story"])
+tool("storyboard_apply", "自动生成模式下，将用户明确要求应用的当前会话分镜方案加入画布。", {
+    "plan_call_id":NODE},[])
+tool("storyboard_generate_frame", "自动生成模式下，为用户要求生成的镜头补齐一张分镜图，并保存到该镜头。", {
+    "node_id":NODE,"shot":prop("integer",minimum=1,maximum=5000)},["node_id","shot"])
 tool("storyboard_range_run_plan", "为连续镜头准备批量生成计划。first 和 last 是从 1 开始且包含两端的镜头编号，stage 为 both、frame（分镜图）或 video。默认补齐缺少成品的节点，明确要求重跑时才设 include_existing=true。生成分镜图时可用 tail_mode：keep 保留现有引用（默认），connect 只新建缺失的上一镜尾帧引用，refresh 只刷新已有引用，connect_and_refresh 同时新建和刷新。用户在界面核对并确认运行。", {
     "node_id":NODE,"first":prop("integer",minimum=1,maximum=5000),"last":prop("integer",minimum=1,maximum=5000),
     "stage":prop("string",enum=["both","frame","video"]),"include_existing":prop("boolean"),
@@ -205,7 +209,9 @@ def scoped_tools(data):
     if data.get("shot_range_pending") or data.get("previs_storyboard_pending"):
         allowed = PLAN_TOOLS & allowed
     if data.get("storyboard_create_pending"):
-        allowed = (PLAN_TOOLS - {"storyboard_create_plan"}) & allowed
+        allowed = ((PLAN_TOOLS - {"storyboard_create_plan"}) | {"storyboard_apply"}) & allowed
+    if data.get("generation_mode") != "auto":
+        allowed = set(allowed) - {"storyboard_apply","storyboard_generate_frame"}
     if data.get("review_revision"):
         allowed = {"storyboard_revision_plan"} & allowed
     return allowed

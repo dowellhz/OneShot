@@ -45,6 +45,10 @@ class GenerationContext:
         p["prompt"] = p.get("prompt", "").split(MEMORY_PROMPT_MARKER, 1)[0]
         if p.get("kind") == "image":
             p["prompt"] = p["prompt"].split(IMAGE_STORY_PROMPT_MARKER, 1)[0]
+            if p.get("character_sheet") is True:
+                for key in ("memory_ids","memory_views","memory_used","fields"):
+                    p.pop(key,None)
+                return {**p,"images":[],"expand":False,"image_text":"none"}
         content = p.get("prompt", "") + "\n" + "\n".join(str(v) for v in (p.get("fields") or {}).values())
         video_generation = p.get("kind") == "video"
         numbered = list(NUMBERED_AV_REFERENCE.finditer(content)) if video_generation else []

@@ -13,6 +13,7 @@ from oneshot.assistant import agent_playlist
 from oneshot.assistant import agent_video
 from oneshot.assistant import creative_profile
 from oneshot.assistant import creative_skills
+from oneshot.assistant import storyboard_execution
 from oneshot.assistant.chat_state import InternalRequest, MAX_RUN_SECONDS, ToolError
 from oneshot.assistant.chat_tools import (
     PLAN_TOOLS,
@@ -76,7 +77,11 @@ class ToolExecution:
             raise ToolError("请先在批量生成计划中核对并确认运行")
         if run["data"].get("previs_storyboard_pending") and name not in PLAN_TOOLS:
             raise ToolError("请先在白模编辑器核对并创建分镜")
-        if run["data"].get("storyboard_create_pending") and name not in PLAN_TOOLS:
+        if name in storyboard_execution.TOOLS and name in scoped_tools(run["data"]):
+            if name == "storyboard_apply":
+                return storyboard_execution.apply(self,run,user,cid,args)
+            return await storyboard_execution.generate_frame(self,run,user,cid,args)
+        if name in storyboard_execution.TOOLS or run["data"].get("storyboard_create_pending") and name not in PLAN_TOOLS:
             raise ToolError("请先核对新分镜脚本并确认加入画布")
         if revision := run["data"].get("review_revision"):
             if name!="storyboard_revision_plan":
@@ -275,7 +280,7 @@ class ToolExecution:
             self.board(user,bid)
             run["data"]["storyboard_create_pending"] = True
             self.update(run)
-            return {"storyboard_create":{"board":bid,"id":"n"+uuid.uuid4().hex[:24],"story":story,
+            return {"plan_call_id":cid,"storyboard_create":{"board":bid,"id":"n"+uuid.uuid4().hex[:24],"story":story,
                                          "aspect":aspect,"refs":pins,**result},
                     "text":"新分镜脚本已拟好，可核对各镜时长，再确认加入画布。"}
         if name in ("storyboard_context","storyboard_next_shot_plan","storyboard_visual_review","storyboard_revision_plan","storyboard_range_run_plan"):

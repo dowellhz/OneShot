@@ -69,6 +69,8 @@
 
 ## Review generation instructions
 
+- With local H3 BF16 selected, enable **Quality precheck** to screen up to five 480p INT8 drafts. **Idea to Film** enables it by default when local INT8 and Qwen vision are available. A local vision model checks the visible requirements. OneShot starts the BF16 render with the first passing or highest-scoring prompt. With image references, it reviews the BF16 result against the timed keyframes and retries once if it finds a clear subject, action, ordering, or camera mismatch. The canvas keeps the highest-scoring final. Right-click the result to see the attempt scores. [Precheck and transfer evaluation](video-reference.md#视频节点质量预检)
+
 - Assign each connected image a role such as source, composition, camera, character appearance, scene, prop, or style. A composition reference includes subject placement. A camera reference preserves the viewpoint and shot size while the frame description determines where people and props are.
 - Choose **No visible text** when the image should contain none. For **Only specified text**, quote the exact wording in the description, such as `The door sign reads "17"`. Use **Preview** to check the effective prompt and reference versions, then choose **Generate as previewed**. The model may still add lettering.
 - In **Idea to Film**, describe the state before the action in the first frame, the key pose in the middle frame, and the settled positions in the final frame. Right-click a generated video and choose **Check dialogue** to listen to that version and compare its expected lines with the timestamped transcript. This uses the transcription service configured in the console.

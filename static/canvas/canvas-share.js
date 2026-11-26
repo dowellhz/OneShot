@@ -1,5 +1,6 @@
 "use strict";
 
+const shareText = OneShotI18n.t;
 const SHARE_ROLES = {reviewer:"可审阅", editor:"可编辑"};
 const sharePath = () => "/api/board/" + encodeURIComponent(boardId) + "/access";
 const snapshotPath = () => "/api/board/" + encodeURIComponent(boardId) + "/snapshot";
@@ -14,18 +15,18 @@ function drawSharePermissions(data) {
   $("#shareTeam").disabled = !!data.team;
   const destination = $("#shareTeamTarget");
   const options = canvasTeams.map(team=>`<option value="${esc(team.id)}">${esc(team.name)}</option>`).join("");
-  destination.innerHTML = '<option value="">个人空间</option>'+options;
+  destination.innerHTML = OneShotI18n.html`<option value="">个人空间</option>`+options;
   if (data.team && !canvasTeams.some(team=>team.id===data.team)) {
-    destination.add(new Option("当前所属团队",data.team));
+    destination.add(new Option(shareText("当前所属团队"),data.team));
   }
   destination.value = data.team || "";
   destination.disabled = $("#shareTeamMove button").disabled = B.owner !== ME_USER?.id;
   const list = $("#sharePeople");
   list.innerHTML = data.collaborators.map(a=>OneShotI18n.html`<div class="share-account" data-username="${esc(a.username)}">
-    <span title="${esc(a.username)}">${esc(a.name || a.username)}${a.disabled ? " · 已停用" : ""}</span>
-    <select aria-label="${esc(a.username)}的权限">${Object.entries(SHARE_ROLES).map(([role,label])=>
-      `<option value="${role}" ${a.role===role?"selected":""}>${label}</option>`).join("")}</select>
-    <button type="button" aria-label="移除 ${esc(a.username)}">移除</button></div>`).join("");
+    <span title="${esc(a.username)}">${esc(a.name || a.username)}${a.disabled ? shareText(" · 已停用") : ""}</span>
+    <select aria-label="${esc(shareText("{name}的权限", {name:a.username}))}">${Object.entries(SHARE_ROLES).map(([role,label])=>
+      `<option value="${role}" ${a.role===role?"selected":""}>${esc(shareText(label))}</option>`).join("")}</select>
+    <button type="button" aria-label="${esc(shareText("移除 {name}", {name:a.username}))}">移除</button></div>`).join("");
   $$(".share-account",list).forEach(row=>{
     const username = row.dataset.username;
     $("select",row).onchange = e=>changeSharePermissions({username,role:e.target.value});
@@ -43,7 +44,7 @@ async function showShareTeamMembers() {
     const url="/api/canvas-teams/"+encodeURIComponent(team.id)+"/members";
     const members=await boardRequest(url);
     if (bid!==boardId || select.value!==team.id) return;
-    list.innerHTML=members.map(member=>`<li><span>${esc(member.name || member.username)}${member.manager?" · 管理员":""}</span>
+    list.innerHTML=members.map(member=>`<li><span>${esc(member.name || member.username)}${member.manager?shareText(" · 管理员"):""}</span>
       ${team.managed && !member.manager ? OneShotI18n.html`<button type="button" data-team-remove="${esc(member.username)}">移除</button>`:""}</li>`).join("");
     invite.hidden=!team.managed;
   } catch(error) { if(bid===boardId)$("#shareStatus").textContent=error.message; }
@@ -58,7 +59,7 @@ async function changeTeamRoster(payload) {
     await boardRequest("/api/canvas-teams/"+encodeURIComponent(team)+"/members","PATCH",payload);
     if(bid!==boardId)return;
     await showShareTeamMembers();
-    $("#shareStatus").textContent="团队成员已更新";
+    $("#shareStatus").textContent=shareText("团队成员已更新");
     $("#shareTeamUsername").value="";
   } catch(error) { if(bid===boardId)$("#shareStatus").textContent=error.message; }
   finally { controls.disabled=false; }
@@ -67,7 +68,7 @@ async function changeTeamRoster(payload) {
 function drawManagedTeams(selected) {
   const select=$("#shareManagedTeam");
   const current=selected || select.value;
-  select.innerHTML='<option value="">选择团队</option>'+canvasTeams.map(team=>
+  select.innerHTML=OneShotI18n.html`<option value="">选择团队</option>`+canvasTeams.map(team=>
     `<option value="${esc(team.id)}">${esc(team.name)}</option>`).join("");
   select.value=canvasTeams.some(team=>team.id===current)?current:"";
   return showShareTeamMembers();
@@ -79,7 +80,7 @@ function drawPublicSnapshot(data) {
   $("#publicPublish").hidden = active;
   $("#publicRevoke").hidden = !active;
   $("#publicURL").value = active ? new URL("/share/"+data.token,location.origin).href : "";
-  $("#publicState").textContent = active ? "发布于 " + new Date(data.created*1000).toLocaleString() : "";
+  $("#publicState").textContent = active ? shareText("发布于 {date}", {date:new Date(data.created*1000).toLocaleString(OneShotI18n.locale)}) : "";
 }
 
 async function changePublicSnapshot(method) {
@@ -92,7 +93,7 @@ async function changePublicSnapshot(method) {
     const data = await boardRequest(url,method);
     if (boardId !== bid) return;
     drawPublicSnapshot(data);
-    $("#shareStatus").textContent = method === "DELETE" ? "公开链接已撤销" : "公开快照已发布";
+    $("#shareStatus").textContent = method === "DELETE" ? shareText("公开链接已撤销") : shareText("公开快照已发布");
   } catch (error) {
     if (boardId === bid) $("#shareStatus").textContent=error.message;
   } finally { if(boardId === bid) controls.disabled=false; }
@@ -111,7 +112,7 @@ async function changeSharePermissions(payload) {
     if (Object.hasOwn(payload,"team")) await loadBoardDirectory();
     if (boardId !== bid) return false;
     drawSharePermissions(data);
-    $("#shareStatus").textContent = "权限已更新";
+    $("#shareStatus").textContent = shareText("权限已更新");
     return true;
   } catch (error) {
     if (boardId === bid) {
@@ -127,7 +128,7 @@ async function shareOpen() {
   const bid = boardId, panel = $("#canvasShare"), link = $("#shareURL");
   link.value = new URL("/?board="+encodeURIComponent(bid),location.origin).href;
   $("#shareStatus").textContent = "";
-  $("#shareMode").textContent = B.access === "reviewer" ? "你可以查看画布并参与评论。" : "使用已获授权的 OneShot 账号登录后打开链接。";
+  $("#shareMode").textContent = B.access === "reviewer" ? shareText("你可以查看画布并参与评论。") : shareText("使用已获授权的 OneShot 账号登录后打开链接。");
   const editable = showcaseCanPublish();
   const connector = $("#shareConnector");
   connector.hidden = !editable || B.owner !== ME_USER?.id;
@@ -158,12 +159,12 @@ async function shareOpen() {
   if (entries.status === "fulfilled" && Array.isArray(entries.value)) {
     drawShowcase(entries.value); showcaseControls.disabled = false;
   }
-  if ([accounts,snapshot,entries].some(result=>result.status === "rejected")) $("#shareStatus").textContent = "部分分享设置读取失败，可以关闭后重试";
+  if ([accounts,snapshot,entries].some(result=>result.status === "rejected")) $("#shareStatus").textContent = shareText("部分分享设置读取失败，可以关闭后重试");
 }
 
 async function copyShareURL(link) {
-  try { await navigator.clipboard.writeText(link.value); $("#shareStatus").textContent="已复制链接"; }
-  catch { link.focus(); link.select(); $("#shareStatus").textContent="链接已选中，可以手动复制"; }
+  try { await navigator.clipboard.writeText(link.value); $("#shareStatus").textContent=shareText("已复制链接"); }
+  catch { link.focus(); link.select(); $("#shareStatus").textContent=shareText("链接已选中，可以手动复制"); }
 }
 
 function initCanvasShare() {
@@ -267,7 +268,7 @@ function initCanvasShare() {
       input.value="";
       drawSharePermissions(await boardRequest(sharePath()));
       await drawManagedTeams(team.id);
-      $("#shareStatus").textContent="团队已创建";
+      $("#shareStatus").textContent=shareText("团队已创建");
     } catch(error) { if(bid===boardId)$("#shareStatus").textContent=error.message; }
     finally { controls.disabled=false; }
   };

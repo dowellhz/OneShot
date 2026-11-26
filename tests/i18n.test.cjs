@@ -115,6 +115,66 @@ async function run() {
   assert.equal(admin.querySelector("#me b").textContent, displayName);
   console.window.close();
 
+  const service = (id, kind, name, label, caps, group = "local") =>
+    ({id, kind, name, label, caps, group, enabled:true, config:{}, secrets:{}});
+  const h3 = service("local_h3", "local_h3", "本地 H3", "本地 H3（4090）", ["image","video"]);
+  const whisper = service("whisper", "asr_compat", "本机 Faster Whisper", "OpenAI 兼容语音转写", ["asr"], "audio");
+  const qwen = service("local_qwen", "local_qwen", "本地 Qwen", "本地 Qwen3.5-9B", ["text","vision"]);
+  const custom = service("custom", "asr_compat", "保留中文名称", "OpenAI 兼容语音转写", ["asr"], "audio");
+  const services = {
+    caps:{ text:"文本（剧本、改写、扩写）", vision:"看图（反推、看图填写、拉片）",
+      image:"生图 / 改图", asr:"语音转写（创作助手）" },
+    catalog:{}, providers:[h3,whisper,qwen,custom],
+    routes:{text:[{provider_id:qwen.id,model:"qwen3.5-9b"},{provider_id:"remote",model:"text-model"}],
+      vision:[{provider_id:qwen.id,model:"qwen3.5-9b"}], image:[{provider_id:h3.id,model:"h3-image"}],
+      asr:[{provider_id:whisper.id,model:"whisper-1"}]},
+  };
+  for (const locale of ["en", "zh-CN"]) {
+    const modelPage = page("console.html", locale, "console#services", async url =>
+      json(url === "/api/admin/providers" ? services : api[url]));
+    await wait();
+    const modelDOM = modelPage.window.document;
+    const english = locale === "en";
+    const text = selector => modelDOM.querySelector(selector).textContent.trim();
+    assert.equal(text('[data-cap="text"] .hd .dim'), english ? "(scripts, rewrites, and expansion)" : "（剧本、改写、扩写）");
+    assert.equal(text('[data-cap="text"] [data-i="0"] .no'), english ? "Default" : "默认");
+    assert.equal(text('[data-cap="text"] [data-i="1"] .no'), english ? "Fallback 1" : "备用 1");
+    assert.equal(text('[data-cap="text"] .faint'), english ? "Try fallback models in order if the default fails." : "默认失败时依次尝试备用");
+    assert.equal(text('[data-cap="image"] option:checked'), english ? "Local H3" : "本地 H3");
+    assert.equal(text('[data-cap="asr"] option:checked'), english ? "Local Faster Whisper" : "本机 Faster Whisper");
+    assert.equal(text('[data-cap="asr"] option[value="custom"]'), "保留中文名称");
+    assert.equal(text(".prov .faint"), english ? "Local H3 (4090)" : "本地 H3（4090）");
+    assert.equal(modelDOM.querySelector('[data-cap="asr"] input').value, "whisper-1");
+    modelPage.window.close();
+  }
+
+  const directoryData = {
+    "/api/me": {id:7, name:displayName, role:"admin"},
+    "/api/samples": [{id:"sample0"}],
+    "/api/admin/users": [],
+    "/api/boards": [{id:"board1", name:"我的中文画布", owner:7, nodes:1, mtime:100}],
+    "/api/canvas-projects": [{id:"project1", name:"我的中文项目"}],
+    "/api/canvas-teams": [],
+  };
+  const directory = page("console.html", "en", "console#projects", async url => {
+    assert.ok(Object.hasOwn(directoryData, url), url);
+    return json(directoryData[url]);
+  });
+  await wait();
+  const projects=directory.window.document;
+  assert.equal(projects.querySelector("#directoryQuery").placeholder, "Search canvases and projects");
+  assert.equal(projects.querySelector("#directoryScope option[value=all]").textContent, "All visible canvases");
+  assert.equal(projects.querySelector("#directorySort option:checked").textContent, "Most recently updated");
+  assert.equal(projects.querySelector("[data-directory-new=samples] b").textContent, "View examples");
+  assert.equal(projects.querySelector("#directoryCount").textContent, "1 canvas · 1 project");
+  assert.equal(projects.querySelector("[data-directory-action=folder]").textContent, "我的中文项目");
+  assert.equal(projects.querySelector(".pj .nm").textContent, "我的中文画布");
+  assert.equal(projects.querySelector("[data-directory-action=rename]").textContent, "Rename");
+  projects.querySelector("#directoryItems [data-directory-action=rename]").click();
+  assert.equal(projects.querySelector("#mbox h3").textContent, "Rename canvas");
+  assert.equal(projects.querySelector("#mbox input[name=name]").value, "我的中文画布");
+  directory.window.close();
+
   for (const file of ["public-canvas.html", "shared-item.html", "showcase.html", "connect-agents.html", "events.html"]) {
     const publicPage = page(file, "en");
     const doc = publicPage.window.document;

@@ -141,7 +141,8 @@ async function previewPrompt(n,{branch=false}={}) {
     $("#pvt").hidden = $("#pvCopy").hidden = !r.prompt;
     const expansion=image && r.image_preview && req.expand
       ? OneShotI18n.t(r.image_expanded ? "已扩写" : "本次按原描述生成") : "";
-    $("#pvm").textContent = [r.mode,expansion].filter(Boolean).join(" · ");
+    const mode=(r.mode||"").split(" · ").map(part=>OneShotI18n.t(part)).join(" · ");
+    $("#pvm").textContent = [mode,expansion].filter(Boolean).join(" · ");
     $("#pvModels").hidden = true;
     const check=$("#pvModelCheck");
     check.hidden=image;

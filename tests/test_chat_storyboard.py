@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock, patch
 import json
 
 from PIL import Image
+from aiohttp import web
 
 from oneshot.editing import image_editor
+from oneshot.generation import requests as generation_requests
 from oneshot.storage import db
 import server
 
@@ -14,6 +16,44 @@ from chat_fixture import ChatFixture, answer, call
 
 
 class ChatStoryboard(ChatFixture):
+    async def test_continue_in_auto_mode_applies_existing_plan_and_generates_shot_images(self):
+        plan_data = {"title":"开门","shots":[
+            {"duration":5,"scene":"门口","keyframe":"桌上的钥匙","action":["找到钥匙"]},
+            {"duration":5,"scene":"门口","keyframe":"钥匙靠近门把","action":["打开门"]}]}
+        llm = SimpleNamespace(chat=AsyncMock(return_value=json.dumps(plan_data)))
+        self.svc.model.side_effect = [
+            call("storyboard_create_plan",{"story":"找到钥匙，打开门。","aspect":"16:9"}),answer()]
+        with patch.dict(self.app,{"llm":llm}):
+            drafted = await self.send("准备分镜方案",selected=[])
+            self.assertEqual((await self.wait(drafted))["state"],"done")
+        result = image_editor.save(server.COMFY_DIR,Image.new("RGB",(128,72),"yellow"))
+
+        async def generate(req,payload):
+            jid = "e0000000"+str(len(server.JOBS)+12345)
+            server.JOBS[jid] = {"state":"done","created":1,"meta":{"uid":7},"outputs":[result]}
+            return web.json_response({"ids":[jid]})
+
+        async def continue_turn(key, mode):
+            response = await self.client.post(f"/api/chat/sessions/{self.sid}/messages",json={
+                "text":"继续","request_key":key,"selected":[],"generation_mode":mode})
+            self.assertEqual(response.status,200,await response.text())
+            return await self.wait((await response.json())["id"],timeout=5)
+
+        self.svc.model.side_effect = [answer("手动模式继续确认"),answer("已有分镜图")]
+        with patch.object(generation_requests,"generate_request",side_effect=generate) as submit:
+            self.assertEqual((await continue_turn("request-manual","manual"))["state"],"done")
+            submit.assert_not_awaited()
+            self.assertEqual((await continue_turn("request-auto","auto"))["state"],"done")
+            self.assertEqual(submit.await_count,2)
+            self.assertEqual((await continue_turn("request-again","auto"))["state"],"done")
+            self.assertEqual(submit.await_count,2)
+        board = self.load()
+        script, = [n for n in board["nodes"] if n["type"]=="script"]
+        pairs = script["data"]["made"]
+        images = {n["id"]:n for n in board["nodes"] if n["type"]=="image"}
+        self.assertEqual([images[p["img"]]["versions"][0]["ref"] for p in pairs],[result["ref"]]*2)
+        self.assertTrue(any(e["from"]==pairs[0]["img"] and e["to"]==pairs[1]["img"] for e in board["edges"]))
+
     async def test_new_storyboard_uses_the_shared_splitter_without_writing_the_board(self):
         path = server.board_path("test")
         before = path.read_text()
@@ -38,6 +78,17 @@ class ChatStoryboard(ChatFixture):
         self.assertEqual(llm.chat.await_count,2)
         self.assertEqual(path.read_text(),before)
         self.assertFalse(server.JOBS)
+
+    async def test_explicit_apply_can_use_plan_created_in_the_same_turn(self):
+        draft = {"title":"一扇门","shots":[{"duration":5,"scene":"门外","keyframe":"门半开"}]}
+        llm = SimpleNamespace(chat=AsyncMock(return_value=json.dumps(draft)))
+        self.svc.model.side_effect = [call("storyboard_create_plan",{"story":"推开门。"},"draft"),
+                                      call("storyboard_apply",{},"apply"),answer("已加入分镜")]
+        with patch.dict(self.app,{"llm":llm}):
+            rid = await self.send("拟好分镜并直接加入画布",selected=[])
+            self.assertEqual((await self.wait(rid))["state"],"done")
+        script, = [node for node in self.load()["nodes"] if node["type"]=="script"]
+        self.assertEqual(script["name"],"一扇门")
 
     async def test_storyboard_binds_assets_to_their_shots_on_canvas_and_in_assistant(self):
         user = {"id":7,"role":"member"}

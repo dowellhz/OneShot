@@ -33,17 +33,29 @@ function makeShotMotionFrame(script,shot,settings,index,phase,prior,x,y) {
   const image=addNode("image",x,y,{...data,aspect:script.data.aspect,quality:"4mp",image_ref_seq:1},
     {name:`镜${index+1} · ${moment}`});
   B.edges.push({from:prior.id,to:image.id,prompt_slot:1,image_use:"camera"});
-  settings.references.forEach(ref=>B.edges.push({from:ref.node.id,to:image.id,image_use:"character",story_cast:!ref.pinned,...(ref.pinned?{ref:ref.ref}:{})}));
+  addStoryboardImageReferences(image,settings.frameReferences);
   return image;
 }
 
 const SCRIPT_VIDEO_DURATIONS = [5,8,10,14];
 const scriptVideoDuration = desired => SCRIPT_VIDEO_DURATIONS.find(seconds=>seconds>=Number(desired||5)) ?? 14;
+function addStoryboardImageReferences(image,references) {
+  for (const ref of references) {
+    B.edges.push({from:ref.node.id,to:image.id,image_use:ref.kind||"character",
+      ...(ref.pinned?{ref:ref.ref}:{story_cast:true})});
+  }
+}
 function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   const data=script.data;
   const refOf=name=>refs.find(ref=>ref.name===name)||refs.find(ref=>ref.name.includes(name)||name.includes(ref.name));
   const characters=shot.characters||[], cast=data.characters||[];
-  const references=[...new Map(characters.map(refOf).filter(Boolean).map(ref=>[ref.node.id,ref])).values()];
+  const references=[...new Map(characters.map(refOf).filter(Boolean).map(ref=>[ref.node.id,ref])).values()].slice(0,8);
+  const visuals=(shot.visual_asset_keys||[]).flatMap(key=>{
+    const asset=(data.visual_assets||[]).find(item=>item.key===key);
+    const source=asset&&wizardVisualAssetNode(script,asset);
+    const input=source&&imageInputs(script).find(({source:n,edge,version})=>n===source&&edge.ref&&version?.ref);
+    return input?[{node:source,ref:input.version.ref,pinned:true,kind:asset.kind,look:asset.look,name:asset.name}]:[];
+  }).slice(0,8-references.length);
   const intro=references.map((ref,i)=>`@图${i+1} 是${ref.name}`).join("，");
   const assets=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
   const assetLine=assets&&"参考资产 "+assets;
@@ -55,8 +67,9 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
     return `${name}：${look}${voice?"，声音："+voice:""}`.replace(/：$/,"");
   }).join("\n");
   const duration=scriptVideoDuration(shot.duration);
-  return {references,image:{prompt,caption:shot.keyframe||""},video:{
-    duration,fields:{style:data.style,scene:assetLine?[shot.scene,assetLine].filter(Boolean).join("\n"):shot.scene,people,camera:[shot.shot_size,shot.camera].filter(Boolean).join("，"),
+  const scene = [shot.scene,...visuals.map(asset=>`${asset.name}：${asset.look}`),assetLine].filter(Boolean).join("\n");
+  return {references,frameReferences:[...references.map(ref=>({...ref,kind:"character"})),...visuals],image:{prompt,caption:shot.keyframe||""},video:{
+    duration,fields:{style:data.style,scene,people,camera:[shot.shot_size,shot.camera].filter(Boolean).join("，"),
       action:(shot.action||[]).join("\n"),dialogue:(shot.dialogue||[]).join("\n"),sound:shot.sound,music:""},
   }};
 }
@@ -84,7 +97,8 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
     const prior=shots[i-1], previousPair=assembled.get(i-1)||links?.[i-1];
     const previousTail=node(previousPair?.motion_frames?.end);
     const continuous=s.motion_frames&&s.continues_previous===true&&prior&&previousTail&&s.scene&&
-      ["scene","shot_size","camera"].every(key=>s[key]===prior[key]);
+      ["scene","shot_size","camera"].every(key=>s[key]===prior[key])&&
+      [...(s.visual_asset_keys||[])].sort().join("|")===[...(prior.visual_asset_keys||[])].sort().join("|");
     if(!img&&continuous)img=previousTail;
     if(!img){
       const composition=s.frame?.source==="previs-frame" ? {previs_composition:{ref:s.frame.ref}} : {};
@@ -95,7 +109,7 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
         img.versions.push({ref,url:"/media?ref="+encodeURIComponent(ref),w,h,source,prompt:""});
         img.cur=0;
       }
-      settings.references.forEach(r=>B.edges.push({from:r.node.id,to:img.id,image_use:"character",story_cast:!r.pinned,...(r.pinned?{ref:r.ref}:{})}));
+      addStoryboardImageReferences(img,settings.frameReferences);
       created.push(img);
     }
     let nextY=y0+(created.length?Math.max(size(img).h,300)+110:0);
