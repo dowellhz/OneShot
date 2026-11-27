@@ -311,9 +311,10 @@ function showPanel() {
     if (segment && d.camera_plan) h += OneShotI18n.html`<button type="button" class="pill" id="retakeSettings" title="重拍设置">重拍设置 · ${esc(cameraModeLabel[d.camera_plan.mode] || "机位")}</button>`;
     if (segment && d.object_edit) h += OneShotI18n.html`<button type="button" class="pill" id="objectSettings">物体编辑设置</button>`;
     const precheck=videoQualityPrecheckAvailable(n);
-    if (precheck || d.quality_precheck) h += pill("quality_precheck",{false:"关闭质量预检",true:"INT8 画面预检，最多五次"},
-      d.quality_precheck?"质量预检开":"质量预检关","",!!d.quality_precheck);
-    if (!d.film && !(precheck && d.quality_precheck)) h += pill("count", { 1: "出 1 个", 2: "抽 2 个版本，挑最好的", 3: "抽 3 个版本，挑最好的" }, `${ico("stack")}${d.count > 1 ? OneShotI18n.t("抽 {count}",{count:d.count}) : OneShotI18n.t("1 个")}`);
+    const precheckEnabled=videoQualityPrecheckEnabled(n);
+    if (precheck || precheckEnabled) h += pill("quality_precheck",{false:"关闭质量预检",true:"INT8 画面预检，最多五次"},
+      precheckEnabled?"质量预检开":"质量预检关","",precheckEnabled);
+    if (!d.film && !(precheck && precheckEnabled)) h += pill("count", { 1: "出 1 个", 2: "抽 2 个版本，挑最好的", 3: "抽 3 个版本，挑最好的" }, `${ico("stack")}${d.count > 1 ? OneShotI18n.t("抽 {count}",{count:d.count}) : OneShotI18n.t("1 个")}`);
   }
   if (n.type !== "script") h += OneShotI18n.html`<button class="pill" id="moreBtn" title="更多设置">${ico("more")}</button>`;
   if (n.type === "video" && d.pmode === "fields") h += OneShotI18n.html`<button class="pill" id="fillBtn" title="Qwen 看连入的首帧 / 人物图，填写风格、场景、人物、镜头（只填空着的栏）">看图填写</button>`;

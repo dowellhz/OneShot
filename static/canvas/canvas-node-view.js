@@ -120,18 +120,22 @@ function refresh(n) { if (!n) return; render(n); if (sel.size === 1 && sel.has(n
 function wire(n, el) {
   // drag the node (card or label); click selects
   const startDrag = e => {
-    if (e.button !== 0 || spaceDown || e.target.closest(".plus, [contenteditable=true], [data-open-playlist], [data-node-start], [data-node-prompt], .node-document a, .node-document button")) return;
+    if (e.button !== 0 || spaceDown || canvasPointerActive || e.isPrimary === false ||
+        e.target.closest(".plus, [contenteditable=true], [data-open-playlist], [data-node-start], [data-node-prompt], .node-document a, .node-document button")) return;
     const vid = e.target.closest("video");
     if (!canvasCanEdit()) { selectOnly(n.id); return; }
+    const fromTitle = e.currentTarget.classList.contains("lbl");
+    const moveSelection = tool === "select" && sel.size > 1 && sel.has(n.id) && !e.shiftKey;
     // typing in a text node, or the video's control bar: select only, leave the element alone
-    if (e.target.closest("textarea,audio") || (vid && e.clientY > vid.getBoundingClientRect().bottom - 52 * B.view.k)) {
+    if (!moveSelection && (e.target.closest("textarea,audio") || (vid && e.clientY > vid.getBoundingClientRect().bottom - 52 * B.view.k))) {
       if (!sel.has(n.id) || sel.size > 1) { sel = new Set([n.id]); updateSel(); }
       return;
     }
     e.stopPropagation();
-    if (vid) e.preventDefault();
-    if (!sel.has(n.id)) { if (!e.shiftKey) sel.clear(); sel.add(n.id); updateSel(); }
-    else if (e.shiftKey) { sel.delete(n.id); updateSel(); return; }
+    if (vid || moveSelection) e.preventDefault();
+    if (!sel.has(n.id)) { if (!e.shiftKey) sel.clear(); sel.add(n.id); updateSel({openPrompt:!fromTitle && !e.shiftKey}); }
+    else if (e.shiftKey) { sel.delete(n.id); updateSel({openPrompt:false}); return; }
+    else if (fromTitle && sel.size === 1) updateSel({openPrompt:false});
     if (nodeLocked(n)) return;
     const moving = [...sel].map(node).filter(m => m && !nodeLocked(m)), w0 = toW(e.clientX, e.clientY);
     const board = B;
@@ -156,11 +160,12 @@ function wire(n, el) {
     };
     const up = ev => {
       if (moved && ev.type === "pointerup" && ev.altKey !== last.altKey) mv(ev);
-      ap.stop(); removeEventListener("pointermove", mv); removeEventListener("pointerup", up);removeEventListener("pointercancel",up);
-      removeEventListener("blur",up);
+      ap.stop();
       clearCanvasGuides();
       moving.forEach(m => els.get(m.id)?.classList.remove("dragging"));
       const valid = validMove();
+      if (!moved && valid && ev.type === "pointerup" && !fromTitle &&
+          sel.size === 1 && sel.has(n.id) && quietCanvasSelection(n)) updateSel();
       const dropped=moved&&ev?.type==="pointerup"&&valid, groupTarget=dropped?ctGroupDropTarget(ev):null;
       ctMarkGroupDrop(null);vtMarkDrop(null);
       if (moved && valid && (groupTarget || !dropped)) {
@@ -183,8 +188,7 @@ function wire(n, el) {
         }
       }
     };
-    addEventListener("pointermove", mv); addEventListener("pointerup", up);addEventListener("pointercancel",up);
-    addEventListener("blur",up);
+    trackCanvasPointer(e.pointerId, mv, up);
   };
   // a drag that started on a video must not also toggle play/pause
   el.addEventListener("click", ev => { if (el._dragged) { ev.preventDefault(); ev.stopPropagation(); } }, true);

@@ -1,8 +1,17 @@
 "use strict";
 
 // ================================================================= selection, overlays
-function updateSel() {
+let canvasMarqueeBoard = null;
+let canvasQuietSelection = null;
+
+function quietCanvasSelection(n) {
+  return canvasQuietSelection?.board === B && canvasQuietSelection.id === n.id;
+}
+
+function updateSel({openPrompt = true} = {}) {
+  canvasQuietSelection = !openPrompt && sel.size === 1 ? {board:B,id:sel.values().next().value} : null;
   ctRevealSelected();
+  vp.classList.toggle("multi-selection", sel.size > 1);
   els.forEach((el, id) => el.classList.toggle("sel", sel.has(id)));
   if (sel.size) { selEdge = null; drawEdges(); }
   showPanel(); placeOverlays(); drawMini();
@@ -20,7 +29,8 @@ function placeOverlays() {
   const tw = tools.offsetWidth;
   tools.style.left = Math.max(8, Math.min(innerWidth - tw - 8, r.right - tw)) + "px";
   tools.style.top = Math.max(8, r.top - tools.offsetHeight - 30) + "px";
-  if (!canvasCanEdit() || n.type==="text" || n.data.film || n.data.previs) { pp.classList.remove("on"); return; }
+  if (canvasMarqueeBoard === B || quietCanvasSelection(n) || !canvasCanEdit() ||
+      n.type==="text" || n.data.film || n.data.previs) { pp.classList.remove("on"); return; }
   pp.classList.add("on");
   const pw = pp.offsetWidth, ph = pp.offsetHeight;
   pp.classList.toggle("pinned", !!ppPin);

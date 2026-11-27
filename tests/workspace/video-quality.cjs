@@ -1,16 +1,27 @@
 "use strict";
 
 module.exports=async function videoQuality({assert,evaluate}) {
- evaluate(`const originalQualityCaps=CAPS_LIST;
+ evaluate(`const originalQualityCaps=CAPS_LIST, oldQualityWizard=W;
+  W={quality:"std",takes:2};
   CAPS_LIST={...CAPS_LIST,video_quality_precheck:true,video:[{id:"local_h3",local:true,default:true,model:"h3-video",
     models:[{id:"h3-video",durations:[5,8,10,14]},{id:"h3-video-ref2va-int8-convrot"}]}]};
   const qualityTest=addNode("video",400,510,{provider:"local_h3",prompt:"Fixed camera.",count:3});
-  selectOnly(qualityTest.id); showPanel(); const qualitySetting=$('[data-k="quality_precheck"]');
+  selectOnly(qualityTest.id); showPanel();`);
+ assert.equal(evaluate('videoReq(qualityTest,"Fixed camera.").quality_precheck'),true);
+ evaluate(`$("#setBtn").click(); $("#setVideoPrecheck").click();`);
+ assert.equal(evaluate('localStorage.getItem(VIDEO_QUALITY_PREFERENCE)'),"off");
+ assert.equal(evaluate('videoReq(qualityTest,"Fixed camera.").quality_precheck'),undefined);
+ assert.equal(evaluate('videoReq(qualityTest,"Fixed camera.").count'),3);
+ assert.equal(evaluate('wizardQualityEnabled()'),false);
+ evaluate(`$("#setClose").click(); $("#setBtn").click();`);
+ assert.equal(evaluate('$("#setVideoPrecheck").checked'),false);
+ evaluate(`$("#setClose").click(); const qualitySetting=$('[data-k="quality_precheck"]');
   qualitySetting.value="true"; qualitySetting.onchange();`);
  assert.equal(evaluate('videoReq(qualityTest,"Fixed camera.").quality_precheck'),true);
  assert.equal(evaluate('videoReq(qualityTest,"Fixed camera.").count'),1);
  assert.equal(evaluate('qualityTest.data.count'),3);
- evaluate('const oldQualityWizard=W; W={quality:"std",takes:2}; setWizardVideoQuality(qualityTest,W.takes)');
+ evaluate(`$("#setBtn").click(); $("#setVideoPrecheck").click(); $("#setClose").click();
+  setWizardVideoQuality(qualityTest,W.takes)`);
  assert.equal(evaluate('qualityTest.data.selected_model'),"h3-video");
  assert.equal(evaluate('videoReq(qualityTest,"Fixed camera.").quality_precheck'),true);
  assert.equal(evaluate('videoReq(qualityTest,"Fixed camera.").quality'),"std");
@@ -25,6 +36,6 @@ module.exports=async function videoQuality({assert,evaluate}) {
  assert.match(evaluate('$("#videoQualityReportDecision").textContent'),/第 2 次/);
  assert.match(evaluate('$("#videoQualityReportAttempts").textContent'),/Repeated exit/);
  assert.match(evaluate('$("#videoQualityReportFinal").textContent'),/9\/10.*Final shot evidence/);
- evaluate('$("#videoQualityReportClose").click(); removeNodes([qualityTest.id]); CAPS_LIST=originalQualityCaps;');
- console.log("Video quality precheck passed: opt-in, one final and recorded decisions.");
+ evaluate('$("#videoQualityReportClose").click(); removeNodes([qualityTest.id]); CAPS_LIST=originalQualityCaps; localStorage.removeItem(VIDEO_QUALITY_PREFERENCE);');
+ console.log("Video quality precheck passed: settings persistence, node override, one final and recorded decisions.");
 };

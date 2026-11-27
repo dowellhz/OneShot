@@ -28,7 +28,7 @@ function canvasBatchLayout() {
 }
 
 function canvasGenerationCount(n) {
-  if (n.data.quality_precheck && videoQualityPrecheckAvailable(n)) return 1;
+  if (videoQualityPrecheckEnabled(n) && videoQualityPrecheckAvailable(n)) return 1;
   const max = n.type === "audio" ? 1 : n.type === "video" ? 3 : 4;
   return Math.max(1,Math.min(max,Math.trunc(Number(n.data.count)) || 1));
 }
@@ -210,6 +210,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   const history=grid ? {image_grid:true,input_edges:[{...gridReference.edge,ref:gridReference.version.ref}]} :
     {input_edges:structuredClone(B.edges.filter(e=>e.to===n.id)),node_data:structuredClone(n.data),
      ...(slow?{video_recipe:structuredClone(req)}:{})};
+  if (history.video_recipe) history.node_data.quality_precheck = req.quality_precheck === true;
   const layout=branch?"branch":previsComposition(n)?"tabs":batchLayout;
   const batch=branch || (req.count>1 && layout!=="tabs" && !req.draft && !req.segment_edit && !req.extension)
     ? {layout,data:structuredClone(grid?{...d,prompt}:d),edges:structuredClone(B.edges.filter(e=>e.to===n.id))}
@@ -283,7 +284,8 @@ function videoReq(n, prompt, {silent=false}={}) {
   const sounds = audioInputs(n);
   const clips = videoInputs(n);
   const missingReference = message => { if(!silent)showErr(n,message); return null; };
-  if (d.quality_precheck && !videoQualityPrecheckAvailable(n))
+  const qualityPrecheck = videoQualityPrecheckEnabled(n);
+  if (qualityPrecheck && !videoQualityPrecheckAvailable(n))
     return missingReference(OneShotI18n.t("当前设置无法预检，请选择本地 H3 BF16 或关闭质量预检"));
   if (guide && !guide.version) return missingReference("白模参考版本已移除，请改用当前版本或删除连线");
   if (sounds.some(s=>!s.version)) return missingReference("音频参考版本已移除，请重新连接");
@@ -310,7 +312,7 @@ function videoReq(n, prompt, {silent=false}={}) {
     const resolved=resolveCanvasPrompt(n,prompt,bindings,{silent});
     if(resolved===null)return null;
     const common = { kind: "video", prompt:resolved, ar, duration:canvasVideoDuration(n), quality:canvasVideoQuality(n), turbo: d.turbo, seed: d.seed, sound: d.sound, music: d.music, count: canvasGenerationCount(n) };
-    if (d.quality_precheck) common.quality_precheck=true;
+    if (qualityPrecheck) common.quality_precheck=true;
     if(d.video_optics&&Object.keys(d.video_optics).length)common.video_optics=structuredClone(d.video_optics);
     if (d.draft && videoDraftAvailable(n)) Object.assign(common,{draft:true,quality:"std"});
     if(usesFields(n)){

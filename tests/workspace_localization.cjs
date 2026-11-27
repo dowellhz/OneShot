@@ -47,6 +47,10 @@ async function verifyDraftProtection(w,evaluate,ready) {
 }
 
 module.exports = async function testEnglishWorkspace({w,evaluate,ready,requests}) {
+  assert.equal(evaluate('$("#setBtn").ariaLabel'),'Settings');
+  evaluate('$("#setBtn").click()');
+  assert.match(evaluate('$("#setVideoPrecheck").labels[0].textContent'),/Preview videos with the quantized model first/);
+  evaluate('$("#setClose").click()');
   assert.equal(w.document.documentElement.lang,'en');
   assert.equal(evaluate('$("#shareBtn").textContent'),'Share');
   assert.equal(evaluate('$("#wizBtn span").textContent'),'Idea to Film');

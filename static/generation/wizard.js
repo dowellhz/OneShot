@@ -22,7 +22,7 @@ let wizSig = "";
 
 const wizScript = () => W && node(W.script);
 function wizSave() { B.wiz = W; save(); }
-const wizardQualityEnabled = () => W?.quality_precheck ?? CAPS_LIST.video_quality_precheck === true;
+const wizardQualityEnabled = () => W?.quality_precheck ?? (defaultVideoQualityPrecheck() && CAPS_LIST.video_quality_precheck === true);
 function setWizardVideoQuality(video, count) {
   Object.assign(video.data,{count:count||1,quality:W.quality||video.data.quality||"hd",quality_precheck:wizardQualityEnabled()});
   if (video.data.quality_precheck) Object.assign(video.data,{provider:"local_h3",selected_model:"h3-video",draft:false});

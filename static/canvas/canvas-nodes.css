@@ -52,6 +52,7 @@
 .node-start-actions button { min-height:28px; padding:3px 8px; }
 .node .node-prompt-action { position:absolute; top:7px; right:7px; z-index:1; opacity:0; pointer-events:none; background:var(--panel); }
 .node:hover .node-prompt-action,.node .node-prompt-action:focus-visible { opacity:1; pointer-events:auto; }
+.tool-select.multi-selection .node.sel :is([data-node-prompt],[data-node-start="prompt"]) { display:none; }
 .node.playlist-drop-target .card::after { content:"添加到播放列表"; position:absolute; z-index:5; bottom:10px; left:50%; transform:translateX(-50%); white-space:nowrap; background:var(--panel); color:var(--text); border:1px solid var(--line2); border-radius:8px; padding:5px 9px; pointer-events:none; }
 .card img.m, .card video.m { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .card video.m { object-fit: contain; background: #000; }

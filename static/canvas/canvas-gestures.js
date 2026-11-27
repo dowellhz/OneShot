@@ -104,27 +104,34 @@ vp.addEventListener("pointerdown", e => {
     if (B !== board) return;
     const x0 = Math.min(sx, ev.clientX), y0 = Math.min(sy, ev.clientY), x1 = Math.max(sx, ev.clientX), y1 = Math.max(sy, ev.clientY);
     if (!active && x1 - x0 + y1 - y0 < 6) return;
-    if(!active)liveStopFollow(false);
-    active = true;
+    if (!active) {
+      active = true;
+      canvasMarqueeBoard = board;
+      liveStopFollow(false);
+      placeOverlays();
+    }
     Object.assign(mq.style, { display: "block", left: x0 + "px", top: y0 + "px", width: x1 - x0 + "px", height: y1 - y0 + "px" });
     preview = new Set(base);
-    els.forEach((el, id) => {   // a card counts once the box covers at least half of it
+    els.forEach((el, id) => {
       if (el.hidden) return;
       const r = $(".card", el).getBoundingClientRect();
       const ow = Math.min(r.right, x1) - Math.max(r.left, x0), oh = Math.min(r.bottom, y1) - Math.max(r.top, y0);
-      if (ow > 0 && oh > 0 && ow * oh >= 0.5 * r.width * r.height) preview.add(id);
+      if (ow > 0 && oh > 0) preview.add(id);
     });
     els.forEach((el, id) => el.classList.toggle("sel", preview.has(id)));
   };
   const up = ev => {
     if (B === board && ev.type === "pointerup") {
       mv(ev);
+      canvasMarqueeBoard = null;
       sel = preview;
       selEdge = null;
-      updateSel();
+      updateSel({openPrompt:false});
       if (!sel.size) drawEdges();
     } else {
+      canvasMarqueeBoard = null;
       els.forEach((el, id) => el.classList.toggle("sel", sel.has(id)));
+      placeOverlays();
     }
     mq.style.display = "none";
   };

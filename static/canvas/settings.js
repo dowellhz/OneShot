@@ -3,6 +3,20 @@
 // rewriting prompts. Anything that has to look at a picture stays on the local Qwen3.5 (the DeepSeek API has no vision).
 
 let SET = null;
+function openCanvasPreferences() {
+  const consoleUrl = ME_USER?.role === "admin" ? "/console#services" : "/console";
+  $("#setBox").innerHTML = OneShotI18n.html`<div class="hd">设置<span style="flex:1"></span><button class="pill" id="setClose">关闭</button></div>
+    <label class="ck"><input type="checkbox" id="setVideoPrecheck" aria-describedby="setVideoPrecheckHelp" ${defaultVideoQualityPrecheck() ? "checked" : ""}>先用量化模型预览视频</label>
+    <div class="h" id="setVideoPrecheckHelp">在此浏览器默认对兼容的 H3 视频先生成并评估 INT8 样片，最多五次，再用 BF16 定稿。项目和节点可单独覆盖。</div>
+    <div class="bt"><a class="pill" href="${consoleUrl}">控制台</a></div>`;
+  $("#setClose").onclick = () => $("#settings").classList.remove("on");
+  $("#setVideoPrecheck").onchange = event => {
+    localStorage.setItem(VIDEO_QUALITY_PREFERENCE, event.target.checked ? "on" : "off");
+    if (B && sel.size === 1) showPanel();
+    if ($("#wiz").classList.contains("on")) renderWiz();
+  };
+  $("#settings").classList.add("on");
+}
 async function openSettings() {
   let LC;
   try { LC = await (await fetch("/api/llm")).json(); } catch { return toast("连不上画布服务"); }
@@ -92,7 +106,7 @@ function initSettings() {
 #setBox .ml button.on b::after { content: "  ✓ 当前使用"; color: var(--green); font-weight: 500; font-size: var(--fs-small); }`;
   document.head.appendChild(css);
   document.body.insertAdjacentHTML("beforeend", `<div id="settings"><div id="setBox"></div></div>`);
-  $("#helpBtn").insertAdjacentHTML("beforebegin", `<button class="ib" id="setBtn" title="文本模型（本地 Qwen / DeepSeek）" style="font-size:var(--fs-heading)">⚙</button>`);
-  $("#setBtn").onclick = openSettings;
+  $("#helpBtn").insertAdjacentHTML("beforebegin", OneShotI18n.html`<button class="ib" id="setBtn" title="设置" aria-label="设置" style="font-size:var(--fs-heading)">⚙</button>`);
+  $("#setBtn").onclick = openCanvasPreferences;
   $("#settings").addEventListener("pointerdown", e => { if (e.target.id === "settings") $("#settings").classList.remove("on"); });
 }

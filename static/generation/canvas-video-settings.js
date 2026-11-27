@@ -54,6 +54,14 @@ function videoQualityPrecheckAvailable(n) {
     (videoOutputModel(n)?.id || "h3-video")==="h3-video";
 }
 
+const VIDEO_QUALITY_PREFERENCE = "h3.videoQualityPrecheck";
+function defaultVideoQualityPrecheck() {
+  return localStorage.getItem(VIDEO_QUALITY_PREFERENCE) !== "off";
+}
+function videoQualityPrecheckEnabled(n) {
+  return n.data.quality_precheck ?? (defaultVideoQualityPrecheck() && videoQualityPrecheckAvailable(n));
+}
+
 const ROLE_CN = { auto: "自动", subject: "人物设定", first: "首帧", last: "尾帧", keyframe: "关键帧" };
 function vidFrames(sec) { let f = Math.max(5, Math.round(sec * 24)); return f + (5 - f % 17 + 17) % 17; }
 // how a video node uses its images: per edge role (auto / subject / first / last / keyframe) -> labels, times, model path
