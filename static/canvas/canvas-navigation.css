@@ -5,7 +5,8 @@
 .ib.on { background: rgba(255,255,255,.12); color: #fff; }
 .ib[data-tip]:hover::after { content: attr(data-tip); position: absolute; left: 44px; top: 50%; transform: translateY(-50%); background: #000; color: #fff; padding: 3px 8px; border-radius: 6px; font-size: var(--fs-small); white-space: nowrap; pointer-events: none; }
 #tl { top: 14px; left: 14px; padding: 5px 8px 5px 6px; gap: 8px; font-size: var(--fs-small); font-weight: 400; line-height: var(--lh-small); }
-#tl .logo { width: 28px; height: 28px; display: flex; flex: none; }
+#tl .logo { width: 28px; height: 28px; display: flex; flex: none; border-radius: 7px; }
+#tl .logo:hover { filter: brightness(1.2); }
 #tl .bname { font: inherit; outline: none; padding: 2px 4px; border-radius: 5px; min-width: 40px; }
 #tl .bname:focus { background: #222; }
 #tl .tb { border: none; background: none; color: var(--dim); padding: 4px 6px; border-radius: 7px; display: flex; align-items: center; }
@@ -20,7 +21,7 @@
 #consoleLink { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; padding: 4px 8px; flex: none;
   border-radius: 7px; background: #222226; color: var(--text); text-decoration: none; font: inherit; white-space: nowrap; }
 #consoleLink:hover { background: #2a2a2f; }
-#consoleLink:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+:is(#consoleLink, #tl .logo):focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 #tr .st { display: flex; align-items: center; gap: 6px; }
 #tr .sd { width: 7px; height: 7px; border-radius: 50%; background: #555; }
 #tr .sd.ok { background: var(--success); box-shadow: 0 0 8px rgba(214,214,220,.3); } #tr .sd.busy { background: #ffcf5a; } #tr .sd.bad { background: var(--red); }
