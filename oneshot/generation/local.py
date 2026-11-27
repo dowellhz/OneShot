@@ -9,7 +9,7 @@ import uuid
 import aiohttp
 from aiohttp import web
 
-from engine import h3_int8, image_models
+from engine import h3_int8, image_models, sulphur
 from oneshot import config
 from oneshot.generation import graphs
 from oneshot.generation import jobs as generation_jobs
@@ -19,12 +19,14 @@ from oneshot.storage import db
 from oneshot.web import http as http_errors
 
 
-async def engine_up(app, image: bool = False, *, int8: bool = False, image_model: str | None = None) -> bool:
+async def engine_up(app, image: bool = False, *, int8: bool = False, image_model: str | None = None,
+                    sulphur_video: bool = False) -> bool:
     try:
         async with app["http"].get(config.ENGINE + "/status", timeout=aiohttp.ClientTimeout(total=2)) as r:
             s = await r.json()
             return (bool(s.get("ready")) and (not image or bool(s.get("image_ready")))
                     and (not int8 or bool(s.get("int8_ready")))
+                    and (not sulphur_video or bool(s.get("sulphur_ready")))
                     and (not image_model or image_model in s.get("image_models", ())))
     except Exception:
         return False
@@ -119,6 +121,10 @@ async def generate_engine(req, p: dict, count: int):
     u = req["user"]
     _, meta = graphs.graph_video(p, native=True)            # mode name, seed and size for the queue entry (prompt rebuilt later)
     cls, units, dflt = generation_jobs.job_class(p)
+    if p.get("_sulphur"):
+        cls, _, dflt = generation_jobs.job_class({**p, "turbo": False})
+        cls = f"{sulphur.MODEL}|{cls}"
+    model_label = sulphur.LABEL if p.get("_sulphur") else h3_int8.LABEL if p.get("_int8") else "MiniMax-H3 " + meta["mode_name"]
     meta.update(prompt=p["prompt"], cls=cls, units=units, est=generation_jobs.estimate(cls, units, dflt), label=http_errors.clean(p.get("label"))[:60], uid=u["id"],
                 board=http_errors.clean(p.get("board")), engine=True)
     pids = []
@@ -127,7 +133,7 @@ async def generate_engine(req, p: dict, count: int):
         m = dict(meta, seed=meta["seed"] + k)
         generation_jobs.JOBS[pid] = {"id": pid, "kind": "video", "state": "queued", "prep": True, "created": time.time(), "meta": m}
         db.task_start(id=pid, user_id=u["id"], board_id=m["board"], label=m["label"], capability="video", provider_id="local_h3",
-                      provider_kind="local_h3", model=h3_int8.LABEL if p.get("_int8") else "MiniMax-H3 " + m["mode_name"], state="queued", cost=0)
+                      provider_kind="local_h3", model=model_label, state="queued", cost=0)
         pids.append(pid)
     prev = PREP_TAIL[0]
     PREP_TAIL[0] = asyncio.create_task(prepare_engine(req.app, p, pids, prev))
@@ -150,9 +156,11 @@ async def prepare_engine(app, p: dict, pids: list, prev):
         llm = app["llm"]
         if llm.running() and llm.device == "GPU":
             llm.stop()                               # give the GPU back to the engine
-        if q.get("_int8"):
+        if q.get("_int8") or q.get("_sulphur"):
             graph, meta = graphs.graph_video(q, native=True)
             body = {"kind": "video_int8", "graph": graph, "media_dir": str(config.COMFY_DIR), "prompt": meta["full_prompt"], "steps": meta["steps"]}
+            if q.get("_sulphur"):
+                body["video_model"] = sulphur.MODEL
         else:
             body, meta = engine_body(q)
         for pid in pids:

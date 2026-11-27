@@ -60,6 +60,10 @@ Ref2VA 和 VAE 从量化仓库取，文本编码器和 LoRA 从原 Comfy-Org 权
 
 用相同的路径配置启动引擎和 Web 服务。每个 INT8 任务由引擎启动隔离的 ComfyUI 进程。确认引擎本机 `/status` 的 `int8_ready` 为真，再从视频节点的模型菜单选择 **H3 Ref2VA INT8 ConvRot**。首次验收可用五秒、480p 的镜头。 [GPU 验收步骤](verification.md#4090-版本验收)
 
+## Sulphur-3 W4A8
+
+将官方量化文件 `quantized/s3_w4a8.safetensors` 放进 `$H3_INT8_MODELS/diffusion_models/`。它复用上面的 ComfyUI、文本编码器和音视频 VAE。确认引擎 `/status` 的 `sulphur_ready` 为真，再在视频节点的本地 H3 模型菜单选择 **Sulphur-3 W4A8**。支持文生视频、首帧和首尾帧。 [模型文件与校验值](https://huggingface.co/SulphurAI/Sulphur-3/blob/988224b9913740d60ee54b5a53c7a892467edc76/quantized/s3_w4a8.safetensors)
+
 ## 可选本地图像模型
 
 在与 GPU 引擎相同的 Python 环境下执行。模型与 H3 共用单 GPU 队列。

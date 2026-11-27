@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import h3engine as E
 import h3_int8
 import image_models
+import sulphur
 import editor_tools as EDITOR
 
 PORT = int(os.environ.get("H3_ENGINE_PORT", "8189"))
@@ -117,7 +118,8 @@ def worker():
                 def report(phase, value, maximum):
                     j.update(phase=phase, value=value, max=maximum)
 
-                h3_int8.run(r["graph"], r["out"], r["media_dir"], r["seed"], report, lambda: bool(j.get("cancel")))
+                options = {"checkpoint": (sulphur.WEIGHTS, sulphur.SIZE)} if r.get("video_model") == sulphur.MODEL else {}
+                h3_int8.run(r["graph"], r["out"], r["media_dir"], r["seed"], report, lambda: bool(j.get("cancel")), **options)
                 j.update(state="done", took=round(time.time() - t0, 1), finished=time.time(), phase="done")
                 continue
             if r.get("kind") == "image":
@@ -196,8 +198,13 @@ async def submit(req):
         return web.json_response({"error": "prompt and out are required"}, status=400)
     if STATE.get("error"):
         return web.json_response({"error": STATE["error"]}, status=503)
-    if r.get("kind") == "video_int8" and not h3_int8.installed():
-        return web.json_response({"error": "H3 INT8 ConvRot 尚未安装"}, status=503)
+    if r.get("kind") == "video_int8":
+        variant = r.get("video_model")
+        if variant == sulphur.MODEL:
+            if not h3_int8.installed(sulphur.WEIGHTS, sulphur.SIZE):
+                return web.json_response({"error": "Sulphur-3 W4A8 尚未安装"}, status=503)
+        elif variant or not h3_int8.installed():
+            return web.json_response({"error": "H3 INT8 ConvRot 尚未安装或模型无效"}, status=503)
     if r.get("kind") == "image" and r.get("image_model") and not image_models.installed(r["image_model"]):
         return web.json_response({"error": "所选图像模型尚未安装"}, status=503)
     try:                                   # a bad number must be refused here, not crash the worker later
@@ -249,6 +256,7 @@ async def status(_):
                               "image_ready": bool(ENGINE and ENGINE.image_ready()),
                               "image_models": [model for model in image_models.MODELS if image_models.installed(model)],
                               "int8_ready": h3_int8.installed(),
+                              "sulphur_ready": h3_int8.installed(sulphur.WEIGHTS, sulphur.SIZE),
                               "loaded": ENGINE and {"task": ENGINE.task, "lora": ENGINE.lora},
                               "queue": sum(1 for v in JOBS.values() if v["state"] == "queued"),
                               "vram_used_gb": round((total - free) / 2**30, 1), "editor": EDITOR.capabilities()})

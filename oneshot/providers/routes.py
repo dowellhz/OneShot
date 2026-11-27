@@ -2,7 +2,7 @@
 
 from aiohttp import web
 
-from engine import h3_int8, image_models
+from engine import h3_int8, image_models, sulphur
 from oneshot.editing import audio_routes
 from oneshot.editing import render as film
 from oneshot.generation import motion_reference
@@ -68,8 +68,9 @@ def canvas_model_choice(provider, cap, model):
     ref_images = motion_reference.image_reference_limit(provider,model)
     model_for_limits = motion_reference.video_model_for_limits(provider,model)
     count, seconds = motion_reference.av_limits(model_for_limits)
-    label = {h3_int8.MODEL: h3_int8.LABEL, "h3-video": "H3 BF16"}.get(model) if kind == "local_h3" else None
+    label = {h3_int8.MODEL: h3_int8.LABEL, "h3-video": "H3 BF16", sulphur.MODEL: sulphur.LABEL}.get(model) if kind == "local_h3" else None
     return {"id":model, **({"label": label} if label else {}), "draft":remote.supports_video_draft(provider,model),
+            **({"first_last_only":True,"fixed_sampling":True} if kind=="local_h3" and model==sulphur.MODEL else {}),
             "durations":[5,8,10,14] if kind == "local_h3" else remote.video_durations(kind,model,provider=provider),
             "qualities":remote.video_resolutions(kind,model,provider=provider),
             **({"endpoint_model":model_for_limits} if model_for_limits != model else {}),

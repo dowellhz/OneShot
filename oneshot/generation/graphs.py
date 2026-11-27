@@ -7,7 +7,7 @@ import re
 
 from aiohttp import web
 
-from engine import h3_int8
+from engine import h3_int8, sulphur
 from oneshot import config
 from oneshot.generation import rewriter
 from oneshot.generation import tools
@@ -351,7 +351,9 @@ def no_speech_guard(full: str) -> str:
 
 
 def graph_video(p: dict, *, native=False):
-    if p.get("_int8"):
+    if p.get("_sulphur"):
+        g, meta = graph_sulphur_video(p)
+    elif p.get("_int8"):
         g, meta = graph_int8_video(p)
     else:
         g, meta = _graph_video(p, native=native)
@@ -362,6 +364,23 @@ def graph_video(p: dict, *, native=False):
         g["5"]["inputs"]["prompt"] = full
     meta["full_prompt"] = full
     return g, meta
+
+
+def graph_sulphur_video(p):
+    images = p.get("images") or []
+    if p.get("planned") or p.get("mode") not in (None, "auto", "fl2v") or len(images) > 2:
+        raise http_errors.bad("Sulphur-3 支持文生视频、首帧和首尾帧，暂不支持多关键帧或人物参考")
+    graph, meta = _graph_video({**p, "mode": "fl2v", "turbo": False}, native=True)
+    graph["1"]["inputs"]["unet_name"] = sulphur.WEIGHTS
+    graph["6"] = {"class_type": "MiniMaxH3SigmaShift", "inputs": {
+        "model": ["1", 0], "shift_video": 12.0, "shift_audio": 3.0}}
+    graph["8"]["inputs"]["sampler_name"] = "euler"
+    for key in ("9", "10"):
+        graph[key]["inputs"]["model"] = ["6", 0]
+    graph["9"]["inputs"]["steps"] = sulphur.STEPS
+    meta.update(steps=sulphur.STEPS, provider="本地 H3", model=sulphur.MODEL,
+                resolution="768P" if p.get("quality", "hd") == "hd" else "480P")
+    return graph, meta
 
 
 def int8_video_input(p):

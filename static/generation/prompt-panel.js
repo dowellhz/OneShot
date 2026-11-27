@@ -280,7 +280,7 @@ function showPanel() {
       if (selected) h += nodeModelPill(n,pill,selected,true);
     } else {
       h = provPill(n, pill) + nodeModelPill(n,pill);
-      if (!rem) h += pill("turbo", { true: "MiniMax H3 · 极速", false: "MiniMax H3 · 高质量" }, `<span class="dot"></span>${OneShotI18n.t(d.turbo ? "H3 极速" : "H3 高质量")}${ico("down")}`, "model");
+      if (!rem && !videoOutputModel(n)?.fixed_sampling) h += pill("turbo", { true: "MiniMax H3 · 极速", false: "MiniMax H3 · 高质量" }, `<span class="dot"></span>${OneShotI18n.t(d.turbo ? "H3 极速" : "H3 高质量")}${ico("down")}`, "model");
     }
     const fa = d.aspect === "auto";
     const followSource=extension && /(?:seedance-2-5|^ep-)/.test(canvasNodeModel(n,referenceService(n),true)?.id || "");
@@ -305,7 +305,7 @@ function showPanel() {
     const range=segment ? videoReferenceRange(clips[0].edge,clips[0].version,referenceDuration(n)) : null;
     h += segment ? `<span class="pill">${range.end>range.start?OneShotI18n.t("{seconds} 秒",{seconds:(range.end-range.start).toFixed(2)}):OneShotI18n.t("跟随修改区间")}</span>`
       : pill("duration",durations,`${ico("clock")}${Math.min(max,Math.max(durationChoices[0],seconds))}s`,"",seconds);
-    if (!reference && imgInputs(n).length) h += pill("mode", { auto: "按每张图的设置", keyframes: "全部当关键帧", reference: "全部当人物设定" }, planLabel(plan(n)));
+    if (!reference && imgInputs(n).length && !videoOutputModel(n)?.first_last_only) h += pill("mode", { auto: "按每张图的设置", keyframes: "全部当关键帧", reference: "全部当人物设定" }, planLabel(plan(n)));
     if (reference) h += OneShotI18n.html`<span class="pill">全模态参考</span>`;
     if(!d.film&&!d.previs)h += OneShotI18n.html`<button type="button" class="pill" id="videoOpticsBtn"${n.job||nodeLocked(n)?" disabled":""}>镜头参数${Number.isFinite(d.video_optics?.lens)?` · ${d.video_optics.lens} mm`:d.video_optics?" · 已设置":""}</button>`;
     if (segment && d.camera_plan) h += OneShotI18n.html`<button type="button" class="pill" id="retakeSettings" title="重拍设置">重拍设置 · ${esc(cameraModeLabel[d.camera_plan.mode] || "机位")}</button>`;
@@ -334,6 +334,10 @@ function showPanel() {
     let val = s.value; if (["turbo","expand","draft","quality_precheck"].includes(key)) val = val === "true"; else if (["count", "duration"].includes(key)) val = Number(val);
     if (key === "provider") delete d.selected_model;
     if (key === "selected_model" && val && !d.provider) d.provider = nodeProvider(n)?.id;
+    if (key === "selected_model" && nodeProvider(n)?.models?.some(model=>model.id===val && model.first_last_only)) {
+      d.mode = "auto";
+      d.quality_precheck = false;
+    }
     if (key === "selected_model" && !val) delete d.selected_model;
     else d[key] = val;
     save(); render(n); refreshDownstream(n); showPanel();

@@ -60,6 +60,10 @@ Use the Ref2VA and VAE files from the quantization repository and the text encod
 
 Start the engine and Web service with the same paths. The engine starts an isolated ComfyUI instance for each INT8 job. Check `int8_ready` in the engine's local `/status` response, then select **H3 Ref2VA INT8 ConvRot** from a video node's model menu. A five-second 480p shot is the first acceptance case. [GPU acceptance procedure](verification.en.md#4090-release-acceptance)
 
+## Sulphur-3 W4A8
+
+Place the official `quantized/s3_w4a8.safetensors` checkpoint in `$H3_INT8_MODELS/diffusion_models/`. It shares the ComfyUI runtime, text encoder, and audio and video VAEs listed above. When the engine reports `sulphur_ready` in `/status`, select **Sulphur-3 W4A8** under Local H3 on a video node. It supports text-only, first-frame, and first-and-last-frame generation. [Checkpoint and checksum](https://huggingface.co/SulphurAI/Sulphur-3/blob/988224b9913740d60ee54b5a53c7a892467edc76/quantized/s3_w4a8.safetensors)
+
 ## Optional local image models
 
 Run the installer in the GPU engine's Python environment. These models share the single GPU queue with H3.

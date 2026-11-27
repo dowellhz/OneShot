@@ -7,7 +7,7 @@ import re
 
 from aiohttp import web
 
-from engine import h3_int8, image_models
+from engine import h3_int8, image_models, sulphur
 from oneshot import config
 from oneshot.assistant import agent_chat
 from oneshot.canvas import workflow_review
@@ -96,21 +96,24 @@ async def preview(req):
             details["duration"] = seconds
         return web.json_response({"prompt": prompt, "mode": mode, "inputs": inputs, **details, **memory_review})
     int8 = bool(route and route["model"] == h3_int8.MODEL)
-    resolution = video_reference.checked_video_resolution(payload,"local_h3",h3_int8.MODEL if int8 else "h3-video")
+    is_sulphur = bool(route and route["model"] == sulphur.MODEL)
+    resolution = video_reference.checked_video_resolution(payload,"local_h3",route["model"] if route else "h3-video")
     p = prompts.apply_fields(graphs.int8_video_input(payload) if int8 or precheck else payload)
     if int8 or precheck:
         inputs = workflow_review.capture_generation(p)["inputs"]
     if not http_errors.clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词为空"}, ensure_ascii=False), content_type="application/json")
     p = await prompts.to_english(req.app, p, local_only=precheck)
-    _, meta = graphs.graph_video({**p, "_int8": int8}, native=int8 or precheck or await local_generation.engine_up(req.app))
+    _, meta = graphs.graph_video({**p, "_int8": int8, "_sulphur": is_sulphur},
+                                 native=int8 or is_sulphur or precheck or await local_generation.engine_up(req.app))
     if meta["mode"] == "planned":
         for item in inputs:
             if item.get("role") == "frame":
                 item["time"] = graphs.keyframe_index(item.get("time"), meta["frames"]) / 24
     if meta.get("mode") == "fl2v" and len(inputs) > 1:
         inputs[-1]["role"] = "last_frame"
-    mode = " · ".join(filter(None,(meta.get("mode_name"), h3_int8.LABEL if int8 else "本地 H3", resolution)))
+    model_label = sulphur.LABEL if is_sulphur else h3_int8.LABEL if int8 else "本地 H3"
+    mode = " · ".join(filter(None,(meta.get("mode_name"), model_label, resolution)))
     if precheck:
         mode += " · INT8 质量预检（最多 5 次） → BF16"
     if p.get("_xlate_err"):
@@ -259,7 +262,7 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
     if payload.get("kind")=="video" and route:
         provider_id = route.get("provider") or "local_h3"
         result["video_model"] = {"provider":provider_id}
-        if route.get("model") and (provider_id!="local_h3" or route["model"] == h3_int8.MODEL
+        if route.get("model") and (provider_id!="local_h3" or route["model"] in (h3_int8.MODEL, sulphur.MODEL)
                                   or payload.get("selected_model") == "h3-video"):
             result["video_model"]["selected_model"] = route["model"]
     elif payload.get("kind") == "image" and route and route["provider"] and route["model"]:
@@ -443,11 +446,13 @@ async def _generate_request(req, raw, *, fixed_route=None):
     if route and route["provider"]["kind"] != "local_h3":
         return await remote_jobs.generate_remote(req, raw, route, cap)
     int8 = bool(cap == "video" and route and route["model"] == h3_int8.MODEL)
+    is_sulphur = bool(cap == "video" and route and route["model"] == sulphur.MODEL)
     if cap=="video":
-        video_reference.checked_video_resolution(raw,"local_h3",h3_int8.MODEL if int8 else "h3-video")
+        video_reference.checked_video_resolution(raw,"local_h3",route["model"] if route else "h3-video")
     if raw.get("draft"):
         raise http_errors.bad("请选择支持原生样片的 Seedance 2.5 服务")
     p = prompts.apply_fields({**(graphs.int8_video_input(raw) if int8 or raw.get("quality_precheck") else raw), "_int8": int8})
+    p["_sulphur"] = is_sulphur
     if not http_errors.clean(p.get("prompt")):
         raise web.HTTPBadRequest(text=json.dumps({"error": "提示词不能为空"}), content_type="application/json")
     if p.get("quality_precheck"):
@@ -459,7 +464,9 @@ async def _generate_request(req, raw, *, fixed_route=None):
     llm = req.app["llm"]
     if int8 and not await local_generation.engine_up(req.app, int8=True):
         raise http_errors.bad("本地 H3 INT8 ConvRot 引擎暂不可用，请稍后重试")
-    if kind != "image" and (int8 or await local_generation.engine_up(req.app)):
+    if is_sulphur and not await local_generation.engine_up(req.app, sulphur_video=True):
+        raise http_errors.bad("Sulphur-3 W4A8 引擎暂不可用")
+    if kind != "image" and (int8 or is_sulphur or await local_generation.engine_up(req.app)):
         return await local_generation.generate_engine(req, p, count)     # translates in the background, after the job is queued
     if kind != "image":
         p = await prompts.to_english(req.app, p)

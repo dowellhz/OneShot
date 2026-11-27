@@ -1,4 +1,4 @@
-"""Run the ConvRot checkpoint in ComfyUI while the native engine owns the GPU queue."""
+"""Run quantized H3 checkpoints in ComfyUI on the shared GPU queue."""
 from __future__ import annotations
 
 import asyncio
@@ -30,18 +30,20 @@ def comfy_python():
     return Path(os.environ.get("H3_INT8_PYTHON", launcher if launcher.is_file() else COMFY_HOME / ".venv/bin/python"))
 
 
-def installed():
+def installed(weights=WEIGHTS, size=ASSETS[f"diffusion_models/{WEIGHTS}"]):
+    assets = {name: n for name, n in ASSETS.items() if name.startswith("vae/")}
+    assets[f"diffusion_models/{weights}"] = size
     try:
         return os.access(comfy_python(), os.X_OK) and (COMFY_HOME / "main.py").is_file() and all(
-            (MODELS / name).stat().st_size == size for name, size in ASSETS.items()
+            (MODELS / name).stat().st_size == expected for name, expected in assets.items()
         )
     except OSError:
         return False
 
 
-def run(graph, out, media_dir, seed, report, cancelled):
-    if not installed():
-        raise RuntimeError("H3 INT8 ConvRot 权重或运行环境尚未安装")
+def run(graph, out, media_dir, seed, report, cancelled, *, checkpoint=None):
+    if not (installed(*checkpoint) if checkpoint else installed()):
+        raise RuntimeError("视频模型权重或 ComfyUI 运行环境尚未安装")
     if cancelled():
         raise InterruptedError()
     target = Path(out)

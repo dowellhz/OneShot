@@ -291,6 +291,8 @@ function videoReq(n, prompt, {silent=false}={}) {
   let req;
   {
     const p = plan(n), imgs = [];
+    if (videoOutputModel(n)?.first_last_only && p.useRef)
+      return missingReference(OneShotI18n.t("Sulphur-3 支持文生视频、首帧和首尾帧，暂不支持多关键帧或人物参考"));
     for (const [i,{edge,source:m,version:v}] of p.inputs.entries()) {
       if(!v?.ref)return missingReference(edge.ref?`「${m.name}」引用的版本已移除`:`「${m.name}」还没有图片`);
       imgs.push({ node_id: m.id, ref: v.ref, name: m.name, caption: m.data.caption || (v.source === "gen" ? v.prompt : "") || "", index: i + 1, asset: m.data.asset?.id,

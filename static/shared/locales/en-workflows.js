@@ -15,6 +15,7 @@ Object.assign(window.OneShotEnglish ||= Object.create(null), {
   "INT8 质量预检（最多 5 次） → BF16": "INT8 precheck (up to 5 attempts) → BF16",
   "本地 H3": "Local H3",
   "当前设置无法预检，请选择本地 H3 BF16 或关闭质量预检": "Precheck is unavailable with these settings. Choose local H3 BF16 or turn off precheck.",
+  "Sulphur-3 支持文生视频、首帧和首尾帧，暂不支持多关键帧或人物参考": "Sulphur-3 supports text, a first frame, or first and last frames. Remove extra keyframes or character references.",
   "正在评估样片": "Evaluating draft",
   "正在准备视频提示词": "Preparing video prompt",
   "INT8 样片排队中": "INT8 draft queued",

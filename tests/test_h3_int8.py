@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import server
+from engine import sulphur
 from oneshot.generation import local as local_generation
 from chat_fixture import ChatFixture
 
@@ -50,3 +51,28 @@ class Int8Video(ChatFixture):
         self.assertEqual(graph["5"]["class_type"], "MiniMaxH3ReferenceToVideo")
         self.assertEqual([graph[f"guide{i}"]["inputs"]["frame_idx"] for i in range(2)], [0, 120])
         self.assertNotIn("6", graph)
+
+    async def test_sulphur_previews_and_queues_the_pinned_checkpoint(self):
+        server.providers.seed()
+        request = {"kind":"video", "provider":"local_h3", "selected_model":sulphur.MODEL, "board":"test",
+                   "prompt":"A yellow ball rolls across the grass.", "mode":"fl2v",
+                   "images":[self.source, self.source], "quality":"std", "seed":17}
+        with patch.object(server.h3_int8, "installed", side_effect=lambda *args: bool(args)), patch.object(
+            local_generation, "engine_up", new=AsyncMock(return_value=True)
+        ), patch.object(local_generation, "prepare_engine", new=AsyncMock()) as prepare:
+            preview = await self.client.post("/api/preview", json=request)
+            self.assertEqual(preview.status, 200, await preview.text())
+            self.assertIn(sulphur.LABEL, (await preview.json())["mode"])
+            queued = await self.client.post("/api/generate", json=request)
+            self.assertEqual(queued.status, 200, await queued.text())
+            self.assertEqual((await queued.json())["video_model"]["selected_model"], sulphur.MODEL)
+            await asyncio.sleep(0)
+            prepared = prepare.await_args.args[1]
+            invalid = await self.client.post("/api/preview", json={**request, "planned":True})
+            self.assertEqual(invalid.status, 400)
+        graph, meta = server.graph_video(prepared)
+        self.assertEqual(graph["1"]["inputs"]["unet_name"], sulphur.WEIGHTS)
+        self.assertEqual(graph["5"]["inputs"]["first_frame"], ["img0", 0])
+        self.assertEqual(graph["5"]["inputs"]["last_frame"], ["img1", 0])
+        self.assertEqual(graph["8"]["inputs"]["sampler_name"], "euler")
+        self.assertEqual((meta["model"], meta["steps"], meta["seed"]), (sulphur.MODEL, 20, 17))
