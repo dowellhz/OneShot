@@ -262,12 +262,28 @@ function renderDirectory(state) {
   $("#directoryCount").textContent=[directoryCanvasCount(boards.length),projects.length&&directoryText(projects.length===1?"1 个项目":"{count} 个项目",{count:projects.length})].filter(Boolean).join(" · ");
   const grid=$("#directoryItems");
   grid.classList.toggle("directory-list",list);
-  grid.innerHTML=projects.map(project=>`<article class="pj directory-project" data-drop-project="${esc(project.id)}">
-    <button class="directory-folder-name" type="button" data-directory-action="folder" data-id="${esc(project.id)}">${esc(project.name)}</button>
-    <div class="bd dim">${directoryCanvasCount(scoped.filter(board=>board.project===project.id&&!board.team).length)}</div>
-    <div class="acts">${directoryButton("project-rename",project.id,"改名")}${directoryButton("project-dissolve",project.id,"解散")}</div>
-  </article>`).concat(boards.map(board=>directoryCard(state,board,list))).join("")||OneShotI18n.html`<p class="dim">没有符合条件的项目或画布</p>`;
+  grid.innerHTML=projects.map(project=>directoryProjectCard(project,scoped,list))
+    .concat(boards.map(board=>directoryCard(state,board,list))).join("")||OneShotI18n.html`<p class="dim">没有符合条件的项目或画布</p>`;
   renderDirectoryStatus(state);
+}
+
+function directoryProjectCard(project,scoped,list) {
+  const children=scoped.filter(board=>board.project===project.id&&!board.team);
+  const representative=children.find(board=>board.cover);
+  return `<article class="pj directory-project" data-drop-project="${esc(project.id)}">
+    ${list?"":`<button class="cv" type="button" data-directory-action="folder" data-id="${esc(project.id)}" tabindex="-1" aria-hidden="true">${directoryCover(representative)}</button>`}
+    <button class="directory-folder-name" type="button" data-directory-action="folder" data-id="${esc(project.id)}">${esc(project.name)}</button>
+    <div class="bd dim">${directoryCanvasCount(children.length)}</div>
+    <div class="acts">${directoryButton("project-rename",project.id,"改名")}${directoryButton("project-dissolve",project.id,"解散")}</div>
+  </article>`;
+}
+
+function directoryCover(board) {
+  if(typeof board?.cover!=="string"||!board.cover.startsWith("/media?"))return directoryText("空白");
+  const url=esc(board.cover);
+  if(board.cover_kind==="image"||(!board.cover_kind&&board.cover.includes("cover_")))
+    return `<img src="${url}" loading="lazy" alt="">`;
+  return `<video src="${url}#t=1" muted preload="metadata"></video>`;
 }
 
 function directoryButton(action,id,label,extra="") {
@@ -277,13 +293,12 @@ function directoryButton(action,id,label,extra="") {
 function directoryCard(state,board,list) {
   const owned=board.owner===ME.id,manageable=owned||ME.role==="admin";
   const team=state.teams.find(item=>item.id===board.team);
-  const cover=typeof board.cover==="string"&&board.cover.startsWith("/media?")?esc(board.cover):"";
   const date=canvasDirectoryPrefs.sort==="created"||canvasDirectoryPrefs.sort==="first"?
     board.created?new Date(board.created*1000).toLocaleDateString(OneShotI18n.locale):directoryText("创建日期未知"):ago(board.mtime);
   const share=team?.name||(board.team?directoryText("团队"):board.shared?directoryText("已共享给平台成员"):null);
   return `<article class="pj" data-board="${esc(board.id)}" ${owned&&!board.team?'draggable="true" data-drag-board="'+esc(board.id)+'"':""}>
     ${state.selecting&&owned?`<label class="directory-check"><input type="checkbox" data-directory-check value="${esc(board.id)}" ${state.selected.has(board.id)?"checked":""}>${esc(directoryText("选中 {name}",{name:board.name}))}</label>`:""}
-    ${list?"":`<a class="cv" href="${directoryBoardURL(board.id)}" tabindex="-1" aria-hidden="true">${cover?(cover.includes("cover_")?`<img src="${cover}" loading="lazy" alt="">`:`<video src="${cover}#t=1" muted preload="metadata"></video>`):directoryText("空白")}</a>`}
+    ${list?"":`<a class="cv" href="${directoryBoardURL(board.id)}" tabindex="-1" aria-hidden="true">${directoryCover(board)}</a>`}
     <div class="bd"><a class="nm" href="${directoryBoardURL(board.id)}">${esc(OneShotI18n.canvasName(board))}</a>
       <div class="mt"><span>${esc(date)}</span><span>${directoryText(board.nodes===1?"1 个节点":"{count} 个节点",{count:board.nodes})}</span>
       ${share?`<span class="tag">${esc(share)}</span>`:""}${!owned&&state.users.has(board.owner)?`<span>${esc(state.users.get(board.owner))}</span>`:""}</div></div>

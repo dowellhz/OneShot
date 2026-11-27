@@ -9,7 +9,7 @@ from oneshot.generation import tools
 class StoryboardTiming(IsolatedAsyncioTestCase):
     async def test_idea_to_film_keeps_only_declared_assets_used_by_the_shot(self):
         llm = AsyncMock()
-        llm.chat.return_value = json.dumps({
+        storyboard = json.dumps({
             "visual_assets":[
                 {"key":"kitchen","kind":"scene","name":"厨房","look":"浅木餐桌与左侧窗户"},
                 {"key":"mug","kind":"prop","name":"蓝杯","look":"带白色杯柄的蓝杯"},
@@ -19,10 +19,24 @@ class StoryboardTiming(IsolatedAsyncioTestCase):
                 {"duration":5,"keyframe":"窗旁的蓝杯","visual_asset_keys":["kitchen","mug","mug","bad"]},
                 {"duration":5,"keyframe":"厨房全景","visual_asset_keys":["kitchen"]},
             ]})
+        draft = {"intent":"从窗边看见蓝杯","fixed":["蓝杯"],
+                 "beats":[{"action":"晨光扫过杯柄","result":"把蓝杯从暗处照亮","dialogue":[]}]}
+        llm.chat.side_effect = [json.dumps(draft,ensure_ascii=False),storyboard]
         result = await tools.storyboard(llm,Path("."),"厨房和蓝杯",[],None,None,"","16:9",prepare_assets=True)
         self.assertEqual([asset["key"] for asset in result["visual_assets"]],["kitchen","mug"])
         self.assertEqual([shot["visual_asset_keys"] for shot in result["shots"]],[["kitchen","mug"],["kitchen"]])
         self.assertIn("visual_assets",llm.chat.await_args.args[0])
+        self.assertIn("你是为 15 到 60 秒短片写作的编剧",llm.chat.await_args_list[0].args[0])
+        self.assertIn("用户原台词保留原文与说话人",llm.chat.await_args.args[0])
+        self.assertIn("晨光扫过杯柄",llm.chat.await_args.args[1][-1]["text"])
+        self.assertIn("厨房和蓝杯",llm.chat.await_args.args[1][0]["text"])
+
+    async def test_unusable_screenplay_draft_keeps_idea_to_film_available(self):
+        llm = AsyncMock()
+        llm.chat.side_effect = ['{"beats":[{"dialogue":[]}]}', '{"shots":[{"duration":5,"keyframe":"窗外街灯"}]}']
+        out = await tools.storyboard(llm,Path("."),"雨夜",[],None,None,"","16:9",prepare_assets=True)
+        self.assertEqual(out["shots"][0]["keyframe"],"窗外街灯")
+        self.assertEqual(len(llm.chat.await_args.args[1]),1)
 
     async def test_motion_storyboards_keep_distinct_phases_and_continuity(self):
         llm = AsyncMock()
@@ -44,6 +58,21 @@ class StoryboardTiming(IsolatedAsyncioTestCase):
             with self.subTest(time=time):
                 frames = tools.motion_frame_plan({"middle":"刚离手","middle_time":time,"end":"球贴地滚动"},5,"手握着球")
                 self.assertEqual(frames,{"end":"球贴地滚动"})
+
+    def test_visible_action_checkpoint_overrides_generic_middle_picture(self):
+        first = "箭尾搭在拉满的弦上"
+        end = "弓弦松开，箭已经离开画面右侧"
+        evidence = "箭尾与弦分离，沿右侧飞出"
+        instant = "弦前半尺有一支水平的箭，右手已张开"
+        original = {"keyframe": first, "motion_frames": {"end": end, "middle": first, "middle_time": 2}}
+        check = {"evidence": evidence, "moment": instant, "seconds": 1.4}
+        shots, failures = tools.storyboard_shots([{**original, "action_check": check}], 5)
+        self.assertFalse(failures)
+        self.assertEqual(shots[0]["motion_frames"], {"end": end, "middle": instant, "middle_time": 1.4})
+        self.assertEqual(shots[0]["action_check"], check)
+        shots, _ = tools.storyboard_shots([{**original, "action_check": {**check, "moment": end}}], 5)
+        self.assertEqual(shots[0]["motion_frames"], {"end": end})
+        self.assertEqual(shots[0]["action_check"], {"evidence": evidence})
 
     async def test_replans_a_long_take_into_separate_usable_shots(self):
         actions = ["走到窗边","拉开窗帘","找到钥匙","走到门口","拿起大衣","打开门","回身关灯"]

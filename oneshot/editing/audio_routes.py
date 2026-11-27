@@ -26,6 +26,7 @@ from oneshot.generation import tools
 from oneshot.generation.audio import AUDIO_GENERATION_MODES
 from oneshot.providers import catalog as providers
 from oneshot.providers import remote
+from oneshot.providers.noiz import SPEED_RANGE as NOIZ_SPEED_RANGE
 from oneshot.storage import db
 from oneshot.web import auth
 from oneshot.web import http as http_errors
@@ -67,14 +68,29 @@ async def voices(_):
     route = providers.primary("tts")
     if route and route["provider"]["kind"] == "minimax":
         vs = [{"id": v, "name": f"{n}（MiniMax）"} for v, n in remote.MM_VOICES] + vs
+    for option in audio_routes("tts"):
+        provider = option["provider"]
+        if provider["kind"] != "noiz":
+            continue
+        configured = [{**voice, "provider": provider["id"], "service": provider["name"]} for voice in option["voices"]]
+        vs = configured + vs if route and route["provider"]["id"] == provider["id"] else vs + configured
     return web.json_response({"available": bool(vs), "voices": vs})
 
 
 async def tts_say(req):
-    """旁白: Kokoro-82M (Chinese) on the CPU, so it never waits for the GPU."""
     p = await req.json()
+    if not isinstance(p, dict):
+        raise http_errors.bad("配音请求格式无效")
+    if p.get("provider"):
+        route = next((item for item in audio_routes("tts") if item["provider"]["id"] == p["provider"]), None)
+        if not route:
+            raise http_errors.bad("所选音频服务不可用，请检查控制台配置")
+        if not any(item["id"] == p.get("voice") for item in route["voices"]):
+            raise http_errors.bad("请选择所选服务提供的音色")
+        if route["provider"]["kind"] != "local_kokoro":
+            return await tts_remote(req, p, route)
     route = providers.primary("tts")
-    if route and route["provider"]["kind"] != "local_kokoro" and not str(p.get("voice") or "").startswith(("zf_", "zm_")):
+    if not p.get("provider") and route and route["provider"]["kind"] != "local_kokoro" and not str(p.get("voice") or "").startswith(("zf_", "zm_")):
         return await tts_remote(req, p, route)
     if not tts.available():
         raise http_errors.bad("配音模型还没装好")
@@ -106,12 +122,14 @@ def audio_routes(cap):
             if cap == "tts" and tts.available():
                 result.append({**route, "voices":tts.VOICES})
         elif (p["kind"], cap) in remote.ADAPTERS and p.get("secrets", {}).get("api_key"):
-            if p["kind"] == "elevenlabs" and cap == "tts":
-                voices = providers.elevenlabs_voices(p["config"].get("voices", ""))
+            if p["kind"] in providers.VOICE_LIST_PROVIDERS and cap == "tts":
+                voices = providers.configured_voices(p["kind"], p["config"].get("voices", ""))
                 if not voices:
                     continue
-                speed = [1,1] if route["model"] == "eleven_v3" else [.7,1.2]
-                result.append({**route,"voices":voices,"speed_range":speed,"subtitles":True})
+                option = {**route, "voices": voices, "speed_range": NOIZ_SPEED_RANGE}
+                if p["kind"] == "elevenlabs":
+                    option.update(speed_range=[1,1] if route["model"] == "eleven_v3" else [.7,1.2], subtitles=True)
+                result.append(option)
             elif cap == "seed_audio":
                 result.append({**route,"voices":[],"subtitles":True})
             else:
@@ -122,6 +140,7 @@ def audio_routes(cap):
 
 def audio_service_options(cap):
     return [{"id":r["provider"]["id"],"name":r["provider"]["name"],"model":r["model"],"voices":r["voices"],
+             **({"music_duration": True} if cap == "music" and r["provider"]["kind"] == "elevenlabs" else {}),
              **{key:r[key] for key in ("speed_range","subtitles") if key in r}} for r in audio_routes(cap)]
 
 
@@ -231,6 +250,11 @@ async def generate_audio(req):
         if not isinstance(lyrics, str) or len(lyrics.strip()) > 3000:
             raise http_errors.bad("歌词最多 3000 字")
         recipe["lyrics"] = lyrics.strip()
+        if raw.get("duration_seconds") is not None:
+            duration = raw["duration_seconds"]
+            if provider["kind"] != "elevenlabs" or type(duration) not in (int,float) or not 3 <= duration <= 600:
+                raise http_errors.bad("指定配乐时长需要支持此设置的服务，范围为 3 到 600 秒")
+            recipe["duration_seconds"] = duration
     elif cap == "seed_audio":
         recipe["references"] = seed_audio_bindings(board,user,raw.get("references",[]),nid)
         seed_audio_prompt(recipe["prompt"],recipe["references"])
@@ -311,6 +335,8 @@ async def run_audio(app, job, provider, model, recipe):
                 else:
                     keys = ("lyrics",) if cap == "music" else ("duration_seconds","prompt_influence","loop")
                     request = {key:recipe[key] for key in ("prompt",*keys)}
+                    if cap == "music" and "duration_seconds" in recipe:
+                        request["duration_seconds"] = recipe["duration_seconds"]
                 result = await remote.run(app["http"],config.COMFY_DIR,provider,model,cap,request)
                 ref = result["files"][0]["ref"]
                 usage = {key:result[key] for key in ("cost","units") if result.get(key) is not None}
@@ -359,10 +385,13 @@ async def tts_remote(req, p: dict, route: dict):
     db.task_start(id=jid, user_id=req["user"]["id"], label="配音", capability="tts", provider_id=pr["id"], provider_kind=pr["kind"],
                   model=route["model"], state="running", started=t0, request={"text": text[:500]})
     try:
-        r = await remote.run(req.app["http"], config.COMFY_DIR, pr, route["model"], "tts", {"text": text, "voice": p.get("voice"), "speed": p.get("speed")})
+        async with remote_jobs.REMOTE_SEM.setdefault(pr["id"], asyncio.Semaphore(3)):
+            r = await remote.run(req.app["http"], config.COMFY_DIR, pr, route["model"], "tts",
+                                 {"text": text, "voice": p.get("voice"), "speed": p.get("speed")})
+        f = r["files"][0]
+        media_routes.grant_media(req["user"], f["ref"])
     except Exception as e:
         db.task_update(jid, state="error", error=str(e)[:500], finished=time.time())
         raise http_errors.bad(f"配音失败：{e}")
-    f = r["files"][0]
     db.task_update(jid, state="done", finished=time.time(), seconds=round(time.time() - t0, 1), units=r.get("units"), outputs=[f["ref"]])
     return web.json_response({"ref": f["ref"], "url": "/media?ref=" + quote(f["ref"], safe=""), "seconds": r.get("seconds") or 0, "took": round(time.time() - t0, 1)})

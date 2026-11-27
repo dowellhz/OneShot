@@ -373,7 +373,8 @@ class Engine:
             need_ram(45, " H3-Image")
             model = pruned.load_pruned_image(IMG_PRUNED, str(IMG_BASE), "transformer_diffusers", read=mmap_safetensors, log=log)
             self._chunk_ff(model)
-            self._stream_resident(model, int(os.environ.get("H3_IMAGE_RESIDENT", "14")))
+            # Leave room for Qwen3-VL to encode all references in a storyboard edit on a 24 GB card.
+            self._stream_resident(model, int(os.environ.get("H3_IMAGE_RESIDENT", "8")))
         else:
             need_ram(70, " H3-Image")
             model = MiniMaxH3ImageTransformer2DModel.from_pretrained(str(IMG_BASE), subfolder="transformer_diffusers", torch_dtype=torch.bfloat16)
@@ -390,6 +391,12 @@ class Engine:
         kw = dict(prompt=prompt, height=height, width=width, generator=torch.Generator().manual_seed(seed), output="images")
         if images:
             kw["image"] = images if len(images) > 1 else images[0]
+            # Keep every reference, but bound conditioning tokens as references accumulate.
+            # These limits apply to internal copies. The requested output size stays independent.
+            many_refs = len(images) > 4
+            vision_edge = 768 if many_refs else 1024
+            self.ipipe.register_to_config(vision_min_short_edge=vision_edge, vision_max_short_edge=vision_edge,
+                                          reference_max_short_edge=1024 if many_refs else 2048)
         if steps:
             kw["num_inference_steps"] = steps
         t0 = time.time()

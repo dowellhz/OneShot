@@ -1,9 +1,36 @@
 """Project grouping preserves board content and the existing board permissions."""
+from urllib.parse import quote
+
+from oneshot import config
+from oneshot.generation.media_files import ref_path
 from oneshot.storage import db
+from oneshot.web.media import grant_media
 from chat_fixture import ChatFixture
 
 
 class CanvasProjects(ChatFixture):
+    async def test_directory_uses_an_image_when_a_video_is_missing(self):
+        image = self.source["ref"]
+        video = "output:h3studio/short.mp4"
+        grant_media({"id": 7}, video)
+        board = self.load()
+        board["nodes"] = [
+            {"id":"still","type":"image","cur":0,"versions":[{"ref":image}]},
+            {"id":"clip","type":"video","cur":0,"versions":[{"ref":video}]},
+        ]
+        saved = await self.client.put("/api/board/test", json=board)
+        self.assertEqual(saved.status, 200, await saved.text())
+        entry, = await (await self.client.get("/api/boards")).json()
+        self.assertEqual(entry["cover"], "/media?ref=" + quote(image, safe=""))
+        self.assertEqual(entry["cover_kind"], "image")
+
+        path = ref_path(config.COMFY_DIR, video)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        entry, = await (await self.client.get("/api/boards")).json()
+        self.assertEqual(entry["cover"], "/media?ref=" + quote(video, safe=""))
+        self.assertEqual(entry["cover_kind"], "video")
+
     async def test_batch_groups_only_owned_personal_boards_and_keeps_creation_time(self):
         index = "/api/boards"
         bulk = index+"/batch-project"

@@ -27,6 +27,7 @@ from oneshot.providers import routes as provider_routes
 from oneshot.web import console_routes as console
 from oneshot.web import history as media_history
 from oneshot.web import media as media_routes
+from oneshot.web import noiz_voices
 from oneshot.web import pages as web_pages
 from oneshot.web import settings_routes
 
@@ -186,6 +187,10 @@ console_routes = [
     web.route("POST", "/api/admin/providers", console.admin_provider_save),
     web.route("DELETE", "/api/admin/providers/{pid}", console.admin_provider_del),
     web.route("POST", "/api/admin/providers/{pid}/test", console.admin_provider_test),
+    web.route("GET", "/api/admin/providers/{pid}/voices", noiz_voices.list_voices),
+    web.route("POST", "/api/admin/providers/{pid}/voices", noiz_voices.clone_voice),
+    web.route("PUT", "/api/admin/providers/{pid}/voices/{voice}", noiz_voices.publish_voice),
+    web.route("DELETE", "/api/admin/providers/{pid}/voices/{voice}", noiz_voices.publish_voice),
     web.route("GET", "/api/llm", console.llm_get),
     web.route("PUT", "/api/admin/llm", console.llm_put),
     web.route("PUT", "/api/admin/routes/{cap}", console.admin_route),

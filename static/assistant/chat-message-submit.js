@@ -71,18 +71,14 @@ async function acSubmitMessage(submission){
   if(AC.pending.has(board))throw new Error("请先处理画布保存冲突");
   const sent=await acApi(`/api/chat/sessions/${sid}/messages`,payload);
   AC.pending.delete(key);
+  AC.delivery.delete(sid);
   try{
    const outbox="h3.chat.outbox."+sid;
    if(JSON.parse(localStorage.getItem(outbox))?.payload?.request_key===payload.request_key)localStorage.removeItem(outbox);
   }catch{}
-  if(!current()){
-   AC.delivery.set(sid,{state:"accepted",message:sent.state==="queued"?"已加入队列":"已送达"});
-   return;
-  }
+  if(!current())return;
   const option=$("#acSessions").selectedOptions[0];
   if(option?.textContent===OneShotI18n.t("新对话"))option.textContent=payload.text.slice(0,30);
-  const title=option?.textContent||"当前对话";
-  AC.delivery.set(sid,{state:"accepted",message:(sent.state==="queued"?"已加入队列 · ":"已送达 · ")+title});
   const input=$("#acInput");
   const sameDraft=input.value===draft&&acComposeMessage(payload.enqueue?undefined:payload.text).key===key;
   AC.modelSelection.locked??=AC.models.find(model=>model.id===payload.chat_model)||{id:""};

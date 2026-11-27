@@ -13,12 +13,27 @@ from PIL import Image
 import server
 from oneshot import config
 from oneshot.generation import local as local_generation
+from oneshot.generation import motion_reference
 from oneshot.generation import reference as video_reference
 from oneshot.generation import remote_jobs
 from oneshot.web import media as media_routes
 
 
 class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
+    async def test_agent_plan_video_alias_preserves_request_id_and_exposes_seedance_limits(self):
+        provider = {"kind": "ark", "config": {}}
+        model = "doubao-seedance-2.5"
+        body = await server.remote.ark_video_body(
+            model, {"prompt": "A ball rolls left", "quality": "480p", "duration": 20, "audio": False},
+            provider=provider,
+        )
+        self.assertEqual(body["model"], model)
+        self.assertEqual(body["resolution"], "480p")
+        self.assertEqual(body["duration"], 20)
+        self.assertIs(body["generate_audio"], False)
+        self.assertEqual(motion_reference.image_reference_limit(provider, model), 30)
+        self.assertTrue(server.remote.supports_video_draft(provider, model))
+
     async def test_native_preview_uses_submitted_keyframe_positions(self):
         raw = {"kind":"video","prompt":"A steady camera", "duration":2.5,"planned":True,
                "images":[{"role":"frame","time":time,"index":i,"ref":f"input:h3studio/frame-{i}.png"}

@@ -109,6 +109,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
   $("#fmGo").disabled = !canvasCanEdit();
   $("#film").classList.add("on");
   renderFilm(); selectClip(sel, saved?.offset || 0);
+  if (voiceList) loadDubbingVoices();
   saveFilmDraft();
 }
 function closeFilm() {
@@ -216,6 +217,21 @@ function initFilm() {
 .nar select { background: #222226; border: 1px solid var(--line); border-radius: 7px; padding: 3px 4px; }
 .nar input[type=number] { width: 56px; background: #111113; border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; margin: 0 4px; }
 .nar .pill { height: 26px; }
+.fm-dubbing-heading, .fm-dubbing-header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.fm-dubbing-heading { margin-top:12px; } #fmSet .fm-dubbing-heading h4 { margin:0; }
+#fmNarr { display:grid; gap:8px; }
+.fm-dubbing { display:grid; gap:9px; min-width:0; padding:10px; border:1px solid var(--line); border-radius:10px; }
+.fm-dubbing-header b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fm-dubbing-header span { flex:none; color:var(--dim); font-size:var(--fs-caption); }
+.fm-dubbing :is(input,textarea) { min-width:0; padding:6px 8px; color:var(--text); background:#111113; border:1px solid var(--line); border-radius:7px; }
+.fm-dubbing label select { min-width:0; }
+.fm-dubbing-timing { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+#fmSet .fm-dubbing-timing label { display:grid; gap:3px; }
+.fm-dubbing-timing input { width:100%; }
+.fm-dubbing-actions { display:flex; flex-wrap:wrap; gap:5px; }
+.fm-dubbing-actions .pill { min-height:28px; }
+.fm-dubbing-primary:not(:disabled) { background:var(--text); color:var(--card); }
+.fm-dubbing-warning { color:#ffc68e; font-size:var(--fs-caption); }
 #fmTl { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 10px 18px 16px; border-top: 1px solid var(--line); min-height: 128px; }
 #fmTl .fc { position: relative; flex: none; height: 104px; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid transparent; cursor: pointer; }
 #fmTl .fc.on { border-color: var(--c-video); } #fmTl .fc.over { border-color: var(--blue); } #fmTl .fc.drag { opacity: .4; }
@@ -255,6 +271,7 @@ function initFilm() {
 .fm-audio-lane { position: relative; height: 28px; margin-top: 4px; border-radius: 7px; background: var(--card); }
 .fm-audio-lane button { position: absolute; height: 100%; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; border: 1px solid var(--line2); border-radius: 7px; background: var(--card-hi); color: var(--text); text-align: left; font-size: var(--fs-caption); }
 .fm-audio-lane button:focus-visible { outline: 2px solid var(--c-image); outline-offset: -2px; }
+.fm-voice-lane button { border-color:#aa8cc6; background:#30263a; }
 #fmAudioSettings .nr b { flex: 1; min-width: 100px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #fmGo { background: #fff; color: #000; font-weight: 600; }
 #qp { position: fixed; top: 54px; right: 14px; z-index: 31; width: min(360px, calc(100vw - 28px)); max-height: 70vh; overflow-y: auto; display: none; flex-direction: column; gap: 4px; padding: 8px;

@@ -24,7 +24,7 @@ const wizScript = () => W && node(W.script);
 function wizSave() { B.wiz = W; save(); }
 const wizardQualityEnabled = () => W?.quality_precheck ?? (defaultVideoQualityPrecheck() && CAPS_LIST.video_quality_precheck === true);
 function setWizardVideoQuality(video, count) {
-  Object.assign(video.data,{count:count||1,quality:W.quality||video.data.quality||"hd",quality_precheck:wizardQualityEnabled()});
+  Object.assign(video.data,{count:count||1,quality:W.quality||video.data.quality||"hd",quality_precheck:!hasMediaReferences(video)&&wizardQualityEnabled()});
   if (video.data.quality_precheck) Object.assign(video.data,{provider:"local_h3",selected_model:"h3-video",draft:false});
 }
 
@@ -133,6 +133,7 @@ function wizardFilm(script) {
 }
 // ---- actions
 function wireStep(body) {
+  wireWizardMedia(body);
   $$("[data-goto]", body).forEach(b => b.onclick = () => goStep(+b.dataset.goto));
   $$("[data-go]", body).forEach(b => b.onclick = () => wizGo(b.dataset.go, b));
   $$("[data-set]", body).forEach(b => b.onclick = () => { const k = b.dataset.set; W[k] = k==="quality_precheck" ? b.dataset.val==="true" : ["dur", "takes"].includes(k) ? +b.dataset.val : b.dataset.val; wizSave(); renderWiz(); });
@@ -180,10 +181,11 @@ function wireStep(body) {
       else if (m === "del") d.shots.splice(i, 1);
       else if (m === "up" && i > 0) d.shots.splice(i - 1, 0, d.shots.splice(i, 1)[0]);
       else if (m === "down" && i + 1 < d.shots.length) d.shots.splice(i + 1, 0, d.shots.splice(i, 1)[0]);
+      if (!scriptShotLinks(s).some(Boolean)) syncWizardOpeningShot(s);
       save(); render(s); renderWiz();
     });
   }
-  if (W.step === 2) wireCast(body);
+  if (W.step === 2) { wireCast(body); wireWizardSuppliedAssets(body); queueMicrotask(startWizardOpeningAnalysis); } else if (W.step === 4) wireWizardActionReview(body);
   $$("[data-middle-time]",body).forEach(input=>input.onchange=()=>{
     const pair=shotPairs().find(item=>item.index===Number(input.dataset.middleTime));
     const timing=pair&&wizardMiddleTiming(pair);
@@ -228,6 +230,7 @@ function wireCast(body) {
   const s = wizScript(), d = s.data;
   $$(".cc", body).forEach(el => {
     const c = d.characters[+el.dataset.i];
+    if (c) wireWizardCharacterRef(el,c);
     $$("[data-c]", el).forEach(f => f.oninput = () => {
       const k = f.dataset.c, old = c.name;
       c[k] = f.value;
@@ -254,11 +257,11 @@ function castNode(c) {
 async function castAction(c, a) {
   if (a === "gen") {
     const m = castNode(c);
-    setWizardCharacterPrompt(m,wizScript(),c);
+    try { setWizardCharacterPrompt(m,wizScript(),c); } catch (error) { return toast(error.message,4500); }
     m.data.count = 2; save();
     await generate(m); wizSig = ""; renderWiz();
   } else if (a === "up") {
-    pickFiles(async files => { const m = castNode(c); await uploadInto(m, files[0]); m.data.caption = c.look || ""; save(); wizSig = ""; renderWiz(); });
+    const script=wizScript(); pickFiles(files => { if (script===wizScript() && files.length) return uploadWizardProductionAsset(script,c,castNode(c),files[0]); });
   } else if (a === "lib") {
     const list = (await loadLibrary()).filter(x => x.kind === "character");
     const box = $("#wzLib");
@@ -275,12 +278,14 @@ async function wizGo(what, btn) {
   const s = wizScript();
   if (what === "script") {
     const idea = (W.idea || "").trim(); if (!idea) { toast("先写一句你的想法"); return; }
+    const media=await prepareWizardUploads();
+    if (!media) return;
     let n = s;
     if (!n) { n = addNode("script", 0, 0, {}, { name: "剧本" }); W.script = n.id; }
     if (n.data.made?.length) toast("新分镜生成后会展开为一组新镜头");
     Object.assign(n.data, { prompt: `${idea}\n风格：${W.style}`, nshots:"auto", shotlen:"auto", aspect:W.aspect, quality:W.quality });
     W.step = 1; wizSave();
-    const job = planStoryboard(n,{targetSeconds:W.dur,resetLinks:true,motionFrames:true});
+    const job = planStoryboard(n,{targetSeconds:W.dur,resetLinks:true,motionFrames:true,wizardMedia:media});
     renderWiz();
     await job;
     fit(B.nodes); wizSig = ""; renderWiz();
@@ -383,6 +388,14 @@ function initWizard() {
   const css = document.createElement("style");
   css.textContent = `
 #wiz { position: fixed; inset: 0; z-index: 57; background: var(--bg); display: none; flex-direction: column; }
+#wiz .wz-media { display:grid; gap:8px; margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:12px; }
+#wiz .wz-media header, #wiz .wz-media-range { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+#wiz .wz-media h3 { margin:0; font-size:var(--fs-body); }
+#wiz .wz-media-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:10px; }
+#wiz .wz-media-card { display:grid; grid-template-columns:100px minmax(0,1fr); gap:10px; border:1px solid var(--line); border-radius:10px; overflow:hidden; padding:8px; }
+#wiz .wz-media-preview :is(img,video) { width:100%; max-height:125px; object-fit:contain; border-radius:7px; }
+#wiz .wz-media-fields { display:grid; gap:6px; } #wiz .wz-media-fields b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#wiz .wz-media-fields :is(label,input,select) { min-width:0; max-width:100%; } #wiz .wz-media-fields input[type=number] { width:76px; }
 #wiz.on { display: flex; }
 #wiz .top { display: flex; align-items: center; gap: 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 #wiz .top .x { margin-left: auto; }

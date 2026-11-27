@@ -17,7 +17,9 @@ function imageCanvasRequest(n, prompt, {grid=false,silent=false}={}) {
   }
   const sheet=!grid&&d.character_sheet===true;
   const selected=canvasNodeModel(n,nodeProvider(n));
-  const ins=grid?[gridReference]:sheet?[]:linked;
+  const ref=sheet?d.wizard_character_reference:null;
+  const ins=grid?[gridReference]:sheet?linked.filter(item=>ref?.node_id===item.source.id &&
+    ref.ref===item.edge.ref && item.edge.image_use==="character").slice(0,1):linked;
   const model=selected?.image_engine || isRemote(n) ? "h3img" : d.model;
   if ((ins.length || guide?.enabled) && model === "h3video") return fail("以图改图需要 H3-Image 模型");
   for(const {edge,source,version} of ins){
@@ -48,7 +50,8 @@ function imageCanvasRequest(n, prompt, {grid=false,silent=false}={}) {
   const request = { kind: "image", model, expand: d.expand, prompt:resolved, images, ar, quality: model === "h3video" ? (d.quality === "16mp" ? "hd" : "std") : d.quality, turbo: d.turbo, seed: d.seed, count: canvasGenerationCount(n),
     ...(d.image_text ? {image_text:d.image_text} : {}) };
   request.board=boardId;
-  if(sheet)Object.assign(request,{character_sheet:true,expand:false,image_text:"none"});
+  if(sheet)Object.assign(request,{character_sheet:true,expand:false,image_text:"none",
+    ...(ins.length?{character_sheet_reference:ref.ref}:{})});
   if (d.replay_memory_ref) request.replay_memory_ref=d.replay_memory_ref;
   if (CAPS_LIST.image?.some(service=>service.id===d.provider)) request.provider=d.provider;
   if (d.selected_model) Object.assign(request,{provider:d.provider,selected_model:d.selected_model});

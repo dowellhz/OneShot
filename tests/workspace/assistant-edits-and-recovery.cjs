@@ -38,10 +38,12 @@ module.exports = async function assistantEditsAndRecovery(workspace, scenarioSta
  assert.equal(evaluate('$("#acInput").value'),'生成图片');
  assert.equal(evaluate('$("#acResend").hidden'),false);
  evaluate('$("#acInput").value="尚未发送的新草稿";$("#acResend").click()');
- await ready('!AC.sending&&$("#acResend").hidden','a resend receives a delivery receipt');
+ await ready('!AC.sending&&$("#acDelivery").hidden','a successful resend clears the composer status');
  assert.equal(chatPosts.length,2);
  assert.deepEqual(chatPosts[0],chatPosts[1],'ambiguous submission resends the exact original request');
- equal(evaluate('[$("#acInput").value,$("#acDeliveryStatus").textContent]'),['尚未发送的新草稿','已送达 · Test chat']);
+ equal(evaluate('[$("#acInput").value,$("#acDeliveryStatus").textContent]'),['尚未发送的新草稿','']);
+ equal(evaluate('$$(".ac-msg",$("#acMessages")).map(el=>el.textContent.trim())'),['生成图片','生成并保存完成'],
+   'the delivered message stays in the transcript in event order');
  assert.equal(w.localStorage.getItem('h3.chat.outbox.s1'),null);
  evaluate('$("#acInput").value=""');
  console.log('Assistant composer shortcuts and receipts passed: skill search, exact resend, receipt and modified draft preservation.');

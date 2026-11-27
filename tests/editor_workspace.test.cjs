@@ -3,6 +3,11 @@
 
 const { boot, close } = require('./workspace_fixture.cjs');
 const imageReferenceRemoval = require('./workspace/image-reference-removal.cjs');
+const filmDubbing = require('./workspace/film-dubbing.cjs');
+const filmMusic = require('./workspace/film-music.cjs');
+const wizardMedia = require('./workspace/wizard-media.cjs');
+const wizardCharacterReference = require('./workspace/wizard-character-reference.cjs');
+const wizardSuppliedAssets = require('./workspace/wizard-supplied-assets.cjs');
 
 const scenarios = [
  require('./workspace/workspace-navigation.cjs'),
@@ -19,6 +24,8 @@ const scenarios = [
  require('./workspace/previs-storyboard-guides.cjs'),
  require('./workspace/video-reference-and-segment-edits.cjs'),
  require('./workspace/video-gif-models-and-drafts.cjs'),
+ filmDubbing,
+ filmMusic,
  require('./workspace/timeline-playlists-and-audio.cjs'),
  require('./workspace/batch-layout-and-group-generation.cjs'),
  require('./workspace/shot-run-and-continuity.cjs'),
@@ -40,12 +47,20 @@ const scenarios = [
  require('./workspace/generation-adherence.cjs'),
  require('./workspace/video-quality.cjs'),
  require('./workspace/wizard-assets.cjs'),
+ wizardMedia,
+ wizardCharacterReference,
+ wizardSuppliedAssets,
  imageReferenceRemoval,
 ];
 
 async function run() {
  const workspace = await boot();
  if (workspace.englishSmoke) {
+  await filmDubbing(workspace);
+  await filmMusic(workspace);
+  await wizardMedia(workspace);
+  await wizardCharacterReference(workspace);
+  await wizardSuppliedAssets(workspace);
   await imageReferenceRemoval(workspace);
   await require('./workspace_localization.cjs')(workspace);
   return;

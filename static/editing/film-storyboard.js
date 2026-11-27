@@ -18,7 +18,8 @@ function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, tr
   }
   if (!media.length) return false;
   const spec = newSpec(media);
-  if (start === 0 && end === script.data.shots.length - 1) spec.story_script = script.id;
+  const full = start === 0 && end === script.data.shots.length - 1;
+  if (full) spec.story_script = script.id;
   const selectedShots = script.data.shots.slice(start, end + 1);
   const keys = selectedShots.map((shot, i) => shot.id || `index:${start+i}`);
   spec.story_tracking = true;
@@ -39,7 +40,17 @@ function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, tr
     return {id:keys[i],node:clip.node,ref:clip.ref,number:start+i+1,frames};
   });
   const scope = [script.id,keys];
-  const key = filmDraftPrefix()+"story:"+JSON.stringify([...scope,shots.map(shot=>[shot.node,shot.ref])]);
+  const inserts=full?(script.data.wizard_media?.clips || []):[];
+  for (const item of inserts) {
+    const media=wizardMediaSource(item);
+    if (!media) { toast(OneShotI18n.t("剪入成片的视频版本已移除")); return false; }
+    const clip=filmClipForVersion(media.source,media.version);
+    Object.assign(clip,{in:item.start,out:item.end,tight:true});
+    spec.clips.push(clip);
+  }
+  const sourceVersions=shots.map(shot=>[shot.node,shot.ref]);
+  const key = filmDraftPrefix()+"story:"+JSON.stringify(inserts.length?
+    [...scope,sourceVersions,inserts.map(({node,ref,start,end})=>[node,ref,start,end])]:[...scope,sourceVersions]);
   showFilm(spec,null,key,null,{scope,shots,base:storyDraftSignature(spec)});
   return true;
 }

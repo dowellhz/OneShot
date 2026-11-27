@@ -152,7 +152,10 @@ async function run() {
     "/api/me": {id:7, name:displayName, role:"admin"},
     "/api/samples": [{id:"sample0"}],
     "/api/admin/users": [],
-    "/api/boards": [{id:"board1", name:"我的中文画布", owner:7, nodes:1, mtime:100}],
+    "/api/boards": [
+      {id:"board1", name:"我的中文画布", owner:7, nodes:1, mtime:100, cover:"/media?ref=input%3Ah3studio%2Fstill.png", cover_kind:"image"},
+      {id:"board2", name:"项目画布", owner:7, nodes:1, mtime:99, project:"project1", cover:"/media?ref=output%3Ah3studio%2Ffilm.mp4", cover_kind:"video"},
+    ],
     "/api/canvas-projects": [{id:"project1", name:"我的中文项目"}],
     "/api/canvas-teams": [],
   };
@@ -167,7 +170,9 @@ async function run() {
   assert.equal(projects.querySelector("#directorySort option:checked").textContent, "Most recently updated");
   assert.equal(projects.querySelector("[data-directory-new=samples] b").textContent, "View examples");
   assert.equal(projects.querySelector("#directoryCount").textContent, "1 canvas · 1 project");
-  assert.equal(projects.querySelector("[data-directory-action=folder]").textContent, "我的中文项目");
+  assert.equal(projects.querySelector(".directory-folder-name").textContent, "我的中文项目");
+  assert.equal(projects.querySelector(".directory-project .cv video").getAttribute("src"), directoryData["/api/boards"][1].cover+"#t=1");
+  assert.equal(projects.querySelector('[data-board="board1"] .cv img').getAttribute("src"), directoryData["/api/boards"][0].cover);
   assert.equal(projects.querySelector(".pj .nm").textContent, "我的中文画布");
   assert.equal(projects.querySelector("[data-directory-action=rename]").textContent, "Rename");
   projects.querySelector("#directoryItems [data-directory-action=rename]").click();

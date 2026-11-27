@@ -8,6 +8,7 @@ async function exportFilm(destination="version") {
   if (destination==="canvas" && !F.n?.data.playlist) return;
   if (!F.spec.clips.length) return toast("先添加视频片段");
   if (F.captionRequests?.size) return toast("请等待字幕识别完成后再导出");
+  if (F.spec.narration.some(clip => dubbingRequests.has(clip))) return toast(OneShotI18n.t("请等待配音生成完成后再导出"));
   if (!downloadOnly && F.n?.job) return toast("此成片仍在导出，请稍候");
   F.busy = true;
   $("#fmGo").disabled = $("#fmDownloadMerged").disabled = $("#fmExportCanvas").disabled = true;
@@ -20,8 +21,11 @@ async function exportFilm(destination="version") {
   }
   finally {
     F.busy = false;
-    if (FILM === F) $("#fmGo").disabled = $("#fmDownloadMerged").disabled = $("#fmExportCanvas").disabled =
-      !canvasCanEdit() || !F.spec.clips.length;
+    if (FILM === F) {
+      $("#fmGo").disabled = $("#fmDownloadMerged").disabled = $("#fmExportCanvas").disabled =
+        !canvasCanEdit() || !F.spec.clips.length;
+      renderNarr();
+    }
   }
 }
 
@@ -92,12 +96,14 @@ async function submitFilm(F,destination) {
   }
   const pending = s.narration.filter(x => x.text.trim() && !x.ref);
   for (const x of pending) {
-    toast(`正在为旁白配音（${pending.indexOf(x) + 1}/${pending.length}）…`, 8000);
+    toast(OneShotI18n.t("正在生成配音（{index}/{total}）…", {index:pending.indexOf(x) + 1,total:pending.length}), 8000);
     try {
-      const r = await api("/api/tts", {text:x.text, voice:x.voice, speed:x.speed});
+      const request = filmNarrationRequest(x);
+      const r = await api("/api/tts", request);
+      if (FILM !== F || F.board !== boardId) return;
       x.ref = r.ref; x.seconds = r.seconds;
       const current = F.spec.narration[s.narration.indexOf(x)];
-      if (current && !current.ref && ["text","voice","speed"].every(k => current[k] === x[k])) {
+      if (current && !current.ref && Object.keys(request).every(k => current[k] === request[k])) {
         current.ref = r.ref; current.seconds = r.seconds;
       }
       saveFilmDraft(F);

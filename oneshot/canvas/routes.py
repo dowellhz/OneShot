@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -17,6 +18,7 @@ from oneshot.canvas.board_store import BOARD_ID as _ID
 from oneshot.canvas.board_store import board_meta
 from oneshot.canvas.board_store import can_edit
 from oneshot.canvas.board_store import can_see
+from oneshot.generation.media_files import VIDEO_EXT, ref_path
 from oneshot.memory import creative_memory
 from oneshot.memory import legacy_routes
 from oneshot.storage import db
@@ -150,6 +152,30 @@ async def move_canvas_project(req):
     return web.json_response({"ok":True, "project":project})
 
 
+def board_cover(board: dict) -> dict:
+    nodes = board.get("nodes", [])
+    for kind, extensions in (("video", VIDEO_EXT), ("image", creative_memory.IMAGE_EXT)):
+        for node in reversed(nodes):
+            versions, current = node.get("versions"), node.get("cur")
+            if (node.get("type") != kind or not isinstance(versions, list)
+                    or type(current) is not int or not 0 <= current < len(versions)
+                    or not isinstance(versions[current], dict)):
+                continue
+            version = versions[current]
+            candidates = ((version.get("cover"), "image", creative_memory.IMAGE_EXT),
+                          (version.get("ref"), kind, extensions))
+            for ref, cover_kind, supported in candidates:
+                if not isinstance(ref, str):
+                    continue
+                try:
+                    path = ref_path(config.COMFY_DIR, ref)
+                    if path.suffix.lower() in supported and path.is_file():
+                        return {"cover": "/media?ref=" + quote(ref, safe=""), "cover_kind": cover_kind}
+                except (OSError, ValueError, RuntimeError):
+                    continue
+    return {"cover": None, "cover_kind": None}
+
+
 async def list_boards(req):
     u = req["user"]
     BOARDS.mkdir(parents=True, exist_ok=True)
@@ -165,13 +191,11 @@ async def list_boards(req):
         if u["role"] == "admin" and req.query.get("all") != "1" and b.get("owner") not in (None, u["id"]) and not b.get("shared") and not (
                 team and db.one("SELECT 1 FROM canvas_team_members WHERE team_id=? AND user_id=?",team,u["id"])):
             continue                       # admins see others' private boards only on request (console)
-        v = next((n["versions"][n["cur"]] for n in reversed(b.get("nodes", [])) if n.get("type") == "video" and
-                  n.get("versions") and type(n.get("cur")) is int and 0<=n["cur"]<len(n["versions"])), None)
         out.append({"id": f.stem, "name": b.get("name") or "未命名画布", "nodes": len(b.get("nodes", [])), "mtime": f.stat().st_mtime,
                     "created":b.get("created"), "auto_name":b.get("auto_name"),
                     "owner": b.get("owner"), "shared": bool(b.get("shared")), "wiz": (b.get("wiz") or {}).get("step"),
                     "project":groups.get(f.stem) if b.get("owner") == u["id"] else None, "access":access_role(u,b),"team":team,
-                    "cover": (v or {}).get("cover_url") or (v or {}).get("url")})
+                    **board_cover(b)})
     return web.json_response(out)
 
 

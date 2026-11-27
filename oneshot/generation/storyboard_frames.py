@@ -27,3 +27,33 @@ def motion_frame_plan(raw: dict, duration: int, first: str) -> dict:
     if key and key not in (shot_text_key(first), shot_text_key(result.get("end", ""))):
         result.update(middle=middle, middle_time=time)
     return result
+
+
+def shot_action_check(raw, duration, first):
+    """Normalize the evidence and optional timestamped picture for a story beat."""
+    if not isinstance(raw, dict):
+        return {}
+    evidence = raw.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        return {}
+    check = {"evidence": evidence.strip()[:240]}
+    instant = motion_frame_plan({"middle": raw.get("moment"), "middle_time": raw.get("seconds")}, duration, first)
+    if "middle" in instant:
+        check.update(moment=instant["middle"], seconds=instant["middle_time"])
+    return check
+
+
+def storyboard_motion_fields(shot, duration):
+    raw = shot.get("motion_frames")
+    first = str(shot.get("keyframe") or "")
+    check = shot_action_check(shot.get("action_check"), duration, first)
+    if not isinstance(raw, dict) and "moment" not in check:
+        return {"action_check": check} if check else {}
+    frames = dict(raw) if isinstance(raw, dict) else {}
+    if "moment" in check:
+        planned = motion_frame_plan({**frames, "middle": check["moment"], "middle_time": check["seconds"]}, duration, first)
+        if "middle" in planned:
+            return {"motion_frames": planned, "action_check": check}
+        check = {"evidence": check["evidence"]}
+    return {"motion_frames": motion_frame_plan(frames, duration, first),
+            **({"action_check": check} if check else {})}

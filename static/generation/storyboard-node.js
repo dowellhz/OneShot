@@ -103,10 +103,11 @@ function madeShots(n) {
   return (n.data.made||[]).filter(pair=>(!pair.shot_id||positions.has(pair.shot_id))&&(node(pair.img)||node(pair.vid)))
     .sort((a,b)=>(positions.get(a.shot_id)??shots.length)-(positions.get(b.shot_id)??shots.length));
 }
-async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=false}={}) {
+async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=false, wizardMedia}={}) {
   const d = n.data, story = fullPrompt(n);
   if (!story.trim()) { toast("先写一段剧情"); $("#prompt").focus(); return; }
-  const refs = scriptRefs(n);
+  const uploads=wizardMedia?wizardUploadedReferences(wizardMedia):[];
+  const refs=[...uploads,...scriptRefs(n).filter(item=>!uploads.some(upload=>upload.ref===item.ref))];
   await withBusy(n, "Qwen 拆分镜中", async () => {
     const bid=boardId;
     await flushSave();
@@ -120,6 +121,7 @@ async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=
     if(resetLinks)d.made=[];
     Object.assign(d,{title:r.title,style:r.style,characters:r.characters,visual_assets:r.visual_assets||[],
       shots:r.shots.map(shot=>({...shot,id:newCanvasNodeId()}))});
+    if (wizardMedia) applyWizardUploadPlan(n,wizardMedia);
     save(); render(n); drawEdges();
     const total = r.planned_seconds ?? r.shots.reduce((sum,shot)=>sum+shot.duration,0);
     toast(`拆成 ${r.shots.length} 镜，计划约 ${total} 秒${llmNote(r)}`, 4000);

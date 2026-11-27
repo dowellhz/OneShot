@@ -48,7 +48,15 @@ class GenerationContext:
             if p.get("character_sheet") is True:
                 for key in ("memory_ids","memory_views","memory_used","fields"):
                     p.pop(key,None)
-                return {**p,"images":[],"expand":False,"image_text":"none"}
+                selected = p.get("character_sheet_reference")
+                images = p.get("images")
+                if selected is None:
+                    images = []
+                elif (not isinstance(selected, str) or not isinstance(images, list) or len(images) != 1
+                      or not isinstance(images[0], dict) or images[0].get("ref") != selected
+                      or images[0].get("image_use") != "character"):
+                    fail("请为定妆照指定一张有效的人物参考图")
+                return {**p,"images":images,"expand":False,"image_text":"none"}
         content = p.get("prompt", "") + "\n" + "\n".join(str(v) for v in (p.get("fields") or {}).values())
         video_generation = p.get("kind") == "video"
         numbered = list(NUMBERED_AV_REFERENCE.finditer(content)) if video_generation else []

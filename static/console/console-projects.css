@@ -12,6 +12,7 @@
 #directoryItems .nm:hover { text-decoration:underline; }
 #directoryItems .mt { flex-wrap:wrap; }
 #directoryItems .cv { color:var(--faint);text-decoration:none; }
+#directoryItems button.cv { width:100%;border:0;cursor:pointer;font:inherit; }
 .directory-folder-name { display:block;text-align:left;padding:13px 12px 7px;border:0;
   background:transparent;color:var(--text);font:inherit;font-weight:600;cursor:pointer;overflow-wrap:anywhere; }
 .directory-folder-name:hover { text-decoration:underline; }

@@ -67,6 +67,10 @@ function renderFilm() {
     <h4>画面</h4>
     <label>画幅${opt("aspect", ASPECT_CN, s.aspect)}</label>
     ${s.aspect !== "source" ? `<label>比例不同时${opt("fit", FIT_CN, s.fit)}</label>` : ""}
+    <div class="fm-dubbing-heading"><h4>视频配音</h4>
+      ${editable ? OneShotI18n.html`<button class="pill" type="button" data-b="narr">＋ 添加配音</button>` : ""}</div>
+    ${editable ? OneShotI18n.html`<div class="h" data-dubbing-empty ${s.narration.length ? "hidden" : ""}>把播放头移到要开口的位置，再添加一段旁白或台词。</div>` : ""}
+    <div id="fmNarr"></div>
     <h4>补画面</h4>
     ${canvasCanEdit() ? `<select id="fmCutawaySource" aria-label="在播放头添加补画面"><option value="">在播放头添加补画面</option>${B.nodes.filter(filmSource).map(n=>
       `<option value="${esc(n.id)}">${esc(n.name)} · 版本 ${n.cur+1}</option>`).join("")}</select>` : ""}
@@ -81,10 +85,8 @@ function renderFilm() {
     ${bg ? OneShotI18n.html`<div class="bgm"><span title="${esc(bg.name || "")}">♪ ${esc(bg.name || "音乐")}</span><button class="pill" data-b="play">试听</button><button class="pill" data-b="rm">移除</button></div>
       <label>音量<input type="range" min="0.05" max="1" step="0.05" value="${bg.volume}" data-bk="volume"><span>${Math.round(bg.volume * 100)}%</span></label>
       <label class="ck"><input type="checkbox" data-bk="duck" ${bg.duck !== false ? "checked" : ""}>有台词和旁白时自动压低音乐</label>`
-      : `<button class="pill" data-b="up">上传音乐（mp3 / wav / m4a）</button><div class="h">没有配乐模型，可以用自己的音乐；会自动循环并在结尾淡出</div>`}
-    <h4>旁白配音</h4>
-    <div id="fmNarr"></div>
-    <button class="pill" data-b="narr">＋ 添加一段旁白</button>
+      : ""}
+    ${editable ? OneShotI18n.html`<button class="pill" data-b="up">上传音乐（mp3 / wav / m4a）</button><div id="fmMusicMaker"></div>` : ""}
     <h4>音频片段</h4>
     <div id="fmAudioSettings"></div>
     <button class="pill" data-b="audio">＋ 上传到当前播放位置</button>
@@ -105,7 +107,7 @@ function renderFilm() {
     audio: () => uploadFilmAudio(F, true),
     rm: () => { s.bgm = null; renderFilm(); },
     play: () => { const a = $("#fmA"); if (!a.paused && a.src.endsWith(bg.url)) { a.pause(); return; } a.src = bg.url; a.volume = bg.volume; a.play(); },
-    narr: () => { s.narration.push({ text: "", voice: voiceList?.voices?.[0]?.id || "zf_001", speed: 1, start: +(timelinePos() || 0).toFixed(1), volume: 1 }); renderNarr(); },
+    narr: () => addFilmDubbing(F),
   })[b.dataset.b]());
   const canvasAudio=$("#fmCanvasAudio",set);
   canvasAudio.onchange=()=>{
@@ -121,6 +123,7 @@ function renderFilm() {
     if (filmSource(media)) addFilmCutaway(F,media);
   };
   renderNarr();
+  renderFilmMusic(F);
   renderFilmAudio();
   renderFilmTitles();
   renderFilmCutaways();

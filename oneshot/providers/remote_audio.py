@@ -95,13 +95,13 @@ def elevenlabs_cues(alignment):
     return cues
 
 
-async def elevenlabs_audio(http, comfy_dir, p, endpoint, body, prefix, max_bytes, *, timed=False):
+async def elevenlabs_audio(http, comfy_dir, p, endpoint, body, prefix, max_bytes, *, timed=False, timeout=120):
     secret = p["secrets"].get("api_key")
     if not secret:
         raise ProviderError("未配置 ElevenLabs API Key")
     async with http.post("https://api.elevenlabs.io/v1/"+endpoint, json=body,
                          params={"output_format":"mp3_44100_128"}, headers={"xi-api-key":secret},
-                         timeout=aiohttp.ClientTimeout(total=120), allow_redirects=False) as response:
+                         timeout=aiohttp.ClientTimeout(total=timeout), allow_redirects=False) as response:
         if response.status != 200:
             detail = {401:"请检查 API Key",403:"Key 或账号无此生成权限",404:"模型或音色不可用",422:"参数不被所选模型接受",
                       429:"请求过多或额度不足"}.get(response.status,"服务暂时不可用")
@@ -139,6 +139,17 @@ async def elevenlabs_sfx(http, comfy_dir, p, model, req):
     if req["duration_seconds"] is not None:
         body["duration_seconds"] = req["duration_seconds"]
     return await elevenlabs_audio(http, comfy_dir, p, "sound-generation", body, "sfx", 4*1024*1024)
+
+
+async def elevenlabs_music(http, comfy_dir, p, model, req):
+    lyrics = req.get("lyrics")
+    prompt = req["prompt"] + ("\n\nUse these lyrics:\n" + lyrics if lyrics else "")
+    if len(prompt) > 4100:
+        raise ProviderError("ElevenLabs 的音乐描述和歌词合计最多 4100 字")
+    body = {"model_id": model, "prompt": prompt, "force_instrumental": not lyrics}
+    if req.get("duration_seconds"):
+        body["music_length_ms"] = round(req["duration_seconds"] * 1000)
+    return await elevenlabs_audio(http, comfy_dir, p, "music", body, "music", 24*1024*1024, timeout=480)
 
 
 async def elevenlabs_tts(http, comfy_dir, p, model, req):

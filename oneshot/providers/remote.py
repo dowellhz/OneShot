@@ -29,7 +29,9 @@ from oneshot.generation.media_files import _new
 from oneshot.generation.motion_reference import image_limit, ordered_video_references, video_model_for_limits
 from oneshot.providers.catalog import ProviderError, data_url, default_model, download, json_req
 from oneshot.providers.minimax import mm_base, mm_check, mm_headers
+from oneshot.providers.noiz import noiz_tts, test_noiz
 from oneshot.providers.remote_audio import (
+    elevenlabs_music,
     MM_VOICES as MM_VOICES,
     elevenlabs_sfx,
     elevenlabs_tts,
@@ -385,9 +387,11 @@ ADAPTERS = {
     ("openai", "image"): oai_image,
     ("gemini", "image"): gemini_image,
     ("minimax", "tts"): mm_tts,
+    ("noiz", "tts"): noiz_tts,
     ("minimax", "music"): mm_music,
     ("elevenlabs", "sfx"): elevenlabs_sfx,
     ("elevenlabs", "tts"): elevenlabs_tts,
+    ("elevenlabs", "music"): elevenlabs_music,
     ("volc_seed_audio", "seed_audio"): volc_seed_audio,
 }
 
@@ -442,4 +446,4 @@ async def _test_openai(http, p):
 
 
 TESTS: dict = {"kling": _test_kling, "ark": _test_ark, "dashscope": _test_dashscope, "openai": _test_openai,
-               "gemini": test_gemini_image}
+               "gemini": test_gemini_image, "noiz": test_noiz}

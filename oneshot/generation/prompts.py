@@ -215,7 +215,12 @@ async def describe(req):
     p = await req.json()
     if not p.get("images"):
         raise http_errors.bad("没有图片")
-    return await http_errors.llm_call(req, tools.describe(req.app["llm"], config.COMFY_DIR, p["images"], p.get("mode") or "prompt"))
+    mode = p.get("mode") or "prompt"
+    if mode in ("character_ref", "character_ref_en"):
+        images = p["images"]
+        if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], dict) or not images[0].get("ref"):
+            raise http_errors.bad("人物参考每次分析一张图片")
+    return await http_errors.llm_call(req, tools.describe(req.app["llm"], config.COMFY_DIR, p["images"], mode))
 
 
 async def analyze(req):

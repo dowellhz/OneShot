@@ -31,15 +31,20 @@ ARK_VIDEO_MODELS = {
 
 
 def video_model_for_limits(provider, model):
-    if provider and provider.get("kind") == "ark" and isinstance(model,str) and ARK_ENDPOINT_ID.fullmatch(model):
-        profile = (provider.get("config") or {}).get("video_endpoint_models",{}).get(model)
-        return ARK_VIDEO_MODELS.get(profile,model)
+    if not isinstance(model, str):
+        return model
+    if provider and provider.get("kind") == "ark" and ARK_ENDPOINT_ID.fullmatch(model):
+        profile = (provider.get("config") or {}).get("video_endpoint_models", {}).get(model)
+        return ARK_VIDEO_MODELS.get(profile, model)
+    # Agent Plan uses dotted model IDs. Keep the original ID in API requests.
+    if model.startswith("doubao-"):
+        return ARK_VIDEO_MODELS.get(model.removeprefix("doubao-"), model)
     return model
 
 
 def ark_multimodal_model(model):
     return isinstance(model,str) and bool(ARK_ENDPOINT_ID.fullmatch(model) or
-        re.fullmatch(r"doubao-seedance-2-[05](?:-[a-z0-9]+)*",model))
+        re.fullmatch(r"doubao-seedance-2-[05](?:-[a-z0-9]+)*", video_model_for_limits(None, model)))
 
 
 def image_reference_limit(provider, model):

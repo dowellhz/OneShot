@@ -228,6 +228,7 @@ function renderAudioPanel(n) {
     ${mode==="tts"&&available?`<span class="pill">${esc(route.voices.find(v=>v.id===voice)?.name || "音色")}<select aria-label="配音音色" data-audio-field="voice">${options(route.voices,voice)}</select></span>
     <label class="pill audio-rate" ${minSpeed===maxSpeed?'title="此模型使用固定语速"':""}>语速 <input type="number" value="${audioSpeed(route,data.speed)}" min="${minSpeed}" max="${maxSpeed}" step="any" ${minSpeed===maxSpeed?"disabled":""} data-audio-field="speed" aria-label="配音语速"></label>
     ${route.subtitles? `<label class="pill"><input type="checkbox" data-audio-field="subtitles" ${data.subtitles===true?"checked":""}>生成同步字幕</label>` : ""}`:""}
+    ${mode==="music"&&route?.music_duration?OneShotI18n.html`<label class="pill audio-rate">时长（秒） <input type="number" min="3" max="600" step="any" placeholder="自动" value="${Number.isFinite(data.duration_seconds)?data.duration_seconds:""}" data-audio-field="duration_seconds" aria-label="配乐时长（秒）"></label>`:""}
     ${mode==="sfx"?`
       <label class="pill audio-rate">时长（秒） <input type="number" min=".5" max="30" step="any" placeholder="自动" value="${Number.isFinite(data.duration_seconds)?data.duration_seconds:""}" data-audio-field="duration_seconds" aria-label="音效时长（秒）"></label>
       <label class="pill audio-rate">提示词影响 <input type="number" min="0" max="1" step="any" value="${Number.isFinite(data.prompt_influence)?data.prompt_influence:.3}" data-audio-field="prompt_influence" aria-label="提示词影响"></label>
@@ -243,7 +244,7 @@ function renderAudioPanel(n) {
   $$("[data-audio-mode]",panel).forEach(button=>button.onclick=()=>{
     if (button.dataset.audioMode===mode) return;
     checkpoint();
-    Object.assign(data,{mode:button.dataset.audioMode,provider:"",voice:""});
+    Object.assign(data,{mode:button.dataset.audioMode,provider:"",voice:"",duration_seconds:null});
     save();showPanel();
   });
   $$("[data-audio-field]",panel).forEach(field=>field.onchange=()=>{
@@ -253,7 +254,7 @@ function renderAudioPanel(n) {
       const fallback={speed:1,duration_seconds:null,prompt_influence:.3,pitch_semitones:0,gain:1};
       data[key]=field.checkValidity() && field.value!=="" ? field.valueAsNumber : fallback[key];
     } else data[key]=field.type==="checkbox"?field.checked:key==="sample_rate"?Number(field.value):field.value;
-    if (key==="provider") data.voice="";
+    if (key==="provider") { data.voice=""; if (mode==="music") data.duration_seconds=null; }
     save();showPanel();
   });
   const adjustButton=$("#moreBtn",panel);
@@ -272,7 +273,10 @@ async function generateAudio(n,{groupRunId}={}) {
     recipe.speed=audioSpeed(route,data.speed);
     recipe.voice=route.voices.some(v=>v.id===data.voice)?data.voice:route.voices[0]?.id;
     if (route.subtitles && data.subtitles) recipe.subtitles=true;
-  } else if (mode==="music") recipe.lyrics=data.lyrics || "";
+  } else if (mode==="music") {
+    recipe.lyrics=data.lyrics || "";
+    if (route.music_duration && Number.isFinite(data.duration_seconds)) recipe.duration_seconds=data.duration_seconds;
+  }
   else if (mode==="sfx") Object.assign(recipe,{duration_seconds:data.duration_seconds??null,prompt_influence:data.prompt_influence??.3,loop:data.loop===true});
   else Object.assign(recipe,{references:data.references||[],subtitles:data.subtitles===true});
   const {format,rate}=audioDelivery(data);

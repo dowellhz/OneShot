@@ -27,7 +27,7 @@ function missingMotionFrames(shot,pair) {
   return motionFramePhases(shot).some(phase=>!node(pair?.motion_frames?.[phase]));
 }
 
-function shotMotionFrameSettings(script,shot,phase,{legacy=false}={}) {
+function shotMotionFrameSettings(script,shot,phase,{legacy=false,references}={}) {
   const action=shot.action||[];
   const end=phase==="end";
   const description=shot.motion_frames[phase]?.trim()||[
@@ -35,7 +35,7 @@ function shotMotionFrameSettings(script,shot,phase,{legacy=false}={}) {
     end?"定格在动作完成之后，人物保持最终站位和姿态":"定格在动作进行到此处的瞬间"
   ].filter(Boolean).join("，");
   const moment=phase==="end"?"尾帧":"中帧";
-  const assets=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+  const assets=storyboardAssetTokens(script,shot,references||scriptShotSettings(script,shot).frameReferences,1);
   const framing=[script.data.style,shot.scene,[shot.shot_size,shot.camera].filter(Boolean).join("，")];
   const pose=`${moment}画面：${description}`;
   const lines=legacy?[
@@ -50,10 +50,11 @@ function shotMotionFrameSettings(script,shot,phase,{legacy=false}={}) {
 }
 
 function makeShotMotionFrame(script,shot,settings,index,phase,prior,x,y) {
-  const {moment,...data}=shotMotionFrameSettings(script,shot,phase);
+  const {moment,...data}=shotMotionFrameSettings(script,shot,phase,{references:settings.frameReferences});
   const image=addNode("image",x,y,{...data,aspect:script.data.aspect,quality:"4mp",image_ref_seq:1},
     {name:`镜${index+1} · ${moment}`});
-  B.edges.push({from:prior.id,to:image.id,prompt_slot:1,image_use:"camera"});
+  const opening=shot.frame?.source==="wizard-opening"&&curV(prior)?.ref===shot.frame.ref;
+  B.edges.push({from:prior.id,to:image.id,prompt_slot:1,image_use:"camera",...(opening?{ref:shot.frame.ref}:{})});
   addStoryboardImageReferences(image,settings.frameReferences);
   return image;
 }
@@ -66,6 +67,22 @@ function addStoryboardImageReferences(image,references) {
       ...(ref.pinned?{ref:ref.ref}:{story_cast:true})});
   }
 }
+
+function storyboardAssetTokens(script,shot,references,priorFrame=0) {
+  const picked=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit);
+  if (!script.data.wizard_media) return picked.map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+  const nameKey=name=>String(name||"").normalize("NFKC").toLowerCase().replace(/\s+/g,"");
+  const pinned=new Set(references.map(ref=>nameKey(ref.name)));
+  const used=new Set(references.map(ref=>ref.ref).filter(Boolean));
+  let spare=Math.max(0,9-priorFrame-used.size);
+  return picked.filter(ref=>{
+    if (ref.kind==="world" || ref.explicit || ref.view) return true;
+    if (pinned.has(nameKey(ref.name)) || spare===0) return false;
+    spare--;
+    return true;
+  }).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+}
+
 function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   const data=script.data;
   const refOf=name=>refs.find(ref=>ref.name===name)||refs.find(ref=>ref.name.includes(name)||name.includes(ref.name));
@@ -78,7 +95,8 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
     return input?[{node:source,ref:input.version.ref,pinned:true,kind:asset.kind,look:asset.look,name:asset.name}]:[];
   }).slice(0,8-references.length);
   const intro=references.map((ref,i)=>`@图${i+1} 是${ref.name}`).join("，");
-  const assets=(shot.asset_refs||[]).filter(ref=>ref.kind!=="world"||ref.explicit).map(ref=>cmLabelledToken(ref,ref.view)).join(" ");
+  const frameReferences=[...references.map(ref=>({...ref,kind:"character"})),...visuals];
+  const assets=storyboardAssetTokens(script,shot,frameReferences);
   const assetLine=assets&&"参考资产 "+assets;
   const prompt=[intro&&intro+"。",data.style,shot.scene,shot.keyframe,shot.shot_size&&`${shot.shot_size}镜头`,assetLine]
     .filter(Boolean).join("，").replace(/。，/g,"。");
@@ -89,9 +107,11 @@ function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   }).join("\n");
   const duration=scriptVideoDuration(shot.duration);
   const scene = [shot.scene,...visuals.map(asset=>`${asset.name}：${asset.look}`),assetLine].filter(Boolean).join("\n");
-  return {references,frameReferences:[...references.map(ref=>({...ref,kind:"character"})),...visuals],image:{prompt,caption:shot.keyframe||""},video:{
+  return {references,frameReferences,image:{prompt,caption:shot.keyframe||""},video:{
     duration,fields:{style:data.style,scene,people,camera:[shot.shot_size,shot.camera].filter(Boolean).join("，"),
-      action:(shot.action||[]).join("\n"),dialogue:(shot.dialogue||[]).join("\n"),sound:shot.sound,music:""},
+      action:[...(shot.action||[]),...(data.wizard_media?.motion?.shot_id===shot.id&&data.wizard_media?.motion?
+        [OneShotI18n.t("参考 @视频{1} 的动作节奏和镜头运动，按本镜剧本生成。")]:[])].join("\n"),
+      dialogue:(shot.dialogue||[]).join("\n"),sound:shot.sound,music:""},
   }};
 }
 
@@ -150,9 +170,13 @@ function expandScript(n, indexes=null, {recordUndo=true}={}) {
     }
     if(!vid){
       const provider=s.motion_frames&&CAPS_LIST.video?.some(item=>item.id==="local_h3")?"local_h3":undefined;
+      const motion=d.wizard_media?.motion?.shot_id===s.id?d.wizard_media.motion:null;
       vid=addNode("video",x,nextY,{...settings.video,quality:d.quality,aspect:d.aspect,pmode:"fields",
-        ...(provider?{provider}:{})},{name:`镜${i+1}`});
-      B.edges.push({from:img.id,to:vid.id,role:"first"});
+        ...(provider?{provider}:{}),...(motion?{provider:motion.provider,selected_model:motion.selected_model,quality_precheck:false}:{})},{name:`镜${i+1}`});
+      B.edges.push({from:img.id,to:vid.id,role:"first",...(s.frame?.source==="wizard-opening"?{ref:s.frame.ref}:{})});
+      if (motion) {
+        B.edges.push({from:motion.node,to:vid.id,relation:"video_ref",ref:motion.ref,start:motion.start,end:motion.end,prompt_slot:1});
+      }
       for(const r of settings.references){
         if(r.node.id!==img.id)B.edges.push({from:r.node.id,to:vid.id,role:"subject",story_cast:!r.pinned,...(r.pinned?{ref:r.ref}:{})});
       }

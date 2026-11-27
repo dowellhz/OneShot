@@ -289,6 +289,8 @@ async def update_media_favorite(req):
             data["audio_recipe"]["pitch_semitones"] = pitch
         if type(gain) in (int,float) and .5 <= gain <= 2:
             data["audio_recipe"]["gain"] = gain
+        if mode == "music" and type(recipe.get("duration_seconds")) in (int,float) and 3 <= recipe["duration_seconds"] <= 600:
+            data["audio_recipe"]["duration_seconds"] = recipe["duration_seconds"]
         if mode == "sfx":
             if type(recipe.get("duration_seconds")) in (int,float) and .5 <= recipe["duration_seconds"] <= 30:
                 data["audio_recipe"]["duration_seconds"] = recipe["duration_seconds"]

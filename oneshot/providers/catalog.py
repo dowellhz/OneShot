@@ -87,25 +87,29 @@ def caps_of(r: dict) -> list[str]:
     caps = list(cat.get("caps", []))
     if r["kind"] == "openai_compat" and (r.get("config") or {}).get("vision") != "yes":
         caps = [c for c in caps if c != "vision"]
-    if r["kind"] == "elevenlabs" and not (r.get("config") or {}).get("voices"):
+    if r["kind"] in VOICE_LIST_PROVIDERS and not (r.get("config") or {}).get("voices"):
         caps.remove("tts")
     return caps
 
 
-def elevenlabs_voices(value):
+VOICE_LIST_PROVIDERS = {"elevenlabs": "ElevenLabs", "noiz": "Noiz"}
+
+
+def configured_voices(kind: str, value: str) -> list[dict]:
+    label = VOICE_LIST_PROVIDERS[kind]
     entries = re.split(r"[,，\n]+", value)
     voices = {}
     for entry in entries:
         if not entry.strip():
             continue
-        voice_id, _, label = entry.partition("=")
+        voice_id, _, name = entry.partition("=")
         voice_id = voice_id.strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", voice_id) or voice_id in voices:
-            raise ProviderError("请填写有效且不重复的 ElevenLabs 音色 ID")
-        voices[voice_id] = (label.strip() or voice_id)[:60]
+            raise ProviderError(f"请填写有效且不重复的 {label} 音色 ID")
+        voices[voice_id] = (name.strip() or voice_id)[:60]
     if len(voices) > 30:
-        raise ProviderError("每个 ElevenLabs 服务最多配置 30 个音色")
-    return [{"id":voice_id,"name":label} for voice_id,label in voices.items()]
+        raise ProviderError(f"每个 {label} 服务最多配置 30 个音色")
+    return [{"id":voice_id,"name":name} for voice_id,name in voices.items()]
 
 
 def all_providers() -> list[dict]:
@@ -177,9 +181,11 @@ def save(pid: str | None, kind: str, name: str, config: dict, secrets: dict, ena
             conf["motion_origin"] = public_origin(conf.get("motion_origin"))
         except ValueError as e:
             raise ProviderError(str(e)) from None
-    if kind == "elevenlabs":
-        conf["voices"] = ",".join(f"{voice['id']}={voice['name']}" for voice in elevenlabs_voices(conf.get("voices", "")))
+    if kind in VOICE_LIST_PROVIDERS:
+        conf["voices"] = ",".join(f"{voice['id']}={voice['name']}" for voice in configured_voices(kind, conf.get("voices", "")))
     old = get(pid) if pid else None
+    if old and old["kind"] != kind and "noiz" in (old["kind"], kind):
+        raise ProviderError("请新建 Noiz 服务并填写对应的 API Key")
     if kind == "ark":
         if "video_endpoint_models" in config:
             conf["video_endpoint_models"] = ark_endpoint_models(config["video_endpoint_models"])
