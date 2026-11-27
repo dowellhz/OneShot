@@ -449,7 +449,7 @@ async function poll() {
         n.job.st = st;
         const sts = n.job.ids.map(i => st[i]).filter(Boolean);
         if (!(sts.length === n.job.ids.length && sts.every(s => s.state === "done" || s.state === "error"))) { renderJob(n); continue; }
-        if (n.job.agent_call) { await acSyncAgentJobs(); if (node(n.id)?.job) renderJob(node(n.id)); continue; }
+        if (n.job.agent_call) { await acReconcileCanvasJob(n,sts); continue; }
         const errs = sts.filter(s => s.state === "error").map(s => s.error);
         const actualSource = n.job.source || (n.data.film ? "film" : "gen");
         const finalizing=!!n.job.history?.draft_final;

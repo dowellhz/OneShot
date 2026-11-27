@@ -96,4 +96,16 @@ async function acSyncBoard(rev,independent=false){
  if(j.rev>(B.rev||0)){acRememberBoard(id,j);acApplyBoard(j,true);}
 }
 async function acSyncAgentJobs(){const id=boardId;const remote=await acApi("/api/board/"+id);if(id===boardId)await acSyncBoard(remote.rev,true);}
+async function acReconcileCanvasJob(n, states) {
+ const board=B, receipt=n.job;
+ try { await acSyncAgentJobs(); } catch { /* A later poll can retry board synchronization. */ }
+ if(B!==board||node(n.id)!==n||n.job!==receipt)return;
+ const known=new Set(n.versions.map(version=>version.ref).filter(Boolean));
+ const adopted=states.length>0&&states.every(state=>state.state==="done"&&state.outputs?.length&&
+   state.outputs.every(output=>known.has(output.ref)));
+ if(!adopted){renderJob(n);return;}
+ n.job=null;
+ save();render(n);
+ if(sel.has(n.id))showPanel();
+}
 function acApplyBoard(data,keepView=false){rebaseCanvasHistory(data);const previous=new Map(B.nodes.map(n=>[n.id,n])),view=B.view;const nodes=data.nodes.map(n=>{const old=previous.get(n.id);if(!old)return n;for(const k of Object.keys(old))if(!(k in n))delete old[k];Object.assign(old,n);return old;});Object.assign(B,data,{nodes});canvasApplyAccess();if(keepView)B.view=view;sel=new Set([...sel].filter(id=>node(id)));rebuild();applyView();if(B.nodes.some(n=>n.job?.agent_call))poll();B.nodes.filter(n=>n.agent_error).forEach(n=>showErr(n,n.agent_error));if(IMAGE_EDITOR&&!node(IMAGE_EDITOR.n.id))closeImageEditor();pvSyncBoard();canvasDocument?.update();}

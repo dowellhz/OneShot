@@ -129,6 +129,13 @@ module.exports = async function assistantEditsAndRecovery(workspace, scenarioSta
  equal(evaluate('B.edges.filter(e=>e.to==="pendingVideo").length'),1,'pending video has visible source connection');
  remote.nodes.find(n=>n.id==='pendingVideo').versions=[{ref:'output:h3studio/test.mp4',url:'/media?ref=output:h3studio/test.mp4',w:640,h:480,seconds:5}];remote.nodes.find(n=>n.id==='pendingVideo').cur=0;remote.nodes.find(n=>n.id==='pendingVideo').job=null;remote.rev++;
  await evaluate('acSyncAgentJobs()');equal(evaluate('node("pendingVideo").versions.length'),1,'same pending node gets one completed video');equal(evaluate('node("pendingVideo").job'),null,'completed video clears progress');
+ remote.nodes.find(n=>n.id==='pendingVideo').job={ids:['pagent0000001'],agent_call:'pendingCall',t0:Date.now()};
+ remote.rev++;
+ await evaluate(`acSyncBoard(${remote.rev},true)`);
+ await ready('node("pendingVideo").job===null','stale assistant progress clears when its output is already saved',2600);
+ equal(evaluate('[node("pendingVideo").versions.length,node("pendingVideo").cur]'),[1,0],'reconciliation keeps the existing version without appending it again');
+ await evaluate('flushSave()');
+ equal(remote.nodes.find(n=>n.id==='pendingVideo').job,null,'cleared receipt is saved to the board');
  // Both media types use tabs; video tabs restore version-specific settings and graph inputs.
  evaluate('AC.board=boardId;sel=new Set(["n1"]);updateSel()');
  equal(evaluate('els.get("n1").querySelectorAll(".vtabs [role=tab]").length'),3,'image versions have tabs');
