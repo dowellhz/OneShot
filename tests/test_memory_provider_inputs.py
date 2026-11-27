@@ -93,7 +93,7 @@ class MemoryProviderInputs(MemoryFixture):
         limited = "doubao-seedance-2-0-fixture"
         provider = server.providers.save(None,"ark","Seedance 测试",
                                          {"motion_origin":"https://oneshot.example","models":{"video":model},
-                                          "generation_rates":f"video {model} hd 0.2\nvideo {limited} hd 0.1\nvideo {model} 480p 0.08"},
+                                          "generation_rates":f"video {model} hd 0.2\nvideo {limited} 480p 0.1\nvideo {model} 480p 0.08"},
                                          {"api_key":"test-key"},True)
         server.providers.set_route("video",[{"provider_id":provider,"model":limited}])
         models = await self.client.post("/api/video/reference-models",json={**request,"duration":22,"quality":"4k"})
@@ -119,8 +119,8 @@ class MemoryProviderInputs(MemoryFixture):
         self.assertIn(model,planned["mode"])
         self.assertEqual([(entry["role"],entry["ref"],entry.get("end")) for entry in planned["inputs"]],
                          [("image_ref",original_image,None),("video_ref",video_ref,16),("audio_ref",audio_ref,3)])
-        quote = await self.client.post("/api/generation-cost",json={"requests":[{**request,"count":2}]})
-        self.assertEqual((await quote.json())["amounts"],[2])
+        quote = await self.client.post("/api/generation-cost",json={"requests":[{**request,"count":2},{**request,"count":2,"quality":"hd"}]})
+        self.assertEqual((await quote.json())["amounts"],[.8,2])
         with patch.object(remote_jobs,"start_remote") as submit:
             rejected = await self.client.post("/api/generate",json={**request,"provider":"local_h3"})
             self.assertEqual(rejected.status,400,await rejected.text())
@@ -166,6 +166,7 @@ class MemoryProviderInputs(MemoryFixture):
         sent_clip = submit.call_args.kwargs["video_refs"][0]
         self.assertEqual((sent_clip["path"],sent_clip["start"],sent_clip["ticks"]),(video,2,7*24))
         upstream = await server.remote.ark_video_body(model,{**queued_request,"video_urls":["https://oneshot.example/fixture"]})
+        self.assertEqual(upstream["resolution"], "480p")
         self.assertEqual([item.get("role") for item in upstream["content"]],
                          [None,"reference_image","reference_video","reference_audio"])
         self.assertEqual([entry["ref"] for entry in receipt["memory_used"][0]["references"]],refs)

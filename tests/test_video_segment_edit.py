@@ -171,7 +171,7 @@ class SegmentEdit(ChatFixture):
             preview=await self.client.post("/api/preview",json=payload)
             self.assertEqual(preview.status,200,await preview.text())
             reviewed=await preview.json()
-            self.assertIn("方舟 · doubao-seedance-2-5-test · 4 秒 · 1080p · 视频 1/10",reviewed["mode"])
+            self.assertIn("方舟 · doubao-seedance-2-5-test · 4 秒 · 480p · 视频 1/10",reviewed["mode"])
             self.assertEqual((reviewed["inputs"][0]["start"],reviewed["inputs"][0]["end"]),(.5,4.5))
             short=await self.client.post("/api/preview",json={**payload,"video_refs":[{**scope,"ref":source_ref,"end":2}]})
             self.assertEqual(short.status,400)
@@ -189,6 +189,7 @@ class SegmentEdit(ChatFixture):
             if method=="POST":
                 request=kwargs["json"]
                 self.assertEqual(request["omni_reference_task_type"], "edit")
+                self.assertEqual(request["resolution"], "480p")
                 submitted.append(request["content"][0]["text"])
                 return {"id":f"retake-{len(submitted)}"}
             return {"status":"succeeded","content":{"video_url":"https://provider.example/edit.mp4"}}
@@ -206,6 +207,7 @@ class SegmentEdit(ChatFixture):
         self.assertEqual(len(final["nodes"]),4)
         self.assertEqual(retained["id"],first["id"])
         self.assertEqual([v["video_recipe"]["camera_plan"] for v in retained["versions"]],[cut,move])
+        self.assertEqual([v["video_recipe"]["quality"] for v in retained["versions"]],["480p","480p"])
         self.assertEqual([v["node_data"]["camera_plan"] for v in retained["versions"]],[cut,move])
         self.assertEqual(submitted[0],expected)
         self.assertIn("平滑、连续移动",submitted[1])

@@ -158,7 +158,7 @@ class ChatGenerationApproval(ChatFixture):
         store.put(user,{"id":asset["id"],"ref":sound,"generation_media":[self.source["ref"],sound]})
         model = "doubao-seedance-2-5-fixture"
         default_provider = providers.save(None,"kling","普通镜头",{"generation_rates":"video kling-2.6 hd 0.1"}, {}, True)
-        provider = providers.save(None,"ark","方舟测试",{"generation_rates":f"video {model} hd 0.25"},{"api_key":"test"},True)
+        provider = providers.save(None,"ark","方舟测试",{"generation_rates":f"video {model} 480p 0.25"},{"api_key":"test"},True)
         providers.set_route("video",[{"provider_id":default_provider,"model":"kling-2.6"},{"provider_id":provider,"model":model}])
         endpoint = f"/api/chat/sessions/{self.sid}/messages"
         pending = asyncio.Event()
@@ -220,6 +220,7 @@ class ChatGenerationApproval(ChatFixture):
             await self.wait(rid,timeout=5)
             submit.assert_called_once()
             self.assertEqual(submit.call_args.args[-1]["audio_refs"],[(audio,0,2)])
+            self.assertEqual(submit.call_args.args[-1]["quality"], "480p")
 
     async def test_image_approval_shows_edited_asset_references_and_blocks_stale_submission(self):
         user = {"id":7,"role":"member"}
