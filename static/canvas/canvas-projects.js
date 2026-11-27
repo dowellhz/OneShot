@@ -309,6 +309,7 @@ function dissolveProject(project) {
 $("#bmenuBtn").onclick = boardAction(async e => {
   e.stopPropagation(); const m = $("#boards"), epoch = ++boardMenuEpoch;
   if (m.classList.contains("on")) { m.classList.remove("on"); return; }
+  m.style.top = $("#canvasToolbar").getBoundingClientRect().bottom + 8 + "px";
   closeMenus(); m.innerHTML = OneShotI18n.markup('<div class="mt">正在读取项目和画布…</div>'); m.classList.add("on");
   await loadBoardDirectory();
   if (epoch === boardMenuEpoch && m.classList.contains("on")) renderBoardMenu();
@@ -333,12 +334,17 @@ async function status() {
     const online = OneShotI18n.t(label,{active:qt,queued:q});
     const rewriter = s.llm_running ? OneShotI18n.t(" · 改写模型({device})",{device:s.llm_device}) : "";
     const remote = s.remote ? OneShotI18n.t(" · 文本：{provider}",{provider:s.remote}) : "";
-    $("#stt").textContent = online + rewriter + remote + (qt || q ? " ▾" : "");
-  } catch { $("#sd").className = "sd bad"; $("#stt").textContent = OneShotI18n.t("画布服务断开"); }
+    const summary = !s.comfy ? (s.loading ? "启动中" : "离线") : qt || q ? "生成中" : "就绪";
+    setCanvasQueueStatus(OneShotI18n.t(summary), online + rewriter + remote);
+  } catch {
+    $("#sd").className = "sd bad";
+    setCanvasQueueStatus(OneShotI18n.t("离线"), OneShotI18n.t("画布服务断开"));
+  }
 }
 function updateEmpty() { $("#empty").classList.toggle("on", !B.nodes.length); }
 addEventListener("resize", placeOverlays);
 setInterval(() => B && B.nodes.forEach(n => n.job && renderJob(n)), 1000);
+initCanvasTopbar();
 initTools();
 initImageEditor();
 initCanvasTools();

@@ -22,6 +22,8 @@ async function renderQueue() {
 }
 function toggleQueue(on = !qOpen) {
   qOpen = on; $("#qp").classList.toggle("on", on); clearInterval(qTimer);
+  $("#canvasQueueBtn").setAttribute("aria-expanded", String(on));
+  if (on) $("#qp").style.top = $("#canvasToolbar").getBoundingClientRect().bottom + 8 + "px";
   if (on) { renderQueue(); qTimer = setInterval(renderQueue, 2000); }
 }
 let wasBusy = false, doneCount = 0;

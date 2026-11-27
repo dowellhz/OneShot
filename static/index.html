@@ -9,12 +9,12 @@
 <link rel="stylesheet" href="/static/canvas/canvas.css?v=80">
 <link rel="stylesheet" href="/static/canvas/canvas-nodes.css?v=2">
 <link rel="stylesheet" href="/static/canvas/canvas-node-controls.css?v=2">
-<link rel="stylesheet" href="/static/canvas/canvas-navigation.css?v=2">
+<link rel="stylesheet" href="/static/canvas/canvas-navigation.css?v=3">
 <link rel="stylesheet" href="/static/canvas/canvas-workflows.css?v=1">
 <link rel="stylesheet" href="/static/shared/i18n.css?v=1">
 <script src="/static/shared/locales/en-workspace.js?v=3"></script>
 <script src="/static/shared/locales/en-pages.js?v=1"></script>
-<script src="/static/shared/locales/en-workflows.js?v=15"></script>
+<script src="/static/shared/locales/en-workflows.js?v=17"></script>
 <script src="/static/shared/locales/en-wizard.js?v=4"></script>
 <script src="/static/shared/locales/en-canvas-actions.js?v=3"></script>
 </head>
@@ -65,13 +65,11 @@
   <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5M12 17v.01"/></symbol>
   <symbol id="i-stack" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/><path d="M9 3.5h9A2.5 2.5 0 0 1 20.5 6v9"/></symbol>
 </svg>
-
 <div id="vp"><div id="world"><svg id="edges" width="1" height="1"></svg></div>
   <svg id="canvasDragGuides" aria-hidden="true"><line style="display:none"/><line style="display:none"/></svg>
   <span id="acPlacementMarker" aria-hidden="true" hidden></span>
 </div>
 <div id="marquee"></div>
-
 <div class="float" id="tl">
   <a class="logo" href="/console" title="控制台" aria-label="控制台"><svg viewBox="0 0 32 32" width="100%" height="100%" aria-hidden="true"><rect x=".5" y=".5" width="31" height="31" rx="7.5" fill="#242429" stroke="#4a4a52"/><circle cx="16" cy="16" r="9" fill="none" stroke="#ededf0" stroke-width="2"/><path d="M14 11.6v8.8l6.8-4.4z" fill="#ededf0"/></svg></a>
   <span class="bname" id="bname" contenteditable="true" spellcheck="false">我的画布</span>
@@ -83,8 +81,13 @@
 </div>
 <nav class="float" id="projectCanvases" aria-label="项目画布" hidden></nav>
 <div class="menu" id="boards"></div>
-<div class="float" id="tr"><div class="interface-language"><select data-interface-language aria-label="界面语言"><option value="zh-CN" lang="zh-CN">中文</option><option value="en" lang="en">English</option></select><span data-language-status role="status"></span></div><button id="shareBtn" type="button" aria-controls="canvasShare" aria-expanded="false">分享</button><button type="button" id="commentBtn" aria-controls="canvasComments" aria-expanded="false"><svg class="i"><use href="#i-comment"/></svg><span>评论</span></button><button id="shotListBtn" aria-controls="shotList" aria-expanded="false"><svg class="i"><use href="#i-script"/></svg><span>镜头</span></button><button id="assetLibraryBtn" aria-controls="assetLibrary" aria-expanded="false"><svg class="i"><use href="#i-assets"/></svg><span>资产库</span></button><span class="st"><span class="sd" id="sd"></span><span id="stt">连接中…</span></span></div>
-
+<div class="float" id="tr"><div class="interface-language"><select data-interface-language aria-label="界面语言"><option value="zh-CN" lang="zh-CN">中文</option><option value="en" lang="en">English</option></select><span data-language-status role="status"></span></div>
+  <button id="shotListBtn" aria-label="镜头" title="镜头" aria-controls="shotList" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-script"/></svg><span>镜头</span></button>
+  <button id="assetLibraryBtn" aria-label="资产库" title="资产库" aria-controls="assetLibrary" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-assets"/></svg><span>资产库</span></button>
+  <button id="commentBtn" type="button" aria-label="评论" title="评论" aria-controls="canvasComments" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-comment"/></svg><span>评论</span></button>
+  <button id="shareBtn" type="button" aria-label="分享" title="分享" aria-controls="canvasShare" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg><span>分享</span></button>
+  <button id="canvasQueueBtn" class="st" type="button" aria-label="任务队列" aria-controls="qp" aria-expanded="false"><span class="sd" id="sd" aria-hidden="true"></span><span id="stt">连接中…</span><svg class="i" aria-hidden="true"><use href="#i-down"/></svg></button>
+</div>
 <div class="float" id="lt">
   <button class="ib" id="toolPan" data-tip="抓手 H：拖空白处移动画布" aria-label="抓手 H：拖空白处移动画布"><svg class="i"><use href="#i-hand"/></svg></button>
   <button class="ib" id="toolSel" data-tip="框选 V：拖空白处框选节点" aria-label="框选 V：拖空白处框选节点"><svg class="i"><use href="#i-select"/></svg></button>
@@ -160,7 +163,6 @@
   <div class="r"><span>拖动节点或连线到屏幕边缘时，画布会自动跟着移动</span><span></span></div>
   <div class="r"><span>提示词面板：按住顶部 ⠿ 拖到任意位置；双击 ⠿ 或点「↺ 跟随节点」回到节点下方</span><span></span></div>
 </div></div>
-
 <div class="menu" id="addMenu">
   <div class="mt">添加到画布</div>
   <button data-add="text"><span class="sw" style="background:#2a2236;color:var(--c-text)"><svg class="i"><use href="#i-text"/></svg></span>文本</button>
@@ -176,7 +178,6 @@
   <button type="button" data-comment-entry hidden><svg class="i"><use href="#i-comment"/></svg>评论此位置</button>
   <button data-arrange-entry hidden><svg class="i"><use href="#i-assets"/></svg>整理对齐…</button>
 </div>
-
 <div id="ntools" role="toolbar" aria-label="节点操作"></div>
 <div id="nodeToolTip" role="tooltip" hidden></div>
 <template id="mediaToolDialogs"></template>
@@ -202,7 +203,6 @@
     <svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 15 15 3m-6 12 6-6m-1 6 1-1"/></svg>
   </button>
 </div>
-
 <div id="drawer">
   <div class="dh">素材库<div class="tabs"><button data-f="all" class="on">全部</button><button data-f="image">图片</button><button data-f="video">视频</button><button data-f="audio">音频</button></div></div>
   <div class="dh2"><div class="tabs lib"><button data-f="character">角色</button><button data-f="scene">场景</button><button data-f="prop">道具</button><button data-f="style">风格</button><button data-f="document">资料</button><button data-f="world">世界观</button></div></div>
@@ -210,7 +210,6 @@
   <div class="h">点击或拖到画布上使用</div>
   <div class="grid" id="agrid"></div>
 </div>
-
 <div id="empty">
   <h1>从一个想法开始</h1>
   <p>双击画布空白处添加节点，或将文件直接拖进来</p>
@@ -355,7 +354,7 @@
 <script src="/static/assistant/chat-models.js?v=1"></script>
 <script src="/static/assistant/chat-sessions.js?v=1"></script>
 <script src="/static/assistant/chat-conversation-memory.js?v=1"></script>
-<script src="/static/assistant/chat-task-center.js?v=1"></script>
+<script src="/static/assistant/chat-task-center.js?v=2"></script>
 <script src="/static/assistant/chat-task-sound.js?v=1"></script>
 <script src="/static/assistant/chat-node-activity.js?v=1"></script>
 <script src="/static/assistant/chat-approvals.js?v=1"></script>
@@ -390,7 +389,7 @@
 <script src="/static/editing/film-titles.js?v=4"></script>
 <script src="/static/editing/film-cutaways.js?v=2"></script>
 <script src="/static/editing/film-playlists.js?v=5"></script>
-<script src="/static/editing/film.js?v=44"></script>
+<script src="/static/editing/film.js?v=45"></script>
 <script src="/static/editing/film-audio-tracks.js?v=1"></script>
 <script src="/static/editing/film-drafts.js?v=1"></script>
 <script src="/static/editing/film-story-timing.js?v=1"></script>
@@ -400,12 +399,12 @@
 <script src="/static/editing/film-clip-editing.js?v=2"></script>
 <script src="/static/editing/film-clip-versions.js?v=1"></script>
 <script src="/static/editing/film-export.js?v=1"></script>
-<script src="/static/generation/queue-panel.js?v=1"></script>
+<script src="/static/generation/queue-panel.js?v=2"></script>
 <script src="/static/generation/wizard-assets.js?v=2"></script>
 <script src="/static/generation/wizard-view.js?v=6"></script>
-<script src="/static/generation/wizard.js?v=23"></script>
-<script src="/static/canvas/settings.js?v=5"></script>
-<script src="/static/console/account.js?v=13"></script>
+<script src="/static/generation/wizard.js?v=24"></script>
+<script src="/static/canvas/settings.js?v=6"></script>
+<script src="/static/console/account.js?v=14"></script>
 <link rel="stylesheet" href="/static/editing/video-remake.css?v=11">
 <script src="/static/editing/video-remake.js?v=41"></script>
 <script src="/static/editing/video-remake-dialog.js?v=1"></script>
@@ -440,7 +439,7 @@
 <script src="/static/canvas/canvas-viewport.js?v=1"></script>
 <script src="/static/canvas/canvas-nodes.js?v=1"></script>
 <script src="/static/canvas/canvas-connections.js?v=1"></script>
-<script src="/static/generation/canvas-video-settings.js?v=3"></script>
+<script src="/static/generation/canvas-video-settings.js?v=4"></script>
 <script src="/static/canvas/canvas-node-view.js?v=5"></script>
 <script src="/static/generation/canvas-video-queue.js?v=1"></script>
 <script src="/static/canvas/canvas-version-switch.js?v=1"></script>
@@ -492,7 +491,8 @@
 <script src="/static/editing/previs-guides.js?v=1"></script>
 <script src="/static/editing/previs-motion.js?v=1"></script>
 <script src="/static/editing/previs-model-import.js?v=1"></script>
-<script src="/static/canvas/canvas-projects.js?v=49"></script>
+<script src="/static/canvas/canvas-topbar.js?v=1"></script>
+<script src="/static/canvas/canvas-projects.js?v=50"></script>
 <script src="/static/generation/generation-history.js?v=10"></script>
 <script src="/static/editing/broll.js?v=2"></script>
 <script src="/static/canvas/creative-apps.js?v=4"></script>

@@ -56,7 +56,7 @@ function videoQualityPrecheckAvailable(n) {
 
 const VIDEO_QUALITY_PREFERENCE = "h3.videoQualityPrecheck";
 function defaultVideoQualityPrecheck() {
-  return localStorage.getItem(VIDEO_QUALITY_PREFERENCE) !== "off";
+  return localStorage.getItem(VIDEO_QUALITY_PREFERENCE) === "on";
 }
 function videoQualityPrecheckEnabled(n) {
   return n.data.quality_precheck ?? (defaultVideoQualityPrecheck() && videoQualityPrecheckAvailable(n));

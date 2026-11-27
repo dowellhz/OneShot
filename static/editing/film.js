@@ -257,7 +257,7 @@ function initFilm() {
 .fm-audio-lane button:focus-visible { outline: 2px solid var(--c-image); outline-offset: -2px; }
 #fmAudioSettings .nr b { flex: 1; min-width: 100px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #fmGo { background: #fff; color: #000; font-weight: 600; }
-#qp { position: fixed; top: 54px; right: 14px; z-index: 31; width: 360px; max-height: 70vh; overflow-y: auto; display: none; flex-direction: column; gap: 4px; padding: 8px;
+#qp { position: fixed; top: 54px; right: 14px; z-index: 31; width: min(360px, calc(100vw - 28px)); max-height: 70vh; overflow-y: auto; display: none; flex-direction: column; gap: 4px; padding: 8px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 13px; box-shadow: 0 12px 40px rgba(0,0,0,.55); }
 #qp.on { display: flex; } #qp .mt { padding: 4px 6px 6px; color: var(--dim); font-size: var(--fs-small); }
 #qp .qj { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 9px; background: #1a1a1d; font-size: var(--fs-small); }
@@ -267,8 +267,7 @@ function initFilm() {
 #qp .qj .x { border: none; background: none; color: var(--faint); font-size: var(--fs-heading); } #qp .qj .x:hover { color: var(--red); }
 #qp .h { padding: 4px 6px; }
 #qpJobs { display: contents; }
-#qp [data-enable-notifications] { align-self: flex-end; }
-#tr { cursor: pointer; }`;
+#qp [data-enable-notifications] { align-self: flex-end; }`;
   document.head.appendChild(css);
   document.body.insertAdjacentHTML("beforeend", OneShotI18n.html`
 <div id="film">
@@ -316,7 +315,7 @@ function initFilm() {
   </form>
 </dialog>
 <div class="menu" id="fmAdd"></div><div class="menu" id="playlistClipMenu" aria-label="片段操作"></div>
-<div id="qp"><div id="qpJobs"></div><button type="button" data-enable-notifications hidden>开启完成通知</button></div>`);
+<div id="qp"><div id="qpContext" class="h"></div><div id="qpJobs"></div><button type="button" data-enable-notifications hidden>开启完成通知</button></div>`);
   $("#fmClose").onclick = closeFilm;
   $("#fmTiming").onclick = () => { if (FILM) openFilmStoryTiming(FILM); };
   $("#fmTimingDialog [data-close]").onclick = () => closeFilmStoryTiming(true);
@@ -363,12 +362,12 @@ function initFilm() {
   setInterval(previewTick, 50);
   setInterval(() => saveFilmDraft(), 900);
   addEventListener("pagehide", () => saveFilmDraft());
-  $("#tr").addEventListener("click", e => { if (!e.target.closest("button")) { e.stopPropagation(); toggleQueue(); } });
+  $("#canvasQueueBtn").onclick = () => toggleQueue();
   for (const event of ["play","pause","seeked","ratechange"]) $("#fmV").addEventListener(event, syncFilmOriginal);
   $("#fmV").addEventListener("play",()=>stopFilmVersionPreview(FILM));
   $("#fmV").addEventListener("pause", () => { if (FILM) syncFilmAudio(FILM); });
   document.addEventListener("pointerdown", e => {
-    if (qOpen && !e.target.closest("#qp, #tr")) toggleQueue(false);
+    if (qOpen && !e.target.closest("#qp, #canvasQueueBtn")) toggleQueue(false);
     if (!e.target.closest("#fmAdd, .fadd")) $("#fmAdd").classList.remove("on");
     if (!e.target.closest("#playlistClipMenu,.fm-clip-menu")) closePlaylistClipMenu();
   });

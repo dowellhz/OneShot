@@ -7,7 +7,7 @@ function openCanvasPreferences() {
   const consoleUrl = ME_USER?.role === "admin" ? "/console#services" : "/console";
   $("#setBox").innerHTML = OneShotI18n.html`<div class="hd">设置<span style="flex:1"></span><button class="pill" id="setClose">关闭</button></div>
     <label class="ck"><input type="checkbox" id="setVideoPrecheck" aria-describedby="setVideoPrecheckHelp" ${defaultVideoQualityPrecheck() ? "checked" : ""}>先用量化模型预览视频</label>
-    <div class="h" id="setVideoPrecheckHelp">在此浏览器默认对兼容的 H3 视频先生成并评估 INT8 样片，最多五次，再用 BF16 定稿。项目和节点可单独覆盖。</div>
+    <div class="h" id="setVideoPrecheckHelp">开启后，此浏览器会对兼容的 H3 视频先生成并评估 INT8 样片，最多五次，再用 BF16 定稿。项目和节点可单独覆盖。</div>
     <div class="bt"><a class="pill" href="${consoleUrl}">控制台</a></div>`;
   $("#setClose").onclick = () => $("#settings").classList.remove("on");
   $("#setVideoPrecheck").onchange = event => {

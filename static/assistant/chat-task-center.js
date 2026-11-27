@@ -193,8 +193,8 @@ function acRenderTaskCenter(){
 }
 
 function acInitTaskCenter(){
- $("#tr").insertAdjacentHTML("afterbegin",OneShotI18n.html`<button type="button" id="acTaskCenterBtn" aria-haspopup="dialog" aria-controls="acTaskCenter" hidden>
-   助手任务 <span data-task-attention hidden></span><span data-task-running hidden></span><span data-task-results hidden></span></button>`);
+ $("#canvasQueueBtn").insertAdjacentHTML("beforebegin",OneShotI18n.html`<button type="button" id="acTaskCenterBtn" aria-label="助手任务" title="助手任务" aria-haspopup="dialog" aria-controls="acTaskCenter" hidden>
+   ${ico("clock")}<span class="tool-label">助手任务</span><span data-task-attention hidden></span><span data-task-running hidden></span><span data-task-results hidden></span></button>`);
  document.body.insertAdjacentHTML("beforeend",OneShotI18n.html`<dialog id="acTaskCenter" aria-labelledby="acTaskCenterTitle">
    <header><strong id="acTaskCenterTitle">当前画布的助手任务</strong><button type="button" data-task-close aria-label="关闭助手任务">×</button></header>
    <div id="acTaskCenterRows"></div>

@@ -51,6 +51,7 @@ function updateWizBtn() {
   const { t } = OneShotI18n;
   const label = resume ? t("继续向导 · {step}", {step:t(step)}) : t("一句话成片");
   $("span", b).textContent = label;
+  b.setAttribute("aria-label", label);
 }
 function goStep(k) { W.step = k; wizSave(); wizSig = ""; renderWiz(); }
 
@@ -474,9 +475,9 @@ function initWizard() {
   document.body.insertAdjacentHTML("beforeend", OneShotI18n.html`<div id="wiz"><div class="top"><b>${ico("script")} 一句话成片</b><div id="wzSteps"></div>
     <button class="ghost x" id="wzClose" title="向导的进度会保存，随时可以回来">去画布查看</button></div><div id="wzBody"></div></div><div id="wzSample"></div>`);
   $("#wzClose").onclick = closeWizard;
-  $("#tl").insertAdjacentHTML("beforeend", OneShotI18n.html`<button id="wizBtn" title="AI 帮你从一句话做到成片">${ico("script")}<span>一句话成片</span></button>`);
+  $("#tl").insertAdjacentHTML("beforeend", OneShotI18n.html`<button id="wizBtn" title="AI 帮你从一句话做到成片" aria-label="一句话成片">${ico("script")}<span>一句话成片</span></button>`);
   $("#wizBtn").onclick = openWizard;
-  $("#wizBtn").insertAdjacentHTML("afterend", OneShotI18n.html`<button id="galBtn" title="看看用一句话做出来的示例成片">${ico("video")}<span>示例</span></button>`);
+  $("#canvasMoreActions").insertAdjacentHTML("beforeend", OneShotI18n.html`<button id="galBtn" title="看看用一句话做出来的示例成片">${ico("video")}<span>示例</span></button>`);
   $("#galBtn").onclick = showGallery;
   $("#empty .tiles").insertAdjacentHTML("afterend", `<div class="gal" id="emptyGal"></div>`);
   fillEmptyGallery();

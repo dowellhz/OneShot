@@ -49,6 +49,14 @@ async function verifyDraftProtection(w,evaluate,ready) {
 module.exports = async function testEnglishWorkspace({w,evaluate,ready,requests}) {
   assert.equal(evaluate('$("#tl .logo").getAttribute("href")'),"/console");
   assert.equal(evaluate('$("#tl .logo").ariaLabel'),"Console");
+  assert.equal(evaluate('$("#tl").parentNode === $("#tr").parentNode'),true);
+  assert.equal(evaluate('$("#canvasMore summary").ariaLabel'),"More actions");
+  assert.equal(evaluate('!!$("#canvasMore [data-interface-language]")'),true);
+  assert.equal(evaluate('!!$("#canvasMore #galBtn")'),true);
+  evaluate('$("#canvasMore summary").click()');
+  assert.equal(evaluate('$("#canvasMore").open'),true);
+  evaluate('$("#canvasMore summary").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
+  assert.equal(evaluate('$("#canvasMore").open'),false);
   assert.equal(evaluate('$("#setBtn").ariaLabel'),'Settings');
   evaluate('$("#setBtn").click()');
   assert.match(evaluate('$("#setVideoPrecheck").labels[0].textContent'),/Preview videos with the quantized model first/);
@@ -87,6 +95,8 @@ module.exports = async function testEnglishWorkspace({w,evaluate,ready,requests}
   style.click();
   assert.equal(evaluate('W.style'),'写实电影');
   evaluate('CAPS_LIST.video_quality_precheck=true; wizSig=""; renderWiz()');
+  assert.equal(evaluate('$("#wzBody [data-set=quality_precheck].on").textContent'),'Generate directly');
+  evaluate('$("#wzBody [data-set=quality_precheck][data-val=true]").click()');
   assert.equal(evaluate('$("#wzBody [data-set=quality_precheck].on").textContent'),'Check with INT8 first');
   evaluate('$("#wzBody [data-set=quality_precheck][data-val=false]").click()');
   assert.equal(evaluate('W.quality_precheck'),false);
@@ -156,7 +166,12 @@ module.exports = async function testEnglishWorkspace({w,evaluate,ready,requests}
   };
   try {
     await evaluate("status()");
-    assert.equal(w.document.querySelector("#stt").textContent,"Generating · 1 task · about 9 min · Text: DeepSeek (deepseek-flash) ▾");
+    assert.equal(w.document.querySelector("#stt").textContent,"Generating");
+    assert.equal(w.document.querySelector("#qpContext").textContent,"Generating · 1 task · about 9 min · Text: DeepSeek (deepseek-flash)");
+    evaluate('$("#canvasQueueBtn").click()');
+    assert.equal(evaluate('$("#canvasQueueBtn").getAttribute("aria-expanded")'),"true");
+    evaluate('$("#canvasQueueBtn").click()');
+    assert.equal(evaluate('$("#canvasQueueBtn").getAttribute("aria-expanded")'),"false");
     const openingProfile = evaluate("cpOpen()");
     assert.equal(w.document.querySelector("#cpStatus").textContent,"Loading memory…");
     await openingProfile;

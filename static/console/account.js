@@ -66,8 +66,8 @@ function initAccount() {
   fetch("/api/me").then(r => r.ok ? r.json() : null).then(u => {
     if (!u) return;
     ME_USER = u;
-    $("#tr").insertAdjacentHTML("afterbegin", OneShotI18n.html`<a href="/console" id="consoleLink" title="控制台" aria-label="控制台">${ico("console")}<span>控制台</span></a><span style="color:var(--dim);font-size:var(--fs-small)">${esc(u.name || u.username)}</span>`);
-    $("#consoleLink").addEventListener("click", e => e.stopPropagation());
+    $("#canvasMoreActions").insertAdjacentHTML("beforeend", OneShotI18n.html`<a href="/console" id="consoleLink">${ico("console")}<span>控制台</span></a>`);
+    $("#canvasTopAccount").textContent = u.name || u.username;
   });
   loadCaps();
   setInterval(loadCaps, 60000);
