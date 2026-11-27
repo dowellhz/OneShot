@@ -73,6 +73,7 @@ def canvas_model_choice(provider, cap, model):
             **({"first_last_only":True,"fixed_sampling":True} if kind=="local_h3" and model==sulphur.MODEL else {}),
             "durations":[5,8,10,14] if kind == "local_h3" else remote.video_durations(kind,model,provider=provider),
             "qualities":remote.video_resolutions(kind,model,provider=provider),
+            "default_quality":remote.default_video_quality(kind,model,provider=provider),
             **({"endpoint_model":model_for_limits} if model_for_limits != model else {}),
             "accepts_audio":audio,"accepts_video":video,
             **({"reference_limits":{"images":ref_images,"videos":count if video else 0,

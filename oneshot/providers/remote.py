@@ -145,8 +145,16 @@ def video_resolutions(kind, model, *, provider=None):
     return {"std":"480P","hd":"768P"}
 
 
+def default_video_quality(kind, model, *, provider=None):
+    if kind == "ark" and "480p" in video_resolutions(kind, model, provider=provider):
+        return "480p"
+    return "hd"
+
+
 def video_resolution(kind, model, quality, *, provider=None):
     options = video_resolutions(kind,model,provider=provider)
+    if kind == "ark" and not quality:
+        quality = default_video_quality(kind, model, provider=provider)
     return options.get(quality,options["std"]) if isinstance(quality,str) else options["std"]
 
 

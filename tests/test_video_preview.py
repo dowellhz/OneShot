@@ -20,6 +20,18 @@ from oneshot.web import media as media_routes
 
 
 class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
+    async def test_seedance_defaults_to_480p_and_respects_explicit_quality(self):
+        model = "doubao-seedance-2-5-260628"
+        provider = {"kind": "ark", "config": {}}
+        base = {"prompt": "A ball rolls left"}
+        for quality, expected in ((None, "480p"), ("hd", "1080p"), ("std", "720p")):
+            payload = {**base, **({"quality": quality} if quality else {})}
+            with self.subTest(quality=quality):
+                self.assertEqual(video_reference.checked_video_resolution(payload, "ark", model, provider=provider), expected)
+                body = await server.remote.ark_video_body(model, payload, provider=provider)
+                self.assertEqual(body["resolution"], expected)
+        self.assertEqual(video_reference.checked_video_resolution({"draft": True}, "ark", model, provider=provider), "480p")
+
     async def test_agent_plan_video_alias_preserves_request_id_and_exposes_seedance_limits(self):
         provider = {"kind": "ark", "config": {}}
         model = "doubao-seedance-2.5"

@@ -247,6 +247,8 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
         response = await _generate_request(req, payload, fixed_route=fixed_route)
     else:
         response = await _generate_request(req, payload)
+    if quality := req.get("effective_video_quality"):
+        payload = {**payload, "quality": quality}
     if isinstance(req, agent_chat.InternalRequest):
         snapshot = copy.deepcopy(payload)
         if snapshot.get("kind") == "image":
@@ -262,6 +264,8 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
     if payload.get("kind")=="video" and route:
         provider_id = route.get("provider") or "local_h3"
         result["video_model"] = {"provider":provider_id}
+        if quality:
+            result["video_model"]["quality"] = quality
         if route.get("model") and (provider_id!="local_h3" or route["model"] in (h3_int8.MODEL, sulphur.MODEL)
                                   or payload.get("selected_model") == "h3-video"):
             result["video_model"]["selected_model"] = route["model"]
@@ -342,7 +346,7 @@ def quoted_video_unit_cost(route, raw, seconds, *, input_video_seconds=None):
     provider, model = route["provider"], route["model"]
     adapter = provider["kind"]
     rates = provider["config"].get("generation_rates", {})
-    quality = raw.get("quality") or "hd"
+    quality = raw.get("quality") or remote.default_video_quality(adapter, model, provider=provider)
     if raw.get("draft"):
         if not remote.supports_video_draft(provider,model):
             return None

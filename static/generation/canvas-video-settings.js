@@ -44,7 +44,8 @@ function canvasVideoDuration(n) {
   return options.reduce((best,value)=>Math.abs(rounded-value)<Math.abs(rounded-best)?value:best);
 }
 function canvasVideoQuality(n) {
-  const quality=n.data.quality || "hd", options=videoOutputModel(n)?.qualities;
+  const model=videoOutputModel(n), options=model?.qualities;
+  const quality=n.data.quality || model?.default_quality || "hd";
   return options && !Object.hasOwn(options,quality) ? "std" : quality;
 }
 

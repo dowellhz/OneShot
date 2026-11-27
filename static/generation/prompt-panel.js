@@ -332,6 +332,8 @@ function showPanel() {
   $$("select", ctl).forEach(s => s.onchange = () => {
     checkpoint();
     const key = s.dataset.k;
+    const modelChanged = n.type === "video" && (key === "provider" || key === "selected_model");
+    const previousDefault = modelChanged ? videoOutputModel(n)?.default_quality : null;
     let val = s.value; if (["turbo","expand","draft","quality_precheck"].includes(key)) val = val === "true"; else if (["count", "duration"].includes(key)) val = Number(val);
     if (key === "provider") delete d.selected_model;
     if (key === "selected_model" && val && !d.provider) d.provider = nodeProvider(n)?.id;
@@ -341,6 +343,7 @@ function showPanel() {
     }
     if (key === "selected_model" && !val) delete d.selected_model;
     else d[key] = val;
+    if (modelChanged && previousDefault !== "480p" && videoOutputModel(n)?.default_quality === "480p") d.quality = "480p";
     save(); render(n); refreshDownstream(n); showPanel();
   });
   $("#send").onclick = () => n.job ? cancel(n) : generate(n);

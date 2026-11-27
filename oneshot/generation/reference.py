@@ -98,9 +98,10 @@ def reference_video_duration(raw, provider, model, motion):
 
 
 def checked_video_resolution(raw,kind,model,*,provider=None):
-    quality = raw.get("quality") or "hd"
+    quality = raw.get("quality")
     if quality in ("480p","4k") and (raw.get("draft") or quality not in remote.video_resolutions(kind,model,provider=provider)):
         raise http_errors.bad(f"当前生成模式不支持 {quality.upper()}，请更改分辨率或模型")
+    quality = quality or remote.default_video_quality(kind, model, provider=provider)
     return "480p" if raw.get("draft") else remote.video_resolution(kind,model,quality,provider=provider)
 
 
@@ -219,7 +220,7 @@ async def video_reference_models(req):
                               segment_edit=bool(payload.get("segment_edit")),extension=bool(payload.get("extension")),
                               all_models=True,image_only=image_only)
     requested_quality = payload.get("quality")
-    requested_quality = requested_quality if isinstance(requested_quality,str) and requested_quality else "hd"
+    requested_quality = requested_quality if isinstance(requested_quality,str) and requested_quality else None
     try:
         duration = image_editor.number(payload.get("duration"),0,300,"成片时长",5)
     except ValueError as exc:
@@ -234,7 +235,9 @@ async def video_reference_models(req):
             durations = [seconds for seconds in durations if seconds <= 14]
         seconds = min(durations,key=lambda value:abs(value-round(duration)))
         draft = bool(payload.get("draft")) and choice["draft"]
-        quality = "std" if draft or requested_quality not in choice["qualities"] else requested_quality
+        quality = requested_quality or choice["default_quality"]
+        if draft or quality not in choice["qualities"]:
+            quality = "std"
         row = {"provider_id":provider["id"],"provider":provider["name"],"model":model,
                **({"endpoint_model":choice["endpoint_model"]} if "endpoint_model" in choice else {}),
                "duration":seconds,"quality":quality,"resolution":"480p" if draft else choice["qualities"][quality],

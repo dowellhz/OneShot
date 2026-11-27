@@ -38,6 +38,11 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
     p, model = route["provider"], route["model"]
     u = req["user"]
     resolution = video_reference.checked_video_resolution(raw,p["kind"],model,provider=p) if cap=="video" else None
+    quality = raw.get("quality")
+    if cap == "video" and not quality:
+        quality = remote.default_video_quality(p["kind"], model, provider=p)
+        if quality == "480p" and not raw.get("draft"):
+            req["effective_video_quality"] = quality
     draft = raw.get("draft")
     if draft and (draft is not True or cap != "video" or not remote.supports_video_draft(p,model)):
         raise http_errors.bad("请选择支持原生样片的 Seedance 2.5 服务")
@@ -74,7 +79,7 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
             raise http_errors.bad(str(exc))
         nreq = {"prompt":prompt, "first":None, "last":None, "refs":paths,
                 "duration":seconds, "ar":ratio,
-                "quality":raw.get("quality") or "hd", "audio":True, "audio_refs":audio_refs}
+                "quality":quality, "audio":True, "audio_refs":audio_refs}
         if raw.get("extension"):
             nreq["extension"] = raw["extension"]
         if raw.get("segment_edit"):
@@ -97,7 +102,7 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
         frames = [x for x in imgs if x.get("role") != "subject"]
         nreq = {"prompt": prompt, "first": frames[0]["path"] if frames else None, "last": frames[-1]["path"] if len(frames) > 1 else None,
                 "refs": [x["path"] for x in imgs if x.get("role") == "subject"], "duration": float(raw.get("duration") or 5),
-                "ar": float(raw.get("ar") or 16 / 9), "quality": raw.get("quality") or "hd", "audio": True}
+                "ar": float(raw.get("ar") or 16 / 9), "quality": quality, "audio": True}
     if motion or video_refs:
         if cap != "video" or not motion_reference.supports(p, model) or nreq["first"] is not None:
             raise http_errors.bad("此服务或参考素材不能用于动作参考")

@@ -25,10 +25,10 @@ function wizSave() { B.wiz = W; save(); }
 const wizardQualityEnabled = () => W?.quality_precheck ?? (defaultVideoQualityPrecheck() && CAPS_LIST.video_quality_precheck === true);
 function setWizardVideoQuality(video, count) {
   Object.assign(video.data,{count:count||1,quality:W.quality||video.data.quality||"hd",quality_precheck:!hasMediaReferences(video)&&wizardQualityEnabled()});
-  if (video.data.quality_precheck) Object.assign(video.data,{provider:"local_h3",selected_model:"h3-video",draft:false});
+  if (video.data.quality_precheck) Object.assign(video.data,{provider:"local_h3",selected_model:"h3-video",draft:false,
+    quality:video.data.quality==="480p"||video.data.quality==="std" ? "std" : "hd"});
 }
 
-// ---- open / close
 async function openWizard() {
   fetch("/api/samples").then(r => r.json()).then(x => { SAMPLES = x || []; if (W && W.step === 0) { wizSig = ""; renderWiz(); } }).catch(() => {});
   if (B.wiz && (!B.wiz.script || node(B.wiz.script))) W = B.wiz;
@@ -39,7 +39,7 @@ async function openWizard() {
       await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({...emptyBoard(OneShotI18n.t("新项目")),auto_name:"project"}) });
       await openBoard(id);
     }
-    W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: "hd", takes: 1, script: null };
+    W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: wizardVideoModel()?.default_quality || "hd", takes: 1, script: null };
   }
   $("#wiz").classList.add("on"); wizSig = ""; renderWiz();
 }
@@ -359,7 +359,7 @@ async function newWizardProject() {
     await fetch("/api/board/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({...emptyBoard(OneShotI18n.t("新项目")),auto_name:"project"}) });
     await openBoard(id);
   }
-  W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: "hd", takes: 1, script: null };
+  W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: wizardVideoModel()?.default_quality || "hd", takes: 1, script: null };
   $("#wiz").classList.add("on"); wizSig = "";
 }
 async function loadSamples() { try { SAMPLES = await (await fetch("/api/samples")).json() || []; } catch {} return SAMPLES; }

@@ -149,7 +149,8 @@ def plan_payload(s, run, user, frames, duration, data, prompt, *, sounds=(), cli
         except (ValueError, ZeroDivisionError, AttributeError):
             raise ValueError("视频画幅格式不正确") from None
     payload = {"kind": "video", "prompt": resolve_canvas_prompt(prompt,images,sounds,clips,guide=guide,special=special), "images": images, "duration": duration, "ar": ar,
-               "quality": data.get("quality", "hd"), "turbo": bool(data.get("turbo", True)), "seed": data.get("seed", -1),
+               **({"quality": data["quality"]} if "quality" in data else {}),
+               "turbo": bool(data.get("turbo", True)), "seed": data.get("seed", -1),
                "count": 1, "sound": data.get("sound", ""), "music": data.get("music", ""), "mode": "fl2v"}
     if planned:
         payload["planned"] = True

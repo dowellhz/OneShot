@@ -19,9 +19,17 @@ function jobText(n) {
 const verNav = n => n.versions.length > 1 ? `<span class="vn"><button data-v="prev" data-n="${n.id}">‹</button>${OneShotI18n.t("第 {current}/{total} 版",{current:n.cur+1,total:n.versions.length})}<button data-v="next" data-n="${n.id}">›</button></span>` : "";
 
 // ① 想法
+function wizardVideoModel() {
+  const node = {type:"video",data:{}};
+  return canvasNodeModel(node,nodeProvider(node));
+}
+
 function stepIdea() {
   const precheck=wizardQualityEnabled();
-  const chip = (k, v, label = v) => `<button class="chip ${String(k==="quality_precheck"?precheck:W[k]) === String(v) ? "on" : ""}" data-set="${k}" data-val="${v}">${OneShotI18n.t(label)}</button>`;
+  const model=wizardVideoModel();
+  const qualities=!precheck&&model?.default_quality==="480p" ? Object.entries(model.qualities) : [["std","快速 480P"],["hd","高清 768P"]];
+  const quality=precheck ? (["480p","std"].includes(W.quality)?"std":"hd") : W.quality;
+  const chip = (k, v, label = v) => `<button class="chip ${String(k==="quality_precheck"?precheck:k==="quality"?quality:W[k]) === String(v) ? "on" : ""}" data-set="${k}" data-val="${v}">${OneShotI18n.t(label)}</button>`;
   return OneShotI18n.html`<div class="wz1">
     <h2>你想拍一个什么样的视频？</h2>
     <textarea id="wzIdea" rows="5" placeholder="用一两句话说说你的想法，例如：一只橘猫在雨夜给流浪狗送伞">${esc(W.idea)}</textarea>
@@ -32,7 +40,7 @@ function stepIdea() {
       <div><span class="lab">风格</span>${STYLES.map(s => chip("style", s)).join("")}</div>
       <div><span class="lab">时长</span>${chip("dur", 15, "15 秒")}${chip("dur", 30, "30 秒")}${chip("dur", 60, "1 分钟")}</div>
       <div><span class="lab">画幅</span>${chip("aspect", "16:9", "横屏 16:9")}${chip("aspect", "9:16", "竖屏 9:16")}</div>
-      <div><span class="lab">画质</span>${chip("quality", "std", "快速 480P")}${chip("quality", "hd", "高清 768P")}</div>
+      <div><span class="lab">画质</span>${qualities.map(([key,label])=>chip("quality",key,label)).join("")}</div>
       ${CAPS_LIST.video_quality_precheck || precheck ? OneShotI18n.html`<div><span class="lab">质量预检</span>${chip("quality_precheck",true,"先用 INT8 检查")}${chip("quality_precheck",false,"直接生成")}</div>` : ""}
       ${precheck ? OneShotI18n.html`<div class="est">每镜最多试生成五次，再用 BF16 生成一份定稿。</div>` : OneShotI18n.html`<div><span class="lab">每个镜头</span>${chip("takes",1,"出 1 个版本")}${chip("takes",2,"抽 2 个挑")}${chip("takes",3,"抽 3 个挑")}</div>`}
     </div>

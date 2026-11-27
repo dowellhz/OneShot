@@ -72,7 +72,7 @@ module.exports = async function videoGifModelsAndDrafts(workspace, scenarioState
                     models:[{id:"kling-4.0-flash",durations:[3,20],qualities:{std:"720p"}}]},
                    {id:"ark-endpoint",kind:"ark",name:"方舟接入点",model:"ep-example",
                     models:[{id:"ep-example",endpoint_model:"doubao-seedance-2-5",durations:[5,15,30],
-                             qualities:{std:"720p",hd:"1080p","4k":"4k"}}]}];
+                             qualities:{"480p":"480p",std:"720p",hd:"1080p","4k":"4k"},default_quality:"480p"}]}];
   const optionsVideo=addNode("video",420,90,{prompt:"测试可用选项",duration:4,quality:"hd"});
   selectOnly(optionsVideo.id);`);
  equal(evaluate(`[$("#ctl select[data-k=duration]").value, $("#ctl select[data-k=quality]").selectedOptions[0].textContent,
@@ -80,6 +80,11 @@ module.exports = async function videoGifModelsAndDrafts(workspace, scenarioState
  evaluate(`optionsVideo.data.provider="flash-fixture";optionsVideo.data.duration=23;showPanel();`);
  equal(evaluate(`[$("#ctl select[data-k=duration]").value,!!$("#ctl select[data-k=quality]"),
   videoReq(optionsVideo,"测试").duration,videoReq(optionsVideo,"测试").quality]`),['20',false,20,'std']);
+ evaluate(`$("#ctl select[data-k=provider]").value="ark-endpoint";
+  $("#ctl select[data-k=provider]").dispatchEvent(new Event("change"));`);
+ equal(evaluate(`[$("#ctl select[data-k=quality]").value,videoReq(optionsVideo,"测试").quality,
+  addNode("video",0,0,{provider:"ark-endpoint"}).data.quality,
+  addNode("video",0,0,{provider:"ark-endpoint",quality:"hd"}).data.quality]`),["480p","480p","480p","hd"]);
  evaluate(`Object.assign(optionsVideo.data,{provider:"ark-endpoint",selected_model:"ep-example",duration:30,quality:"4k"});showPanel();`);
  equal(evaluate(`[$("#ctl select[data-k=selected_model]").selectedOptions[0].textContent,
   $("#ctl select[data-k=quality]").value,videoReq(optionsVideo,"测试").duration]`),

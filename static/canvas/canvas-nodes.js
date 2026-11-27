@@ -18,6 +18,9 @@ function newCanvasNodeId() {
 }
 function addNode(type, x, y, data = {}, extra = {}) {
   const n = { id: newCanvasNodeId(), type, name: nextName(type), x: Math.round(x), y: Math.round(y), data: { ...defaults(type), ...data }, versions: [], cur: -1, job: null, ...extra };
+  if (type === "video" && data.quality == null) {
+    n.data.quality = canvasNodeModel(n, nodeProvider(n))?.default_quality || n.data.quality;
+  }
   B.nodes.push(n); build(n); save(); updateEmpty(); if(nodePins(n).length)renderNodePinBar(); return n;
 }
 function size(n) {
