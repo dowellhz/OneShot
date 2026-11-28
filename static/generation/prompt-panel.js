@@ -236,7 +236,7 @@ function showPanel() {
   const d = n.data, ctl = $("#ctl");
   const pill = (k, opts, label, extra = "", current=d[k]) => {
     const service = k === "provider" || k === "selected_model";
-    const aria = {selected_model:"生成模型",image_text:"画面文字"}[k];
+    const aria = {provider:"生成服务",selected_model:"生成模型",image_text:"画面文字"}[k];
     const name = aria ? ` aria-label="${esc(OneShotI18n.t(aria))}"` : "";
     const options = Object.entries(opts).map(([value, text]) =>
       `<option value="${esc(value)}" ${String(value) === String(current) ? "selected" : ""}>${service ? text : OneShotI18n.t(text)}</option>`).join("");
@@ -332,6 +332,7 @@ function showPanel() {
   $$("select", ctl).forEach(s => s.onchange = () => {
     checkpoint();
     const key = s.dataset.k;
+    if (["provider","selected_model","quality"].includes(key) && v?.ref) d.model_selection_ref = v.ref;
     const modelChanged = n.type === "video" && (key === "provider" || key === "selected_model");
     const previousDefault = modelChanged ? videoOutputModel(n)?.default_quality : null;
     let val = s.value; if (["turbo","expand","draft","quality_precheck"].includes(key)) val = val === "true"; else if (["count", "duration"].includes(key)) val = Number(val);

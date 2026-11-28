@@ -32,6 +32,20 @@ CREATE TABLE IF NOT EXISTS tasks (
   error TEXT, outputs TEXT, request TEXT);
 CREATE INDEX IF NOT EXISTS tasks_user ON tasks(user_id, created);
 CREATE INDEX IF NOT EXISTS tasks_created ON tasks(created);
+CREATE TABLE IF NOT EXISTS generation_submissions (
+  user_id INTEGER NOT NULL, board_id TEXT NOT NULL, key TEXT NOT NULL,
+  node_id TEXT NOT NULL, fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+  worker TEXT NOT NULL, response TEXT, created REAL NOT NULL,
+  PRIMARY KEY (user_id, board_id, key));
+CREATE TABLE IF NOT EXISTS wizard_video_batches (
+  id TEXT PRIMARY KEY, board_id TEXT NOT NULL, user_id INTEGER NOT NULL,
+  script_id TEXT NOT NULL, fingerprint TEXT NOT NULL, state TEXT NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS wizard_video_steps (
+  batch_id TEXT NOT NULL, position INTEGER NOT NULL, node_id TEXT NOT NULL, submission_key TEXT NOT NULL,
+  payload TEXT NOT NULL, state TEXT NOT NULL, result TEXT, error TEXT, PRIMARY KEY (batch_id, position));
+CREATE TABLE IF NOT EXISTS wizard_batch_films (
+  batch_id TEXT PRIMARY KEY, plan TEXT NOT NULL, spec TEXT, job_id TEXT,
+  state TEXT NOT NULL, attempt INTEGER NOT NULL, error TEXT);
 CREATE TABLE IF NOT EXISTS media_preferences (
   user_id INTEGER PRIMARY KEY, ai_watermark INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS task_watermarks (

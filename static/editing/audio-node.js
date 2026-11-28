@@ -187,6 +187,7 @@ function renderAudioPanel(n) {
   const adjust=$("#more");
   const keepAdjust=adjust._audioNode===n.id && adjust.classList.contains("on");
   const services=CAPS_LIST.audio_generation?.[mode] || [];
+  const voiceSetup=mode==="tts" ? (CAPS_LIST.audio_voice_setup || []) : [];
   const route=services.find(s=>s.id===data.provider) || (!data.provider?services[0]:null);
   const voice=route?.voices?.some(v=>v.id===data.voice)?data.voice:route?.voices?.[0]?.id;
   const options=(values,current)=>values.map(({id,name})=>
@@ -217,14 +218,19 @@ function renderAudioPanel(n) {
     lyrics.value=data.lyrics || "";
     lyrics.oninput=()=>{data.lyrics=lyrics.value;save();};
   }
-  const serviceLabel=route?.name || (services.length?"选择服务":"需配置音频服务");
+  const tr=OneShotI18n.t;
+  const unavailable = data.provider && !route;
+  const serviceLabel=route?.name || tr(unavailable?"所选服务不可用":"选择服务");
+  const pendingServices=voiceSetup.map(({id,name})=>
+    `<option value="${esc(id)}" disabled ${id===data.provider?"selected":""}>${esc(tr("{name}（需启用音色）",{name}))}</option>`).join("");
   const available=!!route;
   const [minSpeed,maxSpeed]=audioSpeedRange(route);
   const {formats,format,rates,rate}=audioDelivery(data);
   const formatNames={source:"原格式",wav:"WAV",mp3:"MP3",ogg:"OGG Opus"};
   $("#ctl").innerHTML=`
-    <span class="pill model">${esc(serviceLabel)}<select data-audio-field="provider" aria-label="音频服务">
-      <option value="">默认服务</option>${options(services,data.provider)}</select></span>
+    <span class="pill model">${esc(serviceLabel)}${ico("down")}<select data-audio-field="provider" aria-label="${esc(tr("音频服务"))}">
+      <option value="">${esc(tr("默认服务"))}</option>${options(services,data.provider)}${pendingServices}
+      ${unavailable && !voiceSetup.some(item=>item.id===data.provider) ? `<option value="${esc(data.provider)}" disabled selected>${esc(serviceLabel)}</option>` : ""}</select></span>
     ${mode==="tts"&&available?`<span class="pill">${esc(route.voices.find(v=>v.id===voice)?.name || "音色")}<select aria-label="配音音色" data-audio-field="voice">${options(route.voices,voice)}</select></span>
     <label class="pill audio-rate" ${minSpeed===maxSpeed?'title="此模型使用固定语速"':""}>语速 <input type="number" value="${audioSpeed(route,data.speed)}" min="${minSpeed}" max="${maxSpeed}" step="any" ${minSpeed===maxSpeed?"disabled":""} data-audio-field="speed" aria-label="配音语速"></label>
     ${route.subtitles? `<label class="pill"><input type="checkbox" data-audio-field="subtitles" ${data.subtitles===true?"checked":""}>生成同步字幕</label>` : ""}`:""}

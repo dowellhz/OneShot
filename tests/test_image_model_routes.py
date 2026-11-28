@@ -45,6 +45,7 @@ class ImageModelRoutes(IsolatedAsyncioTestCase):
         http.post.return_value = response
         req = MagicMock(app={"http": http})
         req.__getitem__.return_value = {"id": 7}
+        req.get.side_effect = {}.get
         with TemporaryDirectory() as folder, patch.object(config, "COMFY_DIR", Path(folder)), \
              patch.object(local.db, "task_start") as task, \
              patch.object(local.generation_jobs, "follow_engine", new_callable=AsyncMock), \

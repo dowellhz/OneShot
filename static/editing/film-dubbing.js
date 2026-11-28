@@ -11,9 +11,9 @@ function filmDubbingLabel(clip, index) {
   return clip.speaker?.trim() || OneShotI18n.t("第 {number} 段配音", {number:index + 1});
 }
 
-function addFilmDubbing(F) {
+function addFilmDubbing(F, voice) {
   const previous = F.spec.narration.at(-1);
-  F.spec.narration.push({text:"", voice:previous?.voice, provider:previous?.provider, speed:previous?.speed ?? 1,
+  F.spec.narration.push({text:"", voice:voice?.id ?? previous?.voice, provider:voice ? voice.provider : previous?.provider, speed:previous?.speed ?? 1,
     start:+timelinePos().toFixed(2), volume:1});
   saveFilmDraft(F);
   renderNarr();
@@ -21,15 +21,46 @@ function addFilmDubbing(F) {
 }
 
 function loadDubbingVoices() {
-  if (voiceListRequest) return;
+  if (voiceListRequest) return voiceListRequest;
   voiceListRequest = fetchOk("/api/voices")
     .then(response => response.json())
     .then(result => { voiceList = result; })
     .catch(() => { voiceList = {error:true, voices:[]}; })
     .finally(() => {
       voiceListRequest = null;
-      if ($("#fmNarr")) renderNarr();
+      if ($("#fmNarr")) {renderNarr(); if (FILM) renderStoryDubbing(FILM);}
     });
+  return voiceListRequest;
+}
+
+function dubbingVoiceLabel(voice) {
+  return voice.service ? `${voice.name} · ${voice.service}` : voice.name;
+}
+
+async function pickCanvasDubbingVoice(button, menu, n, version) {
+  const board = B, t = OneShotI18n.t;
+  button.disabled = true;
+  await loadDubbingVoices();
+  button.disabled = false;
+  if (!button.isConnected || !menu.classList.contains("on") || B !== board) return;
+  if (voiceList?.error) return toast(t("音色加载失败"));
+  const voices = voiceList?.voices || [];
+  if (!voices.length) return toast(t("请先在控制台接入一个配音服务。"));
+
+  const select = document.createElement("select");
+  select.className = "pill";
+  select.setAttribute("aria-label", t("配音音色"));
+  select.add(new Option(t("选择配音音色"), "", true, true));
+  select.options[0].disabled = true;
+  voices.forEach((voice, index) => select.add(new Option(dubbingVoiceLabel(voice), String(index))));
+  button.replaceWith(select);
+  select.focus();
+  select.onchange = () => {
+    closeMenus();
+    if (B !== board || !canvasCanEdit() || node(n.id) !== n || nodeLocked(n) || curV(n) !== version) return;
+    const film = n.data.film && !version.film_recipe?.timeline ? openFilm(n) : editVideoTimeline(n, version);
+    if (film) addFilmDubbing(film, voices[Number(select.value)]);
+  };
 }
 
 function renderNarr() {
@@ -49,10 +80,8 @@ function renderNarr() {
         clip.provider = voices[0].provider;
       }
       const selected = voices.findIndex(voice => voice.id === clip.voice && voice.provider === clip.provider);
-      const options = voices.map((voice, option) => {
-        const label = voice.service ? `${voice.name} · ${voice.service}` : voice.name;
-        return `<option value="${option}" ${option === selected ? "selected" : ""}>${esc(label)}</option>`;
-      });
+      const options = voices.map((voice, option) =>
+        `<option value="${option}" ${option === selected ? "selected" : ""}>${esc(dubbingVoiceLabel(voice))}</option>`);
       if (selected < 0) options.unshift(`<option value="" selected disabled>${esc(t("所选音色不可用"))}</option>`);
       const running = dubbingRequests.has(clip);
       const status = running ? t("配音中…") : clip.ref ? t("已生成 · {seconds}s", {seconds:(clip.seconds || 0).toFixed(1)}) : t("待生成");
@@ -112,6 +141,7 @@ function bindDubbingRow(F, row, voices) {
       clip.provider = voice.provider;
     } else if (key === "speaker") clip.speaker = field.value.trim();
     else if (key === "start") {
+      delete clip.story_shot;
       clip.start = Number.isFinite(field.valueAsNumber) ? Math.min(filmTotal(F.spec), Math.max(0, field.valueAsNumber)) : clip.start;
       field.value = clip.start;
     } else clip[key] = Number(field.value);
@@ -130,7 +160,7 @@ function bindDubbingRow(F, row, voices) {
       case "gen": return generateFilmDubbing(F, clip);
       case "play":
       case "sample": return playDubbing(clip, button.dataset.a);
-      case "here": clip.start = +timelinePos().toFixed(2); break;
+      case "here": delete clip.story_shot; clip.start = +timelinePos().toFixed(2); break;
       case "rm": tracks.splice(tracks.indexOf(clip), 1); break;
     }
     saveFilmDraft(F);

@@ -18,21 +18,33 @@ function switchVersion(n, i, {recordUndo = true} = {}) {
   rememberVideoVersion(n);
   const v = n.versions[i];
   if (n.type === "video") {
-    if (Array.isArray(v.input_edges)) {
-      const edges = vtEdgesWithReferenceRanges(v.input_edges,v.video_recipe)
+    const snapshot = v.video_recipe && (!v.node_data || !Array.isArray(v.input_edges)) ? vtSnapshot(n,i) : v;
+    if (Array.isArray(snapshot.input_edges)) {
+      const edges = vtEdgesWithReferenceRanges(snapshot.input_edges,snapshot.video_recipe)
         .filter(e => e.to === n.id && e.from !== n.id && validVideoInput(e));
       B.edges = B.edges.filter(e => e.to !== n.id).concat(JSON.parse(JSON.stringify(edges)));
-      if (edges.length !== v.input_edges.length) toast("部分历史输入节点已删除，已恢复仍存在的连线");
+      if (edges.length !== snapshot.input_edges.length) toast("部分历史输入节点已删除，已恢复仍存在的连线");
     }
-    if (v.node_data) n.data = JSON.parse(JSON.stringify(v.node_data));
+    if (snapshot.node_data) n.data = JSON.parse(JSON.stringify(snapshot.node_data));
     else if(v.video_recipe?.video_optics)n.data.video_optics=structuredClone(v.video_recipe.video_optics);
     else delete n.data.video_optics;
     vtRestoreVideoModel(n.data,v);
+    const prompt = v.generation_record?.prompt ?? v.prompt;
+    if (!snapshot.node_data && versionGenerationModel(v,n.type) && typeof prompt==="string") n.data.prompt = prompt;
   }
   if (n.type === "audio") {
     if (v.audio_recipe) Object.assign(n.data,{...defaults("audio"),...v.audio_recipe});
     else if (isSeedAudio(n)) n.data.references=[];
   }
+  if (n.type === "image") {
+    if (v.node_data?.model) n.data.model = v.node_data.model;
+    if (v.generation_record?.settings?.model) n.data.model = v.generation_record.settings.model;
+    restoreVersionGenerationModel(n.data,v,"image");
+    const prompt = v.node_data?.prompt ?? v.generation_record?.prompt ?? v.prompt;
+    if (versionGenerationModel(v,n.type) && typeof prompt==="string") n.data.prompt = prompt;
+  }
+  delete n.data.model_selection_ref;
+  if ($("#prompt")._node===n.id) $("#prompt")._node=null;
   n.cur = i; save(); render(n); refreshDownstream(n); if (sel.size === 1 && sel.has(n.id)) showPanel(); drawEdges();
   if (AC.open) acRenderRefs();
   return true;
@@ -49,7 +61,7 @@ function renderVTabs(n, el) {
   const previousTab=$(".on",t)?.dataset.i, scrollTop=t.scrollTop;
   const focusedTab=t.contains(document.activeElement)?document.activeElement.dataset.i:null;
   t.innerHTML = n.versions.map((v, i) => {
-    const tip = [`版本 ${i + 1}`, v.label || v.mode, v.seconds ? v.seconds.toFixed(1) + "s" : "", v.seed != null ? "seed " + v.seed : ""].filter(Boolean).join(" · ");
+    const tip = [`版本 ${i + 1}`, v.label, versionGenerationModel(v,n.type)?.label || v.mode, v.seconds ? v.seconds.toFixed(1) + "s" : "", v.seed != null ? "seed " + v.seed : ""].filter(Boolean).join(" · ");
     const thumbnail=n.type==="image"&&v.url
       ? `<img src="${esc(v.url)}" alt="" loading="lazy" draggable="false">`
       : ico(n.type);

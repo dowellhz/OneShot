@@ -20,16 +20,27 @@ module.exports = async function filmDubbing({ equal, evaluate, ready, w, english
       source.versions = [{ref:"input:h3studio/dub-test.mp4",url:"/media?ref=input:h3studio/dub-test.mp4",w:640,h:360,seconds:4}];
       source.cur = 0;
       render(source);
-      editVideoTimeline(source);
-      $("#fmV").onloadedmetadata?.();
-      $("#fmV").currentTime = .5;
-      $("[data-b=narr]").click();
+      closeFilm();
+      selectOnly(source.id);
+      ctxMenu({target:els.get(source.id),clientX:100,clientY:100});
     }`);
-    await ready('$("#fmNarr [data-n=voice]").options.length===2', "both configured voices are listed");
+    equal(evaluate('$("#ctxMenu [data-a=dubbing-voice]").textContent'), englishSmoke ? "Choose a dubbing voice" : "选择配音音色");
+    evaluate('$("#ctxMenu [data-a=dubbing-voice]").click()');
+    await ready('$("#ctxMenu select")?.options.length===3', "both services can be selected from the canvas menu");
+    equal(evaluate('$("#ctxMenu select").options[2].text'), "Narrator · Noiz (noiz.ai)");
     evaluate(`{
-      const voice = $("#fmNarr [data-n=voice]");
-      voice.value = "1";
-      voice.dispatchEvent(new Event("change"));
+      const choice = $("#ctxMenu select");
+      choice.value = "1";
+      choice.dispatchEvent(new Event("change"));
+      $("#fmV").onloadedmetadata?.();
+    }`);
+    await ready('!voiceListRequest && $("#fmNarr [data-n=voice]")?.options.length===2', "editor loads with both configured voices");
+    equal(evaluate('[FILM.target.ref,FILM.spec.narration[0].provider,$("#fmNarr [data-n=voice]").value]'),
+      ["input:h3studio/dub-test.mp4","narrator","1"]);
+    evaluate(`{
+      const start = $("#fmNarr [data-n=start]");
+      start.value = ".5";
+      start.dispatchEvent(new Event("change"));
       const speaker = $("#fmNarr [data-n=speaker]");
       speaker.value = "Anna <host>";
       speaker.dispatchEvent(new Event("change"));

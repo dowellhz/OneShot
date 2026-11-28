@@ -41,7 +41,7 @@ async function openWizard() {
     }
     W = B.wiz = { step: 0, idea: "", style: STYLES[0], aspect: "16:9", dur: 15, quality: wizardVideoModel()?.default_quality || "hd", takes: 1, script: null };
   }
-  $("#wiz").classList.add("on"); wizSig = ""; renderWiz();
+  $("#wiz").classList.add("on"); wizSig = ""; renderWiz(); resumeWizardProduction();
 }
 function closeWizard() { $("#wiz").classList.remove("on"); updateWizBtn(); }
 function updateWizBtn() {
@@ -84,9 +84,10 @@ function wizardMiddleTiming(pair) {
 function renderWiz() {
   if (!W) return;
   const st = $("#wzSteps");
-  st.innerHTML = WSTEPS.map((t, i) => `<button class="${i === W.step ? "on" : ""} ${i < W.step ? "done" : ""}" data-s="${i}" ${i > maxStep() ? "disabled" : ""}><b>${i < W.step ? "✓" : i + 1}</b>${OneShotI18n.t(t)}</button>`).join("<i></i>");
+  st.innerHTML = WSTEPS.map((t, i) => `<button class="${i === W.step ? "on" : ""} ${i < W.step ? "done" : ""}" data-s="${i}" ${i > maxStep() || wizardProductionVisible() ? "disabled" : ""}><b>${i < W.step ? "✓" : i + 1}</b>${OneShotI18n.t(t)}</button>`).join("<i></i>");
   $$("button", st).forEach(b => b.onclick = () => goStep(+b.dataset.s));
   const body = $("#wzBody");
+  if (renderWizardProduction(body)) { wizSig = sigOf(); return; }
   body.innerHTML = [stepIdea, stepScript, stepCast, stepBoards, stepVideos, stepFilm][W.step]();
   wireStep(body);
   $$("textarea", body).forEach(t => { const g = () => { t.style.height = "auto"; t.style.height = Math.min(220, t.scrollHeight + 2) + "px"; }; g(); t.addEventListener("input", g); });
@@ -157,6 +158,7 @@ function wireStep(body) {
           const result=applyScriptShotRevision(s,{shot:index+1,shot_id:x.id,before,changes},{wizard:true,recordUndo:first});
           if(first&&result.retained.length)toast(OneShotI18n.t("保留了独立修改或共用的节点：{names}",{names:wizardShotNumbers(result.retained)}),4500);
           if(!result.already)edited.add(field);
+          refreshWizardStoryboardWarnings(s,body);
         }catch(error){
           field.value=oldValue;
           toast(error.message,4500);
@@ -277,18 +279,11 @@ async function castAction(c, a) {
 async function wizGo(what, btn) {
   const s = wizScript();
   if (what === "script") {
-    const idea = (W.idea || "").trim(); if (!idea) { toast("先写一句你的想法"); return; }
-    const media=await prepareWizardUploads();
-    if (!media) return;
-    let n = s;
-    if (!n) { n = addNode("script", 0, 0, {}, { name: "剧本" }); W.script = n.id; }
-    if (n.data.made?.length) toast("新分镜生成后会展开为一组新镜头");
-    Object.assign(n.data, { prompt: `${idea}\n风格：${W.style}`, nshots:"auto", shotlen:"auto", aspect:W.aspect, quality:W.quality });
-    W.step = 1; wizSave();
-    const job = planStoryboard(n,{targetSeconds:W.dur,resetLinks:true,motionFrames:true,wizardMedia:media});
-    renderWiz();
-    await job;
-    fit(B.nodes); wizSig = ""; renderWiz();
+    await wizardPlanScript();
+  } else if (what === "produce") {
+    await startWizardProduction();
+  } else if (what === "continue-production") {
+    await continueWizardProduction();
   } else if (what === "boards") {
     if (!await prepareWizardAssets(s)) return;
     expandMissingScriptShots(s);
@@ -298,6 +293,8 @@ async function wizGo(what, btn) {
     expandMissingScriptShots(s);
     wizSig="";renderWiz();
     await batchImages(s);
+  } else if (what === "review-frames") {
+    await showWizardFrameReview();
   } else if (what === "videos") {
     if(maxStep()<4)return toast("请先补齐分镜关键帧");
     W.step = 4; wizSave(); renderWiz();

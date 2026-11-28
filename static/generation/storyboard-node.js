@@ -103,20 +103,21 @@ function madeShots(n) {
   return (n.data.made||[]).filter(pair=>(!pair.shot_id||positions.has(pair.shot_id))&&(node(pair.img)||node(pair.vid)))
     .sort((a,b)=>(positions.get(a.shot_id)??shots.length)-(positions.get(b.shot_id)??shots.length));
 }
-async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=false, wizardMedia}={}) {
+async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=false, wizardMedia, requestDraft}={}) {
   const d = n.data, story = fullPrompt(n);
   if (!story.trim()) { toast("先写一段剧情"); $("#prompt").focus(); return; }
   const uploads=wizardMedia?wizardUploadedReferences(wizardMedia):[];
   const refs=[...uploads,...scriptRefs(n).filter(item=>!uploads.some(upload=>upload.ref===item.ref))];
-  await withBusy(n, "Qwen 拆分镜中", async () => {
+  return withBusy(n, "Qwen 拆分镜中", async () => {
     const bid=boardId;
     await flushSave();
     if(boardId!==bid||node(n.id)!==n)return;
-    const r = await api("/api/storyboard", { board:bid, story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
+    const payload = { board:bid, story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
       seconds: d.shotlen === "auto" ? null : +d.shotlen, style: "", aspect: d.aspect,
       ...(motionFrames ? {motion_frames:true,prepare_assets:true} : {}),
-      ...(targetSeconds ? {target_seconds:targetSeconds} : {}) });
-    if(node(n.id)!==n)return;
+      ...(targetSeconds ? {target_seconds:targetSeconds} : {}) };
+    const r = await (requestDraft ? requestDraft(payload) : api("/api/storyboard",payload));
+    if(!r||boardId!==bid||node(n.id)!==n)return;
     checkpoint();ensureScriptShotIds(n);
     if(resetLinks)d.made=[];
     Object.assign(d,{title:r.title,style:r.style,characters:r.characters,visual_assets:r.visual_assets||[],
@@ -125,6 +126,7 @@ async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=
     save(); render(n); drawEdges();
     const total = r.planned_seconds ?? r.shots.reduce((sum,shot)=>sum+shot.duration,0);
     toast(`拆成 ${r.shots.length} 镜，计划约 ${total} 秒${llmNote(r)}`, 4000);
+    return true;
   });
 }
 

@@ -45,7 +45,7 @@ function stepIdea() {
       ${precheck ? OneShotI18n.html`<div class="est">每镜最多试生成五次，再用 BF16 生成一份定稿。</div>` : OneShotI18n.html`<div><span class="lab">每个镜头</span>${chip("takes",1,"出 1 个版本")}${chip("takes",2,"抽 2 个挑")}${chip("takes",3,"抽 3 个挑")}</div>`}
     </div>
     <div class="est">根据动作和台词决定镜头数。较长的段落会拆成多个镜头。</div>
-    <div class="nav"><span></span><button class="go" data-go="script">写剧本 →</button></div></div>`;
+    <div class="nav"><button class="ghost" data-go="script">先看分镜</button><button class="go" data-go="produce">直接生成初稿</button></div></div>`;
 }
 // ② 剧本
 function stepScript() {
@@ -53,6 +53,7 @@ function stepScript() {
   if (!s || toolBusy.has(s.id)) return OneShotI18n.html`<div class="wait"><div class="spin"></div>AI 正在写剧本、拆镜头…（GPU 空闲时约 10~30 秒）</div>`;
   if (!(d.shots || []).length) return OneShotI18n.html`<div class="wait">还没有剧本。<button class="go" data-go="script">重新生成</button><button class="ghost" data-goto="0">← 改一下想法</button></div>`;
   const total = d.shots.reduce((a, x) => a + (x.duration || 0), 0);
+  const review = wizardStoryboardWarnings(s);
   return OneShotI18n.html`<div class="wz2">
     <div class="row"><input id="wzTitle" class="title" value="${esc(d.title)}" placeholder="片名"><span class="dim">${OneShotI18n.t("{count} 个镜头 · 约 {seconds} 秒",{count:d.shots.length,seconds:total})}</span>
       <span class="grow"></span><button class="ghost" data-go="script">不满意，重新写</button></div>
@@ -64,10 +65,13 @@ function stepScript() {
         <label>首帧画面<textarea data-f="keyframe" rows="2">${esc(x.keyframe)}</textarea></label>
         ${motionFramePhases(x).map(phase=>`<label>${OneShotI18n.t(phase==="middle"?"中帧画面":"尾帧画面")}<textarea data-motion-frame="${phase}" rows="2">${esc(x.motion_frames[phase]||"")}</textarea></label>`).join("")}
         <label>动作<textarea data-f="action" rows="2" placeholder="一行一个动作，可写 0–0.5 秒 保持站姿">${esc(x.action.join("\n"))}</textarea></label>
+        <div data-wz-story-review="${i}">${wizardStoryboardWarningMarkup(review.get(i))}</div>
         ${x.action_check?.evidence?OneShotI18n.html`<p class="est">成片核对 · ${esc(x.action_check.evidence)}</p>`:""}
         <label>台词<textarea data-f="dialogue" rows="1" placeholder="名字：台词（没有可以空着）">${esc(x.dialogue.join("\n"))}</textarea></label></div>`).join("")}
       <button class="add" data-m="add">＋ 加一个镜头</button></div>
-    <div class="nav"><button class="ghost" data-goto="0">← 想法</button><button class="go" data-goto="2">下一步：制作素材 →</button></div></div>`;
+    <div class="nav"><button class="ghost" data-goto="0">← 想法</button>${W.production?.showEditor ?
+      OneShotI18n.html`<button class="go" data-go="continue-production">继续制作</button>` :
+      OneShotI18n.html`<button class="go" data-goto="2">下一步：制作素材 →</button>`}</div></div>`;
 }
 // ③ 角色
 function stepCast() {
@@ -88,12 +92,28 @@ function stepCast() {
             <button class="ghost sm" data-cast="lib">从资产库选</button><button class="ghost sm" data-cast="up">上传图片</button></div></div></div>`;
     }).join("")}${wizardAssetCards(script)}</div>
     <div id="wzLib"></div>
-    <div class="nav"><button class="ghost" data-goto="1">← 剧本</button><button class="go" data-go="boards" ${preparing?"disabled":""}>${OneShotI18n.t(preparing?"正在准备素材…":"准备素材并生成分镜 →")}</button></div></div>`;
+    <div class="nav"><button class="ghost" data-goto="1">← 剧本</button><button class="go" data-go="${W.production?.showEditor ? "continue-production" : "boards"}" ${preparing?"disabled":""}>${OneShotI18n.t(preparing?"正在准备素材…":W.production?.showEditor?"继续制作":"准备素材并生成分镜 →")}</button></div></div>`;
 }
 // ④ 分镜图
+function wizardRepeatedKeyframes(pair, shot) {
+  const seenRefs = new Map(), seenDescriptions = new Map(), issues = new Map();
+  for (const frame of wizardShotFrames(pair)) {
+    const ref = curV(frame.node)?.ref;
+    const description = frame.phase === "first" ? shot.keyframe : shot.motion_frames?.[frame.phase];
+    const normalized = typeof description === "string" ? normalizedSpeech(description) : "";
+    const matching = (ref && seenRefs.get(ref)) || (normalized && seenDescriptions.get(normalized));
+    if (matching) issues.set(frame.phase, matching);
+    if (ref && !seenRefs.has(ref)) seenRefs.set(ref, frame.label);
+    if (normalized && !seenDescriptions.has(normalized)) seenDescriptions.set(normalized, frame.label);
+  }
+  return issues;
+}
+
 function stepBoards() {
   const pairs = shotPairs(), d = wizScript().data;
+  const continuing = W.production?.showEditor && W.production.stage===3;
   const cards=pairs.flatMap(p=>wizardShotFrames(p).map(frame=>({...frame,pair:p})));
+  const repeats = new Map(pairs.map(pair => [pair.index, wizardRepeatedKeyframes(pair, d.shots[pair.index])]));
   const images=[...new Set(cards.map(frame=>frame.node))];
   const ready=images.filter(storyboardFrameReady).length;
   const missing=pairs.length!==d.shots.length||pairs.some(p=>missingMotionFrames(d.shots[p.index],p.record));
@@ -108,11 +128,16 @@ function stepBoards() {
         <div class="cap"><b>${OneShotI18n.t("镜头 {number}",{number:pair.index+1})} · ${middle?OneShotI18n.t("中帧"):label}</b>${shared?"":verNav(image)}</div><div class="txt">${esc(shared?image.data.caption : phase==="first"?shot.keyframe:shot.motion_frames?.[phase]||image.data.caption)}</div>
         ${middle?OneShotI18n.html`<label class="wz-frame-time">时点 <input type="number" step="any" min="0.04" max="${(middle.maxFrame/24).toFixed(2)}" value="${Number(middle.time.toFixed(2))}" data-middle-time="${pair.index}" aria-label="${OneShotI18n.t("镜头 {number} 中帧时点（秒）",{number:pair.index+1})}" ${middle.editable?"":"disabled"}> ${OneShotI18n.t("秒")}</label>`:""}
         ${v&&!storyboardFrameReady(image)?OneShotI18n.html`<p class="wz-shot-error" role="status">分镜描述已更新，请重新生成画面。</p>`:""}
+        ${phase==="first" ? wizardFrameReviewMarkup(pair) : ""}
+        ${repeats.get(pair.index).has(phase) ? `<p class="wz-shot-error" role="status">${esc(OneShotI18n.t(
+          "与「{frame}」使用同一张图或相同描述。需要动作推进时，请核对并调整这一帧。",
+          {frame:repeats.get(pair.index).get(phase)}))}</p>` : ""}
         ${pinned?OneShotI18n.html`<small class="est">已固定为上传的起始帧</small>`:shared?"":OneShotI18n.html`<div class="fix"><input placeholder="怎么改？例如：人物离镜头近一点" data-fix="${image.id}"><button class="ghost sm" data-redo="${image.id}" ${busy?"disabled":""}>${OneShotI18n.t(v ? "重画" : "生成")}</button></div>`}</div>`;
     }).join("")}</div>
     <div class="nav"><button class="ghost" data-goto="2">← 制作素材</button>
+      ${wizardFrameReviewInputs().length ? OneShotI18n.html`<button class="ghost" data-go="review-frames">检查关键帧变化</button>` : ""}
       ${missing||ready<images.length?OneShotI18n.html`<button class="ghost" data-go="fill-frames">补齐关键帧</button>`:""}
-      <button class="go" data-go="videos" ${missing||ready<images.length ? "disabled" : ""}>下一步：生成视频 →</button></div></div>`;
+      <button class="go" data-go="${continuing?"continue-production":"videos"}" ${missing||ready<images.length ? "disabled" : ""}>${OneShotI18n.t(continuing?"继续制作":"下一步：生成视频 →")}</button></div></div>`;
 }
 // ⑤ 视频
 function stepVideos() {
@@ -175,7 +200,7 @@ function stepFilm() {
         <button class="ghost" data-go="edit">继续剪辑</button>${!missing.length ? OneShotI18n.html`<button class="ghost" data-go="current-cut">用当前镜头剪辑</button>` : ""}
         <button class="ghost" data-go="canvas">去画布精修</button></div>` : OneShotI18n.html`<div class="wait">上次合成没有成功。<button class="go" data-go="edit">重新打开剪辑台</button></div>`)
     : missing.length ? OneShotI18n.html`<p class="tip" role="status">${OneShotI18n.t("镜头 {numbers} 还缺少视频。补齐后可导出完整成片。",{numbers:wizardShotNumbers(missing)})}</p>`
-    : OneShotI18n.html`<p class="tip">在剪辑台里调整顺序、裁剪片段、加字幕和背景音乐。台词会自动作为字幕带入。</p>
+    : OneShotI18n.html`<p class="tip">台词会自动作为字幕带入。可在剪辑台检查原声并补配音，再导出成片。</p>
        <div class="row"><button class="go" data-go="edit">打开剪辑台</button><button class="ghost" data-go="quick">导出成片</button></div>`}
     <div class="nav"><button class="ghost" data-goto="4">← 视频</button><span></span></div></div>`;
 }

@@ -12,6 +12,7 @@ from oneshot.canvas.board_store import board_meta
 from oneshot.canvas.board_store import can_edit
 from oneshot.editing.audio_edit_routes import audio_node_source
 from oneshot.editing import render as film
+from oneshot.editing.render_timeline_audio import SilentTrackError
 from oneshot.providers import catalog as providers
 from oneshot.web import auth
 from oneshot.web import http as http_errors
@@ -112,14 +113,21 @@ async def video_captions(req):
     if not board or not can_edit(req["user"], board):
         raise web.HTTPForbidden()
     configured = providers.routes("asr")
-    if not configured:
+    allow_silence = raw.get("allow_silence") is True
+    if not configured and not allow_silence:
         return auth.err(503, "请在控制台配置语音转写服务")
     clip = {k:raw[k] for k in ("ref", "in", "out", "audio_ref", "audio_start") if k in raw}
     clip["kind"] = "video"
     try:
         wav, start, end = await asyncio.to_thread(film.transcription_wav, config.COMFY_DIR, clip)
+    except SilentTrackError as error:
+        if allow_silence:
+            return web.json_response({"captions": [], "silent": True})
+        raise http_errors.bad("无法提取视频原声：" + str(error)) from None
     except (KeyError, TypeError, ValueError, OSError, OverflowError) as error:
         raise http_errors.bad("无法提取视频原声：" + str(error)) from None
+    if not configured:
+        return auth.err(503, "请在控制台配置语音转写服务")
     captions = await timed_transcript(req, configured, wav, start, end)
     if captions is not None:
         return web.json_response({"captions":captions})

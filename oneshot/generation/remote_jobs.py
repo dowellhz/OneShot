@@ -118,7 +118,7 @@ async def generate_remote(req, raw: dict, route: dict, cap: str, *, motion=None,
     for _ in range(count):
         jid = "x" + uuid.uuid4().hex[:12]
         meta = {"label": http_errors.clean(raw.get("label"))[:60] or p["name"], "cls": cls, "units": 1, "est": generation_jobs.estimate(cls, 1, 40 if cap == "image" else 150),
-                "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "model":model,
+                "mode_name": f"{p['name']} · {model}", "uid": u["id"], "provider": p["name"], "provider_id": p["id"], "model":model,
                 "prompt": prompt, "board":http_errors.clean(raw.get("board"))}
         if resolution:
             meta["resolution"] = resolution

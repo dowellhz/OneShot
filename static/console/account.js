@@ -13,27 +13,53 @@
 
 let CAPS_LIST = { image: [], video: [] };
 let ME_USER = null;
-async function loadCaps() { try { CAPS_LIST = await (await fetch("/api/capabilities")).json(); } catch {} return CAPS_LIST; }
+let capabilityRequest = null, capabilitySignature = "", capabilityPanelDirty = false;
+function refreshCapabilityPanel() {
+  const panel = $("#pp"), active = document.activeElement;
+  if (!capabilityPanelDirty || !panel.classList.contains("on") ||
+      (panel.contains(active) && active.matches("input,textarea,select"))) return;
+  capabilityPanelDirty = false;
+  showPanel();
+}
+function loadCaps() {
+  if (capabilityRequest) return capabilityRequest;
+  capabilityRequest = (async () => {
+    try {
+      const response = await fetch("/api/capabilities", {cache:"no-store"});
+      if (!response.ok) return CAPS_LIST;
+      const capabilities = await response.json();
+      const signature = JSON.stringify(capabilities);
+      CAPS_LIST = capabilities;
+      if (signature !== capabilitySignature) {
+        capabilitySignature = signature;
+        capabilityPanelDirty = true;
+        refreshCapabilityPanel();
+      }
+    } catch {}
+    return CAPS_LIST;
+  })().finally(()=>{capabilityRequest=null;});
+  return capabilityRequest;
+}
 
-// provider of a node: its own choice if still available, else the default route
+// Select a default only when the node has no explicit service.
 function nodeProvider(n) {
   const cap = n.type === "image" ? "image" : "video", list = CAPS_LIST[cap] || [];
-  return list.find(x => x.id === n.data.provider) || list.find(x => x.default) || list[0] || null;
+  return n.data.provider ? list.find(x=>x.id===n.data.provider) || null : list.find(x=>x.default) || list[0] || null;
 }
 const isRemote = n => { const p = nodeProvider(n); return !!p && !p.local; };
 function provPill(n, pill) {
   const cap = n.type === "image" ? "image" : "video", list = CAPS_LIST[cap] || [];
-  if (list.length < 2 && !n.data.provider) return "";
-  const def = list.find(x => x.default), cur = nodeProvider(n);
-  const unavailable = n.data.provider && !list.some(item=>item.id===n.data.provider) &&
-    (n.data.selected_model || n.type==="video" && n.data.provider==="local_h3");
+  const def = list.find(x => x.default) || list[0], cur = nodeProvider(n);
+  const unavailable = n.data.provider && !cur;
   const tr = OneShotI18n.t;
   const providerName = p => p?.id === "local_h3" && p.name === "本地 H3" ? tr(p.name) : p?.name;
-  const opts = { "": tr("默认：{name}", {name:providerName(def) || tr("本地")}) };
+  const previous = versionGenerationModel(curV(n),n.type);
+  const missingName = previous && previous.provider===n.data.provider ? previous.label : n.data.provider;
+  const opts = { "": def ? tr("默认：{name}", {name:providerName(def)}) : tr("默认服务") };
   list.forEach(x => opts[x.id] = esc(x.local ? tr("{name}（本地，免费）", {name:providerName(x)}) : x.name));
-  if (unavailable) opts[n.data.provider] = esc(tr("{name}（不可用）", {name:n.data.provider}));
+  if (unavailable) opts[n.data.provider] = esc(tr("{name}（不可用）", {name:missingName}));
   opts[""] = esc(opts[""]);
-  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "#b9b9c2" : "#d6d6dc"}"></span>${esc(unavailable?tr("重新选择服务"):providerName(cur) || tr("服务"))}${ico("down")}`, "model");
+  return pill("provider", opts, `<span class="dot" style="background:${cur && !cur.local ? "#b9b9c2" : "#d6d6dc"}"></span>${esc(unavailable?tr("{name}（不可用）",{name:missingName}):providerName(cur) || tr("服务"))}${ico("down")}`, "model");
 }
 
 function canvasNodeModel(n, service, reference = false) {
@@ -53,7 +79,7 @@ function nodeModelPill(n, pill, service = nodeProvider(n), reference = false) {
   const fallback = reference || n.data.provider ? service.model : service.default_route_model || service.model;
   const name = item => item.label || (item.endpoint_model ? item.id+" · "+item.endpoint_model : item.id);
   const tr = OneShotI18n.t;
-  const title = model?.id ? name(model) : tr("重新选择模型");
+  const title = model?.id ? name(model) : n.data.selected_model ? tr("{name}（不可用）",{name:n.data.selected_model}) : tr("重新选择模型");
   if (!n.data.selected_model && options.length < 2) return model?.id ? `<span class="pill" title="${esc(title)}">${esc(title)}</span>` : "";
   const defaultName = options.find(item=>item.id===fallback);
   const choices = Object.fromEntries([["",esc(fallback ? tr("默认 · {name}", {name:defaultName ? name(defaultName) : fallback}) : tr("默认模型"))],
@@ -70,5 +96,7 @@ function initAccount() {
     $("#canvasTopAccount").textContent = u.name || u.username;
   });
   loadCaps();
+  window.addEventListener("focus",loadCaps);
+  $("#pp").addEventListener("focusout",()=>queueMicrotask(refreshCapabilityPanel));
   setInterval(loadCaps, 60000);
 }

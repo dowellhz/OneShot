@@ -152,11 +152,11 @@ async function saveWizardAsset(item, bid, library, active) {
   return true;
 }
 
-async function prepareWizardAssets(script) {
+async function prepareWizardAssets(script, {submit = generate, keepRunning = () => true} = {}) {
   if (wizardAssetRuns.has(script)) return false;
   if (!script.data.characters?.length && !script.data.visual_assets?.length) return true;
   const board=B, bid=boardId, state=W;
-  const active=()=>B===board&&boardId===bid&&W===state&&node(script.id)===script;
+  const active=()=>B===board&&boardId===bid&&W===state&&node(script.id)===script&&keepRunning();
   wizardAssetRuns.add(script);
   try {
     const style=script.data.style||state.style||"";
@@ -194,7 +194,7 @@ async function prepareWizardAssets(script) {
     wizSig=""; renderWiz();
     for (const {n,selection} of items) {
       if (!active()) return false;
-      if (!wizardCharacterReferenceReady(n,selection) && !n.job && !prepping.has(n.id)) await generate(n,{batchLayout:"tabs"});
+      if (!wizardCharacterReferenceReady(n,selection) && !n.job && !prepping.has(n.id)) await submit(n,{batchLayout:"tabs"});
     }
     while (active() && items.some(({n}) => n.job||prepping.has(n.id))) await sleep(750);
     if (!active()) return false;
@@ -207,7 +207,7 @@ async function prepareWizardAssets(script) {
         if (curV(item.n)?.source!=="asset") {
           setWizardCharacterPrompt(item.n,script,item.character);
           item.n.data.count=1;
-          await generate(item.n,{batchLayout:"tabs"});
+          await submit(item.n,{batchLayout:"tabs"});
           while(active()&&(item.n.job||prepping.has(item.n.id)))await sleep(750);
         }
         if(!active())return false;
@@ -227,6 +227,7 @@ async function prepareWizardAssets(script) {
     cmInvalidate();
     return active()&&W.step===2;
   } catch (error) {
+    if (active() && submit !== generate) throw error;
     if (active()) toast(OneShotI18n.t("素材准备失败：{message}",{message:error.message}),5000);
     return false;
   } finally {

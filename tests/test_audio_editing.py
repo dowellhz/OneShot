@@ -1,6 +1,6 @@
 """Audio separation, transcription, frame-aligned export, and trimming."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import asyncio
 import io
 import wave
@@ -9,6 +9,7 @@ import av
 import numpy as np
 
 import server
+from oneshot.editing import tts
 
 from audio_fixture import AudioFixture
 from chat_fixture import answer
@@ -16,6 +17,16 @@ from chat_fixture import call
 
 
 class AudioEditing(AudioFixture):
+    async def test_local_voiceover_defaults_to_a_listed_voice(self):
+        _, ref = self.tone()
+        with patch.object(tts, "available", return_value=True), patch.object(
+            tts, "say", AsyncMock(return_value={"ref": ref, "seconds": 1})
+        ) as say:
+            choices = await (await self.client.get("/api/voices")).json()
+            response = await self.client.post("/api/tts", json={"text": "红球向右滚动"})
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(say.await_args.args[2], choices["voices"][0]["id"])
+
     async def test_separation_keeps_both_stems_aligned_and_restores_the_receipt(self):
         _, ref = self.tone()
         _, newer = self.tone()

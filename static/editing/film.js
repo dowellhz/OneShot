@@ -65,7 +65,7 @@ function openFilm(arg) {
     if (!media.length) return toast("先选择至少一张图片或一段视频");
     spec = newSpec(media);
   }
-  showFilm(spec, n);
+  return showFilm(spec, n);
 }
 function editVideoTimeline(n, version = curV(n)) {
   if (!canvasCanEdit() || !version?.ref || !n.versions.includes(version)) return;
@@ -74,7 +74,7 @@ function editVideoTimeline(n, version = curV(n)) {
   const key = filmDraftPrefix() + "video:" + JSON.stringify([target.id,target.ref]);
   const saved = version.film_recipe?.timeline;
   const spec = saved?.clips?.length ? vtClone(saved) : {...newSpec([]),clips:[filmClipForVersion(n,version)]};
-  showFilm(spec, null, key, target);
+  return showFilm(spec, null, key, target);
 }
 function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, story = null) {
   if (target && !node(target.id)?.versions.some(v => v.ref === target.ref)) return toast("剪辑草稿对应的视频版本已移除");
@@ -111,6 +111,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
   renderFilm(); selectClip(sel, saved?.offset || 0);
   if (voiceList) loadDubbingVoices();
   saveFilmDraft();
+  return FILM;
 }
 function closeFilm() {
   closeStoryDraftPicker();

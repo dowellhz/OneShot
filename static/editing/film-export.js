@@ -8,6 +8,7 @@ async function exportFilm(destination="version") {
   if (destination==="canvas" && !F.n?.data.playlist) return;
   if (!F.spec.clips.length) return toast("先添加视频片段");
   if (F.captionRequests?.size) return toast("请等待字幕识别完成后再导出");
+  if (F.storyDubbing?.running) return toast("请等待配音生成完成后再导出");
   if (F.spec.narration.some(clip => dubbingRequests.has(clip))) return toast(OneShotI18n.t("请等待配音生成完成后再导出"));
   if (!downloadOnly && F.n?.job) return toast("此成片仍在导出，请稍候");
   F.busy = true;
@@ -70,6 +71,8 @@ async function downloadFilmRender(F,spec) {
 
 async function submitFilm(F,destination) {
   const s = vtClone(F.spec);
+  const initialDubbingIssue = alignStoryDubbing(s);
+  if (initialDubbingIssue) throw new Error(OneShotI18n.t(initialDubbingIssue));
   const clips = s.clips.map(c => ({ c, v: filmVersion(c) }));
   const missing = clips.findIndex(x => !x.v);
   if (missing >= 0) { selectClip(missing); throw new Error(`第 ${missing + 1} 段素材已不存在`); }
@@ -110,7 +113,12 @@ async function submitFilm(F,destination) {
     } catch (e) { throw new Error("旁白配音失败：" + e.message); }
     if (FILM !== F || F.board !== boardId) return;
   }
+  const dubbingIssue = alignStoryDubbing(s);
+  if (dubbingIssue) throw new Error(OneShotI18n.t(dubbingIssue));
   spec.narration = narration();
+  spec.clips.forEach((clip,index) => {
+    clip.captions ??= automaticStoryCaptions(s,clips[index].c);
+  });
   if(destination==="download")return downloadFilmRender(F,spec);
   const newNode = destination==="canvas";
   const target = newNode ? null : F.target;

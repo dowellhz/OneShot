@@ -53,7 +53,7 @@ function imageCanvasRequest(n, prompt, {grid=false,silent=false}={}) {
   if(sheet)Object.assign(request,{character_sheet:true,expand:false,image_text:"none",
     ...(ins.length?{character_sheet_reference:ref.ref}:{})});
   if (d.replay_memory_ref) request.replay_memory_ref=d.replay_memory_ref;
-  if (CAPS_LIST.image?.some(service=>service.id===d.provider)) request.provider=d.provider;
+  if (d.provider) request.provider=d.provider;
   if (d.selected_model) Object.assign(request,{provider:d.provider,selected_model:d.selected_model});
   return {request,gridReference};
 }

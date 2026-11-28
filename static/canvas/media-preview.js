@@ -115,6 +115,7 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
   overlay._disposeRegion=null;
   const previousFocus = document.activeElement?.getAttributeNames().find(name => name.startsWith("data-light-"));
   const type = source?.type || cmMediaType(version.ref) || "image";
+  const model = versionGenerationModel(version,type)?.label;
   const index = source?.versions.indexOf(version) ?? -1;
   const choices = (source?.versions || []).map((v,i) => ({v,i})).filter(({v}) => v.url);
   const active = curV(source);
@@ -143,12 +144,14 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
   const media = (v, label) => type === "audio" ? audioPreviewMarkup(v,true) : type === "image" ? `<img src="${esc(v.url)}" alt="${esc(label)}">` :
     `<${type} src="${esc(v.url)}" aria-label="${esc(label)}" controls ${type === "video" ? "autoplay playsinline" : ""}></${type}>`;
   function tile({v,i}) {
+    const generationModel = versionGenerationModel(v,type)?.label;
     const thumb = type === "image" ? `<img src="${esc(v.url)}" alt="" loading="lazy">` :
       type === "video" ? `<video src="${esc(v.url)}#t=0.001" preload="metadata" loading="lazy" muted playsinline aria-hidden="true"></video>` : ico("audio");
     return OneShotI18n.html`<button type="button" data-light-tile="${i}" ${i===index?'aria-current="true"':""}>
       <span class="light-tile-media">${thumb}</span>
       <strong>版本 ${i+1}${i===source.cur?" · 画布当前":""}</strong>
       ${v.label?`<small>${esc(v.label)}</small>`:""}
+      ${generationModel ? `<small>${esc(generationModel)}</small>`:""}
       ${v.seconds>0?OneShotI18n.html`<small>${Number(v.seconds).toFixed(1)} 秒</small>`:""}</button>`;
   }
   pausePreviewMedia(overlay);
@@ -161,6 +164,7 @@ function renderLightbox(version, source, comparing = false, reviewBox = null, ov
         <button type="button" data-light-next title="下一个素材" aria-label="下一个素材" ${lightNeighbor(1) ? "" : "disabled"}>${ico("right")}</button>
       </div>
       <h2 id="lightTitle" title="${esc(title)}">${esc(title)}</h2>
+      ${model ? `<span class="light-model" data-light-generation-model title="${esc(model)}">${esc(model)}</span>` : ""}
       <button type="button" data-light-close title="关闭预览" aria-label="关闭预览">×</button>
     </header>
     <div class="light-body">

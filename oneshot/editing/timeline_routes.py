@@ -130,6 +130,10 @@ async def render_check(req):
     return web.json_response(result)
 
 
+def film_render_job_id(user_id, attempt):
+    return "r" + hashlib.sha256(f"{user_id}:{attempt}".encode()).hexdigest()[:24]
+
+
 async def render_film(req):
     """成片: render a timeline in the background; it is tracked like a generation job (poll /api/jobs)."""
     p = await req.json()
@@ -150,7 +154,7 @@ async def render_film(req):
     if not isinstance(attempt, str) or not re.fullmatch(r"[A-Za-z0-9-]{16,80}", attempt):
         raise http_errors.bad("导出请求编号无效")
     uid = req["user"]["id"]
-    jid = "r" + hashlib.sha256(f"{uid}:{attempt}".encode()).hexdigest()[:24]
+    jid = film_render_job_id(uid, attempt)
     fingerprint = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
     try:
         check = await asyncio.to_thread(film_preflight, spec, req["user"], p.get("board"))

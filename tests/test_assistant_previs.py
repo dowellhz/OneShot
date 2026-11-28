@@ -19,6 +19,7 @@ from previs_fixture import motion_scene
 
 class AssistantPrevis(ChatFixture):
     async def test_assistant_generates_in_place_from_fixed_whitebox_and_checks_approval(self):
+        server.providers.save("fixture-image","ark","Fixture image service",{},{"api_key":"fixture"},True)
         box = server.image_editor.save(server.COMFY_DIR,Image.new("RGB",(90,160),"gray"),"input")
         older = server.image_editor.save(server.COMFY_DIR,Image.new("RGB",(90,160),"yellow"))
         final = server.image_editor.save(server.COMFY_DIR,Image.new("RGB",(144,256),"blue"))

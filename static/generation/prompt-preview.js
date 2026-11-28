@@ -56,8 +56,7 @@ function videoPreviewRequest(n, silent=false) {
   if (!req) return null;
   req.board = boardId;
   applyVideoMemory(n, req);
-  const services = req.previs_guide || req.audio_refs || req.video_refs ? referenceServices(n) : CAPS_LIST.video;
-  if (n.data.provider==="local_h3" || services?.some(service => service.id === n.data.provider)) req.provider = n.data.provider;
+  if (n.data.provider) req.provider = n.data.provider;
   if (n.data.selected_model) Object.assign(req,{provider:n.data.provider,selected_model:n.data.selected_model});
   return req;
 }

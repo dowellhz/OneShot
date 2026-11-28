@@ -16,8 +16,12 @@ def bad(msg):
 
 async def llm_call(req, coro):
     """Run a Qwen tool; tell the user when it has to fall back to the (slow) CPU because a generation holds the GPU."""
-    llm = req.app["llm"]
+    return web.json_response(await llm_result(req.app["llm"], coro))
+
+
+async def llm_result(llm, coro):
     if not llm.available():
+        coro.close()
         raise bad("本地 Qwen 模型还没装好")
     t0 = time.time()
     try:
@@ -28,4 +32,4 @@ async def llm_call(req, coro):
         raise bad(str(e) or e.__class__.__name__)
     r["seconds"] = round(time.time() - t0, 1)
     r["device"] = llm.via
-    return web.json_response(r)
+    return r

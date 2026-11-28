@@ -44,6 +44,8 @@ function generationDraft(n,v) {
     if (Number.isFinite(ar)) data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-ar)<.001) || "auto";
     links=inputs.filter(input=>input.role!=="text" && input.node_id).map(input=>({from:input.node_id,to:n.id,ref:input.ref}));
   }
+  if (n.type==="image") restoreVersionGenerationModel(data,v,"image");
+  delete data.model_selection_ref;
   const recordedRefs = new Map((v.video_recipe?.images || []).concat(inputs)
     .filter(input=>input.node_id && input.ref).map(input=>[input.node_id,input.ref]));
   const savedText = new Map(inputs.filter(input=>input.role==="text").map(input=>[input.node_id,input.text]));

@@ -79,6 +79,9 @@ function ctxMenu(e) {
       add("asset:character", "image", n.data.asset?.kind === "character" ? "更新资产库角色" : "存为角色"); add("asset:scene", "image", "存为场景"); add("asset:prop", "image", "存为道具");
       it.push(`<div class="sep"></div>`);
     }
+    if (n.type === "video" && v.ref && !n.data.playlist && !nodeLocked(n) && canvasCanEdit()) {
+      add("dubbing-voice", "audio", "选择配音音色");
+    }
     if (n.type === "video" && n.data.film && !n.data.playlist) add("film", "scissors", "编辑成片");
     else if (n.type === "video" && !n.data.film) { add("cont", "next", "续拍"); add("film", "scissors", "剪辑视频（导出为新版本）"); add("analyze", "script", "拉片（拆镜头复刻）"); }
     if (n.type === "video") { add("firstframe", "image", "截取首帧"); add("currentframe", "image", "截取当前帧"); add("frame", "image", "截取末帧"); }
@@ -139,6 +142,7 @@ function ctxMenu(e) {
   if (!canvasCanEdit()) $$("button[data-a]",m).filter(b=>!["comment","full","compare-video","dl","gif-export","focus","workflow-review","playlist-open","text-document","panorama"].includes(b.dataset.a)).forEach(b=>b.remove());
   m.style.left = Math.min(e.clientX, innerWidth - m.offsetWidth - 8) + "px"; m.style.top = Math.min(e.clientY, innerHeight - m.offsetHeight - 8) + "px";
   $$("button", m).forEach(b => b.onclick = () => {
+    if (b.dataset.a === "dubbing-voice") return pickCanvasDubbingVoice(b, m, n, v);
     closeMenus(); const a = b.dataset.a;
     if (a === "arrange") ctOpenArrangeMenu(e.clientX, e.clientY);
     else if (a === "comment") ccNode(n);

@@ -109,6 +109,7 @@ async function openBoard(id, savedConflictDraft) {
   B.groups = Array.isArray(B.groups) ? B.groups.filter(g => g && typeof g.id === "string" && Array.isArray(g.nodes)).map(g => ({...g,name:String(g.name || "分组"),nodes:g.nodes.filter(id => B.nodes.some(n => n.id === id))})) : [];
   const cnt = {};   // boards from the first version: names, defaults
   B.nodes.forEach(n => { cnt[n.type] = (cnt[n.type] || 0) + 1; n.name = n.name || `${TYPE_CN[n.type]} ${cnt[n.type]}`; n.data = { ...defaults(n.type), ...n.data }; n.versions = n.versions || []; delete n.w;
+    restoreOpenedGenerationModel(n);
     if (n.type === "image" && !["4mp", "16mp"].includes(n.data.quality)) n.data.quality = "4mp"; });
   restoreCanvasGroupRun();
   historyEpoch++;

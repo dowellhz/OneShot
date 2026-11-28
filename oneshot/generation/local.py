@@ -14,6 +14,7 @@ from oneshot import config
 from oneshot.generation import graphs
 from oneshot.generation import jobs as generation_jobs
 from oneshot.generation import prompts
+from oneshot.generation import submissions
 from oneshot.generation import tools
 from oneshot.storage import db
 from oneshot.web import http as http_errors
@@ -75,7 +76,7 @@ async def generate_engine_image(req, p: dict, count: int, *, model=None, expande
         generation_jobs.attach_image_edit(generation_jobs.JOBS[jid], p)
         db.task_start(id=jid, user_id=u["id"], board_id=meta["board"], label=meta["label"], capability="image", provider_id="local_h3",
                       provider_kind="local_h3", model=model if spec else "H3-Image " + meta["mode_name"], state="queued", cost=0)
-        ids.append(jid)
+        submissions.append_queued_job(req, ids, jid, generation_jobs.JOBS[ids[0] if ids else jid]["meta"])
     asyncio.create_task(generation_jobs.follow_engine(req.app))
     return web.json_response({"ids": ids, "meta": generation_jobs.JOBS[ids[0]]["meta"]})
 

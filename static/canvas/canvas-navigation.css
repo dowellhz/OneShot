@@ -152,6 +152,7 @@
 #light .light-header, #light .light-actions { display: flex; align-items: center; gap: 8px; }
 #light .light-header { justify-content: space-between; }
 #light .light-header h2 { flex: 1; margin: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#light .light-model { max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b7b7bf; }
 #light .light-navigation { display: flex; gap: 6px; }
 #light .light-actions { justify-content: center; flex-wrap: wrap; }
 .light-view :is(button,select,a) { min-height: 34px; padding: 6px 10px; font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; text-decoration: none; }

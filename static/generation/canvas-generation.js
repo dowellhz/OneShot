@@ -1,8 +1,8 @@
 "use strict";
 
 // ================================================================= generation
-async function api(path, body, method = "POST") {
-  const r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+async function api(path, body, method = "POST", headers = {}) {
+  const r = await fetch(path, { method, headers: { "Content-Type": "application/json", ...headers }, body: body ? JSON.stringify(body) : undefined });
   const t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = { error: t }; }
   if (!r.ok) throw new Error(j.error || t || r.statusText); return j;
 }
@@ -37,9 +37,8 @@ function canvasCostRequest(n) {
   const data = n.data;
   if (n.type === "audio") return {kind:"audio",mode:audioMode(data),provider:data.provider};
   const request = {kind:n.type,count:canvasGenerationCount(n),
-    provider:(CAPS_LIST[n.type] || []).find(service=>service.id===data.provider)?.id,
+    provider:data.provider || undefined,
     selected_model:data.selected_model};
-  if (data.selected_model || (n.type==="video" && data.provider==="local_h3")) request.provider = data.provider;
   if (n.type === "video") {
     const prompt=fullPrompt(n), inputs=plan(n);
     Object.assign(request,{
@@ -168,7 +167,7 @@ function canBranchGeneration(n) {
     !!curV(n) && !n.job && !prepping.has(n.id) && !previsComposition(n)?.enabled;
 }
 
-async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false,assetReviewKey,branch=false,reviewedImage=false}={}) {
+async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid=false,assetReviewKey,branch=false,reviewedImage=false,submission,snapshotOnly=false}={}) {
   if (branch && !canBranchGeneration(n)) return;
   if (n.type === "audio") return generateAudio(n,{groupRunId});
   if (n.data.previs) return openPrevis(n);
@@ -200,13 +199,12 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
       showErr(n, needsReferenceVideo(n) ? "请选择已配置公网地址的视频参考服务" : "请选择支持音频参考的视频服务");
       return;
     }
-    if (d.provider) req.provider=d.provider;
-  } else if ((n.type==="video" && d.provider==="local_h3") ||
-             (CAPS_LIST[n.type] || []).some(x => x.id === d.provider)) req.provider=d.provider;
+  }
+  if (d.provider) req.provider=d.provider;
   if (d.selected_model) Object.assign(req,{provider:d.provider,selected_model:d.selected_model});
   const slow = n.type === "video";
   const textInputs = grid ? [] : inputs(n, "text").map(m => ({node_id:m.id,name:m.name,role:"text",text:(m.data.text || "").slice(0,5000)}));
-  const generationRecord = captureGenerationRecord(req, textInputs);
+  const generationRecord = captureGenerationRecord(req,textInputs);
   const history=grid ? {image_grid:true,input_edges:[{...gridReference.edge,ref:gridReference.version.ref}]} :
     {input_edges:structuredClone(B.edges.filter(e=>e.to===n.id)),node_data:structuredClone(n.data),
      ...(slow?{video_recipe:structuredClone(req)}:{})};
@@ -215,7 +213,7 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
   const batch=branch || (req.count>1 && layout!=="tabs" && !req.draft && !req.segment_edit && !req.extension)
     ? {layout,data:structuredClone(grid?{...d,prompt}:d),edges:structuredClone(B.edges.filter(e=>e.to===n.id))}
     : null;
-  rememberVideoVersion(n);
+  if (!snapshotOnly) rememberVideoVersion(n);
   const sourceBoard=B;
   prepping.add(n.id); showPrep(n, true);
   try {
@@ -230,31 +228,14 @@ async function generate(n, {batchLayout=canvasBatchLayout(),groupRunId,imageGrid
       return;
     }
     const rememberedAssetKey=assetReviewKey|| (checked?preview.assetKey:null);
-    const r = await api("/api/generate",{...req,...(checked&&preview.key?{reference_preview:preview.key}:{}),
+    const payload = {...req,...(checked&&preview.key?{reference_preview:preview.key}:{}),
       ...(reviewedImage?{image_preview:preview.imageKey}:{}),
-      ...(rememberedAssetKey?{asset_review_key:rememberedAssetKey}:{})});
-    if (B!==sourceBoard || node(n.id)!==n) return;
-    if (r.image_story_context === "unavailable") toast("世界观细节暂时无法提取，本次按镜头描述生图", 4500);
-    if(history?.video_recipe && r.memory_context)Object.assign(history.video_recipe,r.memory_context);
-    if(history?.video_recipe && r.video_model) {
-      Object.assign(history.video_recipe,r.video_model);
-      Object.assign(history.node_data,r.video_model);
-    }
-    if(r.image_model) {
-      if(history?.node_data) Object.assign(history.node_data,r.image_model);
-      if(batch) Object.assign(batch.data,r.image_model);
-    }
-    if(history?.video_recipe && r.reference_context) {
-      Object.assign(history.video_recipe,r.reference_context);
-      history.input_edges=vtEdgesWithReferenceRanges(history.input_edges,r.reference_context);
-    }
-    if (r.memory_context || r.reference_context || r.video_model || r.image_model) {
-      Object.assign(generationRecord,captureGenerationRecord({...req,...r.memory_context,...r.reference_context,...r.video_model,...r.image_model},textInputs));
-    }
-    n.job = { ids: r.ids, prompt, t0: Date.now(), st: {}, memory_used:r.memory_used||[], generation_record:generationRecord,
-      ...(groupRunId ? {group_run_id:groupRunId} : {}),
-      ...(batch ? {batch} : {}),
-      ...(history ? {history} : {}) }; save(); render(n); showPanel(); poll();
+      ...(rememberedAssetKey?{asset_review_key:rememberedAssetKey}:{})};
+    const snapshot = {req,prompt,textInputs,generationRecord,groupRunId,history,batch,payload};
+    if (snapshotOnly) return snapshot;
+    if (submission && !await submission.prepare(snapshot)) return;
+    const result = submission ? await sendCanvasGenerationSubmission(n.id,submission.key,payload) : await api("/api/generate",payload);
+    if (B===sourceBoard && node(n.id)===n) applyCanvasGenerationReceipt(n,result,snapshot);
   } catch (e) { if(B===sourceBoard&&node(n.id)===n)showErr(n, e.message); }
   finally { prepping.delete(n.id); if(B===sourceBoard&&node(n.id)===n)showPrep(n, false); }
 }
@@ -401,6 +382,8 @@ function placeCanvasBatch(n, versions, batch) {
   if(reuseSource) {
     n.versions.push(versions[0]);
     n.cur=0;
+    restoreVersionGenerationModel(n.data,versions[0],n.type);
+    delete n.data.model_selection_ref;
     created.push(n.id);
   }
   const base=ctCanvasRects([n])[0];
@@ -412,6 +395,9 @@ function placeCanvasBatch(n, versions, batch) {
   for(let i=reuseSource?1:0;i<versions.length;i++) {
     const id=newCanvasNodeId();
     const version=versions[i];
+    const resultData = structuredClone(data);
+    restoreVersionGenerationModel(resultData,version,n.type);
+    delete resultData.model_selection_ref;
     const recordedImages = branch ? new Map((version.generation_record?.inputs || [])
       .filter(input=>input.node_id && input.ref && node(input.node_id)?.type==="image")
       .map(input=>[input.node_id,input.ref])) : new Map();
@@ -419,10 +405,10 @@ function placeCanvasBatch(n, versions, batch) {
       .map(edge=>({...edge,to:id,...(recordedImages.has(edge.from)?{ref:recordedImages.get(edge.from)}:{})}));
     if(n.type==="video" || version.input_edges) {
       version.input_edges=structuredClone(inputEdges);
-      version.node_data=structuredClone(data);
+      version.node_data=structuredClone(resultData);
       if(version.video_recipe)version.video_recipe={...version.video_recipe,count:1};
     }
-    const result={id,type:n.type,name:branch && versions.length===1?`${n.name} · 新结果`:`${n.name} · 结果 ${i+1}`,data:structuredClone(data),versions:[version],cur:0,job:null};
+    const result={id,type:n.type,name:branch && versions.length===1?`${n.name} · 新结果`:`${n.name} · 结果 ${i+1}`,data:resultData,versions:[version],cur:0,job:null};
     const dimensions=size(result);
     Object.assign(result,freeSpot(x,base.y,n.type,dimensions));
     B.nodes.push(result); B.edges.push(...inputEdges); build(result);
@@ -463,7 +449,8 @@ async function poll() {
             mode:s.meta?.mode || receipt.mode,
             effective_prompt:s.meta?.full_prompt || s.meta?.prompt || receipt.effective_prompt,
             ...(s.meta?.quality_review ? {quality_review:s.meta.quality_review} : {}),
-            settings:{...receipt.settings,...(s.meta?.model ? {provider_model:s.meta.model} : {}),
+            settings:{...receipt.settings,...(s.meta?.provider_id ? {provider:s.meta.provider_id} : {}),
+              ...(s.meta?.model ? {provider_model:s.meta.model} : {}),
               ...(s.meta?.resolution ? {resolution:s.meta.resolution} : {})}}};
           versions.push({ ref: o.ref, url: o.url, prompt: n.job.prompt, seed: s.meta?.seed, w: m.width || s.meta?.width, h: m.height || s.meta?.height, seconds: m.duration, source: actualSource, memory_used: n.job.memory_used||[], mode: s.meta?.mode_name, ...(o.extra || {}), ...(n.job.history || {}), ...generation, ...(job.group_run_id?{group_run_id:job.group_run_id}:{}) });
         }
@@ -474,6 +461,10 @@ async function poll() {
           n.versions.push(...versions);
           if(restoreVersion)switchVersion(n,n.versions.length-1,{recordUndo:false});
           else n.cur=n.versions.length-1;
+          if (curV(n)?.generation_record) {
+            restoreVersionGenerationModel(n.data,curV(n),n.type);
+            delete n.data.model_selection_ref;
+          }
         }
         groupRunJobFinished(n,job,versions,errs);
         if (n.type==="audio" && canvasCanEdit()) {

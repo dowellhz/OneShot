@@ -75,6 +75,8 @@ def frame_image(frame, *, display=True, thumbnail_size=None):
 def probe(path: Path, *, display=True):
     import av
     with av.open(str(path)) as c:
+        if not c.streams.video:
+            raise ValueError("文件没有视频轨")
         v = c.streams.video[0]
         dur = float(v.duration * v.time_base) if v.duration else float(c.duration or 0) / 1e6
         if not v.duration and "matroska" in c.format.name.split(","):

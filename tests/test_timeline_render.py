@@ -66,9 +66,18 @@ class TimelineRender(RemakeFixture):
     async def test_captions_use_the_selected_soundtrack_and_render_at_source_times(self):
         source = self.make_clip("caption-picture", 3, (30, 30, 30), 880)
         original = self.make_clip("caption-original", 4, (20, 20, 20), 440)
+        silent = self.make_clip("caption-silent", 2, (20, 20, 20), 0)
+        audio_only = "input:h3studio/caption-original.wav"
+        path = server.tools.ref_path(server.COMFY_DIR, audio_only)
+        rate = server.film.SR
+        with wave.open(str(path), "wb") as tone:
+            tone.setparams((1, 2, rate, 0, "NONE", ""))
+            tone.writeframes((3000 * np.sin(2 * np.pi * 440 * np.arange(4 * rate) / rate)).astype("<i2").tobytes())
         server.write_board(server.board_path("test"), {"owner":7,"collaborators":{"8":"reviewer"},"nodes":[
             {"id":"n3","type":"video","versions":[{"ref":source}]},
             {"id":"n4","type":"video","versions":[{"ref":original}]},
+            {"id":"n5","type":"video","versions":[{"ref":silent}]},
+            {"id":"n6","type":"audio","versions":[{"ref":audio_only}]},
         ]})
 
         @web.middleware
@@ -105,6 +114,15 @@ class TimelineRender(RemakeFixture):
             response = await client.post(api,json={"board":"test",**clip})
             self.assertEqual(response.status,200,await response.text())
             clip["captions"] = (await response.json())["captions"]
+            response = await client.post(api,json={"board":"test",**clip,"audio_ref":audio_only})
+            self.assertEqual(response.status,200,await response.text())
+            self.assertEqual((await response.json())["captions"],clip["captions"])
+            self.assertEqual((await client.post(api,json={"board":"test","ref":audio_only})).status,400)
+            response = await client.post(api,json={"board":"test","ref":silent,"allow_silence":True})
+            self.assertEqual(response.status, 200, await response.text())
+            self.assertEqual(await response.json(), {"captions":[],"silent":True})
+            response = await client.post(api,json={"board":"test","ref":silent})
+            self.assertEqual(response.status, 400)
         self.assertEqual(clip["captions"],[{"start":1.5,"end":2.5,"text":"测试字幕"}])
         spec = {"clips":[clip]}
         self.assertTrue(server.film_preflight(spec)["ok"])

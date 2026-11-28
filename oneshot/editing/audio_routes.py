@@ -99,7 +99,7 @@ async def tts_say(req):
         raise http_errors.bad("先写旁白文字")
     t0 = time.time()
     try:
-        r = await tts.say(config.COMFY_DIR, text, p.get("voice") or "zf_xiaoxiao", float(p.get("speed") or 1.0))
+        r = await tts.say(config.COMFY_DIR, text, p.get("voice") or tts.VOICES[0]["id"], float(p.get("speed") or 1.0))
     except Exception as e:
         raise http_errors.bad(f"配音失败：{e}")
     r["url"] = "/media?ref=" + quote(r["ref"], safe="")

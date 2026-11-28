@@ -20,6 +20,7 @@ function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, tr
   const spec = newSpec(media);
   const full = start === 0 && end === script.data.shots.length - 1;
   if (full) spec.story_script = script.id;
+  spec.story_voices = structuredClone(script.data.story_voices || []);
   const selectedShots = script.data.shots.slice(start, end + 1);
   const keys = selectedShots.map((shot, i) => shot.id || `index:${start+i}`);
   spec.story_tracking = true;
@@ -27,6 +28,7 @@ function openStoryFilm(script, start = 0, end = script.data.shots.length - 1, tr
     const shot=selectedShots[i], range=shot.previs_range;
     clip.trans=transition;
     clip.story_shot=keys[i];
+    clip.story_dialogue=Array.isArray(shot.dialogue) ? [...shot.dialogue] : [];
     const whitebox=Array.isArray(range) && range.length===2 && range.every(Number.isSafeInteger) && range[0]>=0 && range[1]>range[0];
     const frames=Number.isFinite(shot.duration) && shot.duration>0 ? Math.max(1,Math.round(shot.duration*FILM_FPS)) :
       whitebox ? range[1]-range[0] : null;

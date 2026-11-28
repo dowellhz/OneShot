@@ -187,7 +187,8 @@ class AssistantVideoRegeneration(ChatFixture):
                 "outputs":[{"ref":latest["ref"],"meta":{"width":64,"height":64,"duration":2}}]}
             return web.json_response({"ids":[job]})
 
-        local = {"kind":"local_h3","id":"local-test","enabled":True}
+        server.providers.seed()
+        local = server.providers.get("local_h3")
         with patch.object(video_reference,"reference_routes",return_value=[]), patch.object(server.providers,"all_providers",return_value=[local]), \
                 patch.object(generation_requests,"generate_request",side_effect=submit):
             for direction, position, role in (("after","last","first"),("before","first","last")):

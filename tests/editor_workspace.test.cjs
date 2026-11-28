@@ -4,10 +4,14 @@
 const { boot, close } = require('./workspace_fixture.cjs');
 const imageReferenceRemoval = require('./workspace/image-reference-removal.cjs');
 const filmDubbing = require('./workspace/film-dubbing.cjs');
+const storyDubbing = require('./workspace/story-dubbing.cjs');
 const filmMusic = require('./workspace/film-music.cjs');
 const wizardMedia = require('./workspace/wizard-media.cjs');
+const wizardProduction = require('./workspace/wizard-production.cjs');
 const wizardCharacterReference = require('./workspace/wizard-character-reference.cjs');
 const wizardSuppliedAssets = require('./workspace/wizard-supplied-assets.cjs');
+const generationModelSettings = require('./workspace/version-generation-settings.cjs');
+const mediaServicePicker = require('./workspace/media-service-picker.cjs');
 
 const scenarios = [
  require('./workspace/workspace-navigation.cjs'),
@@ -24,7 +28,10 @@ const scenarios = [
  require('./workspace/previs-storyboard-guides.cjs'),
  require('./workspace/video-reference-and-segment-edits.cjs'),
  require('./workspace/video-gif-models-and-drafts.cjs'),
+ generationModelSettings,
+ mediaServicePicker,
  filmDubbing,
+ storyDubbing,
  filmMusic,
  require('./workspace/timeline-playlists-and-audio.cjs'),
  require('./workspace/batch-layout-and-group-generation.cjs'),
@@ -48,6 +55,7 @@ const scenarios = [
  require('./workspace/video-quality.cjs'),
  require('./workspace/wizard-assets.cjs'),
  wizardMedia,
+ wizardProduction,
  wizardCharacterReference,
  wizardSuppliedAssets,
  imageReferenceRemoval,
@@ -56,9 +64,13 @@ const scenarios = [
 async function run() {
  const workspace = await boot();
  if (workspace.englishSmoke) {
+  await generationModelSettings(workspace);
+  await mediaServicePicker(workspace);
   await filmDubbing(workspace);
+  await storyDubbing(workspace);
   await filmMusic(workspace);
   await wizardMedia(workspace);
+  await wizardProduction(workspace);
   await wizardCharacterReference(workspace);
   await wizardSuppliedAssets(workspace);
   await imageReferenceRemoval(workspace);

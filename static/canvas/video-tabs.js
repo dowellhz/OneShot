@@ -39,14 +39,7 @@ function hasVideoRecipeInputs(recipe) {
   return !!recipe && (["images","audio_refs","video_refs"].some(key=>Array.isArray(recipe[key])) || !!recipe.previs_guide);
 }
 function vtRestoreVideoModel(data,version) {
-  const recipe=version.video_recipe, recorded=version.generation_record?.settings;
-  const saved=recipe?.provider && (recipe.selected_model || recipe.provider==="local_h3")
-    ? {provider:recipe.provider,model:recipe.selected_model}
-    : {provider:recorded?.provider,model:recorded?.provider_model};
-  if (!saved.provider || (!saved.model && saved.provider!=="local_h3")) return;
-  data.provider=saved.provider;
-  if (saved.model) data.selected_model=saved.model;
-  else delete data.selected_model;
+  restoreVersionGenerationModel(data,version,"video");
 }
 function vtEdgesWithReferenceRanges(edges,recipe) {
   const references={audio_ref:recipe?.audio_refs,video_ref:recipe?.video_refs};
@@ -99,7 +92,7 @@ function vtSnapshot(n,i){
       if(r.ar)v.node_data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-r.ar)<.001) || "auto";
       v.node_data.mode=r.planned?"keyframes":"auto";v.node_data.pmode=r.fields?"fields":"free";}
   }
-  vtRestoreVideoModel(v.node_data,v);
+  vtRestoreVideoModel(v.node_data,n.versions[i]);
   v.label=v.label||n.name;
   v.tab_nodes=[...new Set([...(v.tab_nodes||[]),n.id])];
   v.tab_origin=v.tab_origin||{id:n.id,name:n.name,x:n.x,y:n.y,version_index:i,groups:(B.groups||[]).filter(g=>g.nodes.includes(n.id)).map(g=>g.id)};
@@ -231,6 +224,7 @@ function vtCopyVersion(n,index,at=null) {
     if (!v.node_data) data.prompt=v.prompt??receipt?.prompt??"";
     const settings=receipt?.settings||{};
     for(const key of ["model","provider","quality","seed"])if(settings[key]!=null)data[key]=settings[key];
+    restoreVersionGenerationModel(data,v,"image");
     if(Number.isFinite(settings.ar))data.aspect=Object.keys(AR).find(key=>Math.abs(AR[key]-settings.ar)<.001)||"auto";
     if(Array.isArray(v.input_edges))inputs=v.input_edges.filter(edge=>node(edge.from)?.type==="image" ||
       v.node_data && node(edge.from)?.type==="text");

@@ -22,6 +22,10 @@ from oneshot.generation import queue as generation_queue
 from oneshot.generation import reference as video_reference
 from oneshot.generation import remote_jobs
 from oneshot.generation import requests as generation_requests
+from oneshot.generation import submissions as generation_submissions
+from oneshot.generation import wizard_batches
+from oneshot.generation import wizard_frame_review
+from oneshot.generation import wizard_script
 from oneshot.memory import legacy_routes
 from oneshot.providers import routes as provider_routes
 from oneshot.web import console_routes as console
@@ -111,6 +115,12 @@ routes = [
     web.route("POST", "/api/media-favorites", media_history.update_media_favorite),
     web.route("POST", "/api/preview", generation_requests.preview),
     web.route("POST", "/api/generate", generation_requests.generate),
+    web.route("GET", "/api/generate/receipt", generation_submissions.status),
+    web.route("POST", "/api/wizard/video-batches", wizard_batches.start),
+    web.route("POST", "/api/wizard/frame-review", wizard_frame_review.review),
+    web.route("POST", "/api/wizard/screenplay", wizard_script.draft),
+    web.route("GET", "/api/wizard/video-batches/{batch_id}", wizard_batches.status),
+    web.route("PUT", "/api/wizard/video-batches/{batch_id}", wizard_batches.set_paused),
     web.route("POST", "/api/image-edit/transform", image_routes.image_transform),
     web.route("POST", "/api/image-edit/selection-cutout", image_routes.image_layers),
     web.route("POST", "/api/image-edit/layers", image_routes.image_layers),

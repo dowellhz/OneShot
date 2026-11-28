@@ -3,6 +3,7 @@
 function renderFilm() {
   closePlaylistClipMenu();
   const F = FILM, s = F.spec, total = filmTotal(s);
+  alignStoryDubbing(s);
   const playlist = !!F.n?.data.playlist, editable = canvasCanEdit();
   if (playlist) $("#fmGo").disabled = !editable || F.busy || !s.clips.length;
   $("#fmDownloadMerged").disabled = !editable || F.busy || !s.clips.length;
@@ -71,6 +72,7 @@ function renderFilm() {
       ${editable ? OneShotI18n.html`<button class="pill" type="button" data-b="narr">＋ 添加配音</button>` : ""}</div>
     ${editable ? OneShotI18n.html`<div class="h" data-dubbing-empty ${s.narration.length ? "hidden" : ""}>把播放头移到要开口的位置，再添加一段旁白或台词。</div>` : ""}
     <div id="fmNarr"></div>
+    ${editable ? '<div data-story-dubbing></div>' : ""}
     <h4>补画面</h4>
     ${canvasCanEdit() ? `<select id="fmCutawaySource" aria-label="在播放头添加补画面"><option value="">在播放头添加补画面</option>${B.nodes.filter(filmSource).map(n=>
       `<option value="${esc(n.id)}">${esc(n.name)} · 版本 ${n.cur+1}</option>`).join("")}</select>` : ""}
@@ -123,6 +125,7 @@ function renderFilm() {
     if (filmSource(media)) addFilmCutaway(F,media);
   };
   renderNarr();
+  renderStoryDubbing(F);
   renderFilmMusic(F);
   renderFilmAudio();
   renderFilmTitles();

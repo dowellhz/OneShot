@@ -10,6 +10,7 @@ import wave
 
 from oneshot.editing.render_audio import audio_clip_info, audio_duration
 from oneshot.editing.render_media import clip_info, probe
+from oneshot.generation.media_files import AUDIO_EXT
 from oneshot.generation.media_files import FPS
 from oneshot.generation.media_files import SR
 from oneshot.generation.media_files import ref_path as _ref_path
@@ -112,6 +113,10 @@ def recording_preview_wav(audio):
     return output.getvalue()
 
 
+class SilentTrackError(ValueError):
+    """The selected range decoded successfully but has no audible soundtrack."""
+
+
 def transcription_wav(root, clip, *, audio_only=False):
     """Encode only the selected region of the clip's source soundtrack."""
     import numpy as np
@@ -129,7 +134,7 @@ def transcription_wav(root, clip, *, audio_only=False):
     pcm = original_pcm(source, max(1, round((end - start) * SR)), offset=offset, audio_only=audio_only)
     channel = pcm.mean(axis=0)
     if np.max(np.abs(channel)) < .00001:
-        raise ValueError("这段素材没有可识别的原声")
+        raise SilentTrackError("这段素材没有可识别的原声")
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:
         wav.setparams((1, 2, SR, 0, "NONE", ""))
@@ -143,7 +148,8 @@ def clip_source_audio(root, clip, start, end, sources):
         return None
     if ref not in sources:
         path = _ref_path(root, ref)
-        sources[ref] = path, probe(path, display=False)[2]
+        duration = audio_duration(path) if path.suffix.lower() in AUDIO_EXT else probe(path, display=False)[2]
+        sources[ref] = path, duration
     path, duration = sources[ref]
     offset = float(clip["audio_start"])
     if not math.isfinite(offset) or not 0 <= offset + start < offset + end <= duration + 1 / FPS:

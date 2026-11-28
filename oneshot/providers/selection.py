@@ -44,4 +44,6 @@ def requested_generation_route(raw, cap):
         return {"provider":choice, "model":model}
     if cap == "video" and provider_id == "local_h3":
         raise http_errors.bad("本地 H3 服务已不可用，请重新选择模型")
+    if provider_id:
+        raise http_errors.bad("所选生成服务不可用，请重新选择服务")
     return providers.primary(cap)

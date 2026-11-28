@@ -21,6 +21,7 @@ from oneshot.generation import motion_reference
 from oneshot.generation import prompts
 from oneshot.generation import reference as video_reference
 from oneshot.generation import remote_jobs
+from oneshot.generation import submissions
 from oneshot.generation import tools
 from oneshot.generation import video_quality
 from oneshot.generation.audio import AUDIO_GENERATION_MODES
@@ -123,11 +124,13 @@ async def preview(req):
 
 
 async def generate(req):
+    return await submissions.submit(req, generate_canvas_request)
+
+async def generate_canvas_request(req):
     raw = await req.json()
     # Only the validated editor endpoint may provide a compositing specification.
-    raw.pop("_image_edit", None)
-    raw.pop("_native_inpaint", None)
-    raw.pop("_preserve_speech_motion", None)
+    for field in ("_image_edit", "_native_inpaint", "_preserve_speech_motion"):
+        raw.pop(field, None)
     if replay_ref := checked_asset_replay(raw):
         req["replay_memory_ref"] = replay_ref
     if (preview_key := raw.pop("reference_preview",None)) is not None:
@@ -257,21 +260,18 @@ async def submit_prepared_generation(req, payload, *, draft=None, fixed_route=No
             if snapshot.get("expand"):
                 snapshot["expand"] = False
         req["generation_snapshot"] = snapshot
-    result = json.loads(response.body)
+    result = submissions.read_generation_response(req, response)
     if story_status is not None:
         result["image_story_context"] = story_status
     route = req.get("generation_route")
     if payload.get("kind")=="video" and route:
         provider_id = route.get("provider") or "local_h3"
-        result["video_model"] = {"provider":provider_id}
+        result["video_model"] = {"provider":provider_id, "selected_model":route.get("model") or "h3-video"}
         if quality:
             result["video_model"]["quality"] = quality
-        if route.get("model") and (provider_id!="local_h3" or route["model"] in (h3_int8.MODEL, sulphur.MODEL)
-                                  or payload.get("selected_model") == "h3-video"):
-            result["video_model"]["selected_model"] = route["model"]
-    elif payload.get("kind") == "image" and route and route["provider"] and route["model"]:
-        if route["provider"] != "local_h3" or route["model"] in image_models.MODELS:
-            result["image_model"] = {"provider":route["provider"], "selected_model":route["model"]}
+    elif payload.get("kind") == "image" and route:
+        result["image_model"] = {"provider":route.get("provider") or "local_h3",
+                                 "selected_model":route.get("model") or "h3-image"}
     references = {key:payload[key] for key in ("video_refs","audio_refs") if payload.get(key)}
     if references:
         result["reference_context"] = references
@@ -493,5 +493,5 @@ async def _generate_request(req, raw, *, fixed_route=None):
             meta["mode_name"] = meta.get("mode_name", "") + " · 扩写"
         jid = await generation_jobs.submit(req.app, g, meta, kind)
         generation_jobs.attach_image_edit(generation_jobs.JOBS[jid], p)
-        ids.append(jid)
+        submissions.append_queued_job(req, ids, jid, generation_jobs.JOBS[ids[0] if ids else jid]["meta"])
     return web.json_response({"ids": ids, "meta": generation_jobs.JOBS[ids[0]]["meta"]})

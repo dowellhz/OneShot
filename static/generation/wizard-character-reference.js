@@ -87,8 +87,8 @@ function selectedWizardCharacterRef(script, character) {
   return candidates.find(item=>item.node===id) || {node:id,ref:item?.ref};
 }
 
-async function startWizardOpeningAnalysis() {
-  if (W?.step!==2 || !$("#wiz").classList.contains("on")) return;
+async function startWizardOpeningAnalysis({production = false} = {}) {
+  if (W?.step!==2 || (!production && !$("#wiz").classList.contains("on"))) return;
   const wizard=W, script=wizScript(), item=wizardOpeningCharacterUpload();
   if (!item || !script?.data.characters?.some(character=>{
     const target=castOf(character.name);

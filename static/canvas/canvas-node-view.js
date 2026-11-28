@@ -77,8 +77,10 @@ function render(n) {
   } else if (v) {
     body.innerHTML = n.type === "image" ? `<img class="m" src="${v.url}" draggable="false">` : `<video class="m" src="${v.url}" controls playsinline preload="metadata"></video>`;
     meta = `${v.w}×${v.h}` + (v.seconds ? ` · ${v.seconds.toFixed(1)}s` : "") + (n.versions.length > 1 ? ` · ${n.cur + 1}/${n.versions.length}` : "");
-    const badge=v.draft_final?.resolution ? `${String(v.draft_final.resolution).toUpperCase()} 定稿` : v.draft_expires ? "480p 样片" : v.mode;
-    if (n.type === "video" && badge) body.insertAdjacentHTML("beforeend", `<span class="badge">${esc(badge)}</span>`);
+    const model = versionGenerationModel(v,n.type)?.label;
+    const status = v.draft_final?.resolution ? `${String(v.draft_final.resolution).toUpperCase()} 定稿` : v.draft_expires ? "480p 样片" : "";
+    const badge = status || model || (n.type==="video" ? v.mode : "");
+    if (badge) body.insertAdjacentHTML("beforeend", `<span class="badge" title="${esc(model || badge)}">${esc(badge)}</span>`);
   } else {
     const tr = OneShotI18n.t;
     let hint;

@@ -85,6 +85,8 @@ class VideoReferencePreview(unittest.IsolatedAsyncioTestCase):
                 server.requested_generation_route({"provider":"legacy","selected_model":"old-model"},"video")
             with self.assertRaises(web.HTTPBadRequest):
                 server.requested_generation_route({"provider":"local_h3"},"video")
+            with self.assertRaises(web.HTTPBadRequest):
+                server.requested_generation_route({"provider":"legacy"},"image")
             fallback.assert_not_called()
             server.requested_generation_route({},"video")
             fallback.assert_called_once_with("video")

@@ -169,8 +169,9 @@ function previewTick() {
   const voiceCaption = F.spec.subtitles ? filmAudioCaption(F.spec,position) : "";
   const sourcePosition = (c.in || 0) + offset * filmSpeed(c);
   const timedVisible = offset >= clipOverlap(F.spec.clips[F.sel - 1], c) && offset < clipLen(c) - clipOverlap(c, F.spec.clips[F.sel + 1]);
-  const txt = voiceCaption || (c.captions && F.spec.subtitles
-    ? (timedVisible && c.captions.find(cue => sourcePosition >= cue.start && sourcePosition < cue.end)?.text || "")
+  const captions = c.captions ?? automaticStoryCaptions(F.spec,c);
+  const txt = voiceCaption || (captions && F.spec.subtitles
+    ? (timedVisible && captions.find(cue => sourcePosition >= cue.start && sourcePosition < cue.end)?.text || "")
     : filmSubtitleCues(lines, clipLen(c)).find(cue => offset >= cue.start && offset < cue.end)?.text || "");
   sub.textContent = txt; sub.style.fontSize = (F.spec.sub_size || 1) * 100 + "%"; sub.style.display = txt ? "" : "none";
   syncFilmOriginal();

@@ -13,6 +13,7 @@ import numpy as np
 
 from oneshot.editing import audio_routes
 from oneshot.providers import remote_audio
+from oneshot.providers import routes as provider_routes
 from oneshot.storage import db
 import server
 
@@ -191,11 +192,15 @@ class AudioGeneration(AudioFixture):
     async def test_elevenlabs_voices_and_model_specific_speed(self):
         provider_id = server.providers.save(None,"elevenlabs","配置配音",{},{"api_key":"fixture"},True)
         self.assertFalse(any(row["id"] == provider_id for row in server.audio_service_options("tts")))
+        capabilities = json.loads((await provider_routes.capabilities(None)).body)
+        self.assertIn({"id":provider_id,"name":"配置配音"},capabilities["audio_voice_setup"])
         self.assertTrue(any(row["id"] == provider_id for row in server.audio_service_options("sfx")))
         with self.assertRaisesRegex(server.providers.ProviderError, "有效且不重复"):
             server.providers.save(provider_id,"elevenlabs","配置配音",{"voices":"some/voice"}, {}, True)
         config = {"voices":"voice_1=旁白，voice_2=对白"}
         server.providers.save(provider_id,"elevenlabs","配置配音",config,{},True)
+        capabilities = json.loads((await provider_routes.capabilities(None)).body)
+        self.assertFalse(any(row["id"]==provider_id for row in capabilities["audio_voice_setup"]))
         options = next(row for row in server.audio_service_options("tts") if row["id"] == provider_id)
         self.assertEqual(options["voices"],[{"id":"voice_1","name":"旁白"},{"id":"voice_2","name":"对白"}])
         self.assertEqual(options["speed_range"],[.7,1.2])

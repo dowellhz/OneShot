@@ -46,6 +46,11 @@ async def capabilities(req):
     out["audio_reference"] = canvas_reference_choices()
     out["segment_edit"] = canvas_reference_choices(segment_edit=True)
     out["audio_generation"] = {cap:audio_routes.audio_service_options(cap) for cap in AUDIO_GENERATION_MODES}
+    out["audio_voice_setup"] = [
+        {"id":provider["id"], "name":provider["name"]} for provider in enabled
+        if provider["kind"] in providers.VOICE_LIST_PROVIDERS and provider.get("secrets", {}).get("api_key")
+        and not providers.configured_voices(provider["kind"], provider["config"].get("voices", ""))
+    ]
     out["audio_output"] = film.AUDIO_OUTPUT_RATES
     out["audio_effects"] = True
     return web.json_response(out)

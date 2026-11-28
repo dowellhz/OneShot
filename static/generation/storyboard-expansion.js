@@ -85,7 +85,9 @@ function storyboardAssetTokens(script,shot,references,priorFrame=0) {
 
 function scriptShotSettings(script,shot,refs=scriptRefs(script)) {
   const data=script.data;
-  const refOf=name=>refs.find(ref=>ref.name===name)||refs.find(ref=>ref.name.includes(name)||name.includes(ref.name));
+  const namedAsset=value=>String(value).normalize("NFKC").trim().toLowerCase();
+  const refOf=name=>refs.find(ref=>namedAsset(ref.name)===namedAsset(name)) ||
+    (!data.wizard_media && refs.find(ref=>ref.name.includes(name)||name.includes(ref.name)));
   const characters=shot.characters||[], cast=data.characters||[];
   const references=[...new Map(characters.map(refOf).filter(Boolean).map(ref=>[ref.node.id,ref])).values()].slice(0,8);
   const visuals=(shot.visual_asset_keys||[]).flatMap(key=>{

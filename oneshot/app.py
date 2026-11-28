@@ -63,6 +63,7 @@ from oneshot.generation import requests as generation_requests
 from oneshot.generation import rewriter
 from oneshot.generation import tools
 from oneshot.generation import video_prompt_adapters
+from oneshot.generation import wizard_batches
 from oneshot.integrations import connector_oauth
 from oneshot.integrations import mcp_bridge
 from oneshot.memory import creative_memory
@@ -96,9 +97,11 @@ async def on_start(app):
     app["tts_task"] = asyncio.create_task(tts.reaper())
     app["remote_tasks"] = set()
     generation_jobs.recover_remote_videos(app)
+    wizard_batches.recover(app)
 
 
 async def on_stop(app):
+    await wizard_batches.stop(app)
     app["ws_task"].cancel()
     app["llm_task"].cancel()
     app["llm"].stop()
