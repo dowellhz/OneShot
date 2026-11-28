@@ -34,6 +34,7 @@ const scenarios = [
  storyDubbing,
  filmMusic,
  require('./workspace/timeline-playlists-and-audio.cjs'),
+ require('./workspace/film-multitrack.cjs'),
  require('./workspace/batch-layout-and-group-generation.cjs'),
  require('./workspace/shot-run-and-continuity.cjs'),
  require('./workspace/selection-batches-and-wizard-motion.cjs'),

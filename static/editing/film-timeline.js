@@ -130,6 +130,7 @@ function renderFilm() {
   renderFilmAudio();
   renderFilmTitles();
   renderFilmCutaways();
+  queueFilmTrackEditor(F);
 }
 
 function refreshTimelineLabels() {
@@ -147,4 +148,5 @@ function refreshTimelineLabels() {
   renderFilmAudioLanes();
   renderFilmTitleLane();
   renderFilmCutawayLane();
+  queueFilmTrackEditor();
 }

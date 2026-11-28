@@ -50,6 +50,7 @@ function selectClip(i, offset = 0, autoplay = false, ready = null) {
   if (!autoplay) { playAll = false; syncFilmAudio(F); }
   F.still = null;
   F.pendingOffset = offset;
+  updateFilmTrackPlayhead(F.spec.clips.length ? clipStart(i)+offset : 0);
   $$("#fmTl .fc").forEach(el => el.classList.toggle("on", +el.dataset.i === i));
   const c = F.spec.clips[i], vid = $("#fmV"), image = $("#fmStill");
   if (!c) {
@@ -180,6 +181,7 @@ function previewTick() {
   if (mainPlay.textContent !== playLabel) mainPlay.textContent = playLabel;
   renderFilmTitlePreview(position);
   $("#fmTime").value = position;
+  updateFilmTrackPlayhead(position);
   $("#fmTimeLabel").textContent = Math.min(Number($("#fmTime").max), position).toFixed(2) + "s";
   syncFilmAudio(F, playing && !ended ? position : undefined);
 }

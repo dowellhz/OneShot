@@ -16,6 +16,13 @@ function saveFilmDraft(F = FILM) {
   const state = JSON.stringify({spec, sel:F.sel, offset:Math.round(offset * 4) / 4, node:F.n?.id, target:F.target,
     attempt:F.attempt,canvasAttempt:F.canvasAttempt,downloadExport:F.downloadExport,playlistBase:F.playlistBase,storySource:F.storySource});
   if (state === F.saved) return;
+  if (F.tracks?.open) {
+    const timeline = JSON.stringify(spec);
+    if (timeline!==F.tracks.savedSpec) {
+      F.tracks.savedSpec = timeline;
+      queueFilmTrackEditor(F);
+    }
+  }
   try {
     localStorage.setItem(F.key, state);
     localStorage.setItem(filmDraftPrefix() + "latest", F.key);

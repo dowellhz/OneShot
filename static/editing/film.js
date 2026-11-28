@@ -83,7 +83,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
   closeFilmStoryTiming();
   stopFilmVersionPreview(FILM);
   finishFilmPlaylistPicker(false,false);
-  if (FILM) { saveFilmDraft(); syncFilmAudio(FILM); }
+  if (FILM) { saveFilmDraft(); syncFilmAudio(FILM); FILM.tracks?.waveformObserver?.disconnect(); }
   playAll = false;
   let saved;
   try { saved = JSON.parse(localStorage.getItem(key)); } catch {}
@@ -108,7 +108,7 @@ function showFilm(spec, n = null, key = filmDraftKey(spec, n), target = null, st
   $("#fmGo").textContent = target ? "导出为新版本" : "导出成片";
   $("#fmGo").disabled = !canvasCanEdit();
   $("#film").classList.add("on");
-  renderFilm(); selectClip(sel, saved?.offset || 0);
+  renderFilm(); selectClip(sel, saved?.offset || 0); renderFilmTrackEditor();
   if (voiceList) loadDubbingVoices();
   saveFilmDraft();
   return FILM;
@@ -121,7 +121,9 @@ function closeFilm() {
   closePlaylistClipMenu();
   finishFilmPlaylistPicker(false,false);
   saveFilmDraft(); if (FILM) syncFilmAudio(FILM);
+  FILM?.tracks?.waveformObserver?.disconnect();
   playAll = false; FILM = null;
+  renderFilmTrackEditor();
   clearFilmCutawayPreview();
   const transfer=$("#assetTransferPanel");
   if (transfer.parentElement===$("#film")) document.body.append(transfer);
@@ -386,7 +388,7 @@ function initFilm() {
   $("#fmV").addEventListener("pause", () => { if (FILM) syncFilmAudio(FILM); });
   document.addEventListener("pointerdown", e => {
     if (qOpen && !e.target.closest("#qp, #canvasQueueBtn")) toggleQueue(false);
-    if (!e.target.closest("#fmAdd, .fadd")) $("#fmAdd").classList.remove("on");
+    if (!e.target.closest("#fmAdd, .fadd, [data-track-action=add]")) $("#fmAdd").classList.remove("on");
     if (!e.target.closest("#playlistClipMenu,.fm-clip-menu")) closePlaylistClipMenu();
   });
   $("#fmTl").addEventListener("scroll",()=>closePlaylistClipMenu(),{passive:true});
@@ -422,6 +424,7 @@ function initFilm() {
       return;
     }
     if (e.key === "Escape") { e.stopPropagation(); closeFilm(); return; }
+    if (handleFilmTrackKey(FILM,e)) return;
     if (!canvasCanEdit() || FILM.busy || e.defaultPrevented || e.isComposing || e.repeat ||
         e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || $("dialog[open]")) return;
     if (e.target!==document && e.target!==document.body && !e.target.closest?.("#film"))return;
@@ -442,5 +445,6 @@ function initFilm() {
       enableNotifications.disabled = false;
     }
   };
+  initFilmTrackEditor();
   setInterval(watchDone, 1500);
 }

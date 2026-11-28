@@ -309,6 +309,8 @@ function addClipMenu(e) {
     m.classList.remove("on");
     const n = node(b.dataset.id);
     if (FILM !== F || !filmSource(n)) return;
-    F.spec.clips.push(newFilmClip(n)); renderFilm(); selectClip(F.spec.clips.length - 1); saveFilmDraft(F);
+    const append = () => { F.spec.clips.push(newFilmClip(n)); };
+    if (F.tracks?.open) filmTrackClipOperation(F,append); else append();
+    renderFilm(); selectClip(F.spec.clips.length - 1); saveFilmDraft(F);
   });
 }
