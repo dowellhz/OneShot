@@ -117,12 +117,12 @@ function audioPreviewMarkup(version, fullscreen=false) {
   </div>`;
 }
 
-function audioPreviewPeaks(ref) {
+function audioPreviewWaveform(ref) {
   if(!audioPeaks.has(ref)){
     const pending=boardRequest("/api/audio/waveform?ref="+encodeURIComponent(ref)).then(result=>{
       if(!Array.isArray(result.peaks)||!result.peaks.length||result.peaks.length>256||
          result.peaks.some(p=>!Number.isFinite(p)||p<0||p>1))throw new Error("无可用波形");
-      return result.peaks;
+      return {peaks:result.peaks,seconds:Number.isFinite(result.seconds) && result.seconds>0 ? result.seconds : null};
     });
     audioPeaks.set(ref,pending);
     pending.catch(()=>{if(audioPeaks.get(ref)===pending)audioPeaks.delete(ref);});
@@ -158,7 +158,7 @@ function bindAudioPreview(container, version) {
   if(!version.ref)return;
   const load=async()=>{
     try{
-      const peaks=await audioPreviewPeaks(version.ref);
+      const {peaks}=await audioPreviewWaveform(version.ref);
       if(!root.isConnected)return;
       visual.replaceChildren(...peaks.map(peak=>{
         const bar=document.createElement("span");
