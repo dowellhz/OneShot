@@ -102,6 +102,9 @@ function wireWizardMedia(body) {
   if (!section || !canvasCanEdit()) return;
   const writeScript=$('[data-go="script"]',body);
   if (writeScript) writeScript.disabled=wizardMediaRuns.has(W);
+  $$("[data-screenplay-start]",body).forEach(button=>{
+    button.disabled=wizardMediaRuns.has(W) || activeScreenplays.has(W) || !!(W.production && W.production.status!=="done");
+  });
   $("[data-wz-upload]",section).onclick=()=>$("[data-wz-files]",section).click();
   $("[data-wz-files]",section).onchange=event=>{ const files=[...event.target.files]; event.target.value=""; void uploadWizardMedia(files); };
   $$("[data-wz-media]",section).forEach(card=>{

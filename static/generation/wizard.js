@@ -95,6 +95,7 @@ function renderWiz() {
 }
 function maxStep() {
   const s = wizScript(); if (!s) return 0;
+  if (wizardScreenplay()) return 1;
   if (!(s.data.shots || []).length) return 0;
   if (!wizardMissingVideos(s).length) return 5;
   const pairs = shotPairs();
@@ -134,7 +135,7 @@ function wizardFilm(script) {
 }
 // ---- actions
 function wireStep(body) {
-  wireWizardMedia(body);
+  wireWizardMedia(body); wireWizardScreenplay(body);
   $$("[data-goto]", body).forEach(b => b.onclick = () => goStep(+b.dataset.goto));
   $$("[data-go]", body).forEach(b => b.onclick = () => wizGo(b.dataset.go, b));
   $$("[data-set]", body).forEach(b => b.onclick = () => { const k = b.dataset.set; W[k] = k==="quality_precheck" ? b.dataset.val==="true" : ["dur", "takes"].includes(k) ? +b.dataset.val : b.dataset.val; wizSave(); renderWiz(); });
@@ -144,10 +145,10 @@ function wireStep(body) {
   $$("[data-v]", body).forEach(b => b.onclick = () => { const n = node(b.dataset.n); nodeAction(n, b.dataset.v); wizSig = ""; renderWiz(); });
   // script editing writes straight into the script node
   const s = wizScript(), d = s?.data;
-  if (W.step === 1 && d?.shots?.length) {
+  if (W.step === 1 && !wizardScreenplay() && d?.shots?.length) {
     $("#wzTitle", body).oninput = e => { d.title = e.target.value; save(); };
     $("#wzStyle", body).oninput = e => { d.style = e.target.value; save(); };
-    $$(".sh", body).forEach(el => {
+    $$(".sh[data-i]", body).forEach(el => {
       const index=+el.dataset.i, x=d.shots[index];
       const edited=new WeakSet();
       $$("input,select,textarea",el).forEach(field=>field.addEventListener("focus",()=>edited.delete(field)));

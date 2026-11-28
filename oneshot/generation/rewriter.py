@@ -155,7 +155,7 @@ class LLM:
             if self.running() and time.time() - self.last > IDLE_S and not self.lock.locked():
                 self.stop()
 
-    async def chat(self, system: str, content, max_tokens=2000, temperature=0.6) -> str:
+    async def chat(self, system: str, content, max_tokens=2000, temperature=0.6, *, response_schema=None) -> str:
         """Follow the console's route for this capability (text, or vision when there are pictures); fall back down the list."""
         from oneshot.providers import catalog as providers
         cap = "vision" if has_image(content) else "text"
@@ -169,7 +169,7 @@ class LLM:
                 if pr["kind"] == "local_qwen":
                     if not self.local_ok():
                         raise RuntimeError("本地 Qwen 没装好")
-                    return await self._local_chat(system, content, max_tokens, temperature)
+                    return await self._local_chat(system, content, max_tokens, temperature, response_schema=response_schema)
                 out = await providers.chat(self.http(), pr, r["model"], system, content, max_tokens, temperature)
                 self.via = pr["name"]
                 return out

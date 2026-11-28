@@ -7,6 +7,7 @@ const filmDubbing = require('./workspace/film-dubbing.cjs');
 const storyDubbing = require('./workspace/story-dubbing.cjs');
 const filmMusic = require('./workspace/film-music.cjs');
 const wizardMedia = require('./workspace/wizard-media.cjs');
+const screenplayWorkbench = require('./workspace/screenplay-workbench.cjs');
 const wizardProduction = require('./workspace/wizard-production.cjs');
 const wizardCharacterReference = require('./workspace/wizard-character-reference.cjs');
 const wizardSuppliedAssets = require('./workspace/wizard-supplied-assets.cjs');
@@ -57,6 +58,7 @@ const scenarios = [
  require('./workspace/wizard-assets.cjs'),
  wizardMedia,
  wizardProduction,
+ screenplayWorkbench,
  wizardCharacterReference,
  wizardSuppliedAssets,
  imageReferenceRemoval,
@@ -72,6 +74,7 @@ async function run() {
   await filmMusic(workspace);
   await wizardMedia(workspace);
   await wizardProduction(workspace);
+  await screenplayWorkbench(workspace);
   await wizardCharacterReference(workspace);
   await wizardSuppliedAssets(workspace);
   await imageReferenceRemoval(workspace);

@@ -103,30 +103,49 @@ function madeShots(n) {
   return (n.data.made||[]).filter(pair=>(!pair.shot_id||positions.has(pair.shot_id))&&(node(pair.img)||node(pair.vid)))
     .sort((a,b)=>(positions.get(a.shot_id)??shots.length)-(positions.get(b.shot_id)??shots.length));
 }
+function storyboardRequest(n, {targetSeconds, motionFrames, wizardMedia}) {
+  const d = n.data;
+  const uploads = wizardMedia ? wizardUploadedReferences(wizardMedia) : [];
+  const refs = [...uploads, ...scriptRefs(n).filter(item => !uploads.some(upload => upload.ref === item.ref))];
+  return {board:boardId, story:fullPrompt(n), refs:refs.map(({node, pinned, ...ref}) => ref),
+    shots:d.nshots === "auto" ? null : +d.nshots, seconds:d.shotlen === "auto" ? null : +d.shotlen,
+    style:"", aspect:d.aspect, ...(motionFrames ? {motion_frames:true,prepare_assets:true} : {}),
+    ...(targetSeconds ? {target_seconds:targetSeconds} : {})};
+}
+
+function applyStoryboardResult(n, result, {resetLinks, wizardMedia, approvedScreenplay}) {
+  checkpoint();
+  ensureScriptShotIds(n);
+  const d = n.data;
+  if (resetLinks) d.made = [];
+  if (approvedScreenplay) d.approved_screenplay = approvedScreenplay;
+  else {
+    delete d.approved_screenplay;
+    delete d.screenplay_audit;
+    delete d.screenplay_versions;
+    delete d.screenplay_outline;
+    delete d.screenplay_source;
+    delete d.screenplay_revision;
+  }
+  Object.assign(d,{title:result.title,style:result.style,characters:result.characters,visual_assets:result.visual_assets||[],
+    shots:result.shots.map(shot=>({...shot,id:newCanvasNodeId()}))});
+  if (wizardMedia) applyWizardUploadPlan(n,wizardMedia);
+  save(); render(n); drawEdges();
+  const total = result.planned_seconds ?? result.shots.reduce((sum,shot)=>sum+shot.duration,0);
+  toast(`拆成 ${result.shots.length} 镜，计划约 ${total} 秒${llmNote(result)}`, 4000);
+}
+
 async function planStoryboard(n, {targetSeconds, resetLinks=false, motionFrames=false, wizardMedia, requestDraft}={}) {
-  const d = n.data, story = fullPrompt(n);
-  if (!story.trim()) { toast("先写一段剧情"); $("#prompt").focus(); return; }
-  const uploads=wizardMedia?wizardUploadedReferences(wizardMedia):[];
-  const refs=[...uploads,...scriptRefs(n).filter(item=>!uploads.some(upload=>upload.ref===item.ref))];
+  const payload = storyboardRequest(n,{targetSeconds,motionFrames,wizardMedia});
+  if (!payload.story.trim()) { toast("先写一段剧情"); $("#prompt").focus(); return; }
   return withBusy(n, "Qwen 拆分镜中", async () => {
-    const bid=boardId;
     await flushSave();
-    if(boardId!==bid||node(n.id)!==n)return;
-    const payload = { board:bid, story, refs: refs.map(({ node, pinned, ...x }) => x), shots: d.nshots === "auto" ? null : +d.nshots,
-      seconds: d.shotlen === "auto" ? null : +d.shotlen, style: "", aspect: d.aspect,
-      ...(motionFrames ? {motion_frames:true,prepare_assets:true} : {}),
-      ...(targetSeconds ? {target_seconds:targetSeconds} : {}) };
-    const r = await (requestDraft ? requestDraft(payload) : api("/api/storyboard",payload));
-    if(!r||boardId!==bid||node(n.id)!==n)return;
-    checkpoint();ensureScriptShotIds(n);
-    if(resetLinks)d.made=[];
-    Object.assign(d,{title:r.title,style:r.style,characters:r.characters,visual_assets:r.visual_assets||[],
-      shots:r.shots.map(shot=>({...shot,id:newCanvasNodeId()}))});
-    if (wizardMedia) applyWizardUploadPlan(n,wizardMedia);
-    save(); render(n); drawEdges();
-    const total = r.planned_seconds ?? r.shots.reduce((sum,shot)=>sum+shot.duration,0);
-    toast(`拆成 ${r.shots.length} 镜，计划约 ${total} 秒${llmNote(r)}`, 4000);
-    return true;
+    if (boardId!==payload.board||node(n.id)!==n) return;
+    const result = await (requestDraft ? requestDraft(payload) : api("/api/storyboard",payload));
+    if (result && boardId===payload.board && node(n.id)===n) {
+      applyStoryboardResult(n,result,{resetLinks,wizardMedia});
+      return true;
+    }
   });
 }
 

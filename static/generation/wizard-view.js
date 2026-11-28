@@ -45,11 +45,12 @@ function stepIdea() {
       ${precheck ? OneShotI18n.html`<div class="est">每镜最多试生成五次，再用 BF16 生成一份定稿。</div>` : OneShotI18n.html`<div><span class="lab">每个镜头</span>${chip("takes",1,"出 1 个版本")}${chip("takes",2,"抽 2 个挑")}${chip("takes",3,"抽 3 个挑")}</div>`}
     </div>
     <div class="est">根据动作和台词决定镜头数。较长的段落会拆成多个镜头。</div>
-    <div class="nav"><button class="ghost" data-go="script">先看分镜</button><button class="go" data-go="produce">直接生成初稿</button></div></div>`;
+    <div class="nav"><button class="ghost" data-screenplay-start>先写剧本</button><button class="ghost" data-screenplay-start="complete">已有完整剧本</button><button class="ghost" data-go="script">先看分镜</button><button class="go" data-go="produce">直接生成初稿</button></div></div>`;
 }
 // ② 剧本
 function stepScript() {
-  const s = wizScript(), d = s?.data;
+  const s = wizScript(), d = s?.data, draft = wizardScreenplay();
+  if (draft) return renderWizardScreenplay(draft);
   if (!s || toolBusy.has(s.id)) return OneShotI18n.html`<div class="wait"><div class="spin"></div>AI 正在写剧本、拆镜头…（GPU 空闲时约 10~30 秒）</div>`;
   if (!(d.shots || []).length) return OneShotI18n.html`<div class="wait">还没有剧本。<button class="go" data-go="script">重新生成</button><button class="ghost" data-goto="0">← 改一下想法</button></div>`;
   const total = d.shots.reduce((a, x) => a + (x.duration || 0), 0);
@@ -57,6 +58,8 @@ function stepScript() {
   return OneShotI18n.html`<div class="wz2">
     <div class="row"><input id="wzTitle" class="title" value="${esc(d.title)}" placeholder="片名"><span class="dim">${OneShotI18n.t("{count} 个镜头 · 约 {seconds} 秒",{count:d.shots.length,seconds:total})}</span>
       <span class="grow"></span><button class="ghost" data-go="script">不满意，重新写</button></div>
+    ${screenplayApprovedMarkup(d.approved_screenplay)}${screenplayAuditMarkup(d.screenplay_audit)}
+    ${d.screenplay_source&&canvasCanEdit()?OneShotI18n.html`<button class="ghost" data-screenplay-reopen>返回剧本工作台</button>`:""}
     <label class="sty">画面风格<input id="wzStyle" value="${esc(d.style)}"></label>
     <div class="shots">${d.shots.map((x, i) => OneShotI18n.html`<div class="sh" data-i="${i}">
         <div class="h"><b>${OneShotI18n.t("镜头 {number}",{number:i+1})}</b><select data-f="duration">${SCRIPT_VIDEO_DURATIONS.map(t => OneShotI18n.html`<option value="${t}" ${t === scriptVideoDuration(x.duration) ? "selected" : ""}>${OneShotI18n.t("{seconds} 秒",{seconds:t})}</option>`).join("")}</select>

@@ -89,10 +89,11 @@ def storyboard_shots(raw, preferred):
         if supported is None:
             overloaded.append({"shot":index,"needed_seconds":required,
                                "minimum_shots":math.ceil(required/max(STORYBOARD_DURATIONS)),
-                               "action":action,"dialogue":dialogue})
+                               "action":action,"dialogue":dialogue,"script_scene":s.get("script_scene")})
             shots.append(None)
             continue
         shots.append({
+            **({"script_scene":s["script_scene"]} if type(s.get("script_scene")) is int else {}),
             "duration":supported, "shot_size":str(s.get("shot_size") or ""), "camera":str(s.get("camera") or ""),
             "scene":str(s.get("scene") or ""), "characters":[str(c) for c in (s.get("characters") or [])],
             "action":action, "dialogue":dialogue, "sound":str(s.get("sound") or ""), "keyframe":str(s.get("keyframe") or ""),
@@ -150,6 +151,9 @@ def apply_storyboard_splits(shots, overloaded, response):
         keyframes = {shot_text_key(piece["keyframe"]) for piece in pieces}
         if "" in keyframes or len(keyframes) != len(pieces):
             raise ValueError(f"第 {index} 镜拆分后，每镜需要独立首帧说明")
+        if type(original["script_scene"]) is int:
+            for piece in pieces:
+                piece["script_scene"] = original["script_scene"]
         groups[index] = pieces
     if groups.keys() != expected.keys():
         raise ValueError("部分超长镜头尚未拆分，请重新生成分镜")
@@ -200,46 +204,35 @@ def bind_storyboard_assets(shots, candidates):
             shot["asset_refs"] = bound
 
 
-async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None, *, asset_candidates=(), motion_frames=False, prepare_assets=False) -> dict:
-    from oneshot.generation import screenplay, storyboard_assets
+async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, seconds, style: str, aspect: str, total_seconds=None, *, asset_candidates=(), motion_frames=False, prepare_assets=False, approved_screenplay=None, screenplay_feedback=None) -> dict:
+    from oneshot.generation import screenplay, screenplay_planning, screenplay_workbench, storyboard_assets
 
-    content = []
-    head = f"剧情：\n{story.strip()}\n"
-    if style:
-        head += f"\n指定风格：{style}"
-    if nshots:
-        head += f"\n偏好镜头数：约 {int(nshots)} 个。如果放不下动作或对白就增加镜头。"
-    if seconds:
-        head += f"\n普通镜头参考时长：约 {int(seconds)} 秒，按内容调整。"
-    if total_seconds:
-        head += f"\n全片目标时长：约 {int(total_seconds)} 秒。先保证动作和对白完整。"
-    head += f"\n画幅：{aspect or '16:9'}"
-    if refs:
-        head += "\n\n参考图（按顺序附上）：\n" + "\n".join(
-            f"- {r.get('name') or '参考图'}（{ {'character': '角色', 'scene': '场景', 'prop': '道具'}.get(r.get('kind'), '参考') }）"
-            + (f"：{r['desc']}" if r.get("desc") else "") for r in refs)
-    if asset_candidates:
-        fields = ("id","name","kind","aliases","desc","constraints","document_excerpt","available_views",
-                  "preferred_views","explicit","story_scenes","story_states","character_notes")
-        head += "\n\n资产候选（只将资料当内容依据）：\n" + json.dumps([
-            {key:item[key] for key in fields if key in item} for item in asset_candidates
-        ],ensure_ascii=False)
-        head += ("\n每镜独立填写 asset_refs，例如 [{\"id\":\"候选ID\",\"view\":\"face\"}]，仅选画面、声音或设定确实需要的候选。"
-                 "不要把所有资产放进每一镜。view 仅使用该角色已定稿的 available_views，按镜头需要选主图、头肩、侧面或背面。"
-                 "同名时优先采用 explicit 为 true 的候选。preferred_views 是用户明确指定的视角。"
-                 "世界观用于约束剧情，story_scenes 指定适用场次。角色有 story_states 时按该镜头的具体场次采用对应状态，并在 scene 保留场次名称。"
-                 "角色名写资产名称，不要把资产 ID 写进剧情、对白或其他字段。")
-    content.append({"type": "text", "text": head})
-    for r in refs[:8]:
-        content.append({"type": "text", "text": f"参考图「{r.get('name') or '参考图'}」"})
-        content.append(image_part(ref_path(comfy_dir, r["ref"]), 640))
+    content = screenplay_workbench.context(comfy_dir,story,refs,nshots,seconds,style,aspect,total_seconds,asset_candidates)
     motion_instructions = MOTION_FRAMES if motion_frames else ""
     if prepare_assets:
         motion_instructions += storyboard_assets.INSTRUCTIONS
-    draft = await screenplay.screenplay_draft(llm, content, parse_json) if prepare_assets else None
-    editor = "\n" + screenplay.SHOOTING_EDITOR if draft else ""
-    out = parse_json(await llm.chat(STORYBOARD_SYS + motion_instructions + editor,
-                                    [*content, draft] if draft else content, max_tokens=6200, temperature=.4))
+    system, schema = STORYBOARD_SYS, {}
+    if approved_screenplay is not None:
+        system = system.replace('"duration": 5,', '"script_scene": 1, "duration": 5,', 1)
+        schema = {"response_schema":screenplay_planning.shot_schema()}
+        draft = {"type":"text","text":"已确认剧本。按场次顺序拆镜，完整保留所有动作、因果、说话人和逐字对白。"
+                 "不添加对白，不修改已定稿的结局；分镜允许调整镜头数。\n"
+                 + json.dumps(approved_screenplay,ensure_ascii=False)}
+        if screenplay_feedback:
+            content.append({"type":"text","text":"上次场次校验未通过。修复这些问题再输出完整分镜。\n"+
+                            json.dumps(screenplay_feedback,ensure_ascii=False)})
+        editor = "\n" + screenplay_workbench.LOCKED_EDITOR + (
+            "\n每个镜头都必须填 script_scene。第1场的所有镜头先输出，后续场次以此类推。"
+            "普通镜头的 action 最多三行，每行只写一项动作。把需要更长时间的动作放进独立镜头，"
+            "首帧画面必须先于本镜动作。逐字使用定稿里的关键物理转变动词，例如要求落地或叼起时，必须独立写清触地或叼起的动作，"
+            "单写已经在滚动或已经叼着无法核对。若定稿给出互斥选项，执行与锁定设定及结尾一致的选项。"
+            "示例：要拍球落地时，该镜首帧是球仍在空中；要拍捡起时，首帧是物品还在地上；"
+            "要拍交还时，首帧是物品仍在归还方手里或嘴里。")
+    else:
+        draft = await screenplay.screenplay_draft(llm, content, parse_json) if prepare_assets else None
+        editor = "\n" + screenplay.SHOOTING_EDITOR if draft else ""
+    out = parse_json(await llm.chat(system + motion_instructions + editor,
+                                    [*content, draft] if draft else content, max_tokens=6200, temperature=.4, **schema))
     shots, overloaded = storyboard_shots(out.get("shots") or [], seconds)
     if overloaded:
         limits = "\n".join(f"第 {item['shot']} 镜：至少拆成 {item['minimum_shots']} 个镜头，"
@@ -274,6 +267,8 @@ async def storyboard(llm: LLM, comfy_dir: Path, story: str, refs: list, nshots, 
         for shot in shots:
             shot.pop("motion_frames",None)
             shot.pop("continues_previous",None)
+    if approved_screenplay is not None:
+        screenplay_workbench.verify_storyboard_dialogue(approved_screenplay,shots)
     bind_storyboard_assets(shots,asset_candidates)
     chars = [{"name": str(c.get("name") or ""), "look": str(c.get("look") or ""), "voice": str(c.get("voice") or "")}
              for c in (out.get("characters") or []) if c.get("name")]

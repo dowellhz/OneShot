@@ -203,7 +203,7 @@ async def storyboard(req):
     return web.json_response(await build_storyboard(req.app, req["user"], await req.json()))
 
 
-async def build_storyboard(app, user, p):
+async def build_storyboard(app, user, p, *, approved_screenplay=None, screenplay_feedback=None):
     if not http_errors.clean(p.get("story")):
         raise http_errors.bad("先写一段剧情")
     candidates = app["creative_memory"].storyboard_assets(user,p["board"],p["story"]) if p.get("board") else []
@@ -211,7 +211,8 @@ async def build_storyboard(app, user, p):
                                                 p.get("seconds"), http_errors.clean(p.get("style")), p.get("aspect") or "16:9", p.get("target_seconds"),
                                                 **({"motion_frames":True} if p.get("motion_frames") is True else {}),
                                                 **({"prepare_assets":True} if p.get("prepare_assets") is True else {}),
-                                                **({"asset_candidates":candidates} if candidates else {})))
+                                                **({"asset_candidates":candidates} if candidates else {}),
+                                                **({"approved_screenplay":approved_screenplay, "screenplay_feedback":screenplay_feedback} if approved_screenplay is not None else {})))
 
 
 async def describe(req):

@@ -2,20 +2,30 @@
 
 const activeWizardProductions = new WeakSet();
 
-async function wizardPlanScript() {
+async function prepareWizardScreenplaySource() {
   const board = B, wizard = W;
   const t = OneShotI18n.t;
   const idea = (wizard.idea || "").trim() ||
     (wizard.media?.length ? t("使用上传的素材制作一个连贯的短片，尊重已指定的素材用途。") : "");
-  if (!idea) { toast("先写一句你的想法"); return false; }
+  if (!idea) { toast("先写一句你的想法"); return null; }
   const media = await prepareWizardUploads();
-  if (!media || B !== board || W !== wizard) return false;
+  if (!media || B !== board || W !== wizard) return null;
   let script = wizScript();
   if (!script) { script = addNode("script", 0, 0, {}, {name:"剧本"}); wizard.script = script.id; }
   if (script.data.made?.length) toast("新分镜生成后会展开为一组新镜头");
   Object.assign(script.data,{prompt:`${idea}\n风格：${wizard.style}`,nshots:"auto",shotlen:"auto",aspect:wizard.aspect,quality:wizard.quality});
   wizard.step = 1;
   wizSave();
+  return {script,media};
+}
+
+async function wizardPlanScript() {
+  const board = B, wizard = W;
+  const prepared = await prepareWizardScreenplaySource();
+  if (!prepared) return false;
+  const {script,media} = prepared;
+  const t = OneShotI18n.t;
+  delete wizard.screenplay;
   const run = wizard.production?.status === "running" ? wizard.production : null;
   const active = () => B === board && W === wizard && wizard.production === run && run.status === "running";
   const requestDraft = !run ? undefined : async payload => {
